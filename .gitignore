@@ -1,0 +1,34 @@
+# deps
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+apps/web/dist/
+bin/
+apps/server/bin/
+# frontend copied here only during the embed/Docker build
+apps/server/internal/webassets/dist/
+
+# models (downloaded separately, large)
+models/*
+!models/.gitkeep
+*.bin
+*.gguf
+*.onnx
+
+# env / local
+.env
+.env.local
+*.local
+
+# os / editor
+.DS_Store
+*.log
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# go
+*.test
+*.out

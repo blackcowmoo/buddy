@@ -1,0 +1,15 @@
+{
+  "name": "buddy",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Streaming English free-talking tutor (Go backend + browser kokoro TTS)",
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=26.5.0",
+    "pnpm": ">=9"
+  },
+  "scripts": {
+    "dev:web": "pnpm --filter @buddy/web dev",
+    "build:web": "pnpm --filter @buddy/web build"
+  }
+}

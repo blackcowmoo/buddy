@@ -1,0 +1,13 @@
+# keep the build context small and reproducible
+.git
+.gitignore
+**/node_modules
+**/dist
+apps/server/bin
+apps/server/internal/webassets/dist
+models
+*.log
+.env
+.env.local
+.claude
+README.md
