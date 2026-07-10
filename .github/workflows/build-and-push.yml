@@ -55,12 +55,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,format=short
+          tags: type=raw,value=${{ steps.sha.outputs.sha_short }}
 
       - name: Build (and push on main/tags/deploy-labeled PRs)
         uses: docker/build-push-action@v6
