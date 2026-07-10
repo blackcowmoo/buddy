@@ -35,11 +35,22 @@ type Config struct {
 	// sentence itself always stays in the target language (English).
 	FeedbackLang string
 
-	// Persistent per-user memory (internal/store, internal/session). Postgres
-	// so the app can run as multiple replicas in Kubernetes (unlike an
-	// embedded single-writer file database).
-	DatabaseURL        string // e.g. postgres://user:pass@host:5432/buddy
-	MaxHistoryMessages int    // verbatim turns kept before folding into the summary
+	// Persistent per-user memory (internal/store, internal/session), backed by
+	// MySQL so the app can run as multiple replicas in Kubernetes (unlike an
+	// embedded single-writer file database). The database is shared with other
+	// services, so buddy's one table is created with a buddy_ prefix to avoid
+	// collisions. Reads can be offloaded to a replica by setting MySQLROHost;
+	// leaving it empty serves reads from the primary (the strongly-consistent
+	// default). These come from a shared secret store, so they use the plain
+	// MYSQL_* names (no BUDDY_ prefix) that the platform already injects.
+	MySQLRWHost   string // primary, read-write host (MYSQL_RW_HOSTNAME)
+	MySQLROHost   string // optional read replica (MYSQL_RO_HOSTNAME); "" => use RW
+	MySQLPort     int
+	MySQLUser     string
+	MySQLPassword string
+	MySQLDatabase string
+
+	MaxHistoryMessages int // verbatim turns kept before folding into the summary
 
 	// Identity (internal/identity): "cookie" (default, anonymous, zero-setup
 	// local dev) or "header" (trust a header set by an upstream auth proxy —
@@ -78,7 +89,13 @@ func Load() Config {
 
 		FeedbackLang: env("BUDDY_FEEDBACK_LANG", "ko"),
 
-		DatabaseURL:        env("BUDDY_DATABASE_URL", "postgres://buddy:buddy@localhost:5432/buddy?sslmode=disable"),
+		MySQLRWHost:   env("MYSQL_RW_HOSTNAME", "localhost"),
+		MySQLROHost:   env("MYSQL_RO_HOSTNAME", ""),
+		MySQLPort:     envInt("MYSQL_PORT", 3306),
+		MySQLUser:     env("MYSQL_USERNAME", "buddy"),
+		MySQLPassword: env("MYSQL_PASSWORD", "buddy"),
+		MySQLDatabase: env("MYSQL_DATABASE", "buddy"),
+
 		MaxHistoryMessages: envInt("BUDDY_MAX_HISTORY_MESSAGES", 20),
 
 		IdentityMode: env("BUDDY_IDENTITY_MODE", "cookie"),

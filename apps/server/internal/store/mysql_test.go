@@ -7,53 +7,64 @@ import (
 	"time"
 
 	"github.com/testcontainers/testcontainers-go"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+	tcmysql "github.com/testcontainers/testcontainers-go/modules/mysql"
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"buddy/server/internal/llm"
 )
 
-// newTestPostgres starts a throwaway Postgres in a container for the
-// duration of one test. A query-level mock wouldn't have caught the SQLite
-// busy-timeout bug this project already hit once — real SQL semantics
-// (upserts, JSON columns, connection handling) need a real database. If
-// Docker isn't reachable (no daemon, sandboxed CI, restricted dev box), this
-// skips rather than failing the whole suite.
-func newTestPostgres(t *testing.T) *PostgresStore {
+// newTestMySQL starts a throwaway MySQL in a container for the duration of one
+// test. A query-level mock wouldn't have caught the SQLite busy-timeout bug
+// this project already hit once — real SQL semantics (the ON DUPLICATE KEY
+// upsert, the utf8mb4 schema, VARCHAR-vs-TEXT key limits, connection handling)
+// need a real database. If Docker isn't reachable (no daemon, sandboxed CI,
+// restricted dev box), this skips rather than failing the whole suite.
+func newTestMySQL(t *testing.T) *MySQLStore {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
-	container, err := tcpostgres.Run(ctx, "postgres:17-alpine",
-		tcpostgres.WithDatabase("buddy"),
-		tcpostgres.WithUsername("buddy"),
-		tcpostgres.WithPassword("buddy"),
+	container, err := tcmysql.Run(ctx, "mysql:8.0",
+		tcmysql.WithDatabase("buddy"),
+		tcmysql.WithUsername("buddy"),
+		tcmysql.WithPassword("buddy"),
+		// Same readiness log line the module picks by default, just with more
+		// patience for a slow first boot on CI.
 		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).
-				WithStartupTimeout(30*time.Second),
+			wait.ForLog("port: 3306  MySQL Community Server").
+				WithStartupTimeout(120*time.Second),
 		),
 	)
 	if err != nil {
-		t.Skipf("postgres testcontainer unavailable (no/unreachable Docker?): %v", err)
+		t.Skipf("mysql testcontainer unavailable (no/unreachable Docker?): %v", err)
 	}
 	t.Cleanup(func() { _ = container.Terminate(context.Background()) })
 
-	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
+	host, err := container.Host(ctx)
 	if err != nil {
-		t.Fatalf("connection string: %v", err)
+		t.Fatalf("container host: %v", err)
+	}
+	port, err := container.MappedPort(ctx, "3306/tcp")
+	if err != nil {
+		t.Fatalf("container port: %v", err)
 	}
 
-	st, err := NewPostgres(dsn)
+	st, err := NewMySQL(MySQLConfig{
+		RWHost:   host,
+		Port:     int(port.Num()),
+		User:     "buddy",
+		Password: "buddy",
+		Database: "buddy",
+	})
 	if err != nil {
-		t.Fatalf("NewPostgres() error = %v", err)
+		t.Fatalf("NewMySQL() error = %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	return st
 }
 
-func TestPostgresLoadUnknownUserReturnsZeroProfile(t *testing.T) {
-	st := newTestPostgres(t)
+func TestMySQLLoadUnknownUserReturnsZeroProfile(t *testing.T) {
+	st := newTestMySQL(t)
 	got, err := st.Load(context.Background(), "nobody")
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
@@ -63,8 +74,8 @@ func TestPostgresLoadUnknownUserReturnsZeroProfile(t *testing.T) {
 	}
 }
 
-func TestPostgresSaveThenLoadRoundTrips(t *testing.T) {
-	st := newTestPostgres(t)
+func TestMySQLSaveThenLoadRoundTrips(t *testing.T) {
+	st := newTestMySQL(t)
 	ctx := context.Background()
 	want := Profile{
 		Summary: "likes hiking",
@@ -85,8 +96,8 @@ func TestPostgresSaveThenLoadRoundTrips(t *testing.T) {
 	}
 }
 
-func TestPostgresSaveTwiceUpserts(t *testing.T) {
-	st := newTestPostgres(t)
+func TestMySQLSaveTwiceUpserts(t *testing.T) {
+	st := newTestMySQL(t)
 	ctx := context.Background()
 	if err := st.Save(ctx, "alex", Profile{Summary: "v1"}); err != nil {
 		t.Fatalf("Save() #1 error = %v", err)
@@ -104,7 +115,7 @@ func TestPostgresSaveTwiceUpserts(t *testing.T) {
 	}
 
 	var n int
-	if err := st.db.QueryRowContext(ctx, `SELECT count(*) FROM profiles WHERE user_id = $1`, "alex").Scan(&n); err != nil {
+	if err := st.rw.QueryRowContext(ctx, `SELECT count(*) FROM buddy_profiles WHERE user_id = ?`, "alex").Scan(&n); err != nil {
 		t.Fatalf("count query: %v", err)
 	}
 	if n != 1 {
@@ -112,8 +123,8 @@ func TestPostgresSaveTwiceUpserts(t *testing.T) {
 	}
 }
 
-func TestPostgresUsersAreIsolated(t *testing.T) {
-	st := newTestPostgres(t)
+func TestMySQLUsersAreIsolated(t *testing.T) {
+	st := newTestMySQL(t)
 	ctx := context.Background()
 	if err := st.Save(ctx, "alex", Profile{Summary: "alex's memory"}); err != nil {
 		t.Fatalf("Save(alex) error = %v", err)

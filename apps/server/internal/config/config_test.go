@@ -3,14 +3,18 @@ package config
 import "testing"
 
 // allBuddyEnvVars lists every key Load() reads, so tests can force a clean
-// slate regardless of what the host environment happens to have set.
+// slate regardless of what the host environment happens to have set. The
+// MySQL keys are unprefixed (they come from a shared secret store), but they're
+// still read by Load() so they belong here.
 var allBuddyEnvVars = []string{
 	"BUDDY_ENV", "BUDDY_ADDR", "BUDDY_WEB_DIST", "BUDDY_VITE_URL",
 	"BUDDY_FAST_STT", "BUDDY_SLOW_STT", "BUDDY_WHISPER_BIN",
 	"BUDDY_WHISPER_FAST_MODEL", "BUDDY_WHISPER_SLOW_MODEL",
 	"BUDDY_LLM_BASE_URL", "BUDDY_LLM_API_KEY", "BUDDY_LLM_CHAT_MODEL",
 	"BUDDY_LLM_CORRECT_MODEL", "BUDDY_FEEDBACK_LANG",
-	"BUDDY_DATABASE_URL", "BUDDY_MAX_HISTORY_MESSAGES",
+	"MYSQL_RW_HOSTNAME", "MYSQL_RO_HOSTNAME", "MYSQL_PORT",
+	"MYSQL_USERNAME", "MYSQL_PASSWORD", "MYSQL_DATABASE",
+	"BUDDY_MAX_HISTORY_MESSAGES",
 	"BUDDY_IDENTITY_MODE", "BUDDY_AUTH_HEADER",
 }
 
@@ -34,7 +38,11 @@ func TestLoadDefaults(t *testing.T) {
 		"LLMChatModel":    {c.LLMChatModel, "local-model"},
 		"LLMCorrectModel": {c.LLMCorrectModel, "local-model"},
 		"FeedbackLang":    {c.FeedbackLang, "ko"},
-		"DatabaseURL":     {c.DatabaseURL, "postgres://buddy:buddy@localhost:5432/buddy?sslmode=disable"},
+		"MySQLRWHost":     {c.MySQLRWHost, "localhost"},
+		"MySQLROHost":     {c.MySQLROHost, ""},
+		"MySQLUser":       {c.MySQLUser, "buddy"},
+		"MySQLPassword":   {c.MySQLPassword, "buddy"},
+		"MySQLDatabase":   {c.MySQLDatabase, "buddy"},
 		"IdentityMode":    {c.IdentityMode, "cookie"},
 		"AuthHeader":      {c.AuthHeader, "X-Auth-Request-Email"},
 	}
@@ -42,6 +50,9 @@ func TestLoadDefaults(t *testing.T) {
 		if tc.got != tc.want {
 			t.Errorf("%s = %q, want %q", name, tc.got, tc.want)
 		}
+	}
+	if c.MySQLPort != 3306 {
+		t.Errorf("MySQLPort = %d, want 3306", c.MySQLPort)
 	}
 	if c.MaxHistoryMessages != 20 {
 		t.Errorf("MaxHistoryMessages = %d, want 20", c.MaxHistoryMessages)
@@ -59,8 +70,18 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("BUDDY_FEEDBACK_LANG", "ja")
 	t.Setenv("BUDDY_IDENTITY_MODE", "header")
 	t.Setenv("BUDDY_AUTH_HEADER", "X-Forwarded-Email")
+	t.Setenv("MYSQL_RW_HOSTNAME", "primary.db")
+	t.Setenv("MYSQL_RO_HOSTNAME", "replica.db")
+	t.Setenv("MYSQL_PORT", "3307")
 
 	c := Load()
+
+	if c.MySQLRWHost != "primary.db" || c.MySQLROHost != "replica.db" {
+		t.Errorf("MySQL host overrides failed: rw=%q ro=%q", c.MySQLRWHost, c.MySQLROHost)
+	}
+	if c.MySQLPort != 3307 {
+		t.Errorf("MySQLPort = %d, want 3307", c.MySQLPort)
+	}
 
 	if c.Env != "prod" || c.IsDev() {
 		t.Errorf("Env override failed: Env=%q IsDev()=%v", c.Env, c.IsDev())
