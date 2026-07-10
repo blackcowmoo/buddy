@@ -133,6 +133,44 @@ Check what's active any time: `curl localhost:8080/api/health`.
 > orchestrated by this repo — you run and manage them yourself. This repo only
 > builds and runs the app image via `docker build` / `docker run`.
 
+## Deploying (environment variables)
+
+This repo doesn't ship Kubernetes manifests — bring your own (Deployment,
+Service, oauth2-proxy + Dex, NetworkPolicy, etc.). What it does provide is
+every env var the binary reads (`internal/config/config.go` is authoritative;
+this table is a deployment-focused summary).
+
+**Required for a real (non-zero-setup) deployment:**
+
+| Variable | Purpose |
+|---|---|
+| `BUDDY_ENV=prod` | Serves the embedded frontend instead of proxying to Vite. |
+| `BUDDY_DATABASE_URL` | Postgres DSN, e.g. `postgres://user:pass@host:5432/buddy?sslmode=disable`. Required — the server fails to start if it can't connect. |
+| `BUDDY_LLM_BASE_URL` | Your OpenAI-compatible endpoint (llama.cpp `llama-server`, vLLM, LM Studio, hosted API). Without it, chat/correction silently degrade to an offline echo. |
+| `BUDDY_LLM_API_KEY` | Only if your LLM endpoint needs a bearer token (e.g. a hosted API). |
+| `BUDDY_IDENTITY_MODE=header` | Switches from the anonymous local-dev cookie to trusting an upstream auth proxy (oauth2-proxy + Dex). |
+| `BUDDY_AUTH_HEADER` | Which header to trust (default `X-Auth-Request-Email` — oauth2-proxy's `--set-xauthrequest` default; use `X-Forwarded-Email`/`-User` for `--pass-user-headers`). |
+
+**The one hard requirement `header` mode depends on, outside this app:** the
+app must be unreachable except through that auth proxy (Kubernetes
+NetworkPolicy / Service topology). This is trust-the-header, not
+cryptographic verification — a deliberate tradeoff, not a TODO. If it's
+reachable directly, anyone can set that header themselves and impersonate any
+user.
+
+**Never set in a real deployment:** `BUDDY_DEV_AUTH_HEADER_VALUE` — it's a
+local-dev convenience that makes the server inject the auth header itself
+(simulating the proxy), since browsers can't set custom headers on a
+WebSocket upgrade from JS. It's structurally inert unless `BUDDY_ENV=dev`
+regardless of this value, but don't set it outside dev anyway.
+
+**Everything else is optional** (sane defaults, see `.env.example`):
+`BUDDY_ADDR`, `BUDDY_FEEDBACK_LANG`, `BUDDY_MAX_HISTORY_MESSAGES`,
+`BUDDY_LLM_CHAT_MODEL`/`BUDDY_LLM_CORRECT_MODEL`, `BUDDY_FAST_STT`/`BUDDY_SLOW_STT`
+(and the matching `BUDDY_WHISPER_*` vars if you set either to `whisper`).
+`BUDDY_WEB_DIST`/`BUDDY_VITE_URL` only matter in dev — a prod image embeds the
+frontend and ignores them.
+
 ## Build outputs
 
 The multi-stage `Dockerfile` builds the frontend with Node 26.5.0, embeds it into
@@ -198,6 +236,33 @@ without touching the pipeline:
 | **Lower TTS latency** | Speak per sentence as `assistant_delta`s arrive instead of on `assistant_done`. |
 | **Different LLM host** | `llm.OpenAI` already works with any OpenAI-compatible server (llama.cpp, vLLM, LM Studio, hosted APIs) — just change `BUDDY_LLM_BASE_URL`. |
 | **Real auth** | Done: `BUDDY_IDENTITY_MODE=header` trusts a header from an upstream auth proxy (oauth2-proxy + Dex). For a different setup, implement `identity.Identifier` — `internal/store` doesn't care where the ID came from. |
+
+## Roadmap — what's still not done
+
+- **True real-time voice.** Input is still push-to-talk: click to record, click
+  to send the whole utterance as one WS frame. The protocol already has
+  `partial_transcript` for this, but nothing emits it yet. Getting to an
+  actually-continuous "just talk" experience needs both pieces from the
+  Extension seams table above: hands-free VAD on the client (auto-detect
+  speech start/end instead of a button) and a true streaming
+  `stt.StreamingRecognizer` on the server (e.g. Vosk) that emits partials as
+  audio arrives instead of waiting for one full utterance.
+- **Frontend has no automated tests.** The Go backend has a full suite
+  (`go test ./...`, including real-Postgres integration tests) across every
+  package with logic; `apps/web` only has `tsc` type-checking. Vitest +
+  Testing Library would be the natural fit (same tooling family as Vite).
+- **Server-side TTS is just an interface, no implementation.**
+  `tts.Synthesizer` exists as a seam but nothing implements it — fine today
+  since the browser (kokoro-82M) handles all TTS, but needed for any
+  non-browser client.
+- **No `llm.Translate()` seam.** The correction prompt asks the LLM to emit
+  Korean explanations directly in one call. That's simpler than a separate
+  translation round-trip, but means "translate this other piece of UI text"
+  isn't a reusable primitive yet if more localized surfaces get added later.
+- **Kubernetes deployment is intentionally out of scope for this repo** — see
+  "Deploying" above for the env vars; manifests, oauth2-proxy/Dex config, and
+  the NetworkPolicy that makes `header` identity mode safe are owned by
+  whoever deploys this, not tracked here.
 
 ## Notes
 
