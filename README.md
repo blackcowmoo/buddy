@@ -20,23 +20,23 @@ corrections**.
 ## Two-track pipeline
 
 ```
-                                    ┌──────────────────────────────────────────┐
- browser                            │               Go backend                 │
-┌──────────────────┐   WS(binary)  │  ┌──────────────┐                         │
-│ mic → PCM 16k    │──utterance───▶│  │  FAST track  │  fast STT (mock/         │
-│  (AudioWorklet)  │               │  │ (low latency)│  whisper-tiny/vosk)      │
-│                  │               │  └──────┬───────┘         │               │
-│                  │               │         ▼ transcript       ▼              │
-│                  │◀─assistant_───│   LLM.ChatStream(OpenAI API) ─ token stream│
-│ kokoro-82M TTS   │   delta        │         │                                 │
-│  (WebGPU) ◀──────│◀─assistant_done│         │                                 │
-│                  │               │  ┌──────▼────────────────────────┐         │
-│ correction cards │◀─correction────│  │ REFINE track (goroutine)       │         │
-│ refined subtitle │◀─refined_──────│  │ slow STT (whisper-large)       │         │
-└──────────────────┘   transcript   │  │  → LLM grammar/context fix      │         │
-                                    │  │  → upgrade session context      │         │
-                                    │  └────────────────────────────────┘         │
-                                    └──────────────────────────────────────────┘
+                                    ┌─────────────────────────────────────────────┐
+ browser                            │               Go backend                    │
+┌──────────────────┐   WS(binary)   │  ┌──────────────┐                           │
+│ mic → PCM 16k    │───utterance───▶│  │  FAST track  │  fast STT (mock/          │
+│  (AudioWorklet)  │                │  │ (low latency)│  whisper-tiny/vosk)       │
+│                  │                │  └──────┬───────┘         │                 │
+│                  │                │         ▼ transcript       ▼                │
+│                  │◀──assistant────│   LLM.ChatStream(OpenAI API) ─ token stream │
+│ kokoro-82M TTS   │   delta        │         │                                   │
+│  (WebGPU) ◀──────│◀─assistant_done│         │                                   │
+│                  │                │  ┌──────▼──────────────────────────┐        │
+│ correction cards │◀─correction────│  │ REFINE track (goroutine)        │        │
+│ refined subtitle │◀─refined_──────│  │ slow STT (whisper-large)        │        │
+└──────────────────┘   transcript   │  │  → LLM grammar/context fix      │        │
+                                    │  │  → upgrade session context      │        │
+                                    │  └─────────────────────────────────┘        │
+                                    └─────────────────────────────────────────────┘
 ```
 
 - **FAST** gives the "real-time" feel: quick transcript + token-streamed reply.
