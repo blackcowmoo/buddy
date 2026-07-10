@@ -1,4 +1,4 @@
-name: Docker Build
+name: github-actions/docker/build-and-push
 
 on:
   push:
