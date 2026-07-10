@@ -11,7 +11,9 @@
 ############################  frontend (Node 26.5.0)  ############################
 FROM node:26.5.0-slim AS web
 WORKDIR /app
-RUN corepack enable
+# Node 26 no longer bundles corepack; reinstall it so the pnpm version from
+# package.json's "packageManager" field stays the single source of truth.
+RUN npm install -g corepack@latest && corepack enable
 # Manifests first for layer caching.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/web/package.json ./apps/web/

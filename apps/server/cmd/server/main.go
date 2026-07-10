@@ -12,8 +12,10 @@ import (
 
 	"buddy/server/internal/config"
 	"buddy/server/internal/httpserver"
+	"buddy/server/internal/identity"
 	"buddy/server/internal/llm"
 	"buddy/server/internal/pipeline"
+	"buddy/server/internal/store"
 	"buddy/server/internal/stt"
 	"buddy/server/internal/webassets"
 )
@@ -23,18 +25,28 @@ func main() {
 	cfg := config.Load()
 
 	pipe := &pipeline.Pipeline{
-		FastSTT:      buildSTT(cfg.FastSTT, "fast", cfg),
-		SlowSTT:      buildSTT(cfg.SlowSTT, "slow", cfg),
-		LLM:          llm.NewOllama(cfg.OllamaURL),
-		ChatModel:    cfg.OllamaChatModel,
-		CorrectModel: cfg.OllamaCorrectModel,
+		FastSTT:            buildSTT(cfg.FastSTT, "fast", cfg),
+		SlowSTT:            buildSTT(cfg.SlowSTT, "slow", cfg),
+		LLM:                llm.NewOpenAI(cfg.LLMBaseURL, cfg.LLMAPIKey),
+		ChatModel:          cfg.LLMChatModel,
+		CorrectModel:       cfg.LLMCorrectModel,
+		FeedbackLang:       cfg.FeedbackLang,
+		MaxHistoryMessages: cfg.MaxHistoryMessages,
 	}
 
-	srv := httpserver.New(cfg, pipe, webassets.FS())
+	// Persistent per-user memory.
+	ident := buildIdentity(cfg)
+	st, err := store.NewPostgres(cfg.DatabaseURL)
+	if err != nil {
+		log.Fatalf("store: %v", err)
+	}
+	defer st.Close()
+
+	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st)
 
 	go func() {
-		log.Printf("buddy up on %s  env=%s  fast=%s  slow=%s",
-			cfg.Addr, cfg.Env, pipe.FastSTT.Name(), pipe.SlowSTT.Name())
+		log.Printf("buddy up on %s  env=%s  fast=%s  slow=%s  feedback=%s",
+			cfg.Addr, cfg.Env, pipe.FastSTT.Name(), pipe.SlowSTT.Name(), cfg.FeedbackLang)
 		if err := srv.ListenAndServe(); err != nil && err.Error() != "http: Server closed" {
 			log.Fatalf("listen: %v", err)
 		}
@@ -48,6 +60,16 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
+}
+
+// buildIdentity selects how learners are identified. "cookie" needs zero
+// setup (local dev); "header" trusts an upstream auth proxy — e.g.
+// oauth2-proxy in front of Dex — see internal/identity/header.go.
+func buildIdentity(cfg config.Config) identity.Identifier {
+	if cfg.IdentityMode == "header" {
+		return identity.NewHeaderIdentifier(cfg.AuthHeader)
+	}
+	return identity.NewCookieIdentifier()
 }
 
 // buildSTT selects an STT engine from config. "mock" needs zero setup;

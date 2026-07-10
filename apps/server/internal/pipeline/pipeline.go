@@ -10,6 +10,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 
@@ -34,6 +35,13 @@ type Pipeline struct {
 	LLM          llm.Client
 	ChatModel    string
 	CorrectModel string
+	// FeedbackLang is the learner's native language for correction
+	// explanations (e.g. "ko"). The corrected sentence stays in English.
+	FeedbackLang string
+	// MaxHistoryMessages caps the verbatim window kept in session.Session
+	// before the oldest half is folded into its long-term summary. See
+	// compact() and session.PeekOldestForCompaction.
+	MaxHistoryMessages int
 }
 
 // HandleUtterance runs one turn from raw audio.
@@ -92,6 +100,54 @@ func (p *Pipeline) reply(ctx context.Context, sess *session.Session, turn int, e
 	}
 	emit(protocol.ServerEvent{Type: protocol.EvAssistantDone, Turn: turn, Text: full})
 	sess.AppendAssistant(full)
+	go p.compact(sess) // background: fold old turns into the long-term summary
+}
+
+// compact folds the oldest verbatim turns into the session's long-term
+// summary once the window exceeds MaxHistoryMessages, so long conversations
+// stay cheap to send to the LLM and to persist (internal/store). It uses
+// context.Background() — bookkeeping on already-committed history, so a
+// barge-in on the current turn must not cancel it.
+func (p *Pipeline) compact(sess *session.Session) {
+	old, curSummary, ok := sess.PeekOldestForCompaction(p.MaxHistoryMessages)
+	if !ok {
+		return
+	}
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: compactionSystemPrompt},
+		{Role: llm.RoleUser, Content: renderCompactionInput(curSummary, old)},
+	}
+	newSummary, err := p.LLM.Complete(context.Background(), p.CorrectModel, msgs, false)
+	if err != nil {
+		log.Printf("compact: %v", err) // leave history untouched; retried next turn
+		return
+	}
+	sess.ApplyCompaction(strings.TrimSpace(newSummary), len(old))
+}
+
+const compactionSystemPrompt = `You maintain compact, persistent memory of an English-learning conversation.
+Given the previous summary (may be empty) and a batch of older verbatim turns,
+write ONE updated summary that:
+- Preserves useful long-term facts about the learner: interests, goals, recurring
+  grammar/vocabulary mistakes, proficiency level, and topics already discussed.
+- Stays concise (a few sentences to a short paragraph) — this replaces the raw
+  turns, it is not a transcript.
+- Is written in English.
+Return ONLY the updated summary text. No labels, no JSON, no preamble.`
+
+func renderCompactionInput(prevSummary string, old []llm.Message) string {
+	var b strings.Builder
+	b.WriteString("Previous summary:\n")
+	if prevSummary == "" {
+		b.WriteString("(none)\n")
+	} else {
+		b.WriteString(prevSummary + "\n")
+	}
+	b.WriteString("\nOlder turns to fold in:\n")
+	for _, m := range old {
+		fmt.Fprintf(&b, "%s: %s\n", m.Role, m.Content)
+	}
+	return b.String()
 }
 
 // refine re-transcribes with the slow/quality engine, upgrades the session
@@ -112,7 +168,7 @@ func (p *Pipeline) refine(ctx context.Context, sess *session.Session, turn int, 
 // correct asks the LLM for grammar/vocabulary feedback as strict JSON.
 func (p *Pipeline) correct(ctx context.Context, turn int, text string, emit Emit) {
 	msgs := []llm.Message{
-		{Role: llm.RoleSystem, Content: correctionSystemPrompt},
+		{Role: llm.RoleSystem, Content: correctionSystemPrompt(p.FeedbackLang)},
 		{Role: llm.RoleUser, Content: text},
 	}
 	raw, err := p.LLM.Complete(ctx, p.CorrectModel, msgs, true)
@@ -143,12 +199,43 @@ func (p *Pipeline) correct(ctx context.Context, turn int, text string, emit Emit
 	})
 }
 
-const correctionSystemPrompt = `You are an English writing coach for a language learner.
-The input is one spoken sentence, possibly with speech-to-text noise.
+// correctionSystemPrompt builds the grammar-coach prompt. The corrected
+// sentence, span, and suggestion stay in English (the language being learned);
+// only the explanation is written in the learner's native language so the
+// feedback is easy to understand.
+func correctionSystemPrompt(lang string) string {
+	native := languageName(lang)
+	return fmt.Sprintf(`You are an English writing coach for a %[1]s-speaking learner.
+The input is one spoken English sentence, possibly with speech-to-text noise.
 Return STRICT JSON only, no prose, in exactly this shape:
 {"corrected":"<the sentence rewritten in correct, natural English>",
- "issues":[{"type":"grammar|vocabulary|phrasing","span":"<original text>","suggestion":"<fix>","explanation":"<short, kind, learner-friendly>"}]}
-If the sentence is already correct, return the same text and an empty issues array.`
+ "issues":[{"type":"grammar|vocabulary|phrasing","span":"<original English text>","suggestion":"<the English fix>","explanation":"<why it is wrong, written in %[1]s, short and kind>"}]}
+Rules:
+- "corrected", "span", and "suggestion" MUST stay in English.
+- "explanation" MUST be written in %[1]s.
+- If the sentence is already correct, return the same text and an empty issues array.`, native)
+}
+
+// languageName maps a short language code to an English name the LLM
+// understands. Unknown codes fall back to the code itself.
+func languageName(code string) string {
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "ko", "ko-kr":
+		return "Korean"
+	case "en", "en-us":
+		return "English"
+	case "ja", "ja-jp":
+		return "Japanese"
+	case "zh", "zh-cn":
+		return "Chinese"
+	case "es":
+		return "Spanish"
+	case "", "auto":
+		return "Korean"
+	default:
+		return code
+	}
+}
 
 func fallbackReply(msgs []llm.Message) string {
 	last := ""

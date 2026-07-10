@@ -122,14 +122,19 @@ export function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <h1>
-          Buddy <span className="sub">English free-talking</span>
-        </h1>
-        <div className="controls">
+        <div className="brand">
           <span className={`dot ${status}`} title={status} />
+          <h1>Buddy</h1>
+        </div>
+        <div className="controls">
           <VoiceButton state={tts} progress={ttsProgress} onLoad={loadVoice} />
-          <button className="ghost" onClick={resetChat}>
-            Reset
+          <button
+            className="ghost icon-btn"
+            onClick={resetChat}
+            aria-label="Reset conversation"
+            title="Reset"
+          >
+            ↺
           </button>
         </div>
       </header>
@@ -137,9 +142,9 @@ export function App() {
       <main className="convo">
         {msgs.length === 0 && (
           <p className="hint">
-            Click <strong>Enable voice</strong> to load kokoro, press{" "}
-            <strong>🎙 Talk</strong>, speak a sentence, then press it again to send.
-            Or just type below.
+            Tap <strong>Enable voice</strong> to load kokoro, tap the{" "}
+            <strong>🎙</strong> button, speak a sentence, then tap it again to
+            send. Or just type below.
           </p>
         )}
         {msgs.map((m, i) => (
@@ -159,15 +164,20 @@ export function App() {
         <button
           className={`mic ${mic ? "on" : ""}`}
           onClick={toggleMic}
+          aria-label={mic ? "Stop recording" : "Push to talk"}
+          aria-pressed={mic}
           title="Push to talk"
         >
-          {mic ? "◼ Stop" : "🎙 Talk"}
+          {mic ? "◼" : "🎙"}
         </button>
         <form onSubmit={submitText}>
           <input
             value={text}
             onChange={(e) => setText(e.target.value)}
             placeholder="…or type in English"
+            enterKeyHint="send"
+            autoComplete="off"
+            autoCorrect="on"
           />
           <button type="submit">Send</button>
         </form>
@@ -206,6 +216,18 @@ function VoiceButton({
   );
 }
 
+// Static UI labels for issue categories, in Korean. No LLM needed — the
+// category set is fixed by the correction prompt.
+const ISSUE_LABELS: Record<string, string> = {
+  grammar: "문법",
+  vocabulary: "어휘",
+  phrasing: "표현",
+};
+
+function issueLabel(type: string): string {
+  return ISSUE_LABELS[type] ?? type;
+}
+
 function CorrectionCard({ c }: { c: Correction }) {
   const changed = c.corrected.trim() && c.corrected.trim() !== c.original.trim();
   return (
@@ -217,7 +239,7 @@ function CorrectionCard({ c }: { c: Correction }) {
       )}
       {c.issues?.map((iss, i) => (
         <div key={i} className="issue">
-          <span className={`badge ${iss.type}`}>{iss.type}</span>
+          <span className={`badge ${iss.type}`}>{issueLabel(iss.type)}</span>
           <span className="span">{iss.span}</span> → <b>{iss.suggestion}</b>
           <div className="why">{iss.explanation}</div>
         </div>

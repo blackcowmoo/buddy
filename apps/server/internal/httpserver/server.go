@@ -11,24 +11,26 @@ import (
 	"time"
 
 	"buddy/server/internal/config"
+	"buddy/server/internal/identity"
 	"buddy/server/internal/pipeline"
+	"buddy/server/internal/store"
 	"buddy/server/internal/transport"
 )
 
 // New builds the single HTTP entry point. assets is the embedded frontend FS
 // (from webassets.FS()); pass nil to serve from disk (prod) or proxy (dev).
-func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS) *http.Server {
+func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store) *http.Server {
 	mux := http.NewServeMux()
 
 	// Realtime + API first (exact patterns win over the "/" catch-all).
-	mux.Handle("/ws", transport.NewHandler(pipe))
+	mux.Handle("/ws", transport.NewHandler(pipe, ident, st))
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{
 			"ok":       true,
 			"env":      cfg.Env,
 			"fast_stt": pipe.FastSTT.Name(),
 			"slow_stt": pipe.SlowSTT.Name(),
-			"chat":     cfg.OllamaChatModel,
+			"chat":     cfg.LLMChatModel,
 		})
 	})
 
@@ -49,9 +51,16 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS) *http.Server 
 		log.Printf("prod: serving frontend <- %s", cfg.WebDist)
 	}
 
+	var handler http.Handler = mux
+	if cfg.IsDev() && cfg.DevAuthHeaderValue != "" {
+		log.Printf("⚠ dev: injecting %s=%q on every request to simulate an auth proxy — never active outside dev",
+			cfg.AuthHeader, cfg.DevAuthHeaderValue)
+		handler = devAuthInjector(cfg.AuthHeader, cfg.DevAuthHeaderValue)(handler)
+	}
+
 	return &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           logging(mux),
+		Handler:           logging(handler),
 		ReadHeaderTimeout: 10 * time.Second,
 		// No WriteTimeout: WebSocket connections are long-lived.
 	}
