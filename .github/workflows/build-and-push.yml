@@ -2,10 +2,10 @@ name: github-actions/docker/build-and-push
 
 on:
   push:
-    branches: [main]
+    branches: [develop]
     tags: ["v*.*.*"]
   pull_request:
-    branches: [main]
+    branches: [develop]
     types: [labeled, synchronize, opened]
   workflow_dispatch:
 
