@@ -50,6 +50,12 @@ jobs:
           username: ${{ secrets.HARBOR_USER_ID }}
           password: ${{ secrets.HARBOR_USER_PASSWORD }}
 
+      - name: Short sha
+        id: sha
+        run: echo "::set-output name=sha_short::$(echo ${GITHUB_HEAD_SHA:0:7})"
+        env:
+          GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
       - name: Extract image metadata
         id: meta
         uses: docker/metadata-action@v5
