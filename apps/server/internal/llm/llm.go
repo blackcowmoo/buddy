@@ -1,6 +1,7 @@
-// Package llm is the seam for the chat + correction models. Swap Ollama for
-// llama.cpp-server, vLLM-over-HTTP, or a hosted API without touching the
-// pipeline.
+// Package llm is the seam for the chat + correction models. The default
+// implementation targets any OpenAI-compatible chat-completions server
+// (llama.cpp's llama-server, vLLM, LM Studio, or the OpenAI API), so the engine
+// swaps by config alone without touching the pipeline.
 package llm
 
 import "context"

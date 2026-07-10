@@ -4,6 +4,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -22,10 +23,38 @@ type Config struct {
 	WhisperFastModel string
 	WhisperSlowModel string
 
-	// LLM (Ollama)
-	OllamaURL          string
-	OllamaChatModel    string
-	OllamaCorrectModel string
+	// LLM: any OpenAI-compatible chat-completions server (llama.cpp's
+	// llama-server, vLLM, LM Studio, or the OpenAI API itself).
+	LLMBaseURL      string // the /v1 root, e.g. http://localhost:8081/v1
+	LLMAPIKey       string // optional bearer token
+	LLMChatModel    string
+	LLMCorrectModel string
+
+	// Feedback language: the learner's native language for correction
+	// explanations (BCP-47-ish code, e.g. "ko", "en", "ja"). The corrected
+	// sentence itself always stays in the target language (English).
+	FeedbackLang string
+
+	// Persistent per-user memory (internal/store, internal/session). Postgres
+	// so the app can run as multiple replicas in Kubernetes (unlike an
+	// embedded single-writer file database).
+	DatabaseURL        string // e.g. postgres://user:pass@host:5432/buddy
+	MaxHistoryMessages int    // verbatim turns kept before folding into the summary
+
+	// Identity (internal/identity): "cookie" (default, anonymous, zero-setup
+	// local dev) or "header" (trust a header set by an upstream auth proxy —
+	// e.g. oauth2-proxy in front of Dex). AuthHeader only applies to "header".
+	IdentityMode string
+	AuthHeader   string
+
+	// DevAuthHeaderValue simulates the auth proxy locally: when set (and only
+	// when IsDev()), the server injects AuthHeader=DevAuthHeaderValue on every
+	// request before identity.HeaderIdentifier reads it. Needed because
+	// browsers can't set custom headers on a WebSocket upgrade from JS, so
+	// there's otherwise no way to exercise IdentityMode=header end-to-end
+	// with a real browser without standing up oauth2-proxy+Dex locally.
+	// Structurally can't activate outside dev — see httpserver.New.
+	DevAuthHeaderValue string
 }
 
 func Load() Config {
@@ -42,9 +71,20 @@ func Load() Config {
 		WhisperFastModel: env("BUDDY_WHISPER_FAST_MODEL", "models/ggml-tiny.en.bin"),
 		WhisperSlowModel: env("BUDDY_WHISPER_SLOW_MODEL", "models/ggml-large-v3.bin"),
 
-		OllamaURL:          env("BUDDY_OLLAMA_URL", "http://localhost:11434"),
-		OllamaChatModel:    env("BUDDY_OLLAMA_CHAT_MODEL", "llama3.2:3b"),
-		OllamaCorrectModel: env("BUDDY_OLLAMA_CORRECT_MODEL", "llama3.2:3b"),
+		LLMBaseURL:      env("BUDDY_LLM_BASE_URL", "http://localhost:8081/v1"),
+		LLMAPIKey:       env("BUDDY_LLM_API_KEY", ""),
+		LLMChatModel:    env("BUDDY_LLM_CHAT_MODEL", "local-model"),
+		LLMCorrectModel: env("BUDDY_LLM_CORRECT_MODEL", "local-model"),
+
+		FeedbackLang: env("BUDDY_FEEDBACK_LANG", "ko"),
+
+		DatabaseURL:        env("BUDDY_DATABASE_URL", "postgres://buddy:buddy@localhost:5432/buddy?sslmode=disable"),
+		MaxHistoryMessages: envInt("BUDDY_MAX_HISTORY_MESSAGES", 20),
+
+		IdentityMode: env("BUDDY_IDENTITY_MODE", "cookie"),
+		AuthHeader:   env("BUDDY_AUTH_HEADER", "X-Auth-Request-Email"),
+
+		DevAuthHeaderValue: env("BUDDY_DEV_AUTH_HEADER_VALUE", ""),
 	}
 }
 
@@ -53,6 +93,15 @@ func (c Config) IsDev() bool { return strings.ToLower(c.Env) != "prod" }
 func env(key, def string) string {
 	if v, ok := os.LookupEnv(key); ok && v != "" {
 		return v
+	}
+	return def
+}
+
+func envInt(key string, def int) int {
+	if v, ok := os.LookupEnv(key); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return def
 }

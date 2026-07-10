@@ -1,6 +1,11 @@
-// Package session holds per-connection conversation state. It is the shared
-// context that the "middle LLM" keeps clean: the refine track can rewrite the
-// last user turn in place once the high-quality transcription lands.
+// Package session holds one connection's conversation state: a short
+// verbatim window of recent turns plus a compact long-term summary. The
+// verbatim window keeps the learner's actual words (mistakes included) so the
+// LLM sees real input — grammar correction is shown as separate feedback,
+// never silently rewritten into what the LLM sees. Once the window grows past
+// pipeline.MaxHistoryMessages, the oldest turns are folded into the summary
+// (see PeekOldestForCompaction/ApplyCompaction) so long conversations stay
+// cheap to store (see internal/store) and to send to the LLM.
 package session
 
 import (
@@ -11,14 +16,30 @@ import (
 
 type Session struct {
 	mu      sync.Mutex
-	history []llm.Message
+	system  string
+	summary string
+	history []llm.Message // verbatim user/assistant turns, most-recent window only
 	turn    int
 }
 
 func New(systemPrompt string) *Session {
-	return &Session{
-		history: []llm.Message{{Role: llm.RoleSystem, Content: systemPrompt}},
-	}
+	return &Session{system: systemPrompt}
+}
+
+// Seed restores long-term memory (loaded from internal/store) into a fresh
+// session, e.g. right after a client connects.
+func (s *Session) Seed(summary string, recent []llm.Message) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.summary = summary
+	s.history = append([]llm.Message(nil), recent...)
+}
+
+// Export returns the current summary and verbatim window for persistence.
+func (s *Session) Export() (summary string, recent []llm.Message) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.summary, append([]llm.Message(nil), s.history...)
 }
 
 // NextTurn increments and returns the current turn id.
@@ -55,18 +76,57 @@ func (s *Session) ReplaceLastUser(text string) {
 	}
 }
 
-// Snapshot returns a copy of the history for a stateless LLM call.
+// Snapshot returns the full message list for a stateless LLM call: system
+// prompt, long-term summary (if any), then the verbatim recent window.
 func (s *Session) Snapshot() []llm.Message {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]llm.Message, len(s.history))
-	copy(out, s.history)
+	out := make([]llm.Message, 0, len(s.history)+2)
+	out = append(out, llm.Message{Role: llm.RoleSystem, Content: s.system})
+	if s.summary != "" {
+		out = append(out, llm.Message{
+			Role:    llm.RoleSystem,
+			Content: "Long-term memory of this learner (compressed, for context only):\n" + s.summary,
+		})
+	}
+	out = append(out, s.history...)
 	return out
 }
 
+// Reset clears the visible conversation (verbatim window + turn counter) but
+// intentionally keeps the long-term summary — that's the learner's permanent
+// profile (internal/store), not the chat transcript, and should survive a UI
+// "reset" the same way it survives a reconnect.
 func (s *Session) Reset(systemPrompt string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.history = []llm.Message{{Role: llm.RoleSystem, Content: systemPrompt}}
+	s.system = systemPrompt
+	s.history = nil
 	s.turn = 0
+}
+
+// PeekOldestForCompaction returns the oldest verbatim messages to fold into
+// the summary, without mutating state, once the window exceeds max (ok=false
+// otherwise). The caller runs the LLM summarization outside the lock, then
+// commits with ApplyCompaction — so a failed LLM call never loses history.
+func (s *Session) PeekOldestForCompaction(max int) (old []llm.Message, curSummary string, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if max <= 0 || len(s.history) <= max {
+		return nil, "", false
+	}
+	drop := len(s.history) - max/2 // fold down to half of max, leaving room to grow again
+	return append([]llm.Message(nil), s.history[:drop]...), s.summary, true
+}
+
+// ApplyCompaction commits a newly rolled-up summary and drops the n oldest
+// verbatim messages that were folded into it.
+func (s *Session) ApplyCompaction(newSummary string, n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if n > len(s.history) {
+		n = len(s.history)
+	}
+	s.summary = newSummary
+	s.history = append([]llm.Message(nil), s.history[n:]...)
 }

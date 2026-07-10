@@ -22,6 +22,9 @@ models/*
 .env.local
 *.local
 
+# Claude session context — kept on disk locally, not committed
+CLAUDE.md
+
 # os / editor
 .DS_Store
 *.log

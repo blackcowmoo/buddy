@@ -7,7 +7,8 @@ corrections**.
 
 - **Backend:** Go (single binary, no Python anywhere)
 - **STT:** pluggable — `mock` (zero setup) → whisper.cpp (subprocess) → Vosk (streaming)
-- **LLM:** Ollama over local HTTP (chat + correction)
+- **LLM:** any OpenAI-compatible server over local HTTP (llama.cpp's
+  llama-server, vLLM, LM Studio, or the OpenAI API) — chat + correction
 - **TTS:** kokoro-82M in the browser (WebGPU), so the server stays audio-free
 - **Frontend:** React + Vite + TypeScript
 - **One entry point:** the Go server serves the frontend and reverse-proxies to
@@ -26,7 +27,7 @@ corrections**.
 │  (AudioWorklet)  │               │  │ (low latency)│  whisper-tiny/vosk)      │
 │                  │               │  └──────┬───────┘         │               │
 │                  │               │         ▼ transcript       ▼              │
-│                  │◀─assistant_───│   LLM.ChatStream(Ollama) ── token stream   │
+│                  │◀─assistant_───│   LLM.ChatStream(OpenAI API) ─ token stream│
 │ kokoro-82M TTS   │   delta        │         │                                 │
 │  (WebGPU) ◀──────│◀─assistant_done│         │                                 │
 │                  │               │  ┌──────▼────────────────────────┐         │
@@ -43,15 +44,48 @@ corrections**.
   and it rewrites the last user turn in the shared session so future replies use
   accurate context. This is the "middle LLM cleans the context" idea.
 
-## Quickstart (zero setup — mock STT, no models)
+## Persistent per-user memory
+
+Each learner's context survives reconnects and server restarts, not just the
+current WebSocket connection:
+
+- **Verbatim window** (`internal/session`): recent turns kept word-for-word,
+  mistakes included — the LLM sees what the learner actually said. Grammar
+  correction is shown as separate feedback, never silently rewritten into what
+  the LLM sees.
+- **Compaction**: once the window passes `BUDDY_MAX_HISTORY_MESSAGES`, the
+  oldest half is folded by the LLM into a compact running summary (interests,
+  goals, recurring mistakes, topics) — this is what keeps long-term storage and
+  LLM context cheap as a conversation grows.
+- **Storage** (`internal/store`): summary + verbatim window persist to
+  **PostgreSQL** (`BUDDY_DATABASE_URL`), keyed by user ID, saved on disconnect
+  and every 30s. Postgres, not an embedded file DB, because this app is meant
+  to run as multiple replicas in Kubernetes — a single-writer file on a PV
+  can't do that (and a PV is typically RWO: only one pod could mount it
+  anyway). Bring your own Postgres; this repo doesn't run one for you.
+- **Identity** (`internal/identity`, `BUDDY_IDENTITY_MODE`): `cookie` (default)
+  is anonymous — a random ID in a long-lived cookie, zero setup for local dev,
+  not real auth. `header` trusts a header set by an upstream auth proxy that
+  already authenticated the request — e.g. **oauth2-proxy in front of Dex** —
+  configurable via `BUDDY_AUTH_HEADER` (default `X-Auth-Request-Email`). By
+  design this is trust-the-header, not cryptographic verification: it's only
+  as safe as the app being unreachable except through that proxy; enforce that
+  with a NetworkPolicy / Service topology, not in this repo. If the configured
+  header is missing, the connection is refused (401) rather than falling back
+  to a shared ID.
+  - **Testing `header` mode locally**: browsers can't set custom headers on a
+    WebSocket upgrade from JS, so there's no way to exercise this path with a
+    real browser without either a real oauth2-proxy or `BUDDY_DEV_AUTH_HEADER_VALUE`
+    (dev-only — see `.env.example`), which makes the server inject the header
+    itself. Structurally can't activate outside `BUDDY_ENV=dev`.
+
+## Quickstart (zero setup — pure `docker build`, mock STT, no models)
+
+No host Go/Node toolchain needed. Build the self-contained image and run it:
 
 ```bash
-# 1. deps
-corepack enable pnpm      # one-time; ships with Node
-make setup                # pnpm install + go mod tidy
-
-# 2. run backend + frontend together
-make dev                  # Go on :8080 proxies to Vite; open http://localhost:8080
+docker build -t buddy .
+docker run --rm -p 8080:8080 buddy
 ```
 
 Open **http://localhost:8080**, type a sentence or click **🎙 Talk**. With no
@@ -61,13 +95,16 @@ replies (Chrome recommended for WebGPU).
 
 ## Turn on the real engines
 
-**LLM (chat + correction):**
+**LLM (chat + correction) — llama.cpp:**
 
 ```bash
-brew install ollama && ollama serve
-ollama pull llama3.2:3b
-# server auto-detects it at http://localhost:11434
+# build llama.cpp, then run its OpenAI-compatible server:
+llama-server -m ./models/your-model.gguf --port 8081
+# server talks to http://localhost:8081/v1 by default (BUDDY_LLM_BASE_URL)
 ```
+
+Any OpenAI-compatible endpoint works — point `BUDDY_LLM_BASE_URL` at vLLM, LM
+Studio, or `https://api.openai.com/v1` (with `BUDDY_LLM_API_KEY`).
 
 **Quality STT (whisper.cpp, no Python):**
 
@@ -79,40 +116,37 @@ sh ./models/download-ggml-model.sh large-v3    # slow/quality track
 # copy the .bin files into buddy/models/, then:
 ```
 
+Point the container at your (externally managed) LLM and Postgres, and pass
+config with `-e`:
+
 ```bash
-cp .env.example .env
-# set BUDDY_FAST_STT=whisper and BUDDY_SLOW_STT=whisper in .env
-make dev
+docker run --rm -p 8080:8080 \
+  --add-host host.docker.internal:host-gateway \
+  -e BUDDY_LLM_BASE_URL=http://host.docker.internal:8081/v1 \
+  -e BUDDY_DATABASE_URL=postgres://buddy:buddy@host.docker.internal:5432/buddy?sslmode=disable \
+  buddy
 ```
 
 Check what's active any time: `curl localhost:8080/api/health`.
 
-## Production build (Go serves the static bundle)
+> External components (the LLM server, models, Postgres) are **not**
+> orchestrated by this repo — you run and manage them yourself. This repo only
+> builds and runs the app image via `docker build` / `docker run`.
 
-```bash
-make run     # builds web → dist, builds the Go binary, serves everything on :8080
-```
-
-## Docker (single self-contained binary)
+## Build outputs
 
 The multi-stage `Dockerfile` builds the frontend with Node 26.5.0, embeds it into
 the Go binary (`//go:embed`, built with `-tags embed`), and ships a static binary
 on distroless. No Python, no runtime static dir, no nginx.
 
 ```bash
-make docker-image     # docker build -t buddy:latest .   (runnable image)
-make docker-run       # build + run on :8080
-make docker-binary    # extract JUST the binary  ->  ./bin/buddy
+docker build -t buddy .                                           # runnable image
+docker build --target export --output type=local,dest=./bin .     # JUST the binary -> ./bin/buddy
 ```
 
-`make docker-binary` uses `docker build --target export --output` to copy the
-compiled binary out to `./bin/buddy` — that's your "docker build makes the
-binary" path. The `export` stage is `FROM scratch`, so nothing else is included.
-
-The image runs mock STT by default; point it at a real LLM with
-`docker run -e BUDDY_OLLAMA_URL=http://host.docker.internal:11434 -p 8080:8080 buddy:latest`.
-To run whisper inside the container, add the `whisper-cli` binary + models to a
-runtime stage and set `BUDDY_FAST_STT=whisper`.
+The `export` stage is `FROM scratch`, so the extracted binary carries nothing
+else. To run whisper STT inside the container, add the `whisper-cli` binary +
+models to a runtime stage and set `BUDDY_FAST_STT=whisper`.
 
 ## Layout
 
@@ -123,7 +157,6 @@ buddy/
 ├── .nvmrc                        # node 26.5.0
 ├── go.work                      # Go workspace (go 1.26.5)
 ├── pnpm-workspace.yaml          # JS workspace
-├── Makefile                     # dev / build / run / docker-*
 ├── apps/
 │   ├── server/                  # Go backend (module: buddy/server)
 │   │   ├── cmd/server/main.go   # composition root
@@ -134,9 +167,11 @@ buddy/
 │   │       ├── transport/       # WebSocket session loop (barge-in)
 │   │       ├── protocol/        # wire types (mirrored in web/src/lib/protocol.ts)
 │   │       ├── pipeline/        # FAST + REFINE orchestration
-│   │       ├── session/         # per-connection conversation memory
+│   │       ├── session/         # per-connection memory: verbatim window + summary
+│   │       ├── store/           # persists Profiles (Postgres, pgx, no CGo)
+│   │       ├── identity/        # resolves user ID (anonymous cookie today)
 │   │       ├── stt/             # Recognizer interface: mock, whisper
-│   │       ├── llm/             # Client interface: ollama
+│   │       ├── llm/             # Client interface: OpenAI-compatible (llama.cpp)
 │   │       └── tts/             # (extension point; browser does TTS)
 │   └── web/                     # React + Vite + TS
 │       ├── public/pcm-worklet.js
@@ -161,7 +196,8 @@ without touching the pipeline:
 | **In-process STT (no subprocess)** | Swap `stt.Whisper` for the whisper.cpp CGo bindings; same `Recognizer` interface. |
 | **Server-side TTS** | Implement `tts.Synthesizer` (e.g. shell out to piper) and stream audio frames down the socket for non-browser clients. |
 | **Lower TTS latency** | Speak per sentence as `assistant_delta`s arrive instead of on `assistant_done`. |
-| **Different LLM host** | Implement `llm.Client` for llama.cpp-server / vLLM / a hosted API. |
+| **Different LLM host** | `llm.OpenAI` already works with any OpenAI-compatible server (llama.cpp, vLLM, LM Studio, hosted APIs) — just change `BUDDY_LLM_BASE_URL`. |
+| **Real auth** | Done: `BUDDY_IDENTITY_MODE=header` trusts a header from an upstream auth proxy (oauth2-proxy + Dex). For a different setup, implement `identity.Identifier` — `internal/store` doesn't care where the ID came from. |
 
 ## Notes
 
