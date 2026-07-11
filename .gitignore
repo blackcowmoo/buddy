@@ -7,6 +7,7 @@ dist/
 apps/web/dist/
 bin/
 apps/server/bin/
+apps/web/coverage/
 # frontend copied here only during the embed/Docker build
 apps/server/internal/webassets/dist/
 
