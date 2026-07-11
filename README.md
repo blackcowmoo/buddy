@@ -171,7 +171,7 @@ the app would still be rejected.
 `BUDDY_WEB_DIST`/`BUDDY_VITE_URL` only matter in dev — a prod image embeds the
 frontend and ignores them.
 
-| `ROOT_PATH` | Mounts the whole app under a path prefix instead of `/`, e.g. `ROOT_PATH=/pr/14` for a PR-preview deployment that an external router sends `/pr/14/*` to. The app strips the prefix itself (`httpserver.withRootPath`); the frontend resolves its own asset/WS/worklet URLs relative to the page URL, so no rebuild is needed per prefix. Unset (default) mounts at `/`, unchanged. |
+| `ROOT_PATH` | Mounts the whole app under a path prefix instead of `/`, e.g. `ROOT_PATH=/pr/14` for a PR-preview deployment that an external router sends `/pr/14/*` to. The app strips the prefix itself (`httpserver.withRootPath`); the frontend resolves its own asset/WS/worklet URLs relative to the page URL, so no rebuild is needed per prefix. Unset (default) mounts at `/`, unchanged. The hamburger menu's PR-path field (`lib/rootPath.ts`) lets a user jump straight to another `/pr/<n>/` deployment without typing the URL by hand. |
 
 ## Build outputs
 
@@ -211,7 +211,7 @@ buddy/
 │   │       ├── pipeline/        # FAST + REFINE orchestration
 │   │       ├── session/         # per-connection memory: verbatim window + summary
 │   │       ├── store/           # persists Profiles (MySQL, buddy_ table prefix)
-│   │       ├── identity/        # resolves user ID (anonymous cookie today)
+│   │       ├── identity/        # resolves user ID: anonymous cookie, or OIDC (Dex JWT)
 │   │       ├── stt/             # Recognizer interface: mock, whisper
 │   │       ├── llm/             # Client interface: OpenAI-compatible (llama.cpp)
 │   │       └── tts/             # (extension point; browser does TTS)
@@ -222,7 +222,9 @@ buddy/
 │           ├── tts/kokoro.ts       # kokoro-82M (WebGPU)
 │           ├── lib/ws.ts           # WebSocket client
 │           ├── lib/protocol.ts     # wire types
-│           └── App.tsx
+│           ├── lib/rootPath.ts     # PR-preview path switcher (hamburger menu)
+│           ├── lib/me.ts           # fetches resolved identity for the menu
+│           └── App.tsx             # + App.test.tsx (Testing Library, jsdom)
 └── models/                      # ggml-*.bin etc. (gitignored)
 ```
 
