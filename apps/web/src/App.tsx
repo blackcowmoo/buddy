@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BuddyClient, type Status } from "./lib/ws";
 import type { Correction, ServerEvent } from "./lib/protocol";
 import { PCMRecorder } from "./audio/recorder";
@@ -7,6 +7,13 @@ import { prPath } from "./lib/rootPath";
 import { fetchMe } from "./lib/me";
 import { fetchSessionDetail, fetchSessions, type SessionSummary } from "./lib/sessions";
 import { applyTheme, getStoredTheme, setStoredTheme, type Theme } from "./lib/theme";
+import {
+  MAX_EXTRA_RATES,
+  NATIVE_RATE,
+  isValidExtraRate,
+  loadExtraRates,
+  saveExtraRates,
+} from "./lib/ttsSettings";
 
 interface Msg {
   turn: number;
@@ -36,6 +43,8 @@ export function App() {
   const [prError, setPrError] = useState(false);
   const [email, setEmail] = useState<string | null>(null);
   const [theme, setTheme] = useState<Theme>(() => getStoredTheme());
+  const [extraRates, setExtraRates] = useState<number[]>(() => loadExtraRates());
+  const [newRateInput, setNewRateInput] = useState("");
 
   const clientRef = useRef<BuddyClient | null>(null);
   const recorderRef = useRef<PCMRecorder | null>(null);
@@ -182,6 +191,45 @@ export function App() {
     }
   }, []);
 
+  useEffect(() => {
+    saveExtraRates(extraRates);
+  }, [extraRates]);
+
+  // Ascending so the fastest speed is always last; native (1.0) sorts
+  // wherever it falls relative to whatever custom speeds are configured.
+  const playRates = useMemo(
+    () => [...extraRates, NATIVE_RATE].sort((a, b) => a - b),
+    [extraRates],
+  );
+
+  const playMessage = useCallback(
+    async (text: string, rate: number) => {
+      const sp = speakerRef.current;
+      if (!sp) return;
+      if (!sp.loaded) await loadVoice();
+      void sp.speak(text, rate);
+    },
+    [loadVoice],
+  );
+
+  const addRate = useCallback(
+    (e: React.FormEvent) => {
+      e.preventDefault();
+      const v = Number(newRateInput);
+      if (!isValidExtraRate(v)) return;
+      setExtraRates((rates) => {
+        if (rates.length >= MAX_EXTRA_RATES || rates.includes(v)) return rates;
+        return [...rates, v].sort((a, b) => a - b);
+      });
+      setNewRateInput("");
+    },
+    [newRateInput],
+  );
+
+  const removeRate = useCallback((rate: number) => {
+    setExtraRates((rates) => rates.filter((r) => r !== rate));
+  }, []);
+
   const submitText = useCallback(
     (e: React.FormEvent) => {
       e.preventDefault();
@@ -293,6 +341,40 @@ export function App() {
               <div className="menu-row">
                 <VoiceButton state={tts} progress={ttsProgress} onLoad={loadVoice} />
               </div>
+              <div className="menu-row tts-settings">
+                <div className="tts-settings-label">재생 속도</div>
+                <div className="rate-chips">
+                  <span className="rate-chip locked">🔊 {NATIVE_RATE}x (원어민)</span>
+                  {extraRates.map((r) => (
+                    <span key={r} className="rate-chip">
+                      {r}x
+                      <button
+                        type="button"
+                        className="chip-remove"
+                        onClick={() => removeRate(r)}
+                        aria-label={`${r}x 속도 삭제`}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+                {extraRates.length < MAX_EXTRA_RATES && (
+                  <form className="rate-add-form" onSubmit={addRate}>
+                    <input
+                      type="number"
+                      step="0.05"
+                      min="0.5"
+                      max="2"
+                      value={newRateInput}
+                      onChange={(e) => setNewRateInput(e.target.value)}
+                      placeholder="예: 0.7"
+                      aria-label="새 재생 속도"
+                    />
+                    <button type="submit">추가</button>
+                  </form>
+                )}
+              </div>
               <button className="ghost menu-item" onClick={resetChat} role="menuitem">
                 ↺ 대화 초기화
               </button>
@@ -343,6 +425,7 @@ export function App() {
             {m.role === "user" && corrections[m.turn] && (
               <CorrectionCard c={corrections[m.turn]} />
             )}
+            {m.text && <PlayButtons text={m.text} rates={playRates} onPlay={playMessage} />}
           </div>
         ))}
       </main>
@@ -392,6 +475,34 @@ function upsertAssistant(m: Msg[], turn: number, patch: (prev: string) => string
     return copy;
   }
   return [...m, { turn, role: "assistant", text: patch("") }];
+}
+
+function PlayButtons({
+  text,
+  rates,
+  onPlay,
+}: {
+  text: string;
+  rates: number[];
+  onPlay: (text: string, rate: number) => void;
+}) {
+  return (
+    <div className="tts-controls">
+      {rates.map((rate) => (
+        <button
+          key={rate}
+          type="button"
+          className="ghost tts-btn"
+          onClick={() => onPlay(text, rate)}
+          aria-label={
+            rate === NATIVE_RATE ? `${rate}배속(원어민 속도)으로 재생` : `${rate}배속으로 재생`
+          }
+        >
+          {rate === NATIVE_RATE ? `🔊 ${rate}x` : `${rate}x`}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 function VoiceButton({

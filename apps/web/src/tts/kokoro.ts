@@ -33,17 +33,22 @@ export class KokoroSpeaker {
     return this.ttsPromise;
   }
 
-  /** Speak text. Calls are queued so replies never overlap. */
-  speak(text: string): Promise<void> {
+  /**
+   * Speak text at the given speed (1 = native speed). This is passed straight
+   * through to the model's own `speed` generation parameter rather than
+   * resampling the finished waveform, so slow speech stays natural instead
+   * of sounding stretched. Calls are queued so replies never overlap.
+   */
+  speak(text: string, speed = 1): Promise<void> {
     this.queue = this.queue
-      .then(() => this.synth(text))
+      .then(() => this.synth(text, speed))
       .catch((err) => console.error("tts:", err));
     return this.queue;
   }
 
-  private async synth(text: string) {
+  private async synth(text: string, speed: number) {
     const tts = await this.load();
-    const audio = await tts.generate(text, { voice: this.voice });
+    const audio = await tts.generate(text, { voice: this.voice, speed });
     const url = URL.createObjectURL(audio.toBlob());
     try {
       await play(url);
