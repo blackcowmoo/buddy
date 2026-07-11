@@ -34,6 +34,7 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 		})
 	})
 	mux.HandleFunc("/api/me", meHandler(cfg.IdentityMode, ident))
+	registerStalePRRedirect(mux, cfg.RootPath)
 
 	// Frontend.
 	switch {
@@ -79,6 +80,23 @@ func withRootPath(rootPath string, h http.Handler) http.Handler {
 		http.Redirect(w, r, rootPath+"/", http.StatusMovedPermanently)
 	})
 	return root
+}
+
+// registerStalePRRedirect sends a stray /pr/<n>/* request to home instead of
+// letting it fall through to the SPA catch-all. This happens when a
+// PR-preview deployment (ROOT_PATH=/pr/14) is torn down but an external
+// router keeps forwarding /pr/14/* to the root deployment for lack of
+// anywhere else to send it: the SPA catch-all would serve index.html for
+// that path too, but its asset URLs are relative and resolve against a path
+// (/pr/) the build never targeted, so the JS 404s and the page is blank.
+// Only registered on the root deployment itself (rootPath == ""); a
+// PR-preview instance never sees an un-prefixed /pr/ path, since
+// withRootPath strips its own prefix before this mux sees the request.
+func registerStalePRRedirect(mux *http.ServeMux, rootPath string) {
+	if rootPath != "" {
+		return
+	}
+	mux.Handle("/pr/", http.RedirectHandler("/", http.StatusFound))
 }
 
 // meHandler resolves the caller's identity the same way the /ws handshake
