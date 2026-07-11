@@ -86,3 +86,34 @@ func TestWithRootPathAnotherPrefix404s(t *testing.T) {
 		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }
+
+func TestRegisterStalePRRedirectSendsStaleDeploymentHome(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.Handle("/", echoPathHandler()) // stand-in for the SPA catch-all
+	registerStalePRRedirect(mux, "")
+
+	req := httptest.NewRequest("GET", "/pr/16/some/deep/path", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/" {
+		t.Fatalf("Location = %q, want /", loc)
+	}
+}
+
+func TestRegisterStalePRRedirectSkippedUnderRootPath(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.Handle("/", echoPathHandler())
+	registerStalePRRedirect(mux, "/pr/14")
+
+	req := httptest.NewRequest("GET", "/pr/16", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != "/pr/16" {
+		t.Fatalf("status=%d body=%q, want 200 /pr/16 (no redirect under a RootPath deployment)", rec.Code, rec.Body.String())
+	}
+}
