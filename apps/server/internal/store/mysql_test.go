@@ -13,6 +13,31 @@ import (
 	"buddy/server/internal/llm"
 )
 
+// TestHostPort guards against a real incident: a secret store injected
+// MYSQL_RW_HOSTNAME already as "host:port", and unconditionally appending
+// cfg.Port turned it into a bracketed literal ("[host:port]:port") whose DNS
+// lookup target was the whole "host:port" string — "no such host".
+func TestHostPort(t *testing.T) {
+	tests := []struct {
+		name         string
+		host         string
+		fallbackPort int
+		want         string
+	}{
+		{"bare hostname gets fallback port appended", "mysql-primary.internal", 3306, "mysql-primary.internal:3306"},
+		{"host already carrying its own port is used as-is", "mysql-primary.internal:3307", 3306, "mysql-primary.internal:3307"},
+		{"bare IPv4 gets fallback port appended", "10.0.0.5", 3306, "10.0.0.5:3306"},
+		{"IPv4 with its own port is used as-is", "10.0.0.5:3307", 3306, "10.0.0.5:3307"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hostPort(tt.host, tt.fallbackPort); got != tt.want {
+				t.Errorf("hostPort(%q, %d) = %q, want %q", tt.host, tt.fallbackPort, got, tt.want)
+			}
+		})
+	}
+}
+
 // newTestMySQL starts a throwaway MySQL in a container for the duration of one
 // test. A query-level mock wouldn't have caught the SQLite busy-timeout bug
 // this project already hit once — real SQL semantics (the ON DUPLICATE KEY
