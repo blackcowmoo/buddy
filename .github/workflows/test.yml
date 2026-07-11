@@ -1,4 +1,4 @@
-name: github-actions/go/test
+name: github-actions/test
 
 on:
   pull_request:
@@ -26,3 +26,26 @@ jobs:
       - name: go test
         working-directory: apps/server
         run: go test ./...
+
+  web-test:
+    name: Web test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+
+      - name: Enable corepack
+        run: npm install -g corepack@latest && corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: web test
+        run: pnpm --filter @buddy/web test
