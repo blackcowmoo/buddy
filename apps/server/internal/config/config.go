@@ -53,19 +53,13 @@ type Config struct {
 	MaxHistoryMessages int // verbatim turns kept before folding into the summary
 
 	// Identity (internal/identity): "cookie" (default, anonymous, zero-setup
-	// local dev) or "header" (trust a header set by an upstream auth proxy —
-	// e.g. oauth2-proxy in front of Dex). AuthHeader only applies to "header".
-	IdentityMode string
-	AuthHeader   string
-
-	// DevAuthHeaderValue simulates the auth proxy locally: when set (and only
-	// when IsDev()), the server injects AuthHeader=DevAuthHeaderValue on every
-	// request before identity.HeaderIdentifier reads it. Needed because
-	// browsers can't set custom headers on a WebSocket upgrade from JS, so
-	// there's otherwise no way to exercise IdentityMode=header end-to-end
-	// with a real browser without standing up oauth2-proxy+Dex locally.
-	// Structurally can't activate outside dev — see httpserver.New.
-	DevAuthHeaderValue string
+	// local dev) or "oidc" (verify the Dex-issued JWT carried in the
+	// Authorization: Bearer header directly against Dex's discovery/JWKS
+	// endpoint — no upstream auth proxy involved). OIDCIssuerURL/OIDCClientID
+	// only apply to "oidc".
+	IdentityMode  string
+	OIDCIssuerURL string // Dex issuer, e.g. https://dex.example.com
+	OIDCClientID  string // expected token audience
 }
 
 func Load() Config {
@@ -98,10 +92,9 @@ func Load() Config {
 
 		MaxHistoryMessages: envInt("BUDDY_MAX_HISTORY_MESSAGES", 20),
 
-		IdentityMode: env("BUDDY_IDENTITY_MODE", "cookie"),
-		AuthHeader:   env("BUDDY_AUTH_HEADER", "X-Auth-Request-Email"),
-
-		DevAuthHeaderValue: env("BUDDY_DEV_AUTH_HEADER_VALUE", ""),
+		IdentityMode:  env("BUDDY_IDENTITY_MODE", "cookie"),
+		OIDCIssuerURL: env("BUDDY_OIDC_ISSUER_URL", ""),
+		OIDCClientID:  env("BUDDY_OIDC_CLIENT_ID", "buddy"),
 	}
 }
 

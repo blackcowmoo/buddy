@@ -1,7 +1,8 @@
 // Package identity resolves a stable user ID for a connection. It exists so
 // internal/store has someone to key Profiles by. CookieIdentifier is the
-// zero-setup local-dev default; HeaderIdentifier (header.go) is real identity
-// via an upstream auth proxy — see main.go's buildIdentity for the switch.
+// zero-setup local-dev default; OIDCIdentifier (oidc.go) is real identity —
+// a Dex-issued JWT verified directly against Dex — see main.go's
+// buildIdentity for the switch.
 package identity
 
 import (

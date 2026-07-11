@@ -51,16 +51,9 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 		log.Printf("prod: serving frontend <- %s", cfg.WebDist)
 	}
 
-	var handler http.Handler = mux
-	if cfg.IsDev() && cfg.DevAuthHeaderValue != "" {
-		log.Printf("⚠ dev: injecting %s=%q on every request to simulate an auth proxy — never active outside dev",
-			cfg.AuthHeader, cfg.DevAuthHeaderValue)
-		handler = devAuthInjector(cfg.AuthHeader, cfg.DevAuthHeaderValue)(handler)
-	}
-
 	return &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           logging(handler),
+		Handler:           logging(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		// No WriteTimeout: WebSocket connections are long-lived.
 	}
