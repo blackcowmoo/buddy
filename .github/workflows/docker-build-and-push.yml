@@ -25,12 +25,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up QEMU (for linux/arm64)
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
       # Split the Harbor project path by intent: deploy-labeled PRs publish
       # to <harbor>/pr, everything else (main/tags) to <harbor>/develop.
       - name: Set docker registry (PR)
@@ -57,20 +51,9 @@ jobs:
         env:
           GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Extract image metadata
-        id: meta
-        uses: docker/metadata-action@v5
+      - name: Docker build & push
+        uses: ./.github/actions/docker-build
         with:
           images: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: type=raw,value=${{ steps.sha.outputs.sha_short }}
-
-      - name: Build (and push on main/tags/deploy-labeled PRs)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          push: "true"

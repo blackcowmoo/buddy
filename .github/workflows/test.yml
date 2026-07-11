@@ -87,13 +87,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version-file: package.json
-
-      - name: Enable corepack
-        run: npm install -g corepack@latest && corepack enable
+          cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
