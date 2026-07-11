@@ -25,7 +25,7 @@ corrections**.
 ┌──────────────────┐   WS(binary)   │  ┌──────────────┐                           │
 │ mic → PCM 16k    │───utterance───▶│  │  FAST track  │  fast STT (mock/          │
 │  (AudioWorklet)  │                │  │ (low latency)│  whisper-tiny/vosk)       │
-│                  │                │  └──────┬───────┘         │                 │
+│                  │                │  └──────┬───────┘          │                │
 │                  │                │         ▼ transcript       ▼                │
 │                  │◀──assistant────│   LLM.ChatStream(OpenAI API) ─ token stream │
 │ kokoro-82M TTS   │   delta        │         │                                   │
