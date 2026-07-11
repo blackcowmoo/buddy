@@ -35,6 +35,38 @@ func newMockDex(t *testing.T) (srv *httptest.Server, priv *rsa.PrivateKey) {
 	return srv, priv
 }
 
+func TestBearerToken(t *testing.T) {
+	tests := []struct {
+		name      string
+		setHeader bool
+		header    string
+		wantTok   string
+		wantOK    bool
+	}{
+		{"valid bearer token", true, "Bearer abc.def.ghi", "abc.def.ghi", true},
+		{"missing header", false, "", "", false},
+		{"empty header value", true, "", "", false},
+		{"wrong scheme", true, "Basic dXNlcjpwYXNz", "", false},
+		{"bearer prefix with no token", true, "Bearer ", "", false},
+		{"bearer prefix with no trailing space", true, "Bearer", "", false},
+		{"lowercase scheme is rejected", true, "bearer abc.def.ghi", "", false},
+		{"scheme with no space before token is rejected", true, "Bearerabc.def.ghi", "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/ws", nil)
+			if tc.setHeader {
+				req.Header.Set("Authorization", tc.header)
+			}
+
+			tok, ok := bearerToken(req)
+			if tok != tc.wantTok || ok != tc.wantOK {
+				t.Fatalf("bearerToken() = %q, %v; want %q, %v", tok, ok, tc.wantTok, tc.wantOK)
+			}
+		})
+	}
+}
+
 func TestOIDCIdentifierAcceptsValidToken(t *testing.T) {
 	srv, priv := newMockDex(t)
 	ctx := context.Background()
