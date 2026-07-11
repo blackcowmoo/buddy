@@ -171,6 +171,8 @@ the app would still be rejected.
 `BUDDY_WEB_DIST`/`BUDDY_VITE_URL` only matter in dev — a prod image embeds the
 frontend and ignores them.
 
+| `ROOT_PATH` | Mounts the whole app under a path prefix instead of `/`, e.g. `ROOT_PATH=/pr/14` for a PR-preview deployment that an external router sends `/pr/14/*` to. The app strips the prefix itself (`httpserver.withRootPath`); the frontend resolves its own asset/WS/worklet URLs relative to the page URL, so no rebuild is needed per prefix. Unset (default) mounts at `/`, unchanged. |
+
 ## Build outputs
 
 The multi-stage `Dockerfile` builds the frontend with Node 26.5.0, embeds it into

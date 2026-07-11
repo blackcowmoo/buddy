@@ -53,10 +53,31 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 
 	return &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           logging(mux),
+		Handler:           logging(withRootPath(cfg.RootPath, mux)),
 		ReadHeaderTimeout: 10 * time.Second,
 		// No WriteTimeout: WebSocket connections are long-lived.
 	}
+}
+
+// withRootPath mounts h under a path prefix (e.g. "/pr/14"), for PR-preview
+// deployments where an external router sends /pr/14/* to this instance based
+// on URL path rather than a routing header. h keeps registering its patterns
+// ("/ws", "/api/health", "/") as if it owned the root; StripPrefix removes
+// the prefix before h ever sees the request. A request for the bare prefix
+// (no trailing slash) redirects to add one, since the frontend resolves its
+// asset/WS URLs relative to the page URL and needs the prefix to look like a
+// directory. Requests outside the prefix 404 — this instance only serves
+// that one path. rootPath == "" (default) mounts h at "/", unchanged.
+func withRootPath(rootPath string, h http.Handler) http.Handler {
+	if rootPath == "" {
+		return h
+	}
+	root := http.NewServeMux()
+	root.Handle(rootPath+"/", http.StripPrefix(rootPath, h))
+	root.HandleFunc(rootPath, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, rootPath+"/", http.StatusMovedPermanently)
+	})
+	return root
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

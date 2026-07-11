@@ -16,6 +16,7 @@ var allBuddyEnvVars = []string{
 	"MYSQL_USERNAME", "MYSQL_PASSWORD", "MYSQL_DATABASE",
 	"BUDDY_MAX_HISTORY_MESSAGES",
 	"BUDDY_IDENTITY_MODE", "BUDDY_OIDC_ISSUER_URL", "BUDDY_OIDC_CLIENT_ID",
+	"ROOT_PATH",
 }
 
 func clearEnv(t *testing.T) {
@@ -46,6 +47,7 @@ func TestLoadDefaults(t *testing.T) {
 		"IdentityMode":    {c.IdentityMode, "cookie"},
 		"OIDCIssuerURL":   {c.OIDCIssuerURL, ""},
 		"OIDCClientID":    {c.OIDCClientID, "buddy"},
+		"RootPath":        {c.RootPath, ""},
 	}
 	for name, tc := range str {
 		if tc.got != tc.want {
@@ -75,8 +77,13 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("MYSQL_RW_HOSTNAME", "primary.db")
 	t.Setenv("MYSQL_RO_HOSTNAME", "replica.db")
 	t.Setenv("MYSQL_PORT", "3307")
+	t.Setenv("ROOT_PATH", "/pr/14")
 
 	c := Load()
+
+	if c.RootPath != "/pr/14" {
+		t.Errorf("RootPath = %q, want /pr/14", c.RootPath)
+	}
 
 	if c.MySQLRWHost != "primary.db" || c.MySQLROHost != "replica.db" {
 		t.Errorf("MySQL host overrides failed: rw=%q ro=%q", c.MySQLRWHost, c.MySQLROHost)
@@ -122,5 +129,24 @@ func TestIsDevCaseInsensitive(t *testing.T) {
 	t.Setenv("BUDDY_ENV", "PROD")
 	if Load().IsDev() {
 		t.Error("IsDev() should be false for \"PROD\" (case-insensitive match)")
+	}
+}
+
+func TestRootPathNormalization(t *testing.T) {
+	clearEnv(t)
+	cases := map[string]string{
+		"":          "",
+		"/pr/14":    "/pr/14",
+		"/pr/14/":   "/pr/14",
+		"pr/14":     "/pr/14",
+		"pr/14/":    "/pr/14",
+		"  /pr/14 ": "/pr/14",
+		"/":         "",
+	}
+	for in, want := range cases {
+		t.Setenv("ROOT_PATH", in)
+		if got := Load().RootPath; got != want {
+			t.Errorf("normalizeRootPath(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

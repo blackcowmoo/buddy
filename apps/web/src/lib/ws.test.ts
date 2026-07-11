@@ -51,7 +51,7 @@ beforeEach(() => {
       }
     },
   );
-  vi.stubGlobal("location", { protocol: "https:", host: "buddy.example:8080" });
+  vi.stubGlobal("location", { protocol: "https:", host: "buddy.example:8080", pathname: "/" });
 });
 
 describe("BuddyClient", () => {
@@ -61,9 +61,21 @@ describe("BuddyClient", () => {
   });
 
   it("uses ws (not wss) when the page is served over http", () => {
-    vi.stubGlobal("location", { protocol: "http:", host: "buddy.example:8080" });
+    vi.stubGlobal("location", { protocol: "http:", host: "buddy.example:8080", pathname: "/" });
     connectedClient();
     expect(lastSocket.url).toBe("ws://buddy.example:8080/ws");
+  });
+
+  it("prefixes the WS URL with a ROOT_PATH mount point", () => {
+    vi.stubGlobal("location", { protocol: "https:", host: "buddy.example:8080", pathname: "/pr/14/" });
+    connectedClient();
+    expect(lastSocket.url).toBe("wss://buddy.example:8080/pr/14/ws");
+  });
+
+  it("adds a trailing slash to pathname before appending ws", () => {
+    vi.stubGlobal("location", { protocol: "https:", host: "buddy.example:8080", pathname: "/pr/14" });
+    connectedClient();
+    expect(lastSocket.url).toBe("wss://buddy.example:8080/pr/14/ws");
   });
 
   it("reports status transitions", () => {

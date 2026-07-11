@@ -60,6 +60,13 @@ type Config struct {
 	IdentityMode  string
 	OIDCIssuerURL string // Dex issuer, e.g. https://dex.example.com
 	OIDCClientID  string // expected token audience
+
+	// RootPath mounts the whole app under a path prefix (e.g. "/pr/14"),
+	// used for PR-preview deployments that route by URL path instead of a
+	// header: an external router sends /pr/14/* to this instance unchanged,
+	// and the app itself strips the prefix (see httpserver.withRootPath).
+	// Empty (default) means the app is mounted at "/", unchanged.
+	RootPath string
 }
 
 func Load() Config {
@@ -95,6 +102,8 @@ func Load() Config {
 		IdentityMode:  env("BUDDY_IDENTITY_MODE", "cookie"),
 		OIDCIssuerURL: env("BUDDY_OIDC_ISSUER_URL", ""),
 		OIDCClientID:  env("BUDDY_OIDC_CLIENT_ID", "buddy"),
+
+		RootPath: normalizeRootPath(env("ROOT_PATH", "")),
 	}
 }
 
@@ -114,4 +123,19 @@ func envInt(key string, def int) int {
 		}
 	}
 	return def
+}
+
+// normalizeRootPath cleans a path-prefix env value into the canonical shape
+// httpserver.withRootPath expects: "" (unset) or "/foo" with no trailing
+// slash, regardless of how the deployer wrote it (with/without a leading or
+// trailing slash).
+func normalizeRootPath(v string) string {
+	v = strings.TrimSuffix(strings.TrimSpace(v), "/")
+	if v == "" {
+		return ""
+	}
+	if !strings.HasPrefix(v, "/") {
+		v = "/" + v
+	}
+	return v
 }

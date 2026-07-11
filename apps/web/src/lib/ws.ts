@@ -14,7 +14,11 @@ export class BuddyClient {
 
   connect() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${location.host}/ws`);
+    // Derive the base path from the current page instead of hardcoding "/ws",
+    // so this works whether the app is mounted at "/" or under a ROOT_PATH
+    // prefix like "/pr/14" (see httpserver.withRootPath server-side).
+    const base = location.pathname.endsWith("/") ? location.pathname : `${location.pathname}/`;
+    const ws = new WebSocket(`${proto}://${location.host}${base}ws`);
     ws.binaryType = "arraybuffer";
     this.onStatus("connecting");
 

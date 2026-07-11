@@ -21,7 +21,10 @@ export class PCMRecorder {
     if (this.recording) return;
 
     this.ctx = new AudioContext({ sampleRate: 16000 });
-    await this.ctx.audioWorklet.addModule("/pcm-worklet.js");
+    // Relative (not "/pcm-worklet.js"): resolves against the current page
+    // URL, so it still works when the app is mounted under a ROOT_PATH
+    // prefix like "/pr/14" instead of "/".
+    await this.ctx.audioWorklet.addModule("pcm-worklet.js");
 
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: {
