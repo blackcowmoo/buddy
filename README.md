@@ -181,7 +181,9 @@ frontend and ignores them.
 
 The multi-stage `Dockerfile` builds the frontend with Node 26.5.0, embeds it into
 the Go binary (`//go:embed`, built with `-tags embed`), and ships a static binary
-on distroless. No Python, no runtime static dir, no nginx.
+on Alpine (a slim base that still includes `/bin/sh` for `docker exec`/`kubectl
+exec` debugging), running as a non-root user. No Python, no runtime static dir,
+no nginx.
 
 ```bash
 docker build -t buddy .                                           # runnable image
