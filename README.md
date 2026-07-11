@@ -68,19 +68,18 @@ current WebSocket connection:
   repo doesn't run one for you.
 - **Identity** (`internal/identity`, `BUDDY_IDENTITY_MODE`): `cookie` (default)
   is anonymous — a random ID in a long-lived cookie, zero setup for local dev,
-  not real auth. `header` trusts a header set by an upstream auth proxy that
-  already authenticated the request — e.g. **oauth2-proxy in front of Dex** —
-  configurable via `BUDDY_AUTH_HEADER` (default `X-Auth-Request-Email`). By
-  design this is trust-the-header, not cryptographic verification: it's only
-  as safe as the app being unreachable except through that proxy; enforce that
-  with a NetworkPolicy / Service topology, not in this repo. If the configured
-  header is missing, the connection is refused (401) rather than falling back
-  to a shared ID.
-  - **Testing `header` mode locally**: browsers can't set custom headers on a
-    WebSocket upgrade from JS, so there's no way to exercise this path with a
-    real browser without either a real oauth2-proxy or `BUDDY_DEV_AUTH_HEADER_VALUE`
-    (dev-only — see `.env.example`), which makes the server inject the header
-    itself. Structurally can't activate outside `BUDDY_ENV=dev`.
+  not real auth. `oidc` verifies the JWT carried in the `Authorization: Bearer`
+  header directly against **Dex**'s OIDC discovery/JWKS endpoint
+  (`BUDDY_OIDC_ISSUER_URL`, `BUDDY_OIDC_CLIENT_ID`). A proxy may still sit in
+  front of the app (e.g. to translate a browser session cookie into that
+  `Authorization` header — browsers send cookies automatically on the `/ws`
+  handshake, unlike custom headers, so this is how the token gets there at
+  all), but unlike a trust-the-header setup, the proxy isn't a trust boundary
+  here: Dex's signature over the token is what's actually checked, so a
+  request that reached the app directly with a forged header would still be
+  rejected. The verified token's `email` claim becomes the user ID; if the
+  header is missing or the token doesn't verify, the connection is refused
+  (401) rather than falling back to a shared ID.
 
 ## Quickstart (zero setup — pure `docker build`, mock STT, no models)
 
@@ -140,7 +139,7 @@ Check what's active any time: `curl localhost:8080/api/health`.
 ## Deploying (environment variables)
 
 This repo doesn't ship Kubernetes manifests — bring your own (Deployment,
-Service, oauth2-proxy + Dex, NetworkPolicy, etc.). What it does provide is
+Service, Dex, etc.). What it does provide is
 every env var the binary reads (`internal/config/config.go` is authoritative;
 this table is a deployment-focused summary).
 
@@ -154,21 +153,16 @@ this table is a deployment-focused summary).
 | `MYSQL_RO_HOSTNAME` | Optional read replica; `Load` reads from it to offload the primary. Leave unset to read from the primary (strongly consistent). |
 | `BUDDY_LLM_BASE_URL` | Your OpenAI-compatible endpoint (llama.cpp `llama-server`, vLLM, LM Studio, hosted API). Without it, chat/correction silently degrade to an offline echo. |
 | `BUDDY_LLM_API_KEY` | Only if your LLM endpoint needs a bearer token (e.g. a hosted API). |
-| `BUDDY_IDENTITY_MODE=header` | Switches from the anonymous local-dev cookie to trusting an upstream auth proxy (oauth2-proxy + Dex). |
-| `BUDDY_AUTH_HEADER` | Which header to trust (default `X-Auth-Request-Email` — oauth2-proxy's `--set-xauthrequest` default; use `X-Forwarded-Email`/`-User` for `--pass-user-headers`). |
+| `BUDDY_IDENTITY_MODE=oidc` | Switches from the anonymous local-dev cookie to verifying a Dex-issued JWT. |
+| `BUDDY_OIDC_ISSUER_URL` | Dex's issuer URL, e.g. `https://dex.example.com`. The server fetches Dex's discovery document + JWKS from this at startup. |
+| `BUDDY_OIDC_CLIENT_ID` | Expected token audience (default `buddy`). |
 
-**The one hard requirement `header` mode depends on, outside this app:** the
-app must be unreachable except through that auth proxy (Kubernetes
-NetworkPolicy / Service topology). This is trust-the-header, not
-cryptographic verification — a deliberate tradeoff, not a TODO. If it's
-reachable directly, anyone can set that header themselves and impersonate any
-user.
-
-**Never set in a real deployment:** `BUDDY_DEV_AUTH_HEADER_VALUE` — it's a
-local-dev convenience that makes the server inject the auth header itself
-(simulating the proxy), since browsers can't set custom headers on a
-WebSocket upgrade from JS. It's structurally inert unless `BUDDY_ENV=dev`
-regardless of this value, but don't set it outside dev anyway.
+`oidc` mode verifies the JWT's signature, issuer, audience, and expiry against
+Dex directly. A proxy in front of the app (translating a browser session
+cookie into the `Authorization` header) is still a normal deployment shape,
+but it's no longer a trust boundary the way `header` mode was — the app
+verifies the token's signature itself, so a forged header sent straight to
+the app would still be rejected.
 
 **Everything else is optional** (sane defaults, see `.env.example`):
 `BUDDY_ADDR`, `BUDDY_FEEDBACK_LANG`, `BUDDY_MAX_HISTORY_MESSAGES`,
@@ -243,7 +237,7 @@ without touching the pipeline:
 | **Server-side TTS** | Implement `tts.Synthesizer` (e.g. shell out to piper) and stream audio frames down the socket for non-browser clients. |
 | **Lower TTS latency** | Speak per sentence as `assistant_delta`s arrive instead of on `assistant_done`. |
 | **Different LLM host** | `llm.OpenAI` already works with any OpenAI-compatible server (llama.cpp, vLLM, LM Studio, hosted APIs) — just change `BUDDY_LLM_BASE_URL`. |
-| **Real auth** | Done: `BUDDY_IDENTITY_MODE=header` trusts a header from an upstream auth proxy (oauth2-proxy + Dex). For a different setup, implement `identity.Identifier` — `internal/store` doesn't care where the ID came from. |
+| **Real auth** | Done: `BUDDY_IDENTITY_MODE=oidc` verifies a Dex-issued JWT from the `Authorization` header directly against Dex. For a different provider/setup, implement `identity.Identifier` — `internal/store` doesn't care where the ID came from. |
 
 ## Roadmap — what's still not done
 
@@ -268,8 +262,7 @@ without touching the pipeline:
   translation round-trip, but means "translate this other piece of UI text"
   isn't a reusable primitive yet if more localized surfaces get added later.
 - **Kubernetes deployment is intentionally out of scope for this repo** — see
-  "Deploying" above for the env vars; manifests, oauth2-proxy/Dex config, and
-  the NetworkPolicy that makes `header` identity mode safe are owned by
+  "Deploying" above for the env vars; manifests and Dex config are owned by
   whoever deploys this, not tracked here.
 
 ## Notes

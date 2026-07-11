@@ -35,7 +35,7 @@ func main() {
 	}
 
 	// Persistent per-user memory.
-	ident := buildIdentity(cfg)
+	ident := buildIdentity(context.Background(), cfg)
 	st, err := store.NewMySQL(store.MySQLConfig{
 		RWHost:   cfg.MySQLRWHost,
 		ROHost:   cfg.MySQLROHost,
@@ -70,11 +70,15 @@ func main() {
 }
 
 // buildIdentity selects how learners are identified. "cookie" needs zero
-// setup (local dev); "header" trusts an upstream auth proxy — e.g.
-// oauth2-proxy in front of Dex — see internal/identity/header.go.
-func buildIdentity(cfg config.Config) identity.Identifier {
-	if cfg.IdentityMode == "header" {
-		return identity.NewHeaderIdentifier(cfg.AuthHeader)
+// setup (local dev); "oidc" verifies the Dex-issued JWT in the Authorization
+// header directly against Dex — see internal/identity/oidc.go.
+func buildIdentity(ctx context.Context, cfg config.Config) identity.Identifier {
+	if cfg.IdentityMode == "oidc" {
+		ident, err := identity.NewOIDCIdentifier(ctx, cfg.OIDCIssuerURL, cfg.OIDCClientID)
+		if err != nil {
+			log.Fatalf("oidc identity: %v", err)
+		}
+		return ident
 	}
 	return identity.NewCookieIdentifier()
 }

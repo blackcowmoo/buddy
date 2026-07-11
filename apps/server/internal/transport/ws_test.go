@@ -30,6 +30,17 @@ func (f fakeSTT) Transcribe(ctx context.Context, pcm []byte) (stt.Result, error)
 	return stt.Result{Text: f.text, Confidence: 1}, nil
 }
 
+// fakeHeaderIdentifier stands in for a real verified-identity mechanism
+// (identity.OIDCIdentifier in production) in tests that only care about
+// transport's fail-closed behavior: refuse before the WS upgrade when
+// identity fails, connect when it succeeds.
+type fakeHeaderIdentifier struct{ header string }
+
+func (f fakeHeaderIdentifier) Identify(w http.ResponseWriter, r *http.Request) (string, bool) {
+	v := r.Header.Get(f.header)
+	return v, v != ""
+}
+
 var errFakeLLMUnavailable = errors.New("fake llm: unavailable")
 
 // fakeLLM always fails, which drives the pipeline's fallback-reply path
@@ -169,12 +180,12 @@ func TestWSFirstVisitSetsAnonymousCookie(t *testing.T) {
 	}
 }
 
-// TestWSRejectsWhenIdentityFails exercises the auth-proxy path (e.g.
-// oauth2-proxy in front of Dex): if HeaderIdentifier finds no configured
-// header, the handler must refuse before ever attempting the WS upgrade.
+// TestWSRejectsWhenIdentityFails exercises the fail-closed contract: if
+// Identify finds no verified identity (e.g. no valid Dex JWT), the handler
+// must refuse before ever attempting the WS upgrade.
 func TestWSRejectsWhenIdentityFails(t *testing.T) {
 	pipe := &pipeline.Pipeline{FastSTT: fakeSTT{text: "hi"}, SlowSTT: fakeSTT{text: "hi"}, LLM: fakeLLM{}}
-	h := NewHandler(pipe, identity.NewHeaderIdentifier("X-Auth-Request-Email"), newFakeStore())
+	h := NewHandler(pipe, fakeHeaderIdentifier{"X-Auth-Request-Email"}, newFakeStore())
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
@@ -188,11 +199,11 @@ func TestWSRejectsWhenIdentityFails(t *testing.T) {
 	}
 }
 
-// TestWSHeaderIdentityConnectsWhenHeaderPresent is the same auth-proxy path,
-// but with the header an authenticated request would actually carry.
+// TestWSHeaderIdentityConnectsWhenHeaderPresent is the same fail-closed
+// contract, but with identity resolving successfully.
 func TestWSHeaderIdentityConnectsWhenHeaderPresent(t *testing.T) {
 	pipe := &pipeline.Pipeline{FastSTT: fakeSTT{text: "hi"}, SlowSTT: fakeSTT{text: "hi"}, LLM: fakeLLM{}}
-	h := NewHandler(pipe, identity.NewHeaderIdentifier("X-Auth-Request-Email"), newFakeStore())
+	h := NewHandler(pipe, fakeHeaderIdentifier{"X-Auth-Request-Email"}, newFakeStore())
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
