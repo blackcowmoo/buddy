@@ -3,6 +3,7 @@ import { BuddyClient, type Status } from "./lib/ws";
 import type { Correction, ServerEvent } from "./lib/protocol";
 import { PCMRecorder } from "./audio/recorder";
 import { KokoroSpeaker } from "./tts/kokoro";
+import { prPath } from "./lib/rootPath";
 
 interface Msg {
   turn: number;
@@ -21,10 +22,14 @@ export function App() {
   const [text, setText] = useState("");
   const [tts, setTts] = useState<TtsState>("idle");
   const [ttsProgress, setTtsProgress] = useState(0);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [prInput, setPrInput] = useState("");
+  const [prError, setPrError] = useState(false);
 
   const clientRef = useRef<BuddyClient | null>(null);
   const recorderRef = useRef<PCMRecorder | null>(null);
   const speakerRef = useRef<KokoroSpeaker | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   const onEvent = useCallback((e: ServerEvent) => {
     switch (e.type) {
@@ -117,7 +122,38 @@ export function App() {
     clientRef.current?.reset();
     setMsgs([]);
     setCorrections({});
+    setMenuOpen(false);
   }, []);
+
+  // Click-outside / Escape closes the menu, same as any dropdown.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [menuOpen]);
+
+  const goToPath = useCallback(
+    (e: React.FormEvent) => {
+      e.preventDefault();
+      const path = prPath(prInput);
+      if (path === null) {
+        setPrError(true);
+        return;
+      }
+      window.location.assign(path);
+    },
+    [prInput],
+  );
 
   return (
     <div className="app">
@@ -126,16 +162,48 @@ export function App() {
           <span className={`dot ${status}`} title={status} />
           <h1>Buddy</h1>
         </div>
-        <div className="controls">
-          <VoiceButton state={tts} progress={ttsProgress} onLoad={loadVoice} />
+        <div className="menu" ref={menuRef}>
           <button
             className="ghost icon-btn"
-            onClick={resetChat}
-            aria-label="Reset conversation"
-            title="Reset"
+            onClick={() => setMenuOpen((o) => !o)}
+            aria-label="Menu"
+            aria-haspopup="true"
+            aria-expanded={menuOpen}
+            title="Menu"
           >
-            ↺
+            ☰
           </button>
+          {menuOpen && (
+            <div className="menu-panel" role="menu">
+              <div className="menu-row">
+                <VoiceButton state={tts} progress={ttsProgress} onLoad={loadVoice} />
+              </div>
+              <button className="ghost menu-item" onClick={resetChat} role="menuitem">
+                ↺ 대화 초기화
+              </button>
+              <div className="menu-divider" />
+              <form className="path-form" onSubmit={goToPath}>
+                <label htmlFor="pr-path">PR 미리보기로 이동</label>
+                <div className="path-row">
+                  <input
+                    id="pr-path"
+                    value={prInput}
+                    onChange={(e) => {
+                      setPrInput(e.target.value);
+                      setPrError(false);
+                    }}
+                    placeholder="PR 번호 (예: 14)"
+                    inputMode="numeric"
+                    autoComplete="off"
+                  />
+                  <button type="submit">이동</button>
+                </div>
+                {prError && (
+                  <p className="path-error">숫자만 입력하세요 (비워두면 메인으로 이동)</p>
+                )}
+              </form>
+            </div>
+          )}
         </div>
       </header>
 
