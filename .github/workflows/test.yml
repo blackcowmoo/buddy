@@ -1,0 +1,28 @@
+name: github-actions/go/test
+
+on:
+  pull_request:
+    branches:
+      - develop
+  push:
+    branches:
+      - develop
+
+jobs:
+  go-test:
+    name: Go test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/server/go.mod
+
+      - name: go test
+        working-directory: apps/server
+        run: go test ./...
