@@ -33,6 +33,7 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 			"chat":     cfg.LLMChatModel,
 		})
 	})
+	mux.HandleFunc("/api/me", meHandler(cfg.IdentityMode, ident))
 
 	// Frontend.
 	switch {
@@ -53,9 +54,50 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 
 	return &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           logging(mux),
+		Handler:           logging(withRootPath(cfg.RootPath, mux)),
 		ReadHeaderTimeout: 10 * time.Second,
 		// No WriteTimeout: WebSocket connections are long-lived.
+	}
+}
+
+// withRootPath mounts h under a path prefix (e.g. "/pr/14"), for PR-preview
+// deployments where an external router sends /pr/14/* to this instance based
+// on URL path rather than a routing header. h keeps registering its patterns
+// ("/ws", "/api/health", "/") as if it owned the root; StripPrefix removes
+// the prefix before h ever sees the request. A request for the bare prefix
+// (no trailing slash) redirects to add one, since the frontend resolves its
+// asset/WS URLs relative to the page URL and needs the prefix to look like a
+// directory. Requests outside the prefix 404 — this instance only serves
+// that one path. rootPath == "" (default) mounts h at "/", unchanged.
+func withRootPath(rootPath string, h http.Handler) http.Handler {
+	if rootPath == "" {
+		return h
+	}
+	root := http.NewServeMux()
+	root.Handle(rootPath+"/", http.StripPrefix(rootPath, h))
+	root.HandleFunc(rootPath, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, rootPath+"/", http.StatusMovedPermanently)
+	})
+	return root
+}
+
+// meHandler resolves the caller's identity the same way the /ws handshake
+// does, so the frontend can show something better than an opaque cookie
+// value in its menu (see apps/web/src/lib/me.ts): the OIDC "email" claim
+// when identityMode is "oidc", and nothing meaningful otherwise — the
+// CookieIdentifier's id is a random per-browser token, not a real identity,
+// so the frontend only trusts it when identityMode says it's real.
+func meHandler(identityMode string, ident identity.Identifier) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := ident.Identify(w, r)
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		writeJSON(w, map[string]any{
+			"identityMode": identityMode,
+			"id":           userID,
+		})
 	}
 }
 

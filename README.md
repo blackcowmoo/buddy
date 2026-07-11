@@ -171,6 +171,8 @@ the app would still be rejected.
 `BUDDY_WEB_DIST`/`BUDDY_VITE_URL` only matter in dev — a prod image embeds the
 frontend and ignores them.
 
+| `ROOT_PATH` | Mounts the whole app under a path prefix instead of `/`, e.g. `ROOT_PATH=/pr/14` for a PR-preview deployment that an external router sends `/pr/14/*` to. The app strips the prefix itself (`httpserver.withRootPath`); the frontend resolves its own asset/WS/worklet URLs relative to the page URL, so no rebuild is needed per prefix. Unset (default) mounts at `/`, unchanged. The hamburger menu's PR-path field (`lib/rootPath.ts`) lets a user jump straight to another `/pr/<n>/` deployment without typing the URL by hand. |
+
 ## Build outputs
 
 The multi-stage `Dockerfile` builds the frontend with Node 26.5.0, embeds it into
@@ -209,7 +211,7 @@ buddy/
 │   │       ├── pipeline/        # FAST + REFINE orchestration
 │   │       ├── session/         # per-connection memory: verbatim window + summary
 │   │       ├── store/           # persists Profiles (MySQL, buddy_ table prefix)
-│   │       ├── identity/        # resolves user ID (anonymous cookie today)
+│   │       ├── identity/        # resolves user ID: anonymous cookie, or OIDC (Dex JWT)
 │   │       ├── stt/             # Recognizer interface: mock, whisper
 │   │       ├── llm/             # Client interface: OpenAI-compatible (llama.cpp)
 │   │       └── tts/             # (extension point; browser does TTS)
@@ -220,7 +222,9 @@ buddy/
 │           ├── tts/kokoro.ts       # kokoro-82M (WebGPU)
 │           ├── lib/ws.ts           # WebSocket client
 │           ├── lib/protocol.ts     # wire types
-│           └── App.tsx
+│           ├── lib/rootPath.ts     # PR-preview path switcher (hamburger menu)
+│           ├── lib/me.ts           # fetches resolved identity for the menu
+│           └── App.tsx             # + App.test.tsx (Testing Library, jsdom)
 └── models/                      # ggml-*.bin etc. (gitignored)
 ```
 
@@ -249,10 +253,14 @@ without touching the pipeline:
   speech start/end instead of a button) and a true streaming
   `stt.StreamingRecognizer` on the server (e.g. Vosk) that emits partials as
   audio arrives instead of waiting for one full utterance.
-- **Frontend has no automated tests.** The Go backend has a full suite
+- **Frontend test coverage is partial.** The Go backend has a full suite
   (`go test ./...`, including real-MySQL integration tests) across every
-  package with logic; `apps/web` only has `tsc` type-checking. Vitest +
-  Testing Library would be the natural fit (same tooling family as Vite).
+  package with logic. `apps/web` now has `tsc` type-checking plus Vitest unit
+  tests for pure logic (`prPath`, `fetchMe`, `floatTo16`) and Testing
+  Library component tests for the hamburger menu (`App.test.tsx`, run under a
+  per-file `jsdom` environment since the rest of the suite runs under
+  `node`), but most of the conversation UI (message list, corrections,
+  mic/TTS flows) still has no component tests.
 - **Server-side TTS is just an interface, no implementation.**
   `tts.Synthesizer` exists as a seam but nothing implements it — fine today
   since the browser (kokoro-82M) handles all TTS, but needed for any
