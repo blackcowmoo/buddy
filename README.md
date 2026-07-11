@@ -251,10 +251,14 @@ without touching the pipeline:
   speech start/end instead of a button) and a true streaming
   `stt.StreamingRecognizer` on the server (e.g. Vosk) that emits partials as
   audio arrives instead of waiting for one full utterance.
-- **Frontend has no automated tests.** The Go backend has a full suite
+- **Frontend test coverage is partial.** The Go backend has a full suite
   (`go test ./...`, including real-MySQL integration tests) across every
-  package with logic; `apps/web` only has `tsc` type-checking. Vitest +
-  Testing Library would be the natural fit (same tooling family as Vite).
+  package with logic. `apps/web` now has `tsc` type-checking plus Vitest unit
+  tests for pure logic (`prPath`, `fetchMe`, `floatTo16`) and Testing
+  Library component tests for the hamburger menu (`App.test.tsx`, run under a
+  per-file `jsdom` environment since the rest of the suite runs under
+  `node`), but most of the conversation UI (message list, corrections,
+  mic/TTS flows) still has no component tests.
 - **Server-side TTS is just an interface, no implementation.**
   `tts.Synthesizer` exists as a seam but nothing implements it — fine today
   since the browser (kokoro-82M) handles all TTS, but needed for any
