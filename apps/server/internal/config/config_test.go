@@ -15,7 +15,7 @@ var allBuddyEnvVars = []string{
 	"MYSQL_RW_HOSTNAME", "MYSQL_RO_HOSTNAME", "MYSQL_PORT",
 	"MYSQL_USERNAME", "MYSQL_PASSWORD", "MYSQL_DATABASE",
 	"BUDDY_MAX_HISTORY_MESSAGES",
-	"BUDDY_IDENTITY_MODE", "BUDDY_AUTH_HEADER",
+	"BUDDY_IDENTITY_MODE", "BUDDY_OIDC_ISSUER_URL", "BUDDY_OIDC_CLIENT_ID",
 }
 
 func clearEnv(t *testing.T) {
@@ -44,7 +44,8 @@ func TestLoadDefaults(t *testing.T) {
 		"MySQLPassword":   {c.MySQLPassword, "buddy"},
 		"MySQLDatabase":   {c.MySQLDatabase, "buddy"},
 		"IdentityMode":    {c.IdentityMode, "cookie"},
-		"AuthHeader":      {c.AuthHeader, "X-Auth-Request-Email"},
+		"OIDCIssuerURL":   {c.OIDCIssuerURL, ""},
+		"OIDCClientID":    {c.OIDCClientID, "buddy"},
 	}
 	for name, tc := range str {
 		if tc.got != tc.want {
@@ -68,8 +69,9 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("BUDDY_ADDR", ":9999")
 	t.Setenv("BUDDY_MAX_HISTORY_MESSAGES", "42")
 	t.Setenv("BUDDY_FEEDBACK_LANG", "ja")
-	t.Setenv("BUDDY_IDENTITY_MODE", "header")
-	t.Setenv("BUDDY_AUTH_HEADER", "X-Forwarded-Email")
+	t.Setenv("BUDDY_IDENTITY_MODE", "oidc")
+	t.Setenv("BUDDY_OIDC_ISSUER_URL", "https://dex.example.com")
+	t.Setenv("BUDDY_OIDC_CLIENT_ID", "buddy-web")
 	t.Setenv("MYSQL_RW_HOSTNAME", "primary.db")
 	t.Setenv("MYSQL_RO_HOSTNAME", "replica.db")
 	t.Setenv("MYSQL_PORT", "3307")
@@ -95,11 +97,14 @@ func TestLoadOverrides(t *testing.T) {
 	if c.FeedbackLang != "ja" {
 		t.Errorf("FeedbackLang = %q, want ja", c.FeedbackLang)
 	}
-	if c.IdentityMode != "header" {
-		t.Errorf("IdentityMode = %q, want header", c.IdentityMode)
+	if c.IdentityMode != "oidc" {
+		t.Errorf("IdentityMode = %q, want oidc", c.IdentityMode)
 	}
-	if c.AuthHeader != "X-Forwarded-Email" {
-		t.Errorf("AuthHeader = %q, want X-Forwarded-Email", c.AuthHeader)
+	if c.OIDCIssuerURL != "https://dex.example.com" {
+		t.Errorf("OIDCIssuerURL = %q, want https://dex.example.com", c.OIDCIssuerURL)
+	}
+	if c.OIDCClientID != "buddy-web" {
+		t.Errorf("OIDCClientID = %q, want buddy-web", c.OIDCClientID)
 	}
 }
 

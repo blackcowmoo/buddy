@@ -35,9 +35,9 @@ func NewHandler(p *pipeline.Pipeline, ident identity.Identifier, st store.Store)
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Resolve (and, on first visit, set) the ID before the upgrade, since
 	// Set-Cookie must go out on the HTTP response, not the WS frames. ok is
-	// false when identity couldn't be established (e.g. HeaderIdentifier
-	// found no auth-proxy header) — refuse rather than fall back to a
-	// shared/empty key that would mix up unrelated users' memory.
+	// false when identity couldn't be established (e.g. OIDCIdentifier found
+	// no valid Dex JWT) — refuse rather than fall back to a shared/empty key
+	// that would mix up unrelated users' memory.
 	userID, ok := h.ident.Identify(w, r)
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
