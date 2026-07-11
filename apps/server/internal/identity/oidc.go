@@ -2,8 +2,10 @@ package identity
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 )
@@ -35,17 +37,29 @@ func (o OIDCIdentifier) Identify(w http.ResponseWriter, r *http.Request) (string
 	if !ok {
 		return "", false
 	}
-	idToken, err := o.verifier.Verify(r.Context(), raw)
+	email, _, err := o.verify(r.Context(), raw)
+	return email, err == nil
+}
+
+// verify checks raw against Dex's keys and returns the token's email claim
+// and expiry. Split out from Identify so CachedOIDCIdentifier (cache.go) can
+// reuse the same check for both its initial verification and its background
+// revalidation, without duplicating claim parsing.
+func (o OIDCIdentifier) verify(ctx context.Context, raw string) (email string, expiry time.Time, err error) {
+	idToken, err := o.verifier.Verify(ctx, raw)
 	if err != nil {
-		return "", false
+		return "", time.Time{}, err
 	}
 	var claims struct {
 		Email string `json:"email"`
 	}
-	if err := idToken.Claims(&claims); err != nil || claims.Email == "" {
-		return "", false
+	if err := idToken.Claims(&claims); err != nil {
+		return "", time.Time{}, err
 	}
-	return claims.Email, true
+	if claims.Email == "" {
+		return "", time.Time{}, errors.New("oidc: token has no email claim")
+	}
+	return claims.Email, idToken.Expiry, nil
 }
 
 func bearerToken(r *http.Request) (string, bool) {

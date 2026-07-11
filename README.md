@@ -79,7 +79,14 @@ current WebSocket connection:
   request that reached the app directly with a forged header would still be
   rejected. The verified token's `email` claim becomes the user ID; if the
   header is missing or the token doesn't verify, the connection is refused
-  (401) rather than falling back to a shared ID.
+  (401) rather than falling back to a shared ID. Verifying a token is
+  already a local, in-process check once the JWKS is cached (Dex is only
+  re-contacted when an unrecognized key ID shows up), so this scales fine as-is;
+  setting `REDIS_CLUSTER_HOST` additionally caches verification results in a
+  Redis Cluster so the auth path stays fast/available even if Dex is slow or
+  briefly down — see `internal/identity/cached_oidc.go`. Redis is purely an
+  optimization layer: any Redis error just falls through to verifying
+  directly, same as when it's unset.
 
 ## Quickstart (zero setup — pure `docker build`, mock STT, no models)
 
@@ -163,6 +170,14 @@ cookie into the `Authorization` header) is still a normal deployment shape,
 but it's no longer a trust boundary the way `header` mode was — the app
 verifies the token's signature itself, so a forged header sent straight to
 the app would still be rejected.
+
+**Optional, only relevant with `oidc` mode:**
+
+| Variable | Purpose |
+|---|---|
+| `REDIS_CLUSTER_HOST` | Seed host of a **Redis Cluster** to cache verification results in (`internal/identity/cached_oidc.go`); go-redis discovers the rest of the cluster's nodes from it. Unset (default) means every check verifies the token directly, same as before this existed — fine, since that's already local once the JWKS is cached. Set it to keep the auth path fast/available if Dex ever gets slow or flaky; Redis is never a hard dependency, any Redis error just falls through to direct verification. No `BUDDY_` prefix — same convention as `MYSQL_*`, for a shared secret store to inject. |
+| `REDIS_PORT` | Port for `REDIS_CLUSTER_HOST` (default `6379`); skip it if the host value already carries its own port. |
+| `REDIS_PASSWORD` | Only if your cluster needs it. |
 
 **Everything else is optional** (sane defaults, see `.env.example`):
 `BUDDY_ADDR`, `BUDDY_FEEDBACK_LANG`, `BUDDY_MAX_HISTORY_MESSAGES`,
