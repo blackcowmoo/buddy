@@ -4,6 +4,7 @@ import type { Correction, ServerEvent } from "./lib/protocol";
 import { PCMRecorder } from "./audio/recorder";
 import { KokoroSpeaker } from "./tts/kokoro";
 import { prPath } from "./lib/rootPath";
+import { fetchMe } from "./lib/me";
 
 interface Msg {
   turn: number;
@@ -25,6 +26,7 @@ export function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [prInput, setPrInput] = useState("");
   const [prError, setPrError] = useState(false);
+  const [email, setEmail] = useState<string | null>(null);
 
   const clientRef = useRef<BuddyClient | null>(null);
   const recorderRef = useRef<PCMRecorder | null>(null);
@@ -76,6 +78,15 @@ export function App() {
       clientRef.current = null;
     };
   }, [onEvent]);
+
+  useEffect(() => {
+    // The CookieIdentifier's id is a random per-browser token, not a real
+    // identity, so only oidc mode's id (the verified email claim) is worth
+    // showing in the menu.
+    fetchMe().then((identity) => {
+      setEmail(identity?.identityMode === "oidc" ? identity.id : null);
+    });
+  }, []);
 
   const toggleMic = useCallback(async () => {
     const rec = recorderRef.current;
@@ -175,6 +186,10 @@ export function App() {
           </button>
           {menuOpen && (
             <div className="menu-panel" role="menu">
+              <div className="menu-row user-info">
+                <span className="user-email">{email ?? "익명 사용자"}</span>
+              </div>
+              <div className="menu-divider" />
               <div className="menu-row">
                 <VoiceButton state={tts} progress={ttsProgress} onLoad={loadVoice} />
               </div>
