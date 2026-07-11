@@ -139,9 +139,7 @@ for (const [file, addedLines] of [...added.entries()].sort(([a], [b]) => a.local
   const ranges = toRanges(hit);
   const parts = ranges.map(([s, e]) => {
     const text = s === e ? `L${s}` : `L${s}-L${e}`;
-    if (!repo) return text;
-    const anchor = s === e ? `L${s}` : `L${s}-L${e}`;
-    return `[${text}](https://github.com/${repo}/blob/${headSha}/${file}#${anchor})`;
+    return repo ? `[${text}](https://github.com/${repo}/blob/${headSha}/${file}#${text})` : text;
   });
   fileEntries.push(`- \`${file}\`: ${parts.join(", ")}`);
 }

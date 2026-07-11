@@ -109,6 +109,10 @@ func openPool(cfg MySQLConfig, host string) (*sql.DB, error) {
 	c.Passwd = cfg.Password
 	c.DBName = cfg.Database
 	c.Collation = "utf8mb4_unicode_ci"
+	// Interpolate params client-side so Load/Save's simple queries skip the
+	// server-side prepare round trip that database/sql otherwise does on
+	// every call — this runs on every WS save tick, not just at startup.
+	c.InterpolateParams = true
 
 	db, err := sql.Open("mysql", c.FormatDSN())
 	if err != nil {

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"os"
 	"reflect"
 	"testing"
 	"time"
@@ -38,14 +39,25 @@ func TestHostPort(t *testing.T) {
 	}
 }
 
-// newTestMySQL starts a throwaway MySQL in a container for the duration of one
-// test. A query-level mock wouldn't have caught the SQLite busy-timeout bug
-// this project already hit once — real SQL semantics (the ON DUPLICATE KEY
-// upsert, the utf8mb4 schema, VARCHAR-vs-TEXT key limits, connection handling)
-// need a real database. If Docker isn't reachable (no daemon, sandboxed CI,
-// restricted dev box), this skips rather than failing the whole suite.
-func newTestMySQL(t *testing.T) *MySQLStore {
-	t.Helper()
+// sharedStore backs every container test in this file. It's started once in
+// TestMain rather than per-test: a query-level mock wouldn't have caught the
+// SQLite busy-timeout bug this project already hit once — real SQL semantics
+// (the ON DUPLICATE KEY upsert, the utf8mb4 schema, VARCHAR-vs-TEXT key
+// limits, connection handling) need a real database, but a fresh container
+// per test quadruples this file's CI time for no isolation benefit: every
+// test below upserts by primary key, so each test's own writes fully
+// determine the state its own reads observe regardless of what earlier tests
+// left behind.
+var (
+	sharedStore    *MySQLStore
+	sharedStoreErr error
+)
+
+func TestMain(m *testing.M) {
+	os.Exit(runMySQLTests(m))
+}
+
+func runMySQLTests(m *testing.M) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
@@ -61,17 +73,23 @@ func newTestMySQL(t *testing.T) *MySQLStore {
 		),
 	)
 	if err != nil {
-		t.Skipf("mysql testcontainer unavailable (no/unreachable Docker?): %v", err)
+		// No/unreachable Docker (sandboxed CI, restricted dev box): record why
+		// so container tests skip themselves instead of failing the suite, but
+		// still run the pure-function tests like TestHostPort.
+		sharedStoreErr = err
+		return m.Run()
 	}
-	t.Cleanup(func() { _ = container.Terminate(context.Background()) })
+	defer func() { _ = container.Terminate(context.Background()) }()
 
 	host, err := container.Host(ctx)
 	if err != nil {
-		t.Fatalf("container host: %v", err)
+		sharedStoreErr = err
+		return m.Run()
 	}
 	port, err := container.MappedPort(ctx, "3306/tcp")
 	if err != nil {
-		t.Fatalf("container port: %v", err)
+		sharedStoreErr = err
+		return m.Run()
 	}
 
 	st, err := NewMySQL(MySQLConfig{
@@ -82,14 +100,25 @@ func newTestMySQL(t *testing.T) *MySQLStore {
 		Database: "buddy",
 	})
 	if err != nil {
-		t.Fatalf("NewMySQL() error = %v", err)
+		sharedStoreErr = err
+		return m.Run()
 	}
-	t.Cleanup(func() { _ = st.Close() })
-	return st
+	defer func() { _ = st.Close() }()
+
+	sharedStore = st
+	return m.Run()
+}
+
+func requireStore(t *testing.T) *MySQLStore {
+	t.Helper()
+	if sharedStoreErr != nil {
+		t.Skipf("mysql testcontainer unavailable (no/unreachable Docker?): %v", sharedStoreErr)
+	}
+	return sharedStore
 }
 
 func TestMySQLLoadUnknownUserReturnsZeroProfile(t *testing.T) {
-	st := newTestMySQL(t)
+	st := requireStore(t)
 	got, err := st.Load(context.Background(), "nobody")
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
@@ -100,7 +129,7 @@ func TestMySQLLoadUnknownUserReturnsZeroProfile(t *testing.T) {
 }
 
 func TestMySQLSaveThenLoadRoundTrips(t *testing.T) {
-	st := newTestMySQL(t)
+	st := requireStore(t)
 	ctx := context.Background()
 	want := Profile{
 		Summary: "likes hiking",
@@ -122,7 +151,7 @@ func TestMySQLSaveThenLoadRoundTrips(t *testing.T) {
 }
 
 func TestMySQLSaveTwiceUpserts(t *testing.T) {
-	st := newTestMySQL(t)
+	st := requireStore(t)
 	ctx := context.Background()
 	if err := st.Save(ctx, "alex", Profile{Summary: "v1"}); err != nil {
 		t.Fatalf("Save() #1 error = %v", err)
@@ -149,7 +178,7 @@ func TestMySQLSaveTwiceUpserts(t *testing.T) {
 }
 
 func TestMySQLUsersAreIsolated(t *testing.T) {
-	st := newTestMySQL(t)
+	st := requireStore(t)
 	ctx := context.Background()
 	if err := st.Save(ctx, "alex", Profile{Summary: "alex's memory"}); err != nil {
 		t.Fatalf("Save(alex) error = %v", err)

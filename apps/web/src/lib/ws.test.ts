@@ -35,6 +35,12 @@ class MockWebSocket {
 
 let lastSocket: MockWebSocket;
 
+function connectedClient(onEvent: (e: ServerEvent) => void = () => {}, onStatus: (s: Status) => void = () => {}) {
+  const client = new BuddyClient(onEvent, onStatus);
+  client.connect();
+  return client;
+}
+
 beforeEach(() => {
   vi.stubGlobal(
     "WebSocket",
@@ -50,21 +56,13 @@ beforeEach(() => {
 
 describe("BuddyClient", () => {
   it("connects to a wss URL derived from location when https", () => {
-    const client = new BuddyClient(
-      () => {},
-      () => {},
-    );
-    client.connect();
+    connectedClient();
     expect(lastSocket.url).toBe("wss://buddy.example:8080/ws");
   });
 
   it("uses ws (not wss) when the page is served over http", () => {
     vi.stubGlobal("location", { protocol: "http:", host: "buddy.example:8080" });
-    const client = new BuddyClient(
-      () => {},
-      () => {},
-    );
-    client.connect();
+    connectedClient();
     expect(lastSocket.url).toBe("ws://buddy.example:8080/ws");
   });
 
@@ -105,11 +103,7 @@ describe("BuddyClient", () => {
   });
 
   it("sendText only writes to the socket once it is open", () => {
-    const client = new BuddyClient(
-      () => {},
-      () => {},
-    );
-    client.connect();
+    const client = connectedClient();
     client.sendText("hello");
     expect(lastSocket.sent).toEqual([]);
 
@@ -119,11 +113,7 @@ describe("BuddyClient", () => {
   });
 
   it("sendAudio writes the raw PCM buffer once open", () => {
-    const client = new BuddyClient(
-      () => {},
-      () => {},
-    );
-    client.connect();
+    const client = connectedClient();
     lastSocket.open();
     const pcm = new Int16Array([1, 2, 3]);
     client.sendAudio(pcm);
@@ -131,22 +121,14 @@ describe("BuddyClient", () => {
   });
 
   it("reset sends a reset message", () => {
-    const client = new BuddyClient(
-      () => {},
-      () => {},
-    );
-    client.connect();
+    const client = connectedClient();
     lastSocket.open();
     client.reset();
     expect(lastSocket.sent).toEqual([JSON.stringify({ type: "reset" })]);
   });
 
   it("close() tears down the socket", () => {
-    const client = new BuddyClient(
-      () => {},
-      () => {},
-    );
-    client.connect();
+    const client = connectedClient();
     lastSocket.open();
     client.close();
     expect(lastSocket.readyState).toBe(MockWebSocket.CLOSED);
