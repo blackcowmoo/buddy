@@ -1,0 +1,213 @@
+name: github-actions/test
+
+on:
+  pull_request:
+    branches:
+      - develop
+  push:
+    branches:
+      - develop
+
+jobs:
+  go-test:
+    name: Go test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      coverage: ${{ steps.coverage.outputs.percent }}
+      base_coverage: ${{ steps.base-coverage.outputs.percent }}
+      uncovered: ${{ steps.diff-coverage.outputs.markdown }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/server/go.mod
+
+      - name: go test
+        working-directory: apps/server
+        run: go test ./... -covermode=atomic -coverprofile=coverage.out
+
+      - name: Compute coverage
+        id: coverage
+        working-directory: apps/server
+        run: |
+          percent=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}')
+          echo "percent=$percent" >> "$GITHUB_OUTPUT"
+
+      - name: Uncovered lines introduced by this PR
+        if: github.event_name == 'pull_request'
+        id: diff-coverage
+        run: |
+          {
+            echo "markdown<<EOF_UNCOVERED"
+            node .github/scripts/diff-coverage.mjs \
+              --format go \
+              --coverage apps/server/coverage.out \
+              --base "${{ github.event.pull_request.base.sha }}" \
+              --head "${{ github.event.pull_request.head.sha }}" \
+              --path-prefix apps/server \
+              --module-prefix buddy/server \
+              --repo "${{ github.repository }}" \
+              --label "apps/server (Go)"
+            echo "EOF_UNCOVERED"
+          } >> "$GITHUB_OUTPUT"
+
+      # Compares against the PR's base commit so the coverage delta below
+      # reflects this PR's own effect, not drift from unrelated later commits.
+      - name: Coverage on base branch
+        if: github.event_name == 'pull_request'
+        id: base-coverage
+        run: |
+          percent="0.0%"
+          git worktree add /tmp/base-ref "${{ github.event.pull_request.base.sha }}"
+          if (cd /tmp/base-ref/apps/server && go test ./... -covermode=atomic -coverprofile=/tmp/base-coverage.out); then
+            percent=$(cd /tmp/base-ref/apps/server && go tool cover -func=/tmp/base-coverage.out | tail -1 | awk '{print $3}')
+          fi
+          echo "percent=$percent" >> "$GITHUB_OUTPUT"
+          git worktree remove /tmp/base-ref --force
+
+  web-test:
+    name: Web test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      coverage: ${{ steps.coverage.outputs.percent }}
+      base_coverage: ${{ steps.base-coverage.outputs.percent }}
+      uncovered: ${{ steps.diff-coverage.outputs.markdown }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+
+      - name: Enable corepack
+        run: npm install -g corepack@latest && corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: web test
+        run: pnpm --filter @buddy/web test:coverage
+
+      - name: Compute coverage
+        id: coverage
+        working-directory: apps/web
+        run: |
+          percent=$(node -e "console.log(require('./coverage/coverage-summary.json').total.lines.pct + '%')")
+          echo "percent=$percent" >> "$GITHUB_OUTPUT"
+
+      - name: Uncovered lines introduced by this PR
+        if: github.event_name == 'pull_request'
+        id: diff-coverage
+        run: |
+          {
+            echo "markdown<<EOF_UNCOVERED"
+            node .github/scripts/diff-coverage.mjs \
+              --format lcov \
+              --coverage apps/web/coverage/lcov.info \
+              --base "${{ github.event.pull_request.base.sha }}" \
+              --head "${{ github.event.pull_request.head.sha }}" \
+              --path-prefix apps/web \
+              --repo "${{ github.repository }}" \
+              --label "apps/web (vitest)"
+            echo "EOF_UNCOVERED"
+          } >> "$GITHUB_OUTPUT"
+
+      # apps/web had no "test:coverage" script before this PR's own base
+      # commit, in which case this falls back to 0.0% — an honest baseline,
+      # not a broken one.
+      - name: Coverage on base branch
+        if: github.event_name == 'pull_request'
+        id: base-coverage
+        run: |
+          percent="0.0%"
+          git worktree add /tmp/base-ref "${{ github.event.pull_request.base.sha }}"
+          if node -e "process.exit(require('/tmp/base-ref/apps/web/package.json').scripts?.['test:coverage'] ? 0 : 1)"; then
+            (cd /tmp/base-ref && pnpm install --frozen-lockfile && pnpm --filter @buddy/web test:coverage) || true
+            if [ -f /tmp/base-ref/apps/web/coverage/coverage-summary.json ]; then
+              percent=$(node -e "console.log(require('/tmp/base-ref/apps/web/coverage/coverage-summary.json').total.lines.pct + '%')")
+            fi
+          fi
+          echo "percent=$percent" >> "$GITHUB_OUTPUT"
+          git worktree remove /tmp/base-ref --force
+
+  coverage-comment:
+    name: Comment coverage
+    needs: [go-test, web-test]
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Comment coverage on PR
+        uses: actions/github-script@v7
+        env:
+          GO_COVERAGE: ${{ needs.go-test.outputs.coverage }}
+          GO_BASE_COVERAGE: ${{ needs.go-test.outputs.base_coverage }}
+          GO_UNCOVERED: ${{ needs.go-test.outputs.uncovered }}
+          WEB_COVERAGE: ${{ needs.web-test.outputs.coverage }}
+          WEB_BASE_COVERAGE: ${{ needs.web-test.outputs.base_coverage }}
+          WEB_UNCOVERED: ${{ needs.web-test.outputs.uncovered }}
+        with:
+          script: |
+            const marker = "<!-- coverage-comment -->";
+
+            function row(label, head, base) {
+              const h = parseFloat(head);
+              const b = parseFloat(base);
+              if (Number.isNaN(h)) return `| ${label} | N/A (job failed) |`;
+              if (Number.isNaN(b)) return `| ${label} | ${head} |`;
+              const delta = h - b;
+              const sign = delta > 0 ? "+" : "";
+              return `| ${label} | ${head} (${sign}${delta.toFixed(2)}pp vs base ${base}) |`;
+            }
+
+            const body = [
+              marker,
+              "### Test coverage",
+              "",
+              "| Package | Coverage |",
+              "| --- | --- |",
+              row("`apps/server` (Go, statements)", process.env.GO_COVERAGE, process.env.GO_BASE_COVERAGE),
+              row("`apps/web` (vitest, lines)", process.env.WEB_COVERAGE, process.env.WEB_BASE_COVERAGE),
+              "",
+              process.env.GO_UNCOVERED || "",
+              "",
+              process.env.WEB_UNCOVERED || "",
+            ].join("\n");
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find((c) => c.body.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
