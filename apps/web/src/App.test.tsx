@@ -62,6 +62,18 @@ beforeEach(() => {
     pathname: "/",
     assign: vi.fn(),
   });
+  localStorage.clear();
+  document.documentElement.removeAttribute("data-theme");
+  // jsdom has no matchMedia implementation; App applies the theme on mount.
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn().mockImplementation((query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })),
+  );
 });
 
 afterEach(() => {
@@ -234,5 +246,39 @@ describe("hamburger menu", () => {
     await openMenu(user);
     await user.click(screen.getByRole("menuitem", { name: /대화 초기화/ }));
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+});
+
+describe("theme switch", () => {
+  it("defaults to following the system theme", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    await openMenu(user);
+    expect(screen.getByRole("button", { name: "시스템 설정" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+  });
+
+  it("switches to white, applies it, and persists it to localStorage only", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    await openMenu(user);
+    await user.click(screen.getByRole("button", { name: "화이트" }));
+    expect(document.documentElement.getAttribute("data-theme")).toBe("white");
+    expect(localStorage.getItem("buddy-theme")).toBe("white");
+  });
+
+  it("restores a previously chosen theme on mount", async () => {
+    localStorage.setItem("buddy-theme", "dark");
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    await openMenu(user);
+    expect(screen.getByRole("button", { name: "다크" })).toHaveAttribute("aria-pressed", "true");
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
   });
 });
