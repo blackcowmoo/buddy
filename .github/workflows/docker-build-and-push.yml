@@ -1,13 +1,14 @@
 name: github-actions/docker/build-and-push
 
 on:
-  push:
-    branches: [develop]
-    tags: ["v*.*.*"]
   pull_request:
-    branches: [develop]
+    branches:
+      - develop
     types: [labeled, synchronize, opened]
-  workflow_dispatch:
+
+  push:
+    branches:
+      - develop
 
 env:
   REGISTRY: ${{ secrets.HARBOR_URL }}
