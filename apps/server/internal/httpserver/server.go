@@ -20,11 +20,13 @@ import (
 
 // New builds the single HTTP entry point. assets is the embedded frontend FS
 // (from webassets.FS()); pass nil to serve from disk (prod) or proxy (dev).
-func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store) *http.Server {
+// audio is optional (nil disables temporary S3 audio backup — see
+// internal/audiostore).
+func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver) *http.Server {
 	mux := http.NewServeMux()
 
 	// Realtime + API first (exact patterns win over the "/" catch-all).
-	mux.Handle("/ws", transport.NewHandler(pipe, ident, st))
+	mux.Handle("/ws", transport.NewHandler(pipe, ident, st, audio))
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{
 			"ok":       true,

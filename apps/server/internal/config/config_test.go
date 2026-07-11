@@ -17,6 +17,8 @@ var allBuddyEnvVars = []string{
 	"BUDDY_MAX_HISTORY_MESSAGES",
 	"BUDDY_IDENTITY_MODE", "BUDDY_OIDC_ISSUER_URL", "BUDDY_OIDC_CLIENT_ID",
 	"ROOT_PATH",
+	"S3_ENDPOINT", "S3_PATH_STYLE", "S3_ACCESS_KEY", "S3_SECRET_KEY",
+	"S3_BUCKET", "S3_STORAGE_CLASS",
 }
 
 func clearEnv(t *testing.T) {
@@ -48,6 +50,11 @@ func TestLoadDefaults(t *testing.T) {
 		"OIDCIssuerURL":   {c.OIDCIssuerURL, ""},
 		"OIDCClientID":    {c.OIDCClientID, "buddy"},
 		"RootPath":        {c.RootPath, ""},
+		"S3Endpoint":      {c.S3Endpoint, ""},
+		"S3AccessKey":     {c.S3AccessKey, ""},
+		"S3SecretKey":     {c.S3SecretKey, ""},
+		"S3Bucket":        {c.S3Bucket, ""},
+		"S3StorageClass":  {c.S3StorageClass, ""},
 	}
 	for name, tc := range str {
 		if tc.got != tc.want {
@@ -62,6 +69,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if !c.IsDev() {
 		t.Errorf("IsDev() = false, want true when BUDDY_ENV is unset (default dev)")
+	}
+	if c.S3PathStyle {
+		t.Errorf("S3PathStyle = true, want false by default")
 	}
 }
 
@@ -78,6 +88,12 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("MYSQL_RO_HOSTNAME", "replica.db")
 	t.Setenv("MYSQL_PORT", "3307")
 	t.Setenv("ROOT_PATH", "/pr/14")
+	t.Setenv("S3_ENDPOINT", "https://ceph.example.com")
+	t.Setenv("S3_PATH_STYLE", "true")
+	t.Setenv("S3_ACCESS_KEY", "access-123")
+	t.Setenv("S3_SECRET_KEY", "secret-456")
+	t.Setenv("S3_BUCKET", "buddy-recordings")
+	t.Setenv("S3_STORAGE_CLASS", "REDUCED_REDUNDANCY")
 
 	c := Load()
 
@@ -112,6 +128,31 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if c.OIDCClientID != "buddy-web" {
 		t.Errorf("OIDCClientID = %q, want buddy-web", c.OIDCClientID)
+	}
+
+	if c.S3Endpoint != "https://ceph.example.com" {
+		t.Errorf("S3Endpoint = %q, want https://ceph.example.com", c.S3Endpoint)
+	}
+	if !c.S3PathStyle {
+		t.Errorf("S3PathStyle = false, want true")
+	}
+	if c.S3AccessKey != "access-123" || c.S3SecretKey != "secret-456" {
+		t.Errorf("S3 credentials = %q/%q, want access-123/secret-456", c.S3AccessKey, c.S3SecretKey)
+	}
+	if c.S3Bucket != "buddy-recordings" {
+		t.Errorf("S3Bucket = %q, want buddy-recordings", c.S3Bucket)
+	}
+	if c.S3StorageClass != "REDUCED_REDUNDANCY" {
+		t.Errorf("S3StorageClass = %q, want REDUCED_REDUNDANCY", c.S3StorageClass)
+	}
+}
+
+func TestEnvBoolFallsBackOnInvalidValue(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("S3_PATH_STYLE", "not-a-bool")
+	c := Load()
+	if c.S3PathStyle {
+		t.Errorf("S3PathStyle = true, want default false for an invalid value")
 	}
 }
 

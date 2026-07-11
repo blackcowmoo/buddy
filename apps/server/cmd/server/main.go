@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"buddy/server/internal/audiostore"
 	"buddy/server/internal/config"
 	"buddy/server/internal/httpserver"
 	"buddy/server/internal/identity"
@@ -18,6 +19,7 @@ import (
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/store"
 	"buddy/server/internal/stt"
+	"buddy/server/internal/transport"
 	"buddy/server/internal/webassets"
 
 	"github.com/redis/go-redis/v9"
@@ -53,7 +55,25 @@ func main() {
 	}
 	defer st.Close()
 
-	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st)
+	// Temporary audio backup: only enabled once an endpoint is configured, so
+	// the server still boots with zero setup by default (see internal/audiostore).
+	var audio transport.AudioSaver
+	if cfg.S3Endpoint != "" {
+		as, err := audiostore.New(audiostore.Config{
+			Endpoint:     cfg.S3Endpoint,
+			PathStyle:    cfg.S3PathStyle,
+			AccessKey:    cfg.S3AccessKey,
+			SecretKey:    cfg.S3SecretKey,
+			Bucket:       cfg.S3Bucket,
+			StorageClass: cfg.S3StorageClass,
+		})
+		if err != nil {
+			log.Fatalf("audiostore: %v", err)
+		}
+		audio = as
+	}
+
+	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio)
 
 	go func() {
 		log.Printf("buddy up on %s  env=%s  fast=%s  slow=%s  feedback=%s",

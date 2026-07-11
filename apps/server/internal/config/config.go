@@ -78,6 +78,20 @@ type Config struct {
 	// and the app itself strips the prefix (see httpserver.withRootPath).
 	// Empty (default) means the app is mounted at "/", unchanged.
 	RootPath string
+
+	// Temporary audio backup (internal/audiostore): each incoming utterance's
+	// raw PCM is streamed to an S3-compatible bucket, e.g. Ceph RGW. Disabled
+	// (zero-setup default) unless S3Endpoint is set. PathStyle and
+	// StorageClass exist specifically for Ceph: RGW commonly needs path-style
+	// addressing (bucket in the URL path, not a virtual-host subdomain), and a
+	// storage class lets the deployer steer these disposable recordings onto
+	// a cheaper/temporary disk pool instead of the bucket's default.
+	S3Endpoint     string
+	S3PathStyle    bool
+	S3AccessKey    string
+	S3SecretKey    string
+	S3Bucket       string
+	S3StorageClass string
 }
 
 func Load() Config {
@@ -119,6 +133,13 @@ func Load() Config {
 		RedisPassword:    env("REDIS_PASSWORD", ""),
 
 		RootPath: normalizeRootPath(env("ROOT_PATH", "")),
+
+		S3Endpoint:     env("S3_ENDPOINT", ""),
+		S3PathStyle:    envBool("S3_PATH_STYLE", false),
+		S3AccessKey:    env("S3_ACCESS_KEY", ""),
+		S3SecretKey:    env("S3_SECRET_KEY", ""),
+		S3Bucket:       env("S3_BUCKET", ""),
+		S3StorageClass: env("S3_STORAGE_CLASS", ""),
 	}
 }
 
@@ -135,6 +156,15 @@ func envInt(key string, def int) int {
 	if v, ok := os.LookupEnv(key); ok {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
+		}
+	}
+	return def
+}
+
+func envBool(key string, def bool) bool {
+	if v, ok := os.LookupEnv(key); ok {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
 		}
 	}
 	return def
