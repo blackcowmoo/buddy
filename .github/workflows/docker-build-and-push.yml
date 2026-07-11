@@ -1,20 +1,22 @@
-name: Docker Build
+name: github-actions/docker/build-and-push
 
 on:
-  push:
-    branches: [main]
-    tags: ["v*.*.*"]
   pull_request:
-    branches: [main]
+    branches:
+      - develop
     types: [labeled, synchronize, opened]
-  workflow_dispatch:
+
+  push:
+    branches:
+      - develop
 
 env:
   REGISTRY: ${{ secrets.HARBOR_URL }}
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  image:
+  docker-build-and-push:
+    if: contains(github.event.pull_request.labels.*.name, 'deploy') || github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main'
     name: Build & push image
     runs-on: ubuntu-latest
     permissions:
@@ -43,71 +45,32 @@ jobs:
       # catch breakage; only pushed when labeled 'deploy', so most PRs don't
       # need Harbor credentials at all.
       - name: Log in to Harbor
-        if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'deploy')
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ secrets.HARBOR_USER_ID }}
           password: ${{ secrets.HARBOR_USER_PASSWORD }}
 
+      - name: Short sha
+        id: sha
+        run: echo "::set-output name=sha_short::$(echo ${GITHUB_HEAD_SHA:0:7})"
+        env:
+          GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
       - name: Extract image metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,format=short
+          tags: type=raw,value=${{ steps.sha.outputs.sha_short }}
 
       - name: Build (and push on main/tags/deploy-labeled PRs)
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'deploy') }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  binary:
-    name: Build standalone binary (${{ matrix.arch }})
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - arch: amd64
-            platform: linux/amd64
-          - arch: arm64
-            platform: linux/arm64
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up QEMU (for linux/arm64)
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # Mirrors the Dockerfile's own documented `--target export` recipe: a
-      # scratch-stage output containing nothing but the self-contained
-      # `buddy` binary (frontend embedded via //go:embed).
-      - name: Extract binary via export stage
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: ${{ matrix.platform }}
-          target: export
-          push: false
-          outputs: type=local,dest=./bin
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: buddy-linux-${{ matrix.arch }}
-          path: bin/buddy
-          if-no-files-found: error
