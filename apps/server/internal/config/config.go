@@ -61,6 +61,17 @@ type Config struct {
 	OIDCIssuerURL string // Dex issuer, e.g. https://dex.example.com
 	OIDCClientID  string // expected token audience
 
+	// Optional Redis Cluster-backed cache of "oidc" verification results
+	// (internal/identity/cached_oidc.go), so the WS-handshake/API auth path
+	// stays fast even if Dex is slow or briefly unavailable. RedisClusterHost
+	// empty (default) disables caching entirely — tokens are verified
+	// directly on every call, same as before this existed. These come from
+	// a shared secret store, so they use the plain REDIS_* names (no BUDDY_
+	// prefix) the platform already injects — same convention as MYSQL_*.
+	RedisClusterHost string // seed node; go-redis discovers the rest of the cluster from it
+	RedisPort        int
+	RedisPassword    string
+
 	// RootPath mounts the whole app under a path prefix (e.g. "/pr/14"),
 	// used for PR-preview deployments that route by URL path instead of a
 	// header: an external router sends /pr/14/* to this instance unchanged,
@@ -102,6 +113,10 @@ func Load() Config {
 		IdentityMode:  env("BUDDY_IDENTITY_MODE", "cookie"),
 		OIDCIssuerURL: env("BUDDY_OIDC_ISSUER_URL", ""),
 		OIDCClientID:  env("BUDDY_OIDC_CLIENT_ID", "buddy"),
+
+		RedisClusterHost: env("REDIS_CLUSTER_HOST", ""),
+		RedisPort:        envInt("REDIS_PORT", 6379),
+		RedisPassword:    env("REDIS_PASSWORD", ""),
 
 		RootPath: normalizeRootPath(env("ROOT_PATH", "")),
 	}

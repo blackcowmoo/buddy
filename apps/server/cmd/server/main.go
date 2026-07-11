@@ -5,8 +5,10 @@ package main
 import (
 	"context"
 	"log"
+	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -18,6 +20,8 @@ import (
 	"buddy/server/internal/store"
 	"buddy/server/internal/stt"
 	"buddy/server/internal/webassets"
+
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -71,16 +75,39 @@ func main() {
 
 // buildIdentity selects how learners are identified. "cookie" needs zero
 // setup (local dev); "oidc" verifies the Dex-issued JWT in the Authorization
-// header directly against Dex — see internal/identity/oidc.go.
+// header directly against Dex — see internal/identity/oidc.go. When
+// REDIS_CLUSTER_HOST is set, "oidc" results are additionally cached in a
+// Redis Cluster (internal/identity/cached_oidc.go) so the auth path stays
+// fast even if Dex is slow or briefly unavailable; leaving it unset keeps
+// today's behavior of verifying directly every time.
 func buildIdentity(ctx context.Context, cfg config.Config) identity.Identifier {
-	if cfg.IdentityMode == "oidc" {
-		ident, err := identity.NewOIDCIdentifier(ctx, cfg.OIDCIssuerURL, cfg.OIDCClientID)
-		if err != nil {
-			log.Fatalf("oidc identity: %v", err)
-		}
+	if cfg.IdentityMode != "oidc" {
+		return identity.NewCookieIdentifier()
+	}
+	ident, err := identity.NewOIDCIdentifier(ctx, cfg.OIDCIssuerURL, cfg.OIDCClientID)
+	if err != nil {
+		log.Fatalf("oidc identity: %v", err)
+	}
+	if cfg.RedisClusterHost == "" {
 		return ident
 	}
-	return identity.NewCookieIdentifier()
+	rdb := redis.NewClusterClient(&redis.ClusterOptions{
+		// One seed node is enough: go-redis discovers the rest of the
+		// cluster's topology (CLUSTER SHARDS) from it.
+		Addrs:    []string{hostPort(cfg.RedisClusterHost, cfg.RedisPort)},
+		Password: cfg.RedisPassword,
+	})
+	return identity.NewCachedOIDCIdentifier(ident, rdb)
+}
+
+// hostPort composes a host:port for redis.ClusterOptions.Addrs. Guards
+// against the same class of incident internal/store.TestHostPort covers for
+// MySQL: a secret store might inject the host already as "host:port".
+func hostPort(host string, fallbackPort int) string {
+	if _, _, err := net.SplitHostPort(host); err == nil {
+		return host
+	}
+	return net.JoinHostPort(host, strconv.Itoa(fallbackPort))
 }
 
 // buildSTT selects an STT engine from config. "mock" needs zero setup;
