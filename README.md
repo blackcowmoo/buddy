@@ -58,11 +58,14 @@ current WebSocket connection:
   goals, recurring mistakes, topics) — this is what keeps long-term storage and
   LLM context cheap as a conversation grows.
 - **Storage** (`internal/store`): summary + verbatim window persist to
-  **PostgreSQL** (`BUDDY_DATABASE_URL`), keyed by user ID, saved on disconnect
-  and every 30s. Postgres, not an embedded file DB, because this app is meant
-  to run as multiple replicas in Kubernetes — a single-writer file on a PV
-  can't do that (and a PV is typically RWO: only one pod could mount it
-  anyway). Bring your own Postgres; this repo doesn't run one for you.
+  **MySQL** (`MYSQL_*` env vars), keyed by user ID, saved on disconnect and
+  every 30s. MySQL, not an embedded file DB, because this app is meant to run
+  as multiple replicas in Kubernetes — a single-writer file on a PV can't do
+  that (and a PV is typically RWO: only one pod could mount it anyway). The
+  database is shared with other services, so the one table is created as
+  `buddy_profiles` (a `buddy_` prefix) to avoid collisions; reads can be
+  offloaded to a replica via `MYSQL_RO_HOSTNAME`. Bring your own MySQL; this
+  repo doesn't run one for you.
 - **Identity** (`internal/identity`, `BUDDY_IDENTITY_MODE`): `cookie` (default)
   is anonymous — a random ID in a long-lived cookie, zero setup for local dev,
   not real auth. `header` trusts a header set by an upstream auth proxy that
@@ -116,20 +119,21 @@ sh ./models/download-ggml-model.sh large-v3    # slow/quality track
 # copy the .bin files into buddy/models/, then:
 ```
 
-Point the container at your (externally managed) LLM and Postgres, and pass
+Point the container at your (externally managed) LLM and MySQL, and pass
 config with `-e`:
 
 ```bash
 docker run --rm -p 8080:8080 \
   --add-host host.docker.internal:host-gateway \
   -e BUDDY_LLM_BASE_URL=http://host.docker.internal:8081/v1 \
-  -e BUDDY_DATABASE_URL=postgres://buddy:buddy@host.docker.internal:5432/buddy?sslmode=disable \
+  -e MYSQL_RW_HOSTNAME=host.docker.internal -e MYSQL_PORT=3306 \
+  -e MYSQL_USERNAME=buddy -e MYSQL_PASSWORD=buddy -e MYSQL_DATABASE=buddy \
   buddy
 ```
 
 Check what's active any time: `curl localhost:8080/api/health`.
 
-> External components (the LLM server, models, Postgres) are **not**
+> External components (the LLM server, models, MySQL) are **not**
 > orchestrated by this repo — you run and manage them yourself. This repo only
 > builds and runs the app image via `docker build` / `docker run`.
 
@@ -145,7 +149,9 @@ this table is a deployment-focused summary).
 | Variable | Purpose |
 |---|---|
 | `BUDDY_ENV=prod` | Serves the embedded frontend instead of proxying to Vite. |
-| `BUDDY_DATABASE_URL` | Postgres DSN, e.g. `postgres://user:pass@host:5432/buddy?sslmode=disable`. Required — the server fails to start if it can't connect. |
+| `MYSQL_RW_HOSTNAME` | MySQL primary (read-write) host. Required — the server fails to start if it can't connect. The table it creates is `buddy_profiles` (prefixed so it can share a database with other services). |
+| `MYSQL_USERNAME`, `MYSQL_PASSWORD`, `MYSQL_DATABASE` | Credentials and database for the store. `MYSQL_PORT` defaults to `3306`. |
+| `MYSQL_RO_HOSTNAME` | Optional read replica; `Load` reads from it to offload the primary. Leave unset to read from the primary (strongly consistent). |
 | `BUDDY_LLM_BASE_URL` | Your OpenAI-compatible endpoint (llama.cpp `llama-server`, vLLM, LM Studio, hosted API). Without it, chat/correction silently degrade to an offline echo. |
 | `BUDDY_LLM_API_KEY` | Only if your LLM endpoint needs a bearer token (e.g. a hosted API). |
 | `BUDDY_IDENTITY_MODE=header` | Switches from the anonymous local-dev cookie to trusting an upstream auth proxy (oauth2-proxy + Dex). |
@@ -175,7 +181,9 @@ frontend and ignores them.
 
 The multi-stage `Dockerfile` builds the frontend with Node 26.5.0, embeds it into
 the Go binary (`//go:embed`, built with `-tags embed`), and ships a static binary
-on distroless. No Python, no runtime static dir, no nginx.
+on Alpine (a slim base that still includes `/bin/sh` for `docker exec`/`kubectl
+exec` debugging), running as a non-root user. No Python, no runtime static dir,
+no nginx.
 
 ```bash
 docker build -t buddy .                                           # runnable image
@@ -206,7 +214,7 @@ buddy/
 │   │       ├── protocol/        # wire types (mirrored in web/src/lib/protocol.ts)
 │   │       ├── pipeline/        # FAST + REFINE orchestration
 │   │       ├── session/         # per-connection memory: verbatim window + summary
-│   │       ├── store/           # persists Profiles (Postgres, pgx, no CGo)
+│   │       ├── store/           # persists Profiles (MySQL, buddy_ table prefix)
 │   │       ├── identity/        # resolves user ID (anonymous cookie today)
 │   │       ├── stt/             # Recognizer interface: mock, whisper
 │   │       ├── llm/             # Client interface: OpenAI-compatible (llama.cpp)
@@ -248,7 +256,7 @@ without touching the pipeline:
   `stt.StreamingRecognizer` on the server (e.g. Vosk) that emits partials as
   audio arrives instead of waiting for one full utterance.
 - **Frontend has no automated tests.** The Go backend has a full suite
-  (`go test ./...`, including real-Postgres integration tests) across every
+  (`go test ./...`, including real-MySQL integration tests) across every
   package with logic; `apps/web` only has `tsc` type-checking. Vitest +
   Testing Library would be the natural fit (same tooling family as Vite).
 - **Server-side TTS is just an interface, no implementation.**

@@ -36,7 +36,14 @@ func main() {
 
 	// Persistent per-user memory.
 	ident := buildIdentity(cfg)
-	st, err := store.NewPostgres(cfg.DatabaseURL)
+	st, err := store.NewMySQL(store.MySQLConfig{
+		RWHost:   cfg.MySQLRWHost,
+		ROHost:   cfg.MySQLROHost,
+		Port:     cfg.MySQLPort,
+		User:     cfg.MySQLUser,
+		Password: cfg.MySQLPassword,
+		Database: cfg.MySQLDatabase,
+	})
 	if err != nil {
 		log.Fatalf("store: %v", err)
 	}

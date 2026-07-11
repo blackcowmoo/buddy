@@ -40,8 +40,15 @@ FROM scratch AS export
 COPY --from=server /out/buddy /buddy
 
 #########################  runtime image (default)  ############################
-FROM gcr.io/distroless/static-debian12:nonroot AS runtime
+# Alpine (not distroless) so the image ships a /bin/sh for `docker exec` /
+# `kubectl exec` debugging. The Go binary is fully static (CGO_ENABLED=0 above),
+# so it runs on musl unchanged; we add ca-certificates for outbound TLS (the LLM
+# API, a TLS MySQL) and run as a non-root user to keep the prior posture.
+FROM alpine:3.23 AS runtime
+RUN apk add --no-cache ca-certificates \
+    && adduser -D -H -u 10001 buddy
 COPY --from=server /out/buddy /usr/local/bin/buddy
+USER buddy
 ENV BUDDY_ENV=prod BUDDY_ADDR=:8080
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/buddy"]

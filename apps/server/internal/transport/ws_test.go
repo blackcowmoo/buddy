@@ -46,7 +46,7 @@ func (fakeLLM) Complete(ctx context.Context, model string, msgs []llm.Message, j
 
 // fakeStore is an in-memory store.Store: these tests are about WS/session
 // wiring (does the handler load/seed/save correctly?), not SQL correctness —
-// that lives in internal/store's own Postgres-backed tests.
+// that lives in internal/store's own MySQL-backed tests.
 type fakeStore struct {
 	mu       sync.Mutex
 	profiles map[string]store.Profile
@@ -242,7 +242,7 @@ func TestWSTextTurnRoundTrip(t *testing.T) {
 // by hand against real Docker containers: the same cookie's conversation
 // accumulates across separate connections (via the store), seeded back into
 // the session on each reconnect. Uses fakeStore — real store semantics are
-// covered by internal/store's own Postgres-backed tests.
+// covered by internal/store's own MySQL-backed tests.
 func TestWSMemoryPersistsAcrossReconnects(t *testing.T) {
 	st := newTestStore(t)
 	srv := newTestServer(t, st)
