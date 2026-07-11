@@ -8,25 +8,31 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
 
 	"buddy/server/internal/llm"
+	"buddy/server/internal/protocol"
 )
 
-// table is the single table this store owns. It carries a buddy_ prefix
-// because the database is shared with other services — an unprefixed
-// "profiles" would risk colliding with another service's table.
-const table = "buddy_profiles"
+// Table names carry a buddy_ prefix because the database is shared with
+// other services — unprefixed names would risk colliding with another
+// service's tables.
+const (
+	sessionsTable = "buddy_sessions"
+	turnsTable    = "buddy_turns"
+)
 
 // MySQLConfig describes how to reach MySQL. RWHost is the primary: all writes
 // and the schema bootstrap go there. ROHost is an optional read replica that
 // Load reads from to take load off the primary; leave it empty (or equal to
 // RWHost) to serve reads from the primary too — the strongly-consistent
-// default. When ROHost names a real replica, Load may observe slightly stale
-// data during replication lag, which is acceptable here: a Profile is re-saved
-// as the session continues, so a stale read self-heals within a turn or two.
+// default. When ROHost names a real replica, reads may observe slightly
+// stale data during replication lag, which is acceptable here: a session is
+// re-saved as the conversation continues, so a stale read self-heals within
+// a turn or two.
 type MySQLConfig struct {
 	RWHost   string
 	ROHost   string
@@ -46,7 +52,7 @@ type MySQLStore struct {
 }
 
 // NewMySQL connects to the primary (and the read replica, if one is
-// configured) and ensures the buddy_profiles table exists on the primary.
+// configured) and ensures buddy_sessions/buddy_turns exist on the primary.
 func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 	rw, err := openPool(cfg, cfg.RWHost)
 	if err != nil {
@@ -64,23 +70,46 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 		}
 	}
 
-	// VARCHAR(255) (not TEXT) for the key: MySQL can't index a TEXT column
-	// without a prefix length, and utf8mb4 keeps the key well under InnoDB's
-	// index-length limit. utf8mb4 throughout so learner text and native-language
+	// (user_id, id)/(user_id, session_id, turn, role) composite primary keys
+	// — not a bare id/session_id — so every row is structurally scoped to
+	// its owner: even a guessed or leaked session ID can only ever resolve
+	// to rows under the requesting user's own user_id, never someone else's.
+	// VARCHAR (not TEXT) for keys: MySQL can't index TEXT without a prefix
+	// length. utf8mb4 throughout so learner text and native-language
 	// feedback (CJK, emoji) round-trip losslessly.
-	const schema = `CREATE TABLE IF NOT EXISTS ` + table + ` (
-		user_id    VARCHAR(255) NOT NULL,
-		summary    TEXT         NOT NULL,
-		recent     TEXT         NOT NULL,
-		updated_at BIGINT       NOT NULL,
-		PRIMARY KEY (user_id)
-	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
-	if _, err := rw.Exec(schema); err != nil {
-		rw.Close()
-		if ro != rw {
-			ro.Close()
+	schema := []string{
+		`CREATE TABLE IF NOT EXISTS ` + sessionsTable + ` (
+			user_id    VARCHAR(255) NOT NULL,
+			id         VARCHAR(64)  NOT NULL,
+			title      VARCHAR(255) NOT NULL DEFAULT '',
+			summary    TEXT         NOT NULL,
+			recent     TEXT         NOT NULL,
+			created_at BIGINT       NOT NULL,
+			updated_at BIGINT       NOT NULL,
+			PRIMARY KEY (user_id, id),
+			INDEX idx_user_updated (user_id, updated_at)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS ` + turnsTable + ` (
+			user_id    VARCHAR(255) NOT NULL,
+			session_id VARCHAR(64)  NOT NULL,
+			turn       INT          NOT NULL,
+			role       VARCHAR(16)  NOT NULL,
+			text       TEXT         NOT NULL,
+			refined    TINYINT(1)   NOT NULL DEFAULT 0,
+			correction TEXT         NULL,
+			meta       TEXT         NULL,
+			created_at BIGINT       NOT NULL,
+			PRIMARY KEY (user_id, session_id, turn, role)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+	}
+	for _, stmt := range schema {
+		if _, err := rw.Exec(stmt); err != nil {
+			rw.Close()
+			if ro != rw {
+				ro.Close()
+			}
+			return nil, fmt.Errorf("store: schema: %w", err)
 		}
-		return nil, fmt.Errorf("store: schema: %w", err)
 	}
 	return &MySQLStore{rw: rw, ro: ro}, nil
 }
@@ -131,10 +160,10 @@ func openPool(cfg MySQLConfig, host string) (*sql.DB, error) {
 	return db, nil
 }
 
-func (s *MySQLStore) Load(ctx context.Context, userID string) (Profile, error) {
+func (s *MySQLStore) Load(ctx context.Context, userID, sessionID string) (Profile, error) {
 	var summary, recentJSON string
 	err := s.ro.QueryRowContext(ctx,
-		`SELECT summary, recent FROM `+table+` WHERE user_id = ?`, userID,
+		`SELECT summary, recent FROM `+sessionsTable+` WHERE user_id = ? AND id = ?`, userID, sessionID,
 	).Scan(&summary, &recentJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Profile{}, nil
@@ -149,27 +178,153 @@ func (s *MySQLStore) Load(ctx context.Context, userID string) (Profile, error) {
 	return Profile{Summary: summary, Recent: recent}, nil
 }
 
-func (s *MySQLStore) Save(ctx context.Context, userID string, p Profile) error {
+func (s *MySQLStore) Save(ctx context.Context, userID, sessionID string, p Profile) error {
 	recentJSON, err := json.Marshal(p.Recent)
 	if err != nil {
 		return fmt.Errorf("store: encode: %w", err)
 	}
-	// VALUES(col) in the update clause is deprecated in MySQL 8.0.20+, but
-	// unlike the newer row-alias syntax it works across every MySQL/MariaDB
-	// version this might run against — worth a deprecation notice for the
-	// portability, since writes go to the primary regardless of its version.
-	_, err = s.rw.ExecContext(ctx, `
-		INSERT INTO `+table+` (user_id, summary, recent, updated_at)
-		VALUES (?, ?, ?, UNIX_TIMESTAMP())
-		ON DUPLICATE KEY UPDATE
-			summary = VALUES(summary),
-			recent = VALUES(recent),
-			updated_at = VALUES(updated_at)
-	`, userID, p.Summary, string(recentJSON))
-	if err != nil {
+	// A plain UPDATE, not an upsert: a session row only exists once its
+	// first turn has been saved (see SaveTurn), so a connection that never
+	// sent a message leaves nothing behind for ListSessions to show.
+	if _, err := s.rw.ExecContext(ctx, `
+		UPDATE `+sessionsTable+` SET summary = ?, recent = ?, updated_at = UNIX_TIMESTAMP()
+		WHERE user_id = ? AND id = ?
+	`, p.Summary, string(recentJSON), userID, sessionID); err != nil {
 		return fmt.Errorf("store: save: %w", err)
 	}
 	return nil
+}
+
+// maxTitleLen bounds the title derived from a session's opening message —
+// long enough to be recognizable in a chat-room list, short enough to fit
+// one line.
+const maxTitleLen = 60
+
+func truncateTitle(text string) string {
+	text = strings.TrimSpace(text)
+	r := []rune(text)
+	if len(r) <= maxTitleLen {
+		return text
+	}
+	return string(r[:maxTitleLen]) + "…"
+}
+
+func (s *MySQLStore) SaveTurn(ctx context.Context, userID, sessionID string, turn int, role, text string, refined bool) error {
+	// The session's row (and its title, derived from the opening message) is
+	// created lazily by whichever turn arrives first — always turn 1 from
+	// the user, since a session only starts once someone speaks or types.
+	// ON DUPLICATE KEY UPDATE only touches updated_at, so a session that
+	// already exists (e.g. after a "reset" that cleared buddy_turns but left
+	// buddy_sessions alone) keeps its original title.
+	if turn == 1 && role == "user" {
+		if _, err := s.rw.ExecContext(ctx, `
+			INSERT INTO `+sessionsTable+` (user_id, id, title, summary, recent, created_at, updated_at)
+			VALUES (?, ?, ?, '', '[]', UNIX_TIMESTAMP(), UNIX_TIMESTAMP())
+			ON DUPLICATE KEY UPDATE updated_at = VALUES(updated_at)
+		`, userID, sessionID, truncateTitle(text)); err != nil {
+			return fmt.Errorf("store: ensure session: %w", err)
+		}
+	}
+	if _, err := s.rw.ExecContext(ctx, `
+		INSERT INTO `+turnsTable+` (user_id, session_id, turn, role, text, refined, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, UNIX_TIMESTAMP())
+		ON DUPLICATE KEY UPDATE text = VALUES(text), refined = VALUES(refined)
+	`, userID, sessionID, turn, role, text, refined); err != nil {
+		return fmt.Errorf("store: save turn: %w", err)
+	}
+	return nil
+}
+
+func (s *MySQLStore) SaveCorrection(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction) error {
+	corrJSON, err := json.Marshal(c)
+	if err != nil {
+		return fmt.Errorf("store: encode correction: %w", err)
+	}
+	if _, err := s.rw.ExecContext(ctx, `
+		UPDATE `+turnsTable+` SET correction = ?
+		WHERE user_id = ? AND session_id = ? AND turn = ? AND role = 'user'
+	`, string(corrJSON), userID, sessionID, turn); err != nil {
+		return fmt.Errorf("store: save correction: %w", err)
+	}
+	return nil
+}
+
+func (s *MySQLStore) DeleteTurns(ctx context.Context, userID, sessionID string) error {
+	if _, err := s.rw.ExecContext(ctx, `
+		DELETE FROM `+turnsTable+` WHERE user_id = ? AND session_id = ?
+	`, userID, sessionID); err != nil {
+		return fmt.Errorf("store: delete turns: %w", err)
+	}
+	return nil
+}
+
+func (s *MySQLStore) ListSessions(ctx context.Context, userID string) ([]SessionMeta, error) {
+	rows, err := s.ro.QueryContext(ctx, `
+		SELECT id, title, created_at, updated_at FROM `+sessionsTable+`
+		WHERE user_id = ? ORDER BY updated_at DESC
+	`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list sessions: %w", err)
+	}
+	defer rows.Close()
+
+	out := []SessionMeta{}
+	for rows.Next() {
+		var m SessionMeta
+		if err := rows.Scan(&m.ID, &m.Title, &m.CreatedAt, &m.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("store: list sessions: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+func (s *MySQLStore) SessionDetail(ctx context.Context, userID, sessionID string) (SessionMeta, []Turn, error) {
+	meta := SessionMeta{ID: sessionID}
+	err := s.ro.QueryRowContext(ctx, `
+		SELECT title, created_at, updated_at FROM `+sessionsTable+` WHERE user_id = ? AND id = ?
+	`, userID, sessionID).Scan(&meta.Title, &meta.CreatedAt, &meta.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SessionMeta{}, nil, ErrNotFound
+	}
+	if err != nil {
+		return SessionMeta{}, nil, fmt.Errorf("store: session detail: %w", err)
+	}
+
+	// role = 'assistant' sorts after 'user' within a turn (false < true).
+	rows, err := s.ro.QueryContext(ctx, `
+		SELECT turn, role, text, refined, correction, meta FROM `+turnsTable+`
+		WHERE user_id = ? AND session_id = ? ORDER BY turn ASC, role = 'assistant' ASC
+	`, userID, sessionID)
+	if err != nil {
+		return SessionMeta{}, nil, fmt.Errorf("store: session detail: %w", err)
+	}
+	defer rows.Close()
+
+	turns := []Turn{}
+	for rows.Next() {
+		var t Turn
+		var refined int
+		var correctionJSON, metaJSON sql.NullString
+		if err := rows.Scan(&t.Turn, &t.Role, &t.Text, &refined, &correctionJSON, &metaJSON); err != nil {
+			return SessionMeta{}, nil, fmt.Errorf("store: session detail: %w", err)
+		}
+		t.Refined = refined != 0
+		if correctionJSON.Valid {
+			var c protocol.Correction
+			if err := json.Unmarshal([]byte(correctionJSON.String), &c); err == nil {
+				t.Correction = &c
+			}
+		}
+		if metaJSON.Valid {
+			t.Meta = json.RawMessage(metaJSON.String)
+		}
+		turns = append(turns, t)
+	}
+	if err := rows.Err(); err != nil {
+		return SessionMeta{}, nil, fmt.Errorf("store: session detail: %w", err)
+	}
+	return meta, turns, nil
 }
 
 func (s *MySQLStore) Close() error {

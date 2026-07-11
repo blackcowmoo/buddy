@@ -27,6 +27,8 @@ export interface ServerEvent {
   type: EventType;
   turn: number;
   text?: string;
+  // Resolved session (chat room) ID. Only set on "ready".
+  session?: string;
   correction?: Correction;
 }
 

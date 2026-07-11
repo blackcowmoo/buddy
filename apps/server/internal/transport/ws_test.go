@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -56,29 +58,127 @@ func (fakeLLM) Complete(ctx context.Context, model string, msgs []llm.Message, j
 }
 
 // fakeStore is an in-memory store.Store: these tests are about WS/session
-// wiring (does the handler load/seed/save correctly?), not SQL correctness —
-// that lives in internal/store's own MySQL-backed tests.
+// wiring (does the handler load/seed/save correctly, mint/resume the right
+// session, persist turns off the right events?), not SQL correctness — that
+// lives in internal/store's own MySQL-backed tests. It mirrors MySQLStore's
+// key behaviors that other tests here depend on: Save is a no-op until a
+// turn has created the session row, and everything is scoped by
+// (userID, sessionID) together.
 type fakeStore struct {
 	mu       sync.Mutex
-	profiles map[string]store.Profile
+	sessions map[string]*fakeSession // key: userID + "\x00" + sessionID
+}
+
+type fakeSession struct {
+	userID  string
+	meta    store.SessionMeta
+	profile store.Profile
+	turns   map[string]store.Turn // key: "<turn>|<role>"
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{profiles: make(map[string]store.Profile)}
+	return &fakeStore{sessions: make(map[string]*fakeSession)}
 }
 
-func (f *fakeStore) Load(ctx context.Context, userID string) (store.Profile, error) {
+func fakeStoreKey(userID, sessionID string) string { return userID + "\x00" + sessionID }
+
+func (f *fakeStore) Load(ctx context.Context, userID, sessionID string) (store.Profile, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	p := f.profiles[userID] // zero value if absent, matching Store's contract
-	return store.Profile{Summary: p.Summary, Recent: append([]llm.Message(nil), p.Recent...)}, nil
+	d := f.sessions[fakeStoreKey(userID, sessionID)]
+	if d == nil {
+		return store.Profile{}, nil
+	}
+	return store.Profile{Summary: d.profile.Summary, Recent: append([]llm.Message(nil), d.profile.Recent...)}, nil
 }
 
-func (f *fakeStore) Save(ctx context.Context, userID string, p store.Profile) error {
+func (f *fakeStore) Save(ctx context.Context, userID, sessionID string, p store.Profile) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.profiles[userID] = store.Profile{Summary: p.Summary, Recent: append([]llm.Message(nil), p.Recent...)}
+	d := f.sessions[fakeStoreKey(userID, sessionID)]
+	if d == nil {
+		return nil // matches MySQLStore.Save: only updates an already-created session row
+	}
+	d.profile = store.Profile{Summary: p.Summary, Recent: append([]llm.Message(nil), p.Recent...)}
 	return nil
+}
+
+func (f *fakeStore) SaveTurn(ctx context.Context, userID, sessionID string, turn int, role, text string, refined bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := fakeStoreKey(userID, sessionID)
+	d := f.sessions[key]
+	if d == nil {
+		if turn != 1 || role != "user" {
+			return nil // no session row yet and this isn't the turn that creates one
+		}
+		d = &fakeSession{userID: userID, meta: store.SessionMeta{ID: sessionID, Title: text}, turns: map[string]store.Turn{}}
+		f.sessions[key] = d
+	}
+	tk := fmt.Sprintf("%d|%s", turn, role)
+	t := d.turns[tk]
+	t.Turn, t.Role, t.Text, t.Refined = turn, role, text, refined
+	d.turns[tk] = t
+	return nil
+}
+
+func (f *fakeStore) SaveCorrection(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.sessions[fakeStoreKey(userID, sessionID)]
+	if d == nil {
+		return nil
+	}
+	tk := fmt.Sprintf("%d|user", turn)
+	t, ok := d.turns[tk]
+	if !ok {
+		return nil // matches MySQLStore.SaveCorrection: no-op if the turn isn't saved yet
+	}
+	cc := c
+	t.Correction = &cc
+	d.turns[tk] = t
+	return nil
+}
+
+func (f *fakeStore) DeleteTurns(ctx context.Context, userID, sessionID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if d := f.sessions[fakeStoreKey(userID, sessionID)]; d != nil {
+		d.turns = map[string]store.Turn{}
+	}
+	return nil
+}
+
+func (f *fakeStore) ListSessions(ctx context.Context, userID string) ([]store.SessionMeta, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := []store.SessionMeta{}
+	for _, d := range f.sessions {
+		if d.userID == userID {
+			out = append(out, d.meta)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeStore) SessionDetail(ctx context.Context, userID, sessionID string) (store.SessionMeta, []store.Turn, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.sessions[fakeStoreKey(userID, sessionID)]
+	if d == nil {
+		return store.SessionMeta{}, nil, store.ErrNotFound
+	}
+	turns := make([]store.Turn, 0, len(d.turns))
+	for _, t := range d.turns {
+		turns = append(turns, t)
+	}
+	sort.Slice(turns, func(i, j int) bool {
+		if turns[i].Turn != turns[j].Turn {
+			return turns[i].Turn < turns[j].Turn
+		}
+		return turns[i].Role == "user" // user sorts before assistant within a turn
+	})
+	return d.meta, turns, nil
 }
 
 func (f *fakeStore) Close() error { return nil }
@@ -104,13 +204,20 @@ func newTestStore(t *testing.T) store.Store {
 	return newFakeStore()
 }
 
-func dial(t *testing.T, srv *httptest.Server, cookie string) (*websocket.Conn, *http.Response) {
+// dial connects to srv. sessionID == "" mints a brand-new chat room, matching
+// what the frontend does from the room list's "새 대화" action; passing the
+// ID from an earlier ready event resumes that room instead.
+func dial(t *testing.T, srv *httptest.Server, cookie, sessionID string) (*websocket.Conn, *http.Response) {
 	t.Helper()
 	hdr := http.Header{}
 	if cookie != "" {
 		hdr.Set("Cookie", "buddy_uid="+cookie)
 	}
-	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/"
+	path := "/"
+	if sessionID != "" {
+		path = "/?session=" + sessionID
+	}
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + path
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	c, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: hdr})
@@ -163,7 +270,7 @@ func sendText(t *testing.T, c *websocket.Conn, text string) {
 
 func TestWSHandshakeSendsReady(t *testing.T) {
 	srv := newTestServer(t, newTestStore(t))
-	c, _ := dial(t, srv, "")
+	c, _ := dial(t, srv, "", "")
 
 	if ev := readEvent(t, c); ev.Type != protocol.EvReady {
 		t.Fatalf("first event = %+v, want ready", ev)
@@ -172,7 +279,7 @@ func TestWSHandshakeSendsReady(t *testing.T) {
 
 func TestWSFirstVisitSetsAnonymousCookie(t *testing.T) {
 	srv := newTestServer(t, newTestStore(t))
-	_, resp := dial(t, srv, "")
+	_, resp := dial(t, srv, "", "")
 
 	cookies := resp.Cookies()
 	if len(cookies) != 1 || cookies[0].Name != "buddy_uid" || cookies[0].Value == "" {
@@ -225,7 +332,7 @@ func TestWSHeaderIdentityConnectsWhenHeaderPresent(t *testing.T) {
 
 func TestWSReusedCookieSetsNoNewCookie(t *testing.T) {
 	srv := newTestServer(t, newTestStore(t))
-	_, resp := dial(t, srv, "known-user")
+	_, resp := dial(t, srv, "known-user", "")
 
 	if cookies := resp.Cookies(); len(cookies) != 0 {
 		t.Fatalf("expected no new cookie when one was already supplied, got %+v", cookies)
@@ -234,7 +341,7 @@ func TestWSReusedCookieSetsNoNewCookie(t *testing.T) {
 
 func TestWSTextTurnRoundTrip(t *testing.T) {
 	srv := newTestServer(t, newTestStore(t))
-	c, _ := dial(t, srv, "")
+	c, _ := dial(t, srv, "", "")
 	readEvent(t, c) // ready
 
 	sendText(t, c, "Hello Buddy")
@@ -250,18 +357,24 @@ func TestWSTextTurnRoundTrip(t *testing.T) {
 }
 
 // TestWSMemoryPersistsAcrossReconnects automates what was previously verified
-// by hand against real Docker containers: the same cookie's conversation
-// accumulates across separate connections (via the store), seeded back into
-// the session on each reconnect. Uses fakeStore — real store semantics are
-// covered by internal/store's own MySQL-backed tests.
+// by hand against real Docker containers: the same room's conversation
+// accumulates across separate connections that pass its session ID (via the
+// store), seeded back into the session on each reconnect. Uses fakeStore —
+// real store semantics are covered by internal/store's own MySQL-backed
+// tests.
 func TestWSMemoryPersistsAcrossReconnects(t *testing.T) {
 	st := newTestStore(t)
 	srv := newTestServer(t, st)
 	cookie := "test-user-abc123"
+	var sessionID string
 
 	send := func(text string) {
-		c, _ := dial(t, srv, cookie)
-		readEvent(t, c) // ready
+		c, _ := dial(t, srv, cookie, sessionID)
+		ready := readEvent(t, c)
+		if ready.Type != protocol.EvReady {
+			t.Fatalf("first event = %+v, want ready", ready)
+		}
+		sessionID = ready.Session // resume this same room on the next send
 		sendText(t, c, text)
 		readUntil(t, c, protocol.EvAssistantDone)
 		c.Close(websocket.StatusNormalClosure, "")
@@ -271,7 +384,7 @@ func TestWSMemoryPersistsAcrossReconnects(t *testing.T) {
 		t.Helper()
 		deadline := time.Now().Add(2 * time.Second)
 		for time.Now().Before(deadline) {
-			p, err := st.Load(context.Background(), cookie)
+			p, err := st.Load(context.Background(), cookie, sessionID)
 			if err != nil {
 				t.Fatalf("Load() error = %v", err)
 			}
@@ -287,7 +400,7 @@ func TestWSMemoryPersistsAcrossReconnects(t *testing.T) {
 	send("My name is Alex.")
 	// The connection's save runs in ServeHTTP's deferred cleanup, which is
 	// async relative to the client-side close above — wait for it to land
-	// before opening the next connection with the same cookie, so it seeds
+	// before opening the next connection with the same session, so it seeds
 	// from this turn instead of racing it (same reasoning as production:
 	// a very fast reconnect can still race the previous save).
 	waitForRecentCount(2)
@@ -300,16 +413,61 @@ func TestWSMemoryPersistsAcrossReconnects(t *testing.T) {
 	}
 }
 
+// TestWSOmittingSessionParamStartsNewSession is the new-behavior counterpart
+// to the memory-persists test above: reconnecting *without* the previous
+// room's session ID must NOT resume it — every plain connection is a fresh
+// chat room, and only an explicit ?session=<id> resumes one.
+func TestWSOmittingSessionParamStartsNewSession(t *testing.T) {
+	st := newTestStore(t)
+	srv := newTestServer(t, st)
+	cookie := "test-user-xyz"
+
+	c1, _ := dial(t, srv, cookie, "")
+	ready1 := readEvent(t, c1)
+	sendText(t, c1, "first room's message")
+	readUntil(t, c1, protocol.EvAssistantDone)
+	c1.Close(websocket.StatusNormalClosure, "")
+
+	// Wait for the first connection's turn to land before opening the second.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if p, _ := st.Load(context.Background(), cookie, ready1.Session); len(p.Recent) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	c2, _ := dial(t, srv, cookie, "") // no session param: a new room
+	ready2 := readEvent(t, c2)
+	c2.Close(websocket.StatusNormalClosure, "")
+
+	if ready2.Session == "" {
+		t.Fatal("ready.Session should never be empty")
+	}
+	if ready2.Session == ready1.Session {
+		t.Fatal("omitting ?session= should mint a new room, got the same session ID back")
+	}
+	p, err := st.Load(context.Background(), cookie, ready2.Session)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(p.Recent) != 0 {
+		t.Fatalf("new session should start with no memory, got %+v", p.Recent)
+	}
+}
+
 func TestWSDifferentCookiesAreIsolated(t *testing.T) {
 	st := newTestStore(t)
 	srv := newTestServer(t, st)
 
+	sessions := map[string]string{}
 	for _, tc := range []struct{ cookie, text string }{
 		{"user-a", "I am user A"},
 		{"user-b", "I am user B"},
 	} {
-		c, _ := dial(t, srv, tc.cookie)
-		readEvent(t, c) // ready
+		c, _ := dial(t, srv, tc.cookie, "")
+		ready := readEvent(t, c)
+		sessions[tc.cookie] = ready.Session
 		sendText(t, c, tc.text)
 		readUntil(t, c, protocol.EvAssistantDone)
 		c.Close(websocket.StatusNormalClosure, "")
@@ -317,8 +475,8 @@ func TestWSDifferentCookiesAreIsolated(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		a, _ := st.Load(context.Background(), "user-a")
-		b, _ := st.Load(context.Background(), "user-b")
+		a, _ := st.Load(context.Background(), "user-a", sessions["user-a"])
+		b, _ := st.Load(context.Background(), "user-b", sessions["user-b"])
 		if len(a.Recent) > 0 && len(b.Recent) > 0 {
 			if a.Recent[0].Content != "I am user A" || b.Recent[0].Content != "I am user B" {
 				t.Fatalf("cross-contamination between users: a=%+v b=%+v", a, b)
@@ -330,9 +488,65 @@ func TestWSDifferentCookiesAreIsolated(t *testing.T) {
 	t.Fatal("timed out waiting for both users' profiles to persist")
 }
 
+// TestWSFinalAndAssistantTurnsArePersisted checks the transport-layer hook
+// (persistEvent in ws.go) that saves the visible parts of a turn — final
+// transcript and assistant reply — into the session's durable transcript, not
+// just its LLM-context Profile.
+func TestWSFinalAndAssistantTurnsArePersisted(t *testing.T) {
+	st := newTestStore(t)
+	srv := newTestServer(t, st)
+	c, _ := dial(t, srv, "turn-user", "")
+	ready := readEvent(t, c)
+
+	sendText(t, c, "Hello Buddy")
+	readUntil(t, c, protocol.EvAssistantDone)
+
+	var turns []store.Turn
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		_, ts, err := st.SessionDetail(context.Background(), "turn-user", ready.Session)
+		if err == nil && len(ts) == 2 {
+			turns = ts
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(turns) != 2 {
+		t.Fatalf("expected 2 persisted turns (user+assistant), got %+v", turns)
+	}
+	if turns[0].Role != "user" || turns[0].Text != "Hello Buddy" {
+		t.Fatalf("turn[0] = %+v, want user/\"Hello Buddy\"", turns[0])
+	}
+	if turns[1].Role != "assistant" || turns[1].Text == "" {
+		t.Fatalf("turn[1] = %+v, want a non-empty assistant reply", turns[1])
+	}
+}
+
+// TestWSListSessionsOnlyShowsSessionsWithMessages ensures a connection that
+// never sends anything doesn't leave a phantom room in the list — matches
+// MySQLStore.Save being a no-op until SaveTurn has created the session row.
+func TestWSListSessionsOnlyShowsSessionsWithMessages(t *testing.T) {
+	st := newTestStore(t)
+	srv := newTestServer(t, st)
+	cookie := "list-user"
+
+	c, _ := dial(t, srv, cookie, "")
+	readEvent(t, c) // ready, but never send anything
+	c.Close(websocket.StatusNormalClosure, "")
+
+	time.Sleep(50 * time.Millisecond) // let the deferred save (a no-op) run
+	sessions, err := st.ListSessions(context.Background(), cookie)
+	if err != nil {
+		t.Fatalf("ListSessions() error = %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("expected no listed sessions before any message, got %+v", sessions)
+	}
+}
+
 func TestWSResetClearsVisibleTurnCounter(t *testing.T) {
 	srv := newTestServer(t, newTestStore(t))
-	c, _ := dial(t, srv, "")
+	c, _ := dial(t, srv, "", "")
 	readEvent(t, c) // ready
 
 	sendText(t, c, "first")
@@ -347,5 +561,49 @@ func TestWSResetClearsVisibleTurnCounter(t *testing.T) {
 	final := readUntil(t, c, protocol.EvFinal)
 	if final.Turn != 1 {
 		t.Fatalf("turn counter should restart after reset, got turn=%d", final.Turn)
+	}
+}
+
+// TestWSResetClearsPersistedTurns guards the fix for a real bug this design
+// would otherwise have: turn numbering restarts at 1 after "reset", which
+// would silently overwrite (via SaveTurn's upsert) this room's *original*
+// turn 1 in the transcript if the old rows were left in place. "reset" must
+// clear the persisted transcript too, so the persisted history matches what
+// the client sees on screen.
+func TestWSResetClearsPersistedTurns(t *testing.T) {
+	st := newTestStore(t)
+	srv := newTestServer(t, st)
+	c, _ := dial(t, srv, "reset-user", "")
+	ready := readEvent(t, c)
+
+	sendText(t, c, "first")
+	readUntil(t, c, protocol.EvAssistantDone)
+
+	waitForTurns := func(want int) []store.Turn {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			_, turns, err := st.SessionDetail(context.Background(), "reset-user", ready.Session)
+			if err == nil && len(turns) == want {
+				return turns
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatalf("timed out waiting for %d persisted turns", want)
+		return nil
+	}
+	waitForTurns(2) // user "first" + assistant reply
+
+	resetMsg, _ := json.Marshal(protocol.ClientMsg{Type: "reset"})
+	if err := c.Write(context.Background(), websocket.MessageText, resetMsg); err != nil {
+		t.Fatalf("Write(reset) error = %v", err)
+	}
+	waitForTurns(0)
+
+	sendText(t, c, "second, after reset")
+	readUntil(t, c, protocol.EvAssistantDone)
+	turns := waitForTurns(2)
+	if turns[0].Text != "second, after reset" {
+		t.Fatalf("turn[0].Text = %q, want the post-reset message (original turn 1 should be gone, not overwritten silently)", turns[0].Text)
 	}
 }

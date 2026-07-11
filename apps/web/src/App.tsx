@@ -5,6 +5,7 @@ import { PCMRecorder } from "./audio/recorder";
 import { KokoroSpeaker } from "./tts/kokoro";
 import { prPath } from "./lib/rootPath";
 import { fetchMe } from "./lib/me";
+import { fetchSessionDetail, fetchSessions, type SessionSummary } from "./lib/sessions";
 
 interface Msg {
   turn: number;
@@ -14,8 +15,14 @@ interface Msg {
 }
 
 type TtsState = "idle" | "loading" | "ready" | "error";
+type View = "list" | "chat";
 
 export function App() {
+  // The home screen always lands on the room list, never a silently
+  // reconnected conversation — a WS connection only opens once the learner
+  // picks a room or starts a new one (see enterChat).
+  const [view, setView] = useState<View>("list");
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [status, setStatus] = useState<Status>("connecting");
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [corrections, setCorrections] = useState<Record<number, Correction>>({});
@@ -68,13 +75,14 @@ export function App() {
 
   useEffect(() => {
     if (clientRef.current) return; // guard StrictMode double-invoke
-    const client = new BuddyClient(onEvent, setStatus);
-    clientRef.current = client;
+    // Created eagerly so mic/voice setup and the WS client are ready the
+    // moment a room is opened, but connect() is NOT called here — the home
+    // screen shows the room list first, not a silently reconnected chat.
+    clientRef.current = new BuddyClient(onEvent, setStatus);
     recorderRef.current = new PCMRecorder();
     speakerRef.current = new KokoroSpeaker();
-    client.connect();
     return () => {
-      client.close();
+      clientRef.current?.close();
       clientRef.current = null;
     };
   }, [onEvent]);
@@ -87,6 +95,44 @@ export function App() {
       setEmail(identity?.identityMode === "oidc" ? identity.id : null);
     });
   }, []);
+
+  const refreshSessions = useCallback(() => {
+    fetchSessions().then(setSessions);
+  }, []);
+
+  useEffect(() => {
+    refreshSessions();
+  }, [refreshSessions]);
+
+  // Opens a room and enters chat view. sessionId omitted starts a brand-new
+  // room (server mints the ID, delivered on the "ready" event); given an
+  // existing ID, this hydrates the visible transcript from its persisted
+  // history first, since reconnecting the WS alone only seeds LLM context,
+  // it doesn't replay old chat bubbles.
+  const enterChat = useCallback(async (sessionId?: string) => {
+    setCorrections({});
+    if (sessionId) {
+      const detail = await fetchSessionDetail(sessionId);
+      if (!detail) return; // fetch failed (e.g. deleted elsewhere) — stay on the list
+      setMsgs(detail.turns.map((t) => ({ turn: t.turn, role: t.role, text: t.text, refined: t.refined })));
+      const corr: Record<number, Correction> = {};
+      for (const t of detail.turns) if (t.correction) corr[t.turn] = t.correction;
+      setCorrections(corr);
+    } else {
+      setMsgs([]);
+    }
+    setView("chat");
+    clientRef.current?.connect(sessionId);
+  }, []);
+
+  const backToList = useCallback(() => {
+    clientRef.current?.close();
+    setMsgs([]);
+    setCorrections({});
+    setMenuOpen(false);
+    setView("list");
+    refreshSessions();
+  }, [refreshSessions]);
 
   const toggleMic = useCallback(async () => {
     const rec = recorderRef.current;
@@ -166,10 +212,46 @@ export function App() {
     [prInput],
   );
 
+  if (view === "list") {
+    return (
+      <div className="app">
+        <header className="topbar">
+          <div className="brand">
+            <h1>Buddy</h1>
+          </div>
+          <span className="user-email">{email ?? "익명 사용자"}</span>
+        </header>
+
+        <main className="session-list">
+          <button className="new-chat" onClick={() => void enterChat()}>
+            + 새 대화
+          </button>
+          {sessions.length === 0 ? (
+            <p className="hint">아직 대화 기록이 없어요. 새 대화를 시작해보세요.</p>
+          ) : (
+            <ul>
+              {sessions.map((s) => (
+                <li key={s.id}>
+                  <button className="session-item" onClick={() => void enterChat(s.id)}>
+                    <span className="title">{s.title}</span>
+                    <span className="time">{formatRelativeTime(s.updatedAt)}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="app">
       <header className="topbar">
         <div className="brand">
+          <button className="ghost icon-btn" onClick={backToList} aria-label="목록으로" title="목록으로">
+            ←
+          </button>
           <span className={`dot ${status}`} title={status} />
           <h1>Buddy</h1>
         </div>
@@ -267,6 +349,17 @@ export function App() {
       </footer>
     </div>
   );
+}
+
+function formatRelativeTime(unixSeconds: number): string {
+  const mins = Math.floor((Date.now() - unixSeconds * 1000) / 60000);
+  if (mins < 1) return "방금 전";
+  if (mins < 60) return `${mins}분 전`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}시간 전`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}일 전`;
+  return new Date(unixSeconds * 1000).toLocaleDateString();
 }
 
 function upsertAssistant(m: Msg[], turn: number, patch: (prev: string) => string): Msg[] {

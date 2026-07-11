@@ -4,6 +4,7 @@ package httpserver
 
 import (
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"log"
 	"net/http"
@@ -34,6 +35,8 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 		})
 	})
 	mux.HandleFunc("/api/me", meHandler(cfg.IdentityMode, ident))
+	mux.HandleFunc("/api/sessions", sessionsListHandler(ident, st))
+	mux.HandleFunc("/api/sessions/{id}", sessionDetailHandler(ident, st))
 	registerStalePRRedirect(mux, cfg.RootPath)
 
 	// Frontend.
@@ -116,6 +119,51 @@ func meHandler(identityMode string, ident identity.Identifier) http.HandlerFunc 
 			"identityMode": identityMode,
 			"id":           userID,
 		})
+	}
+}
+
+// sessionsListHandler returns the caller's own chat rooms — personal, not
+// admin: scoped to whatever ident.Identify resolves to, the same identity
+// /ws and /api/me use, so a learner only ever sees their own history.
+func sessionsListHandler(ident identity.Identifier, st store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := ident.Identify(w, r)
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		sessions, err := st.ListSessions(r.Context(), userID)
+		if err != nil {
+			log.Printf("list sessions: %v", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, sessions)
+	}
+}
+
+// sessionDetailHandler returns one session's full transcript for replay.
+// store.SessionDetail scopes the lookup by the caller's own userID, so a
+// session ID belonging to someone else 404s exactly like one that doesn't
+// exist at all — this handler can't tell the difference, on purpose.
+func sessionDetailHandler(ident identity.Identifier, st store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := ident.Identify(w, r)
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		meta, turns, err := st.SessionDetail(r.Context(), userID, r.PathValue("id"))
+		if errors.Is(err, store.ErrNotFound) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			log.Printf("session detail: %v", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]any{"session": meta, "turns": turns})
 	}
 }
 
