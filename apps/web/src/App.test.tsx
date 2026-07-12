@@ -2,12 +2,20 @@
  * @vitest-environment jsdom
  */
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { ServerEvent } from "./lib/protocol";
+
+let capturedOnEvent: ((e: ServerEvent) => void) | null = null;
+
 vi.mock("./lib/ws", () => ({
-  BuddyClient: vi.fn().mockImplementation(function BuddyClient(this: object) {
+  BuddyClient: vi.fn().mockImplementation(function BuddyClient(
+    this: object,
+    onEvent: (e: ServerEvent) => void,
+  ) {
+    capturedOnEvent = onEvent;
     return Object.assign(this, {
       connect: vi.fn(),
       close: vi.fn(),
@@ -50,9 +58,12 @@ vi.mock("./lib/sessions", () => ({
 import { App } from "./App";
 import { fetchMe } from "./lib/me";
 import { fetchSessionDetail, fetchSessions } from "./lib/sessions";
+import { KokoroSpeaker } from "./tts/kokoro";
 import { BuddyClient } from "./lib/ws";
 
 beforeEach(() => {
+  localStorage.clear();
+  capturedOnEvent = null;
   vi.mocked(fetchMe).mockResolvedValue(null);
   vi.mocked(fetchSessions).mockResolvedValue([]);
   vi.mocked(fetchSessionDetail).mockResolvedValue(null);
@@ -100,6 +111,11 @@ function lastClientInstance() {
     connect: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;
   };
+}
+
+/** Simulates a server event arriving over the (mocked) websocket. */
+function emit(e: ServerEvent) {
+  capturedOnEvent?.(e);
 }
 
 describe("room list", () => {
@@ -280,5 +296,92 @@ describe("theme switch", () => {
     await openMenu(user);
     expect(screen.getByRole("button", { name: "다크" })).toHaveAttribute("aria-pressed", "true");
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+  });
+});
+
+describe("per-message tts playback", () => {
+  it("shows a play button for the native rate and each configured extra speed", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "assistant_done", turn: 1, text: "Hello there" }));
+    expect(
+      await screen.findByRole("button", { name: "1배속(원어민 속도)으로 재생" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "0.5배속으로 재생" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "0.8배속으로 재생" })).toBeInTheDocument();
+  });
+
+  it("loads the voice on demand and speaks the message at the chosen rate", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "assistant_done", turn: 1, text: "Hello there" }));
+    await user.click(await screen.findByRole("button", { name: "0.5배속으로 재생" }));
+    const speaker = vi.mocked(KokoroSpeaker).mock.instances[0] as unknown as {
+      speak: ReturnType<typeof vi.fn>;
+    };
+    expect(speaker.speak).toHaveBeenCalledWith("Hello there", 0.5);
+  });
+});
+
+describe("tts speed settings", () => {
+  it("lists the native speed as fixed and the default extra speeds as removable", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    await openMenu(user);
+    expect(screen.getByText("🔊 1x (원어민)")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "0.5x 속도 삭제" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "0.8x 속도 삭제" })).toBeInTheDocument();
+  });
+
+  it("hides the add-speed form once the two extra-speed slots are full", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    await openMenu(user);
+    expect(screen.queryByLabelText("새 재생 속도")).not.toBeInTheDocument();
+  });
+
+  it("removing a speed frees a slot, drops its play button, and persists the change", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "assistant_done", turn: 1, text: "Hello there" }));
+    await openMenu(user);
+    await user.click(screen.getByRole("button", { name: "0.5x 속도 삭제" }));
+    expect(screen.queryByRole("button", { name: "0.5배속으로 재생" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("새 재생 속도")).toBeInTheDocument();
+    expect(localStorage.getItem("buddy.tts.extraRates")).toBe(JSON.stringify([0.8]));
+  });
+
+  it("adds a custom speed once a slot is free and persists it", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    await openMenu(user);
+    await user.click(screen.getByRole("button", { name: "0.5x 속도 삭제" }));
+    await user.type(screen.getByLabelText("새 재생 속도"), "1.5");
+    await user.click(screen.getByRole("button", { name: "추가" }));
+    expect(screen.getByRole("button", { name: "1.5x 속도 삭제" })).toBeInTheDocument();
+    expect(localStorage.getItem("buddy.tts.extraRates")).toBe(JSON.stringify([0.8, 1.5]));
+    expect(screen.queryByLabelText("새 재생 속도")).not.toBeInTheDocument();
+  });
+
+  it("rejects the native rate as a custom speed", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    await openMenu(user);
+    await user.click(screen.getByRole("button", { name: "0.5x 속도 삭제" }));
+    await user.type(screen.getByLabelText("새 재생 속도"), "1");
+    await user.click(screen.getByRole("button", { name: "추가" }));
+    expect(localStorage.getItem("buddy.tts.extraRates")).toBe(JSON.stringify([0.8]));
+  });
+
+  it("persists the default speeds to localStorage on first load", () => {
+    render(<App />);
+    expect(localStorage.getItem("buddy.tts.extraRates")).toBe(JSON.stringify([0.5, 0.8]));
   });
 });
