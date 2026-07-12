@@ -19,6 +19,7 @@ var allBuddyEnvVars = []string{
 	"ROOT_PATH",
 	"S3_ENDPOINT", "S3_PATH_STYLE", "S3_ACCESS_KEY", "S3_SECRET_KEY",
 	"S3_BUCKET", "S3_STORAGE_CLASS",
+	"BUDDY_S3_BUCKET", "BUDDY_S3_REGION", "BUDDY_S3_ENDPOINT",
 }
 
 func clearEnv(t *testing.T) {
@@ -33,28 +34,31 @@ func TestLoadDefaults(t *testing.T) {
 	c := Load()
 
 	str := map[string]struct{ got, want string }{
-		"Env":             {c.Env, "dev"},
-		"Addr":            {c.Addr, ":8080"},
-		"FastSTT":         {c.FastSTT, "mock"},
-		"SlowSTT":         {c.SlowSTT, "mock"},
-		"LLMBaseURL":      {c.LLMBaseURL, "http://localhost:8081/v1"},
-		"LLMChatModel":    {c.LLMChatModel, "local-model"},
-		"LLMCorrectModel": {c.LLMCorrectModel, "local-model"},
-		"FeedbackLang":    {c.FeedbackLang, "ko"},
-		"MySQLRWHost":     {c.MySQLRWHost, "localhost"},
-		"MySQLROHost":     {c.MySQLROHost, ""},
-		"MySQLUser":       {c.MySQLUser, "buddy"},
-		"MySQLPassword":   {c.MySQLPassword, "buddy"},
-		"MySQLDatabase":   {c.MySQLDatabase, "buddy"},
-		"IdentityMode":    {c.IdentityMode, "cookie"},
-		"OIDCIssuerURL":   {c.OIDCIssuerURL, ""},
-		"OIDCClientID":    {c.OIDCClientID, "buddy"},
-		"RootPath":        {c.RootPath, ""},
-		"S3Endpoint":      {c.S3Endpoint, ""},
-		"S3AccessKey":     {c.S3AccessKey, ""},
-		"S3SecretKey":     {c.S3SecretKey, ""},
-		"S3Bucket":        {c.S3Bucket, ""},
-		"S3StorageClass":  {c.S3StorageClass, ""},
+		"Env":                 {c.Env, "dev"},
+		"Addr":                {c.Addr, ":8080"},
+		"FastSTT":             {c.FastSTT, "mock"},
+		"SlowSTT":             {c.SlowSTT, "mock"},
+		"LLMBaseURL":          {c.LLMBaseURL, "http://localhost:8081/v1"},
+		"LLMChatModel":        {c.LLMChatModel, "local-model"},
+		"LLMCorrectModel":     {c.LLMCorrectModel, "local-model"},
+		"FeedbackLang":        {c.FeedbackLang, "ko"},
+		"MySQLRWHost":         {c.MySQLRWHost, "localhost"},
+		"MySQLROHost":         {c.MySQLROHost, ""},
+		"MySQLUser":           {c.MySQLUser, "buddy"},
+		"MySQLPassword":       {c.MySQLPassword, "buddy"},
+		"MySQLDatabase":       {c.MySQLDatabase, "buddy"},
+		"IdentityMode":        {c.IdentityMode, "cookie"},
+		"OIDCIssuerURL":       {c.OIDCIssuerURL, ""},
+		"OIDCClientID":        {c.OIDCClientID, "buddy"},
+		"RootPath":            {c.RootPath, ""},
+		"S3Endpoint":          {c.S3Endpoint, ""},
+		"S3AccessKey":         {c.S3AccessKey, ""},
+		"S3SecretKey":         {c.S3SecretKey, ""},
+		"S3Bucket":            {c.S3Bucket, ""},
+		"S3StorageClass":      {c.S3StorageClass, ""},
+		"RecordingS3Bucket":   {c.RecordingS3Bucket, ""},
+		"RecordingS3Region":   {c.RecordingS3Region, "us-east-1"},
+		"RecordingS3Endpoint": {c.RecordingS3Endpoint, ""},
 	}
 	for name, tc := range str {
 		if tc.got != tc.want {
@@ -94,11 +98,17 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("S3_SECRET_KEY", "secret-456")
 	t.Setenv("S3_BUCKET", "buddy-recordings")
 	t.Setenv("S3_STORAGE_CLASS", "REDUCED_REDUNDANCY")
+	t.Setenv("BUDDY_S3_BUCKET", "buddy-recordings-archive")
+	t.Setenv("BUDDY_S3_REGION", "ap-northeast-2")
+	t.Setenv("BUDDY_S3_ENDPOINT", "http://localhost:9000")
 
 	c := Load()
 
 	if c.RootPath != "/pr/14" {
 		t.Errorf("RootPath = %q, want /pr/14", c.RootPath)
+	}
+	if c.RecordingS3Bucket != "buddy-recordings-archive" || c.RecordingS3Region != "ap-northeast-2" || c.RecordingS3Endpoint != "http://localhost:9000" {
+		t.Errorf("recording S3 overrides failed: bucket=%q region=%q endpoint=%q", c.RecordingS3Bucket, c.RecordingS3Region, c.RecordingS3Endpoint)
 	}
 
 	if c.MySQLRWHost != "primary.db" || c.MySQLROHost != "replica.db" {

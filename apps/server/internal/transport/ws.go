@@ -12,6 +12,7 @@ import (
 	"buddy/server/internal/identity"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/protocol"
+	"buddy/server/internal/recording"
 	"buddy/server/internal/session"
 	"buddy/server/internal/store"
 
@@ -23,6 +24,10 @@ const (
 	maxAudioBytes    = 16 << 20 // 16 MiB per utterance frame
 	saveInterval     = 30 * time.Second
 	audioSaveTimeout = 30 * time.Second
+
+	// pcmSampleRate matches the wire format documented in internal/protocol:
+	// mono, 16 kHz, signed 16-bit little-endian PCM.
+	pcmSampleRate = 16000
 )
 
 // AudioSaver persists one utterance's raw audio bytes to a temporary backing
@@ -34,14 +39,15 @@ type AudioSaver interface {
 
 // Handler upgrades HTTP to WebSocket and runs one conversation per connection.
 type Handler struct {
-	pipe  *pipeline.Pipeline
-	ident identity.Identifier
-	store store.Store
-	audio AudioSaver
+	pipe       *pipeline.Pipeline
+	ident      identity.Identifier
+	store      store.Store
+	audio      AudioSaver
+	recordings recording.Store // nil disables recording archival (see config.RecordingS3Bucket)
 }
 
-func NewHandler(p *pipeline.Pipeline, ident identity.Identifier, st store.Store, audio AudioSaver) *Handler {
-	return &Handler{pipe: p, ident: ident, store: st, audio: audio}
+func NewHandler(p *pipeline.Pipeline, ident identity.Identifier, st store.Store, audio AudioSaver, recordings recording.Store) *Handler {
+	return &Handler{pipe: p, ident: ident, store: st, audio: audio, recordings: recordings}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -155,10 +161,26 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		switch typ {
 		case websocket.MessageBinary:
 			pcm := append([]byte(nil), data...) // copy: Read may reuse the buffer
+			go h.pipe.HandleUtterance(tctx, sess, pcm, emit)
+			// Both backups below are side-effects independent of the
+			// conversation pipeline, so they use context.Background() (like
+			// save() above) rather than ctx/tctx: a barge-in or the user
+			// closing the tab right after speaking must not abort an upload
+			// already in flight. A save failure never disrupts the live
+			// conversation — just logged. These are two separate, unrelated
+			// features (see internal/recording's package doc for why).
 			if h.audio != nil {
 				go h.backupAudio(userID, pcm)
 			}
-			go h.pipe.HandleUtterance(tctx, sess, pcm, emit)
+			if h.recordings != nil {
+				go func() {
+					sctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cancel()
+					if _, err := h.recordings.Save(sctx, userID, pcm, pcmSampleRate); err != nil {
+						log.Printf("recording: save %s: %v", userID, err)
+					}
+				}()
+			}
 		case websocket.MessageText:
 			var m protocol.ClientMsg
 			if err := json.Unmarshal(data, &m); err != nil {

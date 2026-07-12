@@ -320,6 +320,11 @@ func (s *MySQLStore) SessionDetail(ctx context.Context, userID, sessionID string
 	return meta, turns, nil
 }
 
+// DB exposes the underlying read-write and read-only pools so other stores
+// that persist to the same MySQL instance (e.g. internal/recording) can share
+// these connections instead of opening a second pool to the same host.
+func (s *MySQLStore) DB() (rw, ro *sql.DB) { return s.rw, s.ro }
+
 func (s *MySQLStore) Close() error {
 	err := s.rw.Close()
 	if s.ro != s.rw {

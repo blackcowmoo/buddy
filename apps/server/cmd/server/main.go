@@ -17,6 +17,7 @@ import (
 	"buddy/server/internal/identity"
 	"buddy/server/internal/llm"
 	"buddy/server/internal/pipeline"
+	"buddy/server/internal/recording"
 	"buddy/server/internal/store"
 	"buddy/server/internal/stt"
 	"buddy/server/internal/transport"
@@ -57,6 +58,8 @@ func main() {
 
 	// Temporary audio backup: only enabled once an endpoint is configured, so
 	// the server still boots with zero setup by default (see internal/audiostore).
+	// This is a separate, unrelated feature from the recording archive below
+	// — see internal/recording's package doc for why the two coexist.
 	var audio transport.AudioSaver
 	if cfg.S3Endpoint != "" {
 		as, err := audiostore.New(audiostore.Config{
@@ -73,7 +76,16 @@ func main() {
 		audio = as
 	}
 
-	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio)
+	// Voice recording archive: optional, disabled unless BUDDY_S3_BUCKET is
+	// set (see config.RecordingS3Bucket and internal/recording). Shares st's
+	// MySQL pools rather than opening a second connection to the same
+	// instance.
+	recordings := buildRecordingStore(context.Background(), cfg, st)
+	if recordings != nil {
+		defer recordings.Close()
+	}
+
+	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings)
 
 	go func() {
 		log.Printf("buddy up on %s  env=%s  fast=%s  slow=%s  feedback=%s",
@@ -120,6 +132,22 @@ func buildIdentity(ctx context.Context, cfg config.Config) (identity.Identifier,
 		Password: cfg.RedisPassword,
 	})
 	return identity.NewCachedOIDCIdentifier(ident, rdb), rdb
+}
+
+// buildRecordingStore builds the voice-recording archive (internal/recording)
+// when configured, or returns nil (archival disabled, the WS handler simply
+// skips saving) when BUDDY_S3_BUCKET is unset — the same optional-feature
+// convention as buildIdentity's Redis cache.
+func buildRecordingStore(ctx context.Context, cfg config.Config, st *store.MySQLStore) recording.Store {
+	if cfg.RecordingS3Bucket == "" {
+		return nil
+	}
+	rw, ro := st.DB()
+	rec, err := recording.NewS3(ctx, cfg.RecordingS3Bucket, cfg.RecordingS3Region, cfg.RecordingS3Endpoint, rw, ro)
+	if err != nil {
+		log.Fatalf("recording store: %v", err)
+	}
+	return rec
 }
 
 // buildSTT selects an STT engine from config. "mock" needs zero setup;

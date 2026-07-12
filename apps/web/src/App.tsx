@@ -248,6 +248,13 @@ export function App() {
     [text],
   );
 
+  const goToRecordings = useCallback(() => {
+    // Relative navigation (not "/recordings"): resolves against the current
+    // page URL, so this still works under a ROOT_PATH prefix like "/pr/14"
+    // (see lib/route.ts).
+    window.location.assign("recordings");
+  }, []);
+
   // Click-outside / Escape closes the menu, same as any dropdown.
   useEffect(() => {
     if (!menuOpen) return;
@@ -310,6 +317,7 @@ export function App() {
                 onPrInputChange={handlePrInputChange}
                 prError={prError}
                 onGoToPath={goToPath}
+                onGoToRecordings={goToRecordings}
               />
             )}
           </div>
@@ -368,6 +376,7 @@ export function App() {
               onPrInputChange={handlePrInputChange}
               prError={prError}
               onGoToPath={goToPath}
+              onGoToRecordings={goToRecordings}
               chat={{
                 tts,
                 ttsProgress,
@@ -547,6 +556,7 @@ function MenuPanel({
   onPrInputChange,
   prError,
   onGoToPath,
+  onGoToRecordings,
   chat,
 }: {
   email: string | null;
@@ -556,6 +566,7 @@ function MenuPanel({
   onPrInputChange: (v: string) => void;
   prError: boolean;
   onGoToPath: (e: React.FormEvent) => void;
+  onGoToRecordings: () => void;
   chat?: ChatMenuProps;
 }) {
   return (
@@ -609,6 +620,9 @@ function MenuPanel({
       <div className="menu-row">
         <ThemeSwitch theme={theme} onChange={onThemeChange} />
       </div>
+      <button className="ghost menu-item" onClick={onGoToRecordings} role="menuitem">
+        🎧 녹음 목록
+      </button>
       <div className="menu-divider" />
       <form className="path-form" onSubmit={onGoToPath}>
         <label htmlFor="pr-path">PR 미리보기로 이동</label>

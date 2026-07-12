@@ -18,6 +18,7 @@ import (
 	"buddy/server/internal/llm"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/protocol"
+	"buddy/server/internal/recording"
 	"buddy/server/internal/store"
 	"buddy/server/internal/stt"
 
@@ -214,14 +215,61 @@ func (f *fakeAudioSaver) snapshot() map[string][]byte {
 	return out
 }
 
+// fakeRecordingStore is an in-memory recording.Store: these tests are about
+// WS wiring (is Save called with the right userID/audio on a binary frame?),
+// not S3/SQL correctness — that lives in internal/recording's own
+// container-backed tests.
+type fakeRecordingStore struct {
+	mu    sync.Mutex
+	saved []recordingSave
+}
+
+type recordingSave struct {
+	userID string
+	pcm    []byte
+}
+
+func (f *fakeRecordingStore) Save(ctx context.Context, userID string, pcm []byte, sampleRate int) (recording.Recording, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.saved = append(f.saved, recordingSave{userID, append([]byte(nil), pcm...)})
+	return recording.Recording{ID: "fake-id", UserID: userID}, nil
+}
+
+func (f *fakeRecordingStore) List(ctx context.Context, userID string) ([]recording.Recording, error) {
+	return nil, nil
+}
+
+func (f *fakeRecordingStore) Open(ctx context.Context, userID, id string) (recording.Recording, io.ReadCloser, error) {
+	return recording.Recording{}, nil, errors.New("fakeRecordingStore: Open not implemented")
+}
+
+func (f *fakeRecordingStore) Close() error { return nil }
+
+func (f *fakeRecordingStore) all() []recordingSave {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]recordingSave(nil), f.saved...)
+}
+
 // ---- helpers -----------------------------------------------------------------
 
 func newTestServer(t *testing.T, st store.Store) *httptest.Server {
 	t.Helper()
-	return newTestServerWithAudio(t, st, nil)
+	return newTestServerFull(t, st, nil, nil)
 }
 
 func newTestServerWithAudio(t *testing.T, st store.Store, audio AudioSaver) *httptest.Server {
+	t.Helper()
+	return newTestServerFull(t, st, audio, nil)
+}
+
+func newTestServerWithRecordings(t *testing.T, st store.Store, recordings recording.Store) *httptest.Server {
+	t.Helper()
+	return newTestServerFull(t, st, nil, recordings)
+}
+
+func newTestServerFull(t *testing.T, st store.Store, audio AudioSaver, recordings recording.Store) *httptest.Server {
 	t.Helper()
 	pipe := &pipeline.Pipeline{
 		FastSTT:            fakeSTT{text: "hello there"},
@@ -229,7 +277,7 @@ func newTestServerWithAudio(t *testing.T, st store.Store, audio AudioSaver) *htt
 		LLM:                fakeLLM{},
 		MaxHistoryMessages: 20,
 	}
-	h := NewHandler(pipe, identity.NewCookieIdentifier(), st, audio)
+	h := NewHandler(pipe, identity.NewCookieIdentifier(), st, audio, recordings)
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	return srv
@@ -328,7 +376,7 @@ func TestWSFirstVisitSetsAnonymousCookie(t *testing.T) {
 // must refuse before ever attempting the WS upgrade.
 func TestWSRejectsWhenIdentityFails(t *testing.T) {
 	pipe := &pipeline.Pipeline{FastSTT: fakeSTT{text: "hi"}, SlowSTT: fakeSTT{text: "hi"}, LLM: fakeLLM{}}
-	h := NewHandler(pipe, fakeHeaderIdentifier{"X-Auth-Request-Email"}, newFakeStore(), nil)
+	h := NewHandler(pipe, fakeHeaderIdentifier{"X-Auth-Request-Email"}, newFakeStore(), nil, nil)
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
@@ -346,7 +394,7 @@ func TestWSRejectsWhenIdentityFails(t *testing.T) {
 // contract, but with identity resolving successfully.
 func TestWSHeaderIdentityConnectsWhenHeaderPresent(t *testing.T) {
 	pipe := &pipeline.Pipeline{FastSTT: fakeSTT{text: "hi"}, SlowSTT: fakeSTT{text: "hi"}, LLM: fakeLLM{}}
-	h := NewHandler(pipe, fakeHeaderIdentifier{"X-Auth-Request-Email"}, newFakeStore(), nil)
+	h := NewHandler(pipe, fakeHeaderIdentifier{"X-Auth-Request-Email"}, newFakeStore(), nil, nil)
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
@@ -613,3 +661,49 @@ func TestWSListSessionsOnlyShowsSessionsWithMessages(t *testing.T) {
 	}
 }
 
+// TestWSBinaryFrameSavesRecording covers the archival side-effect (see
+// config.RecordingS3Bucket / internal/recording): a spoken utterance must be
+// handed to the recording store independently of — and even if — STT/LLM
+// fail, since recording.Store.Save doesn't touch the conversation pipeline
+// at all.
+func TestWSBinaryFrameSavesRecording(t *testing.T) {
+	rec := &fakeRecordingStore{}
+	srv := newTestServerWithRecordings(t, newTestStore(t), rec)
+	c, _ := dial(t, srv, "voice-user", "")
+	readEvent(t, c) // ready
+
+	pcm := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	if err := c.Write(context.Background(), websocket.MessageBinary, pcm); err != nil {
+		t.Fatalf("Write(binary) error = %v", err)
+	}
+	readUntil(t, c, protocol.EvFinal) // wait for the pipeline to process the utterance
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if saved := rec.all(); len(saved) == 1 {
+			if saved[0].userID != "voice-user" {
+				t.Fatalf("saved userID = %q, want voice-user", saved[0].userID)
+			}
+			if string(saved[0].pcm) != string(pcm) {
+				t.Fatalf("saved pcm = %v, want %v", saved[0].pcm, pcm)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for a recording save, got %+v", rec.all())
+}
+
+// TestWSNilRecordingStoreDisablesArchival documents that a nil recordings
+// store (the default when config.RecordingS3Bucket is unset) is safe: no
+// panic, the conversation pipeline still runs normally.
+func TestWSNilRecordingStoreDisablesArchival(t *testing.T) {
+	srv := newTestServerWithRecordings(t, newTestStore(t), nil)
+	c, _ := dial(t, srv, "", "")
+	readEvent(t, c) // ready
+
+	if err := c.Write(context.Background(), websocket.MessageBinary, []byte{1, 2, 3, 4}); err != nil {
+		t.Fatalf("Write(binary) error = %v", err)
+	}
+	readUntil(t, c, protocol.EvFinal) // would hang/fail if the nil store panicked
+}
