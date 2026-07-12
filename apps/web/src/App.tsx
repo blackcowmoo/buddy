@@ -123,18 +123,24 @@ export function App() {
   const enterChat = useCallback(async (sessionId?: string) => {
     setCorrections({});
     if (sessionId) {
+      // Fire the WS handshake alongside the transcript fetch — they're
+      // independent round trips — instead of waiting for the fetch first.
+      clientRef.current?.connect(sessionId);
       const detail = await fetchSessionDetail(sessionId);
-      if (!detail) return; // fetch failed (e.g. deleted elsewhere) — stay on the list
+      if (!detail) {
+        clientRef.current?.close(); // fetch failed (e.g. deleted elsewhere) — stay on the list
+        return;
+      }
       setMsgs(detail.turns.map((t) => ({ turn: t.turn, role: t.role, text: t.text, refined: t.refined })));
       const corr: Record<number, Correction> = {};
       for (const t of detail.turns) if (t.correction) corr[t.turn] = t.correction;
       setCorrections(corr);
     } else {
       setMsgs([]);
+      clientRef.current?.connect(undefined);
     }
     setMenuOpen(false);
     setView("chat");
-    clientRef.current?.connect(sessionId);
   }, []);
 
   const backToList = useCallback(() => {

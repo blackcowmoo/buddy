@@ -34,7 +34,7 @@ func (CookieIdentifier) Identify(w http.ResponseWriter, r *http.Request) (string
 	if c, err := r.Cookie(cookieName); err == nil && c.Value != "" {
 		return c.Value, true
 	}
-	id := randID()
+	id := NewOpaqueID()
 	http.SetCookie(w, &http.Cookie{
 		Name:     cookieName,
 		Value:    id,
@@ -46,7 +46,11 @@ func (CookieIdentifier) Identify(w http.ResponseWriter, r *http.Request) (string
 	return id, true
 }
 
-func randID() string {
+// NewOpaqueID mints a random, unguessable 128-bit ID (crypto/rand, hex
+// encoded) — the same shape used for anonymous cookie IDs. Shared with
+// internal/transport for minting chat-room session IDs, so both keep the
+// same entropy without duplicating the recipe.
+func NewOpaqueID() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
