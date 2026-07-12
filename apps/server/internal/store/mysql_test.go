@@ -34,8 +34,8 @@ func TestHostPort(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := hostPort(tt.host, tt.fallbackPort); got != tt.want {
-				t.Errorf("hostPort(%q, %d) = %q, want %q", tt.host, tt.fallbackPort, got, tt.want)
+			if got := HostPort(tt.host, tt.fallbackPort); got != tt.want {
+				t.Errorf("HostPort(%q, %d) = %q, want %q", tt.host, tt.fallbackPort, got, tt.want)
 			}
 		})
 	}

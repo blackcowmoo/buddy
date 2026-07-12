@@ -114,15 +114,17 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 	return &MySQLStore{rw: rw, ro: ro}, nil
 }
 
-// hostPort returns the "host:port" to dial for host, which may be a bare
+// HostPort returns the "host:port" to dial for host, which may be a bare
 // hostname (fallbackPort is appended) or may already include its own
-// ":port" — some secret stores inject the RW/RO endpoint pre-joined.
-// Unconditionally appending fallbackPort via net.JoinHostPort in that case
-// would double up the port and, worse, wrap the whole "host:port" string in
-// brackets as a literal DNS name (net.JoinHostPort brackets any host
-// containing ":"), producing lookups like "mysql-prod.internal:3306: no such
-// host" instead of resolving the intended hostname.
-func hostPort(host string, fallbackPort int) string {
+// ":port" — some secret stores inject the endpoint pre-joined. Unconditionally
+// appending fallbackPort via net.JoinHostPort in that case would double up
+// the port and, worse, wrap the whole "host:port" string in brackets as a
+// literal DNS name (net.JoinHostPort brackets any host containing ":"),
+// producing lookups like "mysql-prod.internal:3306: no such host" instead of
+// resolving the intended hostname. Shared by every caller that dials a host
+// from config (MySQL here, Redis in cmd/server) since both are exposed to the
+// same class of secret-store incident.
+func HostPort(host string, fallbackPort int) string {
 	if _, _, err := net.SplitHostPort(host); err == nil {
 		return host
 	}
@@ -133,7 +135,7 @@ func hostPort(host string, fallbackPort int) string {
 func openPool(cfg MySQLConfig, host string) (*sql.DB, error) {
 	c := mysql.NewConfig()
 	c.Net = "tcp"
-	c.Addr = hostPort(host, cfg.Port)
+	c.Addr = HostPort(host, cfg.Port)
 	c.User = cfg.User
 	c.Passwd = cfg.Password
 	c.DBName = cfg.Database

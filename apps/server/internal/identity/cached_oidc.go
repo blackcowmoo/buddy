@@ -101,7 +101,7 @@ func (c CachedOIDCIdentifier) Identify(w http.ResponseWriter, r *http.Request) (
 
 	if entry, hit := c.load(r.Context(), key); hit {
 		if time.Since(entry.CachedAt) >= trustWindow {
-			c.refreshInBackground(key, raw)
+			go c.refreshInBackground(key, raw)
 		}
 		return entry.Email, true
 	}
@@ -151,14 +151,15 @@ func (c CachedOIDCIdentifier) save(ctx context.Context, key, email string, token
 	}
 }
 
-// refreshInBackground revalidates a cache entry that's past trustWindow
-// without making the current request wait for it: the caller already has
-// today's cached answer, this just keeps the next request fast too. The
-// SETNX lock both serializes revalidation (only one goroutine per token does
-// the real Dex/JWKS check) and throttles it (refreshLockTTL: at most one
-// attempt per token per that interval) — so a token that's past trustWindow
-// gets rechecked roughly every refreshLockTTL for as long as requests keep
-// arriving, not on every single request.
+// refreshInBackground revalidates a cache entry that's past trustWindow.
+// Callers run it via `go`, so the request that triggered it already has
+// today's cached answer and never waits on this — not on the Dex/JWKS check,
+// and not even on the SETNX lock round trip below. The lock both serializes
+// revalidation (only one goroutine per token does the real check) and
+// throttles it (refreshLockTTL: at most one attempt per token per that
+// interval) — so a token that's past trustWindow gets rechecked roughly every
+// refreshLockTTL for as long as requests keep arriving, not on every single
+// request.
 func (c CachedOIDCIdentifier) refreshInBackground(key, raw string) {
 	lockCtx, lockCancel := context.WithTimeout(context.Background(), revalidateTimeout)
 	acquired, err := c.rdb.SetNX(lockCtx, key+":refresh", "1", refreshLockTTL).Result()
@@ -167,30 +168,28 @@ func (c CachedOIDCIdentifier) refreshInBackground(key, raw string) {
 		return
 	}
 
-	go func() {
-		vctx, cancel := context.WithTimeout(context.Background(), revalidateTimeout)
-		defer cancel()
+	vctx, cancel := context.WithTimeout(context.Background(), revalidateTimeout)
+	defer cancel()
 
-		email, expiry, verr := c.inner.verify(vctx, raw)
-		switch {
-		case verr == nil:
-			c.save(context.Background(), key, email, expiry)
-		case isTransientVerifyError(vctx, verr):
-			// Couldn't reach Dex (or our own timeout fired) — leave the
-			// cached entry as-is. It keeps being served as before, and the
-			// next request past trustWindow retries once refreshLockTTL
-			// releases this lock; worst case it just rides out to its own
-			// cacheTTL-based expiry and the next request re-verifies from
-			// scratch.
-		default:
-			// The token itself is bad now (expired, rotated key, wrong
-			// issuer/audience) — evict immediately rather than keep
-			// serving it for the rest of the already-granted window.
-			if err := c.rdb.Del(context.Background(), key).Err(); err != nil {
-				log.Printf("identity: redis cache evict: %v", err)
-			}
+	email, expiry, verr := c.inner.verify(vctx, raw)
+	switch {
+	case verr == nil:
+		c.save(context.Background(), key, email, expiry)
+	case isTransientVerifyError(vctx, verr):
+		// Couldn't reach Dex (or our own timeout fired) — leave the
+		// cached entry as-is. It keeps being served as before, and the
+		// next request past trustWindow retries once refreshLockTTL
+		// releases this lock; worst case it just rides out to its own
+		// cacheTTL-based expiry and the next request re-verifies from
+		// scratch.
+	default:
+		// The token itself is bad now (expired, rotated key, wrong
+		// issuer/audience) — evict immediately rather than keep
+		// serving it for the rest of the already-granted window.
+		if err := c.rdb.Del(context.Background(), key).Err(); err != nil {
+			log.Printf("identity: redis cache evict: %v", err)
 		}
-	}()
+	}
 }
 
 // isTransientVerifyError reports whether verr means buddy failed to reach

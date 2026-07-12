@@ -4,11 +4,10 @@ package main
 
 import (
 	"context"
+	"io"
 	"log"
-	"net"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -39,7 +38,8 @@ func main() {
 	}
 
 	// Persistent per-user memory.
-	ident := buildIdentity(context.Background(), cfg)
+	ident, identCloser := buildIdentity(context.Background(), cfg)
+	defer identCloser.Close()
 	st, err := store.NewMySQL(store.MySQLConfig{
 		RWHost:   cfg.MySQLRWHost,
 		ROHost:   cfg.MySQLROHost,
@@ -79,35 +79,27 @@ func main() {
 // REDIS_CLUSTER_HOST is set, "oidc" results are additionally cached in a
 // Redis Cluster (internal/identity/cached_oidc.go) so the auth path stays
 // fast even if Dex is slow or briefly unavailable; leaving it unset keeps
-// today's behavior of verifying directly every time.
-func buildIdentity(ctx context.Context, cfg config.Config) identity.Identifier {
+// today's behavior of verifying directly every time. The returned io.Closer
+// releases whatever resources were opened (the Redis client, if any) and is
+// always safe to defer-close, even when it's a no-op.
+func buildIdentity(ctx context.Context, cfg config.Config) (identity.Identifier, io.Closer) {
 	if cfg.IdentityMode != "oidc" {
-		return identity.NewCookieIdentifier()
+		return identity.NewCookieIdentifier(), io.NopCloser(nil)
 	}
 	ident, err := identity.NewOIDCIdentifier(ctx, cfg.OIDCIssuerURL, cfg.OIDCClientID)
 	if err != nil {
 		log.Fatalf("oidc identity: %v", err)
 	}
 	if cfg.RedisClusterHost == "" {
-		return ident
+		return ident, io.NopCloser(nil)
 	}
 	rdb := redis.NewClusterClient(&redis.ClusterOptions{
 		// One seed node is enough: go-redis discovers the rest of the
 		// cluster's topology (CLUSTER SHARDS) from it.
-		Addrs:    []string{hostPort(cfg.RedisClusterHost, cfg.RedisPort)},
+		Addrs:    []string{store.HostPort(cfg.RedisClusterHost, cfg.RedisPort)},
 		Password: cfg.RedisPassword,
 	})
-	return identity.NewCachedOIDCIdentifier(ident, rdb)
-}
-
-// hostPort composes a host:port for redis.ClusterOptions.Addrs. Guards
-// against the same class of incident internal/store.TestHostPort covers for
-// MySQL: a secret store might inject the host already as "host:port".
-func hostPort(host string, fallbackPort int) string {
-	if _, _, err := net.SplitHostPort(host); err == nil {
-		return host
-	}
-	return net.JoinHostPort(host, strconv.Itoa(fallbackPort))
+	return identity.NewCachedOIDCIdentifier(ident, rdb), rdb
 }
 
 // buildSTT selects an STT engine from config. "mock" needs zero setup;
