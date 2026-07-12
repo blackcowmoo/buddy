@@ -97,9 +97,10 @@ function openMenu(user: ReturnType<typeof userEvent.setup>) {
   return user.click(screen.getByRole("button", { name: "Menu" }));
 }
 
-// The app always lands on the room list; the hamburger menu only exists in
-// chat view, so every menu test needs to get there first, the same way a
-// learner would: start a new chat.
+// The app always lands on the room list, and the room list has its own
+// hamburger menu (identity, theme, PR nav). Tests for chat-only menu items
+// (voice/playback speed, reset) need to get into a room first, the same way
+// a learner would: start a new chat.
 async function enterNewChat(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("button", { name: "+ 새 대화" }));
   await screen.findByRole("button", { name: "Menu" });
@@ -176,6 +177,34 @@ describe("room list", () => {
 
     expect(await screen.findByRole("button", { name: "+ 새 대화" })).toBeInTheDocument();
     expect(lastClientInstance().close).toHaveBeenCalled();
+  });
+
+  it("has a menu button reachable without opening a room first", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await openMenu(user);
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+  });
+
+  it("shows identity, theme switch, and PR nav in the list menu, but no chat-only items", async () => {
+    vi.mocked(fetchMe).mockResolvedValue({ identityMode: "oidc", id: "alex@example.com" });
+    const user = userEvent.setup();
+    render(<App />);
+    await openMenu(user);
+    expect(await screen.findByText("alex@example.com")).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "테마" })).toBeInTheDocument();
+    expect(screen.getByLabelText("PR 미리보기로 이동")).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: /대화 초기화/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("Enable voice")).not.toBeInTheDocument();
+  });
+
+  it("closes the list menu when a room is opened", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await openMenu(user);
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "+ 새 대화" }));
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 });
 

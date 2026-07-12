@@ -132,6 +132,7 @@ export function App() {
     } else {
       setMsgs([]);
     }
+    setMenuOpen(false);
     setView("chat");
     clientRef.current?.connect(sessionId);
   }, []);
@@ -278,6 +279,11 @@ export function App() {
     [prInput],
   );
 
+  const handlePrInputChange = useCallback((v: string) => {
+    setPrInput(v);
+    setPrError(false);
+  }, []);
+
   if (view === "list") {
     return (
       <div className="app">
@@ -285,7 +291,29 @@ export function App() {
           <div className="brand">
             <h1>Buddy</h1>
           </div>
-          <span className="user-email">{email ?? "익명 사용자"}</span>
+          <div className="menu" ref={menuRef}>
+            <button
+              className="ghost icon-btn"
+              onClick={() => setMenuOpen((o) => !o)}
+              aria-label="Menu"
+              aria-haspopup="true"
+              aria-expanded={menuOpen}
+              title="Menu"
+            >
+              ☰
+            </button>
+            {menuOpen && (
+              <MenuPanel
+                email={email}
+                theme={theme}
+                onThemeChange={selectTheme}
+                prInput={prInput}
+                onPrInputChange={handlePrInputChange}
+                prError={prError}
+                onGoToPath={goToPath}
+              />
+            )}
+          </div>
         </header>
 
         <main className="session-list">
@@ -333,77 +361,26 @@ export function App() {
             ☰
           </button>
           {menuOpen && (
-            <div className="menu-panel" role="menu">
-              <div className="menu-row user-info">
-                <span className="user-email">{email ?? "익명 사용자"}</span>
-              </div>
-              <div className="menu-divider" />
-              <div className="menu-row">
-                <VoiceButton state={tts} progress={ttsProgress} onLoad={loadVoice} />
-              </div>
-              <div className="menu-row tts-settings">
-                <div className="tts-settings-label">재생 속도</div>
-                <div className="rate-chips">
-                  <span className="rate-chip locked">🔊 {NATIVE_RATE}x (원어민)</span>
-                  {extraRates.map((r) => (
-                    <span key={r} className="rate-chip">
-                      {r}x
-                      <button
-                        type="button"
-                        className="chip-remove"
-                        onClick={() => removeRate(r)}
-                        aria-label={`${r}x 속도 삭제`}
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
-                </div>
-                {extraRates.length < MAX_EXTRA_RATES && (
-                  <form className="rate-add-form" onSubmit={addRate}>
-                    <input
-                      type="number"
-                      step="0.05"
-                      min="0.5"
-                      max="2"
-                      value={newRateInput}
-                      onChange={(e) => setNewRateInput(e.target.value)}
-                      placeholder="예: 0.7"
-                      aria-label="새 재생 속도"
-                    />
-                    <button type="submit">추가</button>
-                  </form>
-                )}
-              </div>
-              <button className="ghost menu-item" onClick={resetChat} role="menuitem">
-                ↺ 대화 초기화
-              </button>
-              <div className="menu-divider" />
-              <div className="menu-row">
-                <ThemeSwitch theme={theme} onChange={selectTheme} />
-              </div>
-              <div className="menu-divider" />
-              <form className="path-form" onSubmit={goToPath}>
-                <label htmlFor="pr-path">PR 미리보기로 이동</label>
-                <div className="path-row">
-                  <input
-                    id="pr-path"
-                    value={prInput}
-                    onChange={(e) => {
-                      setPrInput(e.target.value);
-                      setPrError(false);
-                    }}
-                    placeholder="PR 번호 (예: 14)"
-                    inputMode="numeric"
-                    autoComplete="off"
-                  />
-                  <button type="submit">이동</button>
-                </div>
-                {prError && (
-                  <p className="path-error">숫자만 입력하세요 (비워두면 메인으로 이동)</p>
-                )}
-              </form>
-            </div>
+            <MenuPanel
+              email={email}
+              theme={theme}
+              onThemeChange={selectTheme}
+              prInput={prInput}
+              onPrInputChange={handlePrInputChange}
+              prError={prError}
+              onGoToPath={goToPath}
+              chat={{
+                tts,
+                ttsProgress,
+                onLoadVoice: loadVoice,
+                extraRates,
+                newRateInput,
+                onNewRateInputChange: setNewRateInput,
+                onAddRate: addRate,
+                onRemoveRate: removeRate,
+                onResetChat: resetChat,
+              }}
+            />
           )}
         </div>
       </header>
@@ -545,6 +522,115 @@ function ThemeSwitch({ theme, onChange }: { theme: Theme; onChange: (t: Theme) =
           {THEME_LABELS[t]}
         </button>
       ))}
+    </div>
+  );
+}
+
+interface ChatMenuProps {
+  tts: TtsState;
+  ttsProgress: number;
+  onLoadVoice: () => void;
+  extraRates: number[];
+  newRateInput: string;
+  onNewRateInputChange: (v: string) => void;
+  onAddRate: (e: React.FormEvent) => void;
+  onRemoveRate: (rate: number) => void;
+  onResetChat: () => void;
+}
+
+// Shared by both the room list and the chat header, so the menu (identity,
+// theme, PR-preview nav) is reachable before a room is ever opened, not just
+// from within a conversation. `chat` carries the items that only make sense
+// once a room is open (voice/playback speed, reset) — omitted on the list.
+function MenuPanel({
+  email,
+  theme,
+  onThemeChange,
+  prInput,
+  onPrInputChange,
+  prError,
+  onGoToPath,
+  chat,
+}: {
+  email: string | null;
+  theme: Theme;
+  onThemeChange: (t: Theme) => void;
+  prInput: string;
+  onPrInputChange: (v: string) => void;
+  prError: boolean;
+  onGoToPath: (e: React.FormEvent) => void;
+  chat?: ChatMenuProps;
+}) {
+  return (
+    <div className="menu-panel" role="menu">
+      <div className="menu-row user-info">
+        <span className="user-email">{email ?? "익명 사용자"}</span>
+      </div>
+      <div className="menu-divider" />
+      {chat && (
+        <>
+          <div className="menu-row">
+            <VoiceButton state={chat.tts} progress={chat.ttsProgress} onLoad={chat.onLoadVoice} />
+          </div>
+          <div className="menu-row tts-settings">
+            <div className="tts-settings-label">재생 속도</div>
+            <div className="rate-chips">
+              <span className="rate-chip locked">🔊 {NATIVE_RATE}x (원어민)</span>
+              {chat.extraRates.map((r) => (
+                <span key={r} className="rate-chip">
+                  {r}x
+                  <button
+                    type="button"
+                    className="chip-remove"
+                    onClick={() => chat.onRemoveRate(r)}
+                    aria-label={`${r}x 속도 삭제`}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+            {chat.extraRates.length < MAX_EXTRA_RATES && (
+              <form className="rate-add-form" onSubmit={chat.onAddRate}>
+                <input
+                  type="number"
+                  step="0.05"
+                  min="0.5"
+                  max="2"
+                  value={chat.newRateInput}
+                  onChange={(e) => chat.onNewRateInputChange(e.target.value)}
+                  placeholder="예: 0.7"
+                  aria-label="새 재생 속도"
+                />
+                <button type="submit">추가</button>
+              </form>
+            )}
+          </div>
+          <button className="ghost menu-item" onClick={chat.onResetChat} role="menuitem">
+            ↺ 대화 초기화
+          </button>
+          <div className="menu-divider" />
+        </>
+      )}
+      <div className="menu-row">
+        <ThemeSwitch theme={theme} onChange={onThemeChange} />
+      </div>
+      <div className="menu-divider" />
+      <form className="path-form" onSubmit={onGoToPath}>
+        <label htmlFor="pr-path">PR 미리보기로 이동</label>
+        <div className="path-row">
+          <input
+            id="pr-path"
+            value={prInput}
+            onChange={(e) => onPrInputChange(e.target.value)}
+            placeholder="PR 번호 (예: 14)"
+            inputMode="numeric"
+            autoComplete="off"
+          />
+          <button type="submit">이동</button>
+        </div>
+        {prError && <p className="path-error">숫자만 입력하세요 (비워두면 메인으로 이동)</p>}
+      </form>
     </div>
   );
 }
