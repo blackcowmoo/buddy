@@ -1,10 +1,12 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"time"
@@ -16,22 +18,32 @@ import (
 	"buddy/server/internal/store"
 
 	"github.com/coder/websocket"
+	"github.com/google/uuid"
 )
 
 const (
-	maxAudioBytes = 16 << 20 // 16 MiB per utterance frame
-	saveInterval  = 30 * time.Second
+	maxAudioBytes    = 16 << 20 // 16 MiB per utterance frame
+	saveInterval     = 30 * time.Second
+	audioSaveTimeout = 30 * time.Second
 )
+
+// AudioSaver persists one utterance's raw audio bytes to a temporary backing
+// store, e.g. an S3-compatible bucket (see internal/audiostore.Store). A nil
+// AudioSaver disables backup entirely.
+type AudioSaver interface {
+	SaveStream(ctx context.Context, key string, r io.Reader) error
+}
 
 // Handler upgrades HTTP to WebSocket and runs one conversation per connection.
 type Handler struct {
 	pipe  *pipeline.Pipeline
 	ident identity.Identifier
 	store store.Store
+	audio AudioSaver
 }
 
-func NewHandler(p *pipeline.Pipeline, ident identity.Identifier, st store.Store) *Handler {
-	return &Handler{pipe: p, ident: ident, store: st}
+func NewHandler(p *pipeline.Pipeline, ident identity.Identifier, st store.Store, audio AudioSaver) *Handler {
+	return &Handler{pipe: p, ident: ident, store: st, audio: audio}
 }
 
 // newSessionID mints a chat-room ID with the same shape/entropy as
@@ -153,6 +165,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		switch typ {
 		case websocket.MessageBinary:
 			pcm := append([]byte(nil), data...) // copy: Read may reuse the buffer
+			if h.audio != nil {
+				go h.backupAudio(userID, pcm)
+			}
 			go h.pipe.HandleUtterance(tctx, sess, pcm, emit)
 		case websocket.MessageText:
 			var m protocol.ClientMsg
@@ -219,5 +234,20 @@ func persistEvent(st store.Store, userID, sessionID string, ev protocol.ServerEv
 func saveTurn(st store.Store, userID, sessionID string, turn int, role, text string, refined bool) {
 	if err := st.SaveTurn(context.Background(), userID, sessionID, turn, role, text, refined); err != nil {
 		log.Printf("store: save turn %s/%s#%d: %v", userID, sessionID, turn, err)
+	}
+}
+
+// backupAudio streams one utterance's raw PCM to the configured temporary
+// store (see internal/audiostore.Store) as a best-effort disposable backup.
+// It runs on its own context.Background() timeout rather than the turn's
+// context, so a barge-in that cancels the turn doesn't truncate the upload —
+// and it only logs on failure, since losing this backup must never affect
+// the live conversation.
+func (h *Handler) backupAudio(userID string, pcm []byte) {
+	key := userID + "/" + uuid.New().String() + ".pcm"
+	ctx, cancel := context.WithTimeout(context.Background(), audioSaveTimeout)
+	defer cancel()
+	if err := h.audio.SaveStream(ctx, key, bytes.NewReader(pcm)); err != nil {
+		log.Printf("audiostore: backup %s: %v", key, err)
 	}
 }

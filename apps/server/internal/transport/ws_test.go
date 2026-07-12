@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -183,9 +184,53 @@ func (f *fakeStore) SessionDetail(ctx context.Context, userID, sessionID string)
 
 func (f *fakeStore) Close() error { return nil }
 
+// fakeAudioSaver is an in-memory AudioSaver: these tests only care that
+// backupAudio is invoked with the right key/bytes, not real S3 semantics —
+// that lives in internal/audiostore's own tests.
+type fakeAudioSaver struct {
+	mu    sync.Mutex
+	saved map[string][]byte
+}
+
+func newFakeAudioSaver() *fakeAudioSaver {
+	return &fakeAudioSaver{saved: make(map[string][]byte)}
+}
+
+func (f *fakeAudioSaver) SaveStream(ctx context.Context, key string, r io.Reader) error {
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.saved[key] = b
+	return nil
+}
+
+func (f *fakeAudioSaver) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.saved)
+}
+
+func (f *fakeAudioSaver) snapshot() map[string][]byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string][]byte, len(f.saved))
+	for k, v := range f.saved {
+		out[k] = v
+	}
+	return out
+}
+
 // ---- helpers -----------------------------------------------------------------
 
 func newTestServer(t *testing.T, st store.Store) *httptest.Server {
+	t.Helper()
+	return newTestServerWithAudio(t, st, nil)
+}
+
+func newTestServerWithAudio(t *testing.T, st store.Store, audio AudioSaver) *httptest.Server {
 	t.Helper()
 	pipe := &pipeline.Pipeline{
 		FastSTT:            fakeSTT{text: "hello there"},
@@ -193,7 +238,7 @@ func newTestServer(t *testing.T, st store.Store) *httptest.Server {
 		LLM:                fakeLLM{},
 		MaxHistoryMessages: 20,
 	}
-	h := NewHandler(pipe, identity.NewCookieIdentifier(), st)
+	h := NewHandler(pipe, identity.NewCookieIdentifier(), st, audio)
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	return srv
@@ -292,7 +337,7 @@ func TestWSFirstVisitSetsAnonymousCookie(t *testing.T) {
 // must refuse before ever attempting the WS upgrade.
 func TestWSRejectsWhenIdentityFails(t *testing.T) {
 	pipe := &pipeline.Pipeline{FastSTT: fakeSTT{text: "hi"}, SlowSTT: fakeSTT{text: "hi"}, LLM: fakeLLM{}}
-	h := NewHandler(pipe, fakeHeaderIdentifier{"X-Auth-Request-Email"}, newFakeStore())
+	h := NewHandler(pipe, fakeHeaderIdentifier{"X-Auth-Request-Email"}, newFakeStore(), nil)
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
@@ -310,7 +355,7 @@ func TestWSRejectsWhenIdentityFails(t *testing.T) {
 // contract, but with identity resolving successfully.
 func TestWSHeaderIdentityConnectsWhenHeaderPresent(t *testing.T) {
 	pipe := &pipeline.Pipeline{FastSTT: fakeSTT{text: "hi"}, SlowSTT: fakeSTT{text: "hi"}, LLM: fakeLLM{}}
-	h := NewHandler(pipe, fakeHeaderIdentifier{"X-Auth-Request-Email"}, newFakeStore())
+	h := NewHandler(pipe, fakeHeaderIdentifier{"X-Auth-Request-Email"}, newFakeStore(), nil)
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
@@ -353,6 +398,39 @@ func TestWSTextTurnRoundTrip(t *testing.T) {
 	done := readUntil(t, c, protocol.EvAssistantDone)
 	if done.Text == "" {
 		t.Fatalf("assistant_done had empty text")
+	}
+}
+
+// TestWSBinaryFrameBacksUpAudio verifies each incoming utterance's raw PCM is
+// also streamed to the configured AudioSaver, independent of the STT/LLM
+// pipeline — a nil AudioSaver (the zero-setup default, exercised by every
+// other test via newTestServer) must skip this entirely instead of panicking.
+func TestWSBinaryFrameBacksUpAudio(t *testing.T) {
+	audio := newFakeAudioSaver()
+	srv := newTestServerWithAudio(t, newTestStore(t), audio)
+	c, _ := dial(t, srv, "", "")
+	readEvent(t, c) // ready
+
+	pcm := []byte("fake pcm bytes")
+	if err := c.Write(context.Background(), websocket.MessageBinary, pcm); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	readUntil(t, c, protocol.EvFinal) // the pipeline consumed the frame
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && audio.count() == 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if audio.count() != 1 {
+		t.Fatalf("audio saves = %d, want 1", audio.count())
+	}
+	for key, saved := range audio.snapshot() {
+		if !strings.HasSuffix(key, ".pcm") {
+			t.Errorf("key = %q, want a .pcm suffix", key)
+		}
+		if string(saved) != string(pcm) {
+			t.Errorf("saved bytes = %q, want %q", saved, pcm)
+		}
 	}
 }
 
