@@ -167,20 +167,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			switch m.Type {
 			case "text":
 				go h.pipe.HandleText(tctx, sess, m.Text, emit)
-			case "reset":
-				sess.Reset(pipeline.DefaultSystemPrompt)
-				// Turn numbering restarts at 1 after Reset, which would
-				// collide with (and silently overwrite, via SaveTurn's
-				// upsert) this room's original turn 1 if its old transcript
-				// were left in place. Clearing it keeps "reset" meaning the
-				// same thing for the persisted history as it does on
-				// screen: this room's messages are gone, its long-term
-				// summary and title are not.
-				go func() {
-					if err := h.store.DeleteTurns(context.Background(), userID, sessionID); err != nil {
-						log.Printf("store: delete turns %s/%s: %v", userID, sessionID, err)
-					}
-				}()
 			}
 		}
 	}

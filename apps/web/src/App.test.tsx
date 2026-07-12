@@ -19,7 +19,6 @@ vi.mock("./lib/ws", () => ({
     return Object.assign(this, {
       connect: vi.fn(),
       close: vi.fn(),
-      reset: vi.fn(),
       sendText: vi.fn(),
       sendAudio: vi.fn(),
     });
@@ -282,15 +281,6 @@ describe("hamburger menu", () => {
     await user.type(screen.getByLabelText("PR 미리보기로 이동"), "14");
     await user.click(screen.getByRole("button", { name: "이동" }));
     expect(location.assign).toHaveBeenCalledWith("/pr/14/");
-  });
-
-  it("closes the menu when resetting the conversation", async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    await enterNewChat(user);
-    await openMenu(user);
-    await user.click(screen.getByRole("menuitem", { name: /대화 초기화/ }));
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 });
 

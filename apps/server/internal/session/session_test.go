@@ -102,30 +102,6 @@ func TestReplaceLastUserNoUserTurnIsNoop(t *testing.T) {
 	}
 }
 
-// TestResetKeepsSummaryDropsVerbatimWindow guards a deliberate product
-// decision: the long-term summary is the learner's permanent profile and
-// must survive a UI "Reset" the same way it survives a reconnect — only the
-// visible chat transcript is cleared.
-func TestResetKeepsSummaryDropsVerbatimWindow(t *testing.T) {
-	s := New("sys")
-	s.Seed("permanent learner profile", []llm.Message{{Role: llm.RoleUser, Content: "hi"}})
-	s.AppendUser("more chat")
-	s.NextTurn()
-
-	s.Reset("new sys")
-
-	summary, recent := s.Export()
-	if summary != "permanent learner profile" {
-		t.Fatalf("Reset must keep the summary, got %q", summary)
-	}
-	if len(recent) != 0 {
-		t.Fatalf("Reset must clear the verbatim window, got %+v", recent)
-	}
-	if got := s.NextTurn(); got != 1 {
-		t.Fatalf("Reset must restart the turn counter, NextTurn() = %d, want 1", got)
-	}
-}
-
 func TestNextTurnIncrements(t *testing.T) {
 	s := New("sys")
 	if got := s.NextTurn(); got != 1 {

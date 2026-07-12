@@ -345,39 +345,6 @@ func TestMySQLSaveCorrectionNoopWhenTurnMissing(t *testing.T) {
 	}
 }
 
-func TestMySQLDeleteTurnsClearsTranscriptKeepsSummaryAndTitle(t *testing.T) {
-	st := requireStore(t)
-	ctx := context.Background()
-	sessionID := "sess-delete"
-	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "original opener", false); err != nil {
-		t.Fatalf("SaveTurn() error = %v", err)
-	}
-	if err := st.Save(ctx, "alex", sessionID, Profile{Summary: "long-term memory"}); err != nil {
-		t.Fatalf("Save() error = %v", err)
-	}
-	if err := st.DeleteTurns(ctx, "alex", sessionID); err != nil {
-		t.Fatalf("DeleteTurns() error = %v", err)
-	}
-
-	meta, turns, err := st.SessionDetail(ctx, "alex", sessionID)
-	if err != nil {
-		t.Fatalf("SessionDetail() error = %v", err)
-	}
-	if len(turns) != 0 {
-		t.Fatalf("expected no turns after DeleteTurns, got %+v", turns)
-	}
-	if meta.Title != "original opener" {
-		t.Fatalf("Title = %q, DeleteTurns should not touch it", meta.Title)
-	}
-	profile, err := st.Load(ctx, "alex", sessionID)
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if profile.Summary != "long-term memory" {
-		t.Fatalf("Summary = %q, DeleteTurns should not touch the long-term summary", profile.Summary)
-	}
-}
-
 func TestMySQLSessionDetailOrdersUserBeforeAssistantWithinATurn(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()

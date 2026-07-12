@@ -53,10 +53,6 @@ export class BuddyClient {
     this.send({ type: "text", text });
   }
 
-  reset() {
-    this.send({ type: "reset" });
-  }
-
   close() {
     this.ws?.close();
     this.ws = null;
