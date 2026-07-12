@@ -1,3 +1,4 @@
+import { fetchJSON } from "./fetchJSON";
 import type { Correction } from "./protocol";
 
 // Mirrors store.SessionMeta / store.Turn (apps/server/internal/store/store.go).
@@ -21,30 +22,16 @@ export interface SessionDetail {
   turns: TurnRecord[];
 }
 
-// Fetches the caller's own chat rooms, most recently active first. Relative
-// URL: resolves against the current page, so this still hits the right
-// server whether the app is mounted at "/" or under a ROOT_PATH prefix.
-// Returns [] on any failure so the room list can render an empty state
-// instead of throwing.
+// Fetches the caller's own chat rooms, most recently active first. Returns
+// [] on any failure so the room list can render an empty state instead of
+// throwing.
 export async function fetchSessions(): Promise<SessionSummary[]> {
-  try {
-    const res = await fetch("api/sessions");
-    if (!res.ok) return [];
-    return (await res.json()) as SessionSummary[];
-  } catch {
-    return [];
-  }
+  return fetchJSON<SessionSummary[]>("api/sessions", []);
 }
 
 // Fetches one room's full transcript for replay. Returns null on any
 // failure — network error, non-200 (including a 404 for someone else's
 // session ID), or bad JSON.
 export async function fetchSessionDetail(id: string): Promise<SessionDetail | null> {
-  try {
-    const res = await fetch(`api/sessions/${encodeURIComponent(id)}`);
-    if (!res.ok) return null;
-    return (await res.json()) as SessionDetail;
-  } catch {
-    return null;
-  }
+  return fetchJSON<SessionDetail | null>(`api/sessions/${encodeURIComponent(id)}`, null);
 }

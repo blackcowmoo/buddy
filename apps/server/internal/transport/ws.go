@@ -3,8 +3,6 @@ package transport
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log"
@@ -46,19 +44,6 @@ func NewHandler(p *pipeline.Pipeline, ident identity.Identifier, st store.Store,
 	return &Handler{pipe: p, ident: ident, store: st, audio: audio}
 }
 
-// newSessionID mints a chat-room ID with the same shape/entropy as
-// identity.CookieIdentifier's anonymous IDs — 128 bits of crypto/rand, hex
-// encoded. Uniqueness (not unguessability of someone else's) is all that's
-// required here: every store lookup is scoped by (userID, sessionID)
-// together, so a collision or a guessed ID from another user still can't
-// reach that user's data (see the composite primary keys in
-// internal/store/mysql.go).
-func newSessionID() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
-}
-
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Resolve (and, on first visit, set) the ID before the upgrade, since
 	// Set-Cookie must go out on the HTTP response, not the WS frames. ok is
@@ -76,7 +61,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// room list rather than silently reconnecting to whatever was last open.
 	sessionID := r.URL.Query().Get("session")
 	if sessionID == "" {
-		sessionID = newSessionID()
+		// Uniqueness (not unguessability of someone else's) is all that's
+		// required here: every store lookup is scoped by (userID, sessionID)
+		// together, so a collision or a guessed ID from another user still
+		// can't reach that user's data (see the composite primary keys in
+		// internal/store/mysql.go).
+		sessionID = identity.NewOpaqueID()
 	}
 
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
@@ -222,18 +212,19 @@ func persistEvent(st store.Store, userID, sessionID string, ev protocol.ServerEv
 		if ev.Correction == nil {
 			return
 		}
-		c := *ev.Correction
-		go func() {
-			if err := st.SaveCorrection(context.Background(), userID, sessionID, ev.Turn, c); err != nil {
-				log.Printf("store: save correction %s/%s#%d: %v", userID, sessionID, ev.Turn, err)
-			}
-		}()
+		go saveCorrection(st, userID, sessionID, ev.Turn, *ev.Correction)
 	}
 }
 
 func saveTurn(st store.Store, userID, sessionID string, turn int, role, text string, refined bool) {
 	if err := st.SaveTurn(context.Background(), userID, sessionID, turn, role, text, refined); err != nil {
 		log.Printf("store: save turn %s/%s#%d: %v", userID, sessionID, turn, err)
+	}
+}
+
+func saveCorrection(st store.Store, userID, sessionID string, turn int, c protocol.Correction) {
+	if err := st.SaveCorrection(context.Background(), userID, sessionID, turn, c); err != nil {
+		log.Printf("store: save correction %s/%s#%d: %v", userID, sessionID, turn, err)
 	}
 }
 
