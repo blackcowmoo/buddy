@@ -88,6 +88,38 @@ current WebSocket connection:
   optimization layer: any Redis error just falls through to verifying
   directly, same as when it's unset.
 
+## Voice recording archive
+
+Every spoken utterance can optionally be archived to S3 for later playback,
+via a **recordings** page reachable from the hamburger menu. This is pure
+storage for now — nothing in the app consumes the audio back yet, it's there
+for whatever comes next (e.g. training data, review, re-transcription with a
+better model down the line).
+
+- **Compression** (`internal/recording`): raw PCM is never stored. Each
+  utterance (mono 16-bit PCM, same wire format the WS handshake uses) is
+  wrapped in a WAV header and gzip-compressed before it reaches S3 — a
+  deliberately low-effort choice: stdlib only, no codec dependency or
+  subprocess to manage (unlike `internal/stt`'s whisper.cpp), good enough for
+  archival speech audio. The gzip bytes are stored as the S3 object body with
+  `Content-Encoding: gzip`, so serving playback back to the browser
+  (`GET /api/recordings/{id}/audio`) is a byte-for-byte proxy — the browser's
+  own HTTP stack decompresses it, no server CPU spent decoding.
+- **Storage**: audio bytes live in S3; metadata (id, duration, size,
+  timestamp) lives in MySQL as `buddy_recordings` (same `buddy_` prefix
+  convention as `buddy_profiles`), sharing the same connection pool as
+  `internal/store` rather than opening a second one.
+- **Saving is decoupled from the conversation pipeline**: it happens
+  alongside `pipeline.HandleUtterance` in `internal/transport/ws.go`, not
+  inside it, so a save failure never disrupts the live conversation and STT
+  quality/latency has no bearing on what gets archived.
+- **Optional, disabled by default**: leave `BUDDY_S3_BUCKET` unset and this
+  feature is a no-op (same convention as `REDIS_CLUSTER_HOST` above) — the WS
+  handler skips saving, and `/api/recordings*` answer `503`.
+- **Per-user scoping**: both listing and playback are scoped to the caller's
+  resolved identity (`internal/identity`) — one user can never list or play
+  back another user's recordings, even by guessing an ID.
+
 ## Quickstart (zero setup — pure `docker build`, mock STT, no models)
 
 No host Go/Node toolchain needed. Build the self-contained image and run it:
@@ -179,6 +211,18 @@ the app would still be rejected.
 | `REDIS_PORT` | Port for `REDIS_CLUSTER_HOST` (default `6379`); skip it if the host value already carries its own port. |
 | `REDIS_PASSWORD` | Only if your cluster needs it. |
 
+**Optional (enables the voice recording archive — see above):**
+
+| Variable | Purpose |
+|---|---|
+| `BUDDY_S3_BUCKET` | S3 bucket to archive recordings into. Unset (default) disables the feature entirely. |
+| `BUDDY_S3_REGION` | Bucket's region (default `us-east-1`). |
+| `BUDDY_S3_ENDPOINT` | Only for an S3-compatible endpoint (e.g. MinIO) in local dev; leave unset for real AWS S3. |
+
+Credentials come from the standard AWS credential chain
+(`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, or an IAM role/IRSA in
+Kubernetes) — not a bespoke `BUDDY_*` pair.
+
 **Everything else is optional** (sane defaults, see `.env.example`):
 `BUDDY_ADDR`, `BUDDY_FEEDBACK_LANG`, `BUDDY_MAX_HISTORY_MESSAGES`,
 `BUDDY_LLM_CHAT_MODEL`/`BUDDY_LLM_CORRECT_MODEL`, `BUDDY_FAST_STT`/`BUDDY_SLOW_STT`
@@ -226,6 +270,7 @@ buddy/
 │   │       ├── pipeline/        # FAST + REFINE orchestration
 │   │       ├── session/         # per-connection memory: verbatim window + summary
 │   │       ├── store/           # persists Profiles (MySQL, buddy_ table prefix)
+│   │       ├── recording/       # archives utterance audio: S3 (gzip WAV) + MySQL metadata
 │   │       ├── identity/        # resolves user ID: anonymous cookie, or OIDC (Dex JWT)
 │   │       ├── stt/             # Recognizer interface: mock, whisper
 │   │       ├── llm/             # Client interface: OpenAI-compatible (llama.cpp)
@@ -239,6 +284,9 @@ buddy/
 │           ├── lib/protocol.ts     # wire types
 │           ├── lib/rootPath.ts     # PR-preview path switcher (hamburger menu)
 │           ├── lib/me.ts           # fetches resolved identity for the menu
+│           ├── lib/route.ts        # picks chat vs. recordings page from the URL
+│           ├── lib/recordings.ts   # fetches/plays the recording archive
+│           ├── pages/Recordings.tsx # recordings list + playback page
 │           └── App.tsx             # + App.test.tsx (Testing Library, jsdom)
 └── models/                      # ggml-*.bin etc. (gitignored)
 ```
@@ -295,3 +343,6 @@ without touching the pipeline:
 - `protocol.go` and `protocol.ts` are hand-mirrored — change them together.
 - Barge-in: speaking again cancels the in-flight turn (see `transport/ws.go`).
 - kokoro's ONNX runtime is ~21 MB of WASM + the model on first load; it's lazy.
+- The voice recording archive (`internal/recording`) uses `aws-sdk-go-v2`,
+  which is pure Go — no cgo, so it doesn't affect the static/scratch export
+  build (`docker build --target export`).

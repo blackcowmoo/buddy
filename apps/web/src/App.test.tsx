@@ -282,6 +282,14 @@ describe("hamburger menu", () => {
     await user.click(screen.getByRole("button", { name: "이동" }));
     expect(location.assign).toHaveBeenCalledWith("/pr/14/");
   });
+
+  it("navigates to the relative recordings page from the menu", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await openMenu(user);
+    await user.click(screen.getByRole("menuitem", { name: /녹음 목록/ }));
+    expect(location.assign).toHaveBeenCalledWith("recordings");
+  });
 });
 
 describe("theme switch", () => {

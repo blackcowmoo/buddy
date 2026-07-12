@@ -14,6 +14,7 @@ import (
 	"buddy/server/internal/config"
 	"buddy/server/internal/identity"
 	"buddy/server/internal/pipeline"
+	"buddy/server/internal/recording"
 	"buddy/server/internal/store"
 	"buddy/server/internal/transport"
 )
@@ -21,12 +22,15 @@ import (
 // New builds the single HTTP entry point. assets is the embedded frontend FS
 // (from webassets.FS()); pass nil to serve from disk (prod) or proxy (dev).
 // audio is optional (nil disables temporary S3 audio backup — see
-// internal/audiostore).
-func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver) *http.Server {
+// internal/audiostore). recordings is nil when voice-recording archival is
+// disabled (see config.RecordingS3Bucket) — the /api/recordings routes still
+// exist but answer 503. These are two separate, unrelated S3-backed features
+// — see internal/recording's package doc for why they coexist.
+func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store) *http.Server {
 	mux := http.NewServeMux()
 
 	// Realtime + API first (exact patterns win over the "/" catch-all).
-	mux.Handle("/ws", transport.NewHandler(pipe, ident, st, audio))
+	mux.Handle("/ws", transport.NewHandler(pipe, ident, st, audio, recordings))
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{
 			"ok":       true,
@@ -39,6 +43,8 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux.HandleFunc("/api/me", meHandler(cfg.IdentityMode, ident))
 	mux.HandleFunc("/api/sessions", sessionsListHandler(ident, st))
 	mux.HandleFunc("/api/sessions/{id}", sessionDetailHandler(ident, st))
+	mux.HandleFunc("GET /api/recordings", recordingsListHandler(ident, recordings))
+	mux.HandleFunc("GET /api/recordings/{id}/audio", recordingAudioHandler(ident, recordings))
 	registerStalePRRedirect(mux, cfg.RootPath)
 
 	// Frontend.
