@@ -75,9 +75,6 @@ type Store interface {
 	// SaveCorrection attaches grammar/vocabulary feedback to an existing
 	// user turn. A no-op if that turn hasn't been saved yet.
 	SaveCorrection(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction) error
-	// DeleteTurns clears a session's transcript (used by the "reset
-	// conversation" action) without touching its long-term summary or title.
-	DeleteTurns(ctx context.Context, userID, sessionID string) error
 
 	// ListSessions returns userID's chat rooms, most recently active first.
 	// Only sessions with at least one saved turn appear (see SaveTurn).

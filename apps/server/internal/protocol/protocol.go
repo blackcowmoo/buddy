@@ -58,6 +58,6 @@ type Issue struct {
 // ---- client -> server (TEXT control frames) ---------------------------------
 
 type ClientMsg struct {
-	Type string `json:"type"` // "text" (typed input) | "reset"
+	Type string `json:"type"` // "text" (typed input)
 	Text string `json:"text,omitempty"`
 }

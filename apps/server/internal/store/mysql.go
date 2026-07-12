@@ -251,15 +251,6 @@ func (s *MySQLStore) SaveCorrection(ctx context.Context, userID, sessionID strin
 	return nil
 }
 
-func (s *MySQLStore) DeleteTurns(ctx context.Context, userID, sessionID string) error {
-	if _, err := s.rw.ExecContext(ctx, `
-		DELETE FROM `+turnsTable+` WHERE user_id = ? AND session_id = ?
-	`, userID, sessionID); err != nil {
-		return fmt.Errorf("store: delete turns: %w", err)
-	}
-	return nil
-}
-
 func (s *MySQLStore) ListSessions(ctx context.Context, userID string) ([]SessionMeta, error) {
 	rows, err := s.ro.QueryContext(ctx, `
 		SELECT id, title, created_at, updated_at FROM `+sessionsTable+`

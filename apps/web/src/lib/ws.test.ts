@@ -132,13 +132,6 @@ describe("BuddyClient", () => {
     expect(lastSocket.sent).toEqual([pcm.buffer]);
   });
 
-  it("reset sends a reset message", () => {
-    const client = connectedClient();
-    lastSocket.open();
-    client.reset();
-    expect(lastSocket.sent).toEqual([JSON.stringify({ type: "reset" })]);
-  });
-
   it("close() tears down the socket", () => {
     const client = connectedClient();
     lastSocket.open();

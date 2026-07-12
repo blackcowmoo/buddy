@@ -93,18 +93,6 @@ func (s *Session) Snapshot() []llm.Message {
 	return out
 }
 
-// Reset clears the visible conversation (verbatim window + turn counter) but
-// intentionally keeps the long-term summary — that's the learner's permanent
-// profile (internal/store), not the chat transcript, and should survive a UI
-// "reset" the same way it survives a reconnect.
-func (s *Session) Reset(systemPrompt string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.system = systemPrompt
-	s.history = nil
-	s.turn = 0
-}
-
 // PeekOldestForCompaction returns the oldest verbatim messages to fold into
 // the summary, without mutating state, once the window exceeds max (ok=false
 // otherwise). The caller runs the LLM summarization outside the lock, then

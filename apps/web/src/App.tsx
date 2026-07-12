@@ -242,13 +242,6 @@ export function App() {
     [text],
   );
 
-  const resetChat = useCallback(() => {
-    clientRef.current?.reset();
-    setMsgs([]);
-    setCorrections({});
-    setMenuOpen(false);
-  }, []);
-
   // Click-outside / Escape closes the menu, same as any dropdown.
   useEffect(() => {
     if (!menuOpen) return;
@@ -378,7 +371,6 @@ export function App() {
                 onNewRateInputChange: setNewRateInput,
                 onAddRate: addRate,
                 onRemoveRate: removeRate,
-                onResetChat: resetChat,
               }}
             />
           )}
@@ -535,13 +527,12 @@ interface ChatMenuProps {
   onNewRateInputChange: (v: string) => void;
   onAddRate: (e: React.FormEvent) => void;
   onRemoveRate: (rate: number) => void;
-  onResetChat: () => void;
 }
 
 // Shared by both the room list and the chat header, so the menu (identity,
 // theme, PR-preview nav) is reachable before a room is ever opened, not just
 // from within a conversation. `chat` carries the items that only make sense
-// once a room is open (voice/playback speed, reset) — omitted on the list.
+// once a room is open (voice/playback speed) — omitted on the list.
 function MenuPanel({
   email,
   theme,
@@ -606,9 +597,6 @@ function MenuPanel({
               </form>
             )}
           </div>
-          <button className="ghost menu-item" onClick={chat.onResetChat} role="menuitem">
-            ↺ 대화 초기화
-          </button>
           <div className="menu-divider" />
         </>
       )}

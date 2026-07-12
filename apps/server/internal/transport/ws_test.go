@@ -141,15 +141,6 @@ func (f *fakeStore) SaveCorrection(ctx context.Context, userID, sessionID string
 	return nil
 }
 
-func (f *fakeStore) DeleteTurns(ctx context.Context, userID, sessionID string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if d := f.sessions[fakeStoreKey(userID, sessionID)]; d != nil {
-		d.turns = map[string]store.Turn{}
-	}
-	return nil
-}
-
 func (f *fakeStore) ListSessions(ctx context.Context, userID string) ([]store.SessionMeta, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -622,66 +613,3 @@ func TestWSListSessionsOnlyShowsSessionsWithMessages(t *testing.T) {
 	}
 }
 
-func TestWSResetClearsVisibleTurnCounter(t *testing.T) {
-	srv := newTestServer(t, newTestStore(t))
-	c, _ := dial(t, srv, "", "")
-	readEvent(t, c) // ready
-
-	sendText(t, c, "first")
-	readUntil(t, c, protocol.EvAssistantDone)
-
-	resetMsg, _ := json.Marshal(protocol.ClientMsg{Type: "reset"})
-	if err := c.Write(context.Background(), websocket.MessageText, resetMsg); err != nil {
-		t.Fatalf("Write(reset) error = %v", err)
-	}
-
-	sendText(t, c, "second")
-	final := readUntil(t, c, protocol.EvFinal)
-	if final.Turn != 1 {
-		t.Fatalf("turn counter should restart after reset, got turn=%d", final.Turn)
-	}
-}
-
-// TestWSResetClearsPersistedTurns guards the fix for a real bug this design
-// would otherwise have: turn numbering restarts at 1 after "reset", which
-// would silently overwrite (via SaveTurn's upsert) this room's *original*
-// turn 1 in the transcript if the old rows were left in place. "reset" must
-// clear the persisted transcript too, so the persisted history matches what
-// the client sees on screen.
-func TestWSResetClearsPersistedTurns(t *testing.T) {
-	st := newTestStore(t)
-	srv := newTestServer(t, st)
-	c, _ := dial(t, srv, "reset-user", "")
-	ready := readEvent(t, c)
-
-	sendText(t, c, "first")
-	readUntil(t, c, protocol.EvAssistantDone)
-
-	waitForTurns := func(want int) []store.Turn {
-		t.Helper()
-		deadline := time.Now().Add(10 * time.Second) // CI runners can be much slower than local
-		for time.Now().Before(deadline) {
-			_, turns, err := st.SessionDetail(context.Background(), "reset-user", ready.Session)
-			if err == nil && len(turns) == want {
-				return turns
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
-		t.Fatalf("timed out waiting for %d persisted turns", want)
-		return nil
-	}
-	waitForTurns(2) // user "first" + assistant reply
-
-	resetMsg, _ := json.Marshal(protocol.ClientMsg{Type: "reset"})
-	if err := c.Write(context.Background(), websocket.MessageText, resetMsg); err != nil {
-		t.Fatalf("Write(reset) error = %v", err)
-	}
-	waitForTurns(0)
-
-	sendText(t, c, "second, after reset")
-	readUntil(t, c, protocol.EvAssistantDone)
-	turns := waitForTurns(2)
-	if turns[0].Text != "second, after reset" {
-		t.Fatalf("turn[0].Text = %q, want the post-reset message (original turn 1 should be gone, not overwritten silently)", turns[0].Text)
-	}
-}

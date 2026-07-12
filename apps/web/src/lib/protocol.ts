@@ -32,4 +32,4 @@ export interface ServerEvent {
   correction?: Correction;
 }
 
-export type ClientMsg = { type: "text"; text: string } | { type: "reset" };
+export type ClientMsg = { type: "text"; text: string };
