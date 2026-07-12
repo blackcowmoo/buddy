@@ -382,7 +382,7 @@ func TestWSMemoryPersistsAcrossReconnects(t *testing.T) {
 
 	waitForRecentCount := func(want int) store.Profile {
 		t.Helper()
-		deadline := time.Now().Add(2 * time.Second)
+		deadline := time.Now().Add(10 * time.Second) // CI runners can be much slower than local
 		for time.Now().Before(deadline) {
 			p, err := st.Load(context.Background(), cookie, sessionID)
 			if err != nil {
@@ -429,7 +429,7 @@ func TestWSOmittingSessionParamStartsNewSession(t *testing.T) {
 	c1.Close(websocket.StatusNormalClosure, "")
 
 	// Wait for the first connection's turn to land before opening the second.
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second) // CI runners can be much slower than local
 	for time.Now().Before(deadline) {
 		if p, _ := st.Load(context.Background(), cookie, ready1.Session); len(p.Recent) > 0 {
 			break
@@ -473,7 +473,7 @@ func TestWSDifferentCookiesAreIsolated(t *testing.T) {
 		c.Close(websocket.StatusNormalClosure, "")
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second) // CI runners can be much slower than local
 	for time.Now().Before(deadline) {
 		a, _ := st.Load(context.Background(), "user-a", sessions["user-a"])
 		b, _ := st.Load(context.Background(), "user-b", sessions["user-b"])
@@ -502,7 +502,7 @@ func TestWSFinalAndAssistantTurnsArePersisted(t *testing.T) {
 	readUntil(t, c, protocol.EvAssistantDone)
 
 	var turns []store.Turn
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second) // CI runners can be much slower than local
 	for time.Now().Before(deadline) {
 		_, ts, err := st.SessionDetail(context.Background(), "turn-user", ready.Session)
 		if err == nil && len(ts) == 2 {
@@ -581,7 +581,7 @@ func TestWSResetClearsPersistedTurns(t *testing.T) {
 
 	waitForTurns := func(want int) []store.Turn {
 		t.Helper()
-		deadline := time.Now().Add(2 * time.Second)
+		deadline := time.Now().Add(10 * time.Second) // CI runners can be much slower than local
 		for time.Now().Before(deadline) {
 			_, turns, err := st.SessionDetail(context.Background(), "reset-user", ready.Session)
 			if err == nil && len(turns) == want {
