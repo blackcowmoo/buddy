@@ -32,6 +32,12 @@ type ServerEvent struct {
 	Turn int    `json:"turn"`
 	Text string `json:"text,omitempty"`
 
+	// Session carries the resolved session (chat room) ID. Only set on
+	// EvReady — the client uses it to fetch/replay this room later via
+	// GET /api/sessions/{id} and to resume it with ?session=<id> on a
+	// future connection.
+	Session string `json:"session,omitempty"`
+
 	// Only on EvCorrection.
 	Correction *Correction `json:"correction,omitempty"`
 }

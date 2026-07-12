@@ -42,11 +42,20 @@ vi.mock("./lib/me", () => ({
   fetchMe: vi.fn(),
 }));
 
+vi.mock("./lib/sessions", () => ({
+  fetchSessions: vi.fn(),
+  fetchSessionDetail: vi.fn(),
+}));
+
 import { App } from "./App";
 import { fetchMe } from "./lib/me";
+import { fetchSessionDetail, fetchSessions } from "./lib/sessions";
+import { BuddyClient } from "./lib/ws";
 
 beforeEach(() => {
   vi.mocked(fetchMe).mockResolvedValue(null);
+  vi.mocked(fetchSessions).mockResolvedValue([]);
+  vi.mocked(fetchSessionDetail).mockResolvedValue(null);
   vi.stubGlobal("location", {
     protocol: "http:",
     host: "buddy.example",
@@ -65,15 +74,95 @@ function openMenu(user: ReturnType<typeof userEvent.setup>) {
   return user.click(screen.getByRole("button", { name: "Menu" }));
 }
 
-describe("hamburger menu", () => {
-  it("is closed by default", () => {
+// The app always lands on the room list; the hamburger menu only exists in
+// chat view, so every menu test needs to get there first, the same way a
+// learner would: start a new chat.
+async function enterNewChat(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "+ 새 대화" }));
+  await screen.findByRole("button", { name: "Menu" });
+}
+
+function lastClientInstance() {
+  const mocked = vi.mocked(BuddyClient);
+  return mocked.mock.instances[mocked.mock.instances.length - 1] as unknown as {
+    connect: ReturnType<typeof vi.fn>;
+    close: ReturnType<typeof vi.fn>;
+  };
+}
+
+describe("room list", () => {
+  it("is the initial view — no WS connection until a room is opened", () => {
     render(<App />);
+    expect(screen.getByRole("button", { name: "+ 새 대화" })).toBeInTheDocument();
+    expect(vi.mocked(BuddyClient).mock.instances[0]).toBeDefined();
+    expect(lastClientInstance().connect).not.toHaveBeenCalled();
+  });
+
+  it("shows an empty state with no sessions", async () => {
+    render(<App />);
+    expect(await screen.findByText(/아직 대화 기록이 없어요/)).toBeInTheDocument();
+  });
+
+  it("lists sessions returned by the server", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: Math.floor(Date.now() / 1000) },
+    ]);
+    render(<App />);
+    expect(await screen.findByText("hello there")).toBeInTheDocument();
+  });
+
+  it("starting a new chat opens the WS with no session id", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    expect(lastClientInstance().connect).toHaveBeenCalledWith(undefined);
+  });
+
+  it("clicking a session hydrates its transcript and resumes it by id", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+      turns: [
+        { turn: 1, role: "user", text: "hi", refined: false },
+        { turn: 1, role: "assistant", text: "hello!", refined: false },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+
+    expect(await screen.findByText("hi")).toBeInTheDocument();
+    expect(await screen.findByText("hello!")).toBeInTheDocument();
+    expect(fetchSessionDetail).toHaveBeenCalledWith("s1");
+    expect(lastClientInstance().connect).toHaveBeenCalledWith("s1");
+  });
+
+  it('"back to list" closes the connection and re-shows the room list', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+
+    await user.click(screen.getByRole("button", { name: "목록으로" }));
+
+    expect(await screen.findByRole("button", { name: "+ 새 대화" })).toBeInTheDocument();
+    expect(lastClientInstance().close).toHaveBeenCalled();
+  });
+});
+
+describe("hamburger menu", () => {
+  it("is closed by default", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 
   it("opens on click and closes on a second click", async () => {
     const user = userEvent.setup();
     render(<App />);
+    await enterNewChat(user);
     await openMenu(user);
     expect(screen.getByRole("menu")).toBeInTheDocument();
     await openMenu(user);
@@ -83,6 +172,7 @@ describe("hamburger menu", () => {
   it("closes when clicking outside the menu", async () => {
     const user = userEvent.setup();
     render(<App />);
+    await enterNewChat(user);
     await openMenu(user);
     expect(screen.getByRole("menu")).toBeInTheDocument();
     await user.click(document.body);
@@ -92,6 +182,7 @@ describe("hamburger menu", () => {
   it("closes on Escape", async () => {
     const user = userEvent.setup();
     render(<App />);
+    await enterNewChat(user);
     await openMenu(user);
     expect(screen.getByRole("menu")).toBeInTheDocument();
     await user.keyboard("{Escape}");
@@ -102,6 +193,7 @@ describe("hamburger menu", () => {
     vi.mocked(fetchMe).mockResolvedValue({ identityMode: "oidc", id: "alex@example.com" });
     const user = userEvent.setup();
     render(<App />);
+    await enterNewChat(user);
     await openMenu(user);
     expect(await screen.findByText("alex@example.com")).toBeInTheDocument();
   });
@@ -109,6 +201,7 @@ describe("hamburger menu", () => {
   it("shows an anonymous label when there is no real identity", async () => {
     const user = userEvent.setup();
     render(<App />);
+    await enterNewChat(user);
     await openMenu(user);
     expect(await screen.findByText("익명 사용자")).toBeInTheDocument();
   });
@@ -116,6 +209,7 @@ describe("hamburger menu", () => {
   it("rejects a non-numeric PR path and does not navigate", async () => {
     const user = userEvent.setup();
     render(<App />);
+    await enterNewChat(user);
     await openMenu(user);
     await user.type(screen.getByLabelText("PR 미리보기로 이동"), "abc");
     await user.click(screen.getByRole("button", { name: "이동" }));
@@ -126,6 +220,7 @@ describe("hamburger menu", () => {
   it("navigates to /pr/<n>/ for a numeric PR input", async () => {
     const user = userEvent.setup();
     render(<App />);
+    await enterNewChat(user);
     await openMenu(user);
     await user.type(screen.getByLabelText("PR 미리보기로 이동"), "14");
     await user.click(screen.getByRole("button", { name: "이동" }));
@@ -135,6 +230,7 @@ describe("hamburger menu", () => {
   it("closes the menu when resetting the conversation", async () => {
     const user = userEvent.setup();
     render(<App />);
+    await enterNewChat(user);
     await openMenu(user);
     await user.click(screen.getByRole("menuitem", { name: /대화 초기화/ }));
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();

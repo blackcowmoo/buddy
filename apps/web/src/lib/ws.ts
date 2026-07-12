@@ -12,13 +12,21 @@ export class BuddyClient {
     private onStatus: (s: Status) => void,
   ) {}
 
-  connect() {
+  /**
+   * Opens the connection. Passing sessionID resumes that chat room (server
+   * seeds its long-term memory and the caller is expected to have already
+   * hydrated the visible transcript via fetchSessionDetail); omitting it
+   * always starts a brand-new room — the server mints an ID and returns it
+   * on the "ready" event.
+   */
+  connect(sessionID?: string) {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     // Derive the base path from the current page instead of hardcoding "/ws",
     // so this works whether the app is mounted at "/" or under a ROOT_PATH
     // prefix like "/pr/14" (see httpserver.withRootPath server-side).
     const base = location.pathname.endsWith("/") ? location.pathname : `${location.pathname}/`;
-    const ws = new WebSocket(`${proto}://${location.host}${base}ws`);
+    const qs = sessionID ? `?session=${encodeURIComponent(sessionID)}` : "";
+    const ws = new WebSocket(`${proto}://${location.host}${base}ws${qs}`);
     ws.binaryType = "arraybuffer";
     this.onStatus("connecting");
 

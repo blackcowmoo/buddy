@@ -2,6 +2,8 @@ package transport
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -32,6 +34,19 @@ func NewHandler(p *pipeline.Pipeline, ident identity.Identifier, st store.Store)
 	return &Handler{pipe: p, ident: ident, store: st}
 }
 
+// newSessionID mints a chat-room ID with the same shape/entropy as
+// identity.CookieIdentifier's anonymous IDs — 128 bits of crypto/rand, hex
+// encoded. Uniqueness (not unguessability of someone else's) is all that's
+// required here: every store lookup is scoped by (userID, sessionID)
+// together, so a collision or a guessed ID from another user still can't
+// reach that user's data (see the composite primary keys in
+// internal/store/mysql.go).
+func newSessionID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Resolve (and, on first visit, set) the ID before the upgrade, since
 	// Set-Cookie must go out on the HTTP response, not the WS frames. ok is
@@ -42,6 +57,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
+	}
+	// The frontend only ever supplies ?session=<id> when the learner picked
+	// an existing chat room from the list (or is resuming one); omitting it
+	// always starts a brand-new room, on purpose — the home screen shows the
+	// room list rather than silently reconnecting to whatever was last open.
+	sessionID := r.URL.Query().Get("session")
+	if sessionID == "" {
+		sessionID = newSessionID()
 	}
 
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
@@ -58,17 +81,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	profile, err := h.store.Load(ctx, userID)
+	profile, err := h.store.Load(ctx, userID, sessionID)
 	if err != nil {
-		log.Printf("store: load %s: %v", userID, err)
+		log.Printf("store: load %s/%s: %v", userID, sessionID, err)
 	}
 	sess := session.New(pipeline.DefaultSystemPrompt)
 	sess.Seed(profile.Summary, profile.Recent)
 
 	save := func() {
 		summary, recent := sess.Export()
-		if err := h.store.Save(context.Background(), userID, store.Profile{Summary: summary, Recent: recent}); err != nil {
-			log.Printf("store: save %s: %v", userID, err)
+		if err := h.store.Save(context.Background(), userID, sessionID, store.Profile{Summary: summary, Recent: recent}); err != nil {
+			log.Printf("store: save %s/%s: %v", userID, sessionID, err)
 		}
 	}
 	defer save() // final save on disconnect
@@ -90,6 +113,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// events reach it, so pipeline goroutines can emit concurrently.
 	events := make(chan protocol.ServerEvent, 128)
 	emit := func(ev protocol.ServerEvent) {
+		persistEvent(h.store, userID, sessionID, ev)
 		select {
 		case events <- ev:
 		case <-ctx.Done():
@@ -113,7 +137,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	emit(protocol.ServerEvent{Type: protocol.EvReady})
+	emit(protocol.ServerEvent{Type: protocol.EvReady, Session: sessionID})
 
 	// turnCancel implements barge-in: a new input cancels the previous turn.
 	turnCancel := func() {}
@@ -140,6 +164,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				go h.pipe.HandleText(tctx, sess, m.Text, emit)
 			case "reset":
 				sess.Reset(pipeline.DefaultSystemPrompt)
+				// Turn numbering restarts at 1 after Reset, which would
+				// collide with (and silently overwrite, via SaveTurn's
+				// upsert) this room's original turn 1 if its old transcript
+				// were left in place. Clearing it keeps "reset" meaning the
+				// same thing for the persisted history as it does on
+				// screen: this room's messages are gone, its long-term
+				// summary and title are not.
+				go func() {
+					if err := h.store.DeleteTurns(context.Background(), userID, sessionID); err != nil {
+						log.Printf("store: delete turns %s/%s: %v", userID, sessionID, err)
+					}
+				}()
 			}
 		}
 	}
@@ -148,4 +184,40 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	cancel()
 	log.Printf("ws: connection closed")
 	_ = c.Close(websocket.StatusNormalClosure, "bye")
+}
+
+// persistEvent writes a copy of ev's payload to durable per-session
+// transcript storage. It's deliberately narrow and off the hot path:
+// EvAssistantDelta fires many times per turn as tokens stream, so only
+// events that represent a finished piece of state trigger a write, and each
+// write runs in its own goroutine so a slow database never adds latency to
+// the live conversation the learner is watching. Writes use
+// context.Background(), not the connection's context, so a turn's result
+// still lands even if the client disconnects or barges in right as it
+// completes (same reasoning as pipeline.compact's use of Background).
+func persistEvent(st store.Store, userID, sessionID string, ev protocol.ServerEvent) {
+	switch ev.Type {
+	case protocol.EvFinal:
+		go saveTurn(st, userID, sessionID, ev.Turn, "user", ev.Text, false)
+	case protocol.EvRefined:
+		go saveTurn(st, userID, sessionID, ev.Turn, "user", ev.Text, true)
+	case protocol.EvAssistantDone:
+		go saveTurn(st, userID, sessionID, ev.Turn, "assistant", ev.Text, false)
+	case protocol.EvCorrection:
+		if ev.Correction == nil {
+			return
+		}
+		c := *ev.Correction
+		go func() {
+			if err := st.SaveCorrection(context.Background(), userID, sessionID, ev.Turn, c); err != nil {
+				log.Printf("store: save correction %s/%s#%d: %v", userID, sessionID, ev.Turn, err)
+			}
+		}()
+	}
+}
+
+func saveTurn(st store.Store, userID, sessionID string, turn int, role, text string, refined bool) {
+	if err := st.SaveTurn(context.Background(), userID, sessionID, turn, role, text, refined); err != nil {
+		log.Printf("store: save turn %s/%s#%d: %v", userID, sessionID, turn, err)
+	}
 }
