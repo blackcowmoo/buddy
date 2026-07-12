@@ -6,6 +6,7 @@ import { KokoroSpeaker } from "./tts/kokoro";
 import { prPath } from "./lib/rootPath";
 import { fetchMe } from "./lib/me";
 import { fetchSessionDetail, fetchSessions, type SessionSummary } from "./lib/sessions";
+import { applyTheme, getStoredTheme, setStoredTheme, type Theme } from "./lib/theme";
 
 interface Msg {
   turn: number;
@@ -34,6 +35,7 @@ export function App() {
   const [prInput, setPrInput] = useState("");
   const [prError, setPrError] = useState(false);
   const [email, setEmail] = useState<string | null>(null);
+  const [theme, setTheme] = useState<Theme>(() => getStoredTheme());
 
   const clientRef = useRef<BuddyClient | null>(null);
   const recorderRef = useRef<PCMRecorder | null>(null);
@@ -133,6 +135,22 @@ export function App() {
     setView("list");
     refreshSessions();
   }, [refreshSessions]);
+
+  useEffect(() => {
+    applyTheme(theme);
+    if (theme !== "system") return;
+    // Live-follow OS/browser theme changes while "system" is selected,
+    // instead of only resolving once at mount.
+    const mql = window.matchMedia("(prefers-color-scheme: light)");
+    const onChange = () => applyTheme("system");
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, [theme]);
+
+  const selectTheme = useCallback((t: Theme) => {
+    setStoredTheme(t);
+    setTheme(t);
+  }, []);
 
   const toggleMic = useCallback(async () => {
     const rec = recorderRef.current;
@@ -279,6 +297,10 @@ export function App() {
                 ↺ 대화 초기화
               </button>
               <div className="menu-divider" />
+              <div className="menu-row">
+                <ThemeSwitch theme={theme} onChange={selectTheme} />
+              </div>
+              <div className="menu-divider" />
               <form className="path-form" onSubmit={goToPath}>
                 <label htmlFor="pr-path">PR 미리보기로 이동</label>
                 <div className="path-row">
@@ -389,6 +411,30 @@ function VoiceButton({
     <button className="ghost" onClick={onLoad}>
       Enable voice
     </button>
+  );
+}
+
+const THEME_LABELS: Record<Theme, string> = {
+  white: "화이트",
+  dark: "다크",
+  system: "시스템 설정",
+};
+
+function ThemeSwitch({ theme, onChange }: { theme: Theme; onChange: (t: Theme) => void }) {
+  return (
+    <div className="theme-switch" role="group" aria-label="테마">
+      {(Object.keys(THEME_LABELS) as Theme[]).map((t) => (
+        <button
+          key={t}
+          type="button"
+          className={`theme-option ${theme === t ? "active" : ""}`}
+          aria-pressed={theme === t}
+          onClick={() => onChange(t)}
+        >
+          {THEME_LABELS[t]}
+        </button>
+      ))}
+    </div>
   );
 }
 

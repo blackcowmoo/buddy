@@ -9,7 +9,7 @@
       name="viewport"
       content="width=device-width, initial-scale=1, viewport-fit=cover"
     />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="dark light" />
     <meta name="theme-color" content="#0f1115" />
     <!-- Standalone/home-screen install looks and feels like a native app. -->
     <meta name="mobile-web-app-capable" content="yes" />
@@ -17,6 +17,26 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Buddy" />
     <title>Buddy — English Free-Talking</title>
+    <!-- Sets [data-theme] before first paint so the page never flashes the
+         wrong palette. Mirrors src/lib/theme.ts's resolution logic; kept as
+         a plain blocking script (not a module import) so it runs
+         synchronously ahead of CSS/React. Reads localStorage only — theme
+         is a client-only preference, never sent to the server. -->
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem("buddy-theme");
+          var theme = raw === "white" || raw === "dark" ? raw : "system";
+          var resolved =
+            theme === "system"
+              ? window.matchMedia("(prefers-color-scheme: light)").matches
+                ? "white"
+                : "dark"
+              : theme;
+          document.documentElement.setAttribute("data-theme", resolved);
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
