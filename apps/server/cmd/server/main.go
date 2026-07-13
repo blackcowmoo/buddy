@@ -58,8 +58,10 @@ func main() {
 
 	// Temporary audio backup: only enabled once an endpoint is configured, so
 	// the server still boots with zero setup by default (see internal/audiostore).
-	// This is a separate, unrelated feature from the recording archive below
-	// — see internal/recording's package doc for why the two coexist.
+	// A second, independent feature (the recording archive below) archives
+	// the same utterance audio to the same S3_* endpoint/credentials for a
+	// different purpose — see config.Config's doc comment for why both share
+	// one config block.
 	var audio transport.AudioSaver
 	if cfg.S3Endpoint != "" {
 		as, err := audiostore.New(audiostore.Config{
@@ -76,10 +78,9 @@ func main() {
 		audio = as
 	}
 
-	// Voice recording archive: optional, disabled unless BUDDY_S3_BUCKET is
-	// set (see config.RecordingS3Bucket and internal/recording). Shares st's
-	// MySQL pools rather than opening a second connection to the same
-	// instance.
+	// Voice recording archive: optional, disabled unless S3Bucket is set (see
+	// internal/recording). Shares st's MySQL pools rather than opening a
+	// second connection to the same instance.
 	recordings := buildRecordingStore(context.Background(), cfg, st)
 	if recordings != nil {
 		defer recordings.Close()
@@ -136,14 +137,23 @@ func buildIdentity(ctx context.Context, cfg config.Config) (identity.Identifier,
 
 // buildRecordingStore builds the voice-recording archive (internal/recording)
 // when configured, or returns nil (archival disabled, the WS handler simply
-// skips saving) when BUDDY_S3_BUCKET is unset — the same optional-feature
-// convention as buildIdentity's Redis cache.
+// skips saving) when S3Bucket is unset — the same optional-feature
+// convention as buildIdentity's Redis cache. Shares cfg's S3_* settings with
+// internal/audiostore (see config.Config's doc comment for why the two
+// features use the same endpoint/credentials).
 func buildRecordingStore(ctx context.Context, cfg config.Config, st *store.MySQLStore) recording.Store {
-	if cfg.RecordingS3Bucket == "" {
+	if cfg.S3Bucket == "" {
 		return nil
 	}
 	rw, ro := st.DB()
-	rec, err := recording.NewS3(ctx, cfg.RecordingS3Bucket, cfg.RecordingS3Region, cfg.RecordingS3Endpoint, rw, ro)
+	rec, err := recording.NewS3(ctx, recording.S3Config{
+		Endpoint:     cfg.S3Endpoint,
+		PathStyle:    cfg.S3PathStyle,
+		AccessKey:    cfg.S3AccessKey,
+		SecretKey:    cfg.S3SecretKey,
+		Bucket:       cfg.S3Bucket,
+		StorageClass: cfg.S3StorageClass,
+	}, rw, ro)
 	if err != nil {
 		log.Fatalf("recording store: %v", err)
 	}

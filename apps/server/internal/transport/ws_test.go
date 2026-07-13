@@ -662,7 +662,7 @@ func TestWSListSessionsOnlyShowsSessionsWithMessages(t *testing.T) {
 }
 
 // TestWSBinaryFrameSavesRecording covers the archival side-effect (see
-// config.RecordingS3Bucket / internal/recording): a spoken utterance must be
+// internal/recording): a spoken utterance must be
 // handed to the recording store independently of — and even if — STT/LLM
 // fail, since recording.Store.Save doesn't touch the conversation pipeline
 // at all.
@@ -695,7 +695,7 @@ func TestWSBinaryFrameSavesRecording(t *testing.T) {
 }
 
 // TestWSNilRecordingStoreDisablesArchival documents that a nil recordings
-// store (the default when config.RecordingS3Bucket is unset) is safe: no
+// store (the default when config.Config's S3Bucket is unset) is safe: no
 // panic, the conversation pipeline still runs normally.
 func TestWSNilRecordingStoreDisablesArchival(t *testing.T) {
 	srv := newTestServerWithRecordings(t, newTestStore(t), nil)

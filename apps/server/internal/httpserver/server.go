@@ -23,9 +23,10 @@ import (
 // (from webassets.FS()); pass nil to serve from disk (prod) or proxy (dev).
 // audio is optional (nil disables temporary S3 audio backup — see
 // internal/audiostore). recordings is nil when voice-recording archival is
-// disabled (see config.RecordingS3Bucket) — the /api/recordings routes still
-// exist but answer 503. These are two separate, unrelated S3-backed features
-// — see internal/recording's package doc for why they coexist.
+// disabled (see config.Config's S3Bucket) — the /api/recordings routes still
+// exist but answer 503. audio and recordings are two independent features
+// that happen to share the same S3_* config — see internal/recording.S3Config's
+// doc comment for why.
 func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store) *http.Server {
 	mux := http.NewServeMux()
 

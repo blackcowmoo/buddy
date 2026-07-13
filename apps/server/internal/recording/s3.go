@@ -12,7 +12,9 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/google/uuid"
 )
 
@@ -20,36 +22,68 @@ import (
 // buddy_profiles: the database is shared with other services.
 const table = "buddy_recordings"
 
+// region is never surfaced to callers: like internal/audiostore's identical
+// constant, Ceph/MinIO-style S3-compatible endpoints don't route on it, so
+// it's a fixed, arbitrary value purely to satisfy the SDK's request signing,
+// not a piece of deployment configuration.
+const region = "us-east-1"
+
+// S3Config mirrors internal/audiostore.Config deliberately: both packages
+// archive the same WS utterance audio to the same kind of S3-compatible
+// endpoint, so they share one static-credential shape (and, in practice, one
+// set of S3_* environment variables — see config.Config) rather than one
+// using the AWS default credential chain and the other static keys. A
+// bespoke chain (env vars/shared config file/IRSA) sounds nice for real AWS
+// S3, but this app's actual deployments hand out static keys via a secret
+// store, the same as MYSQL_*/REDIS_* — that mismatch previously left this
+// feature silently disabled (RecordingS3Bucket/BUDDY_S3_BUCKET was never the
+// name anything actually injected).
+type S3Config struct {
+	Endpoint     string // optional S3-compatible endpoint (e.g. MinIO, Ceph RGW); empty for real AWS S3
+	PathStyle    bool   // true: http://endpoint/bucket/key instead of http://bucket.endpoint/key
+	AccessKey    string
+	SecretKey    string
+	Bucket       string
+	StorageClass string // empty leaves it up to the bucket's default
+}
+
 // S3Store is the default Store: audio bytes in S3, metadata in MySQL. rw/ro
 // are shared with internal/store's MySQLStore (see its DB() accessor) rather
 // than a second connection pool to the same instance.
 type S3Store struct {
-	s3     *s3.Client
-	bucket string
-	rw, ro *sql.DB
+	s3           *s3.Client
+	bucket       string
+	storageClass types.StorageClass
+	rw, ro       *sql.DB
 }
 
-// NewS3 builds an S3-backed Store and ensures the buddy_recordings table
-// exists. endpoint is optional — set it to point at an S3-compatible service
-// (e.g. MinIO) for local dev; leave it empty for real AWS S3. Credentials and
-// region come from the standard AWS credential/config chain (env vars,
-// shared config file, or an IAM role), overridden by region if non-empty.
-func NewS3(ctx context.Context, bucket, region, endpoint string, rw, ro *sql.DB) (*S3Store, error) {
-	optFns := []func(*awsconfig.LoadOptions) error{}
-	if region != "" {
-		optFns = append(optFns, awsconfig.WithRegion(region))
-	}
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, optFns...)
+// newS3Client builds the AWS SDK client from cfg's static credentials —
+// split out from NewS3 so the endpoint/path-style/credential wiring can be
+// tested (internal/recording/s3_config_test.go) without a real database.
+func newS3Client(cfg S3Config) (*s3.Client, error) {
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
+		awsconfig.WithRegion(region),
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, "")),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("recording: aws config: %w", err)
 	}
 
-	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
-		if endpoint != "" {
-			o.BaseEndpoint = aws.String(endpoint)
-			o.UsePathStyle = true // required by MinIO and most S3-compatible endpoints
+	return s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		if cfg.Endpoint != "" {
+			o.BaseEndpoint = aws.String(cfg.Endpoint)
 		}
-	})
+		o.UsePathStyle = cfg.PathStyle
+	}), nil
+}
+
+// NewS3 builds an S3-backed Store and ensures the buddy_recordings table
+// exists.
+func NewS3(ctx context.Context, cfg S3Config, rw, ro *sql.DB) (*S3Store, error) {
+	client, err := newS3Client(cfg)
+	if err != nil {
+		return nil, err
+	}
 
 	const schema = `CREATE TABLE IF NOT EXISTS ` + table + ` (
 		id          VARCHAR(64)  NOT NULL,
@@ -65,7 +99,13 @@ func NewS3(ctx context.Context, bucket, region, endpoint string, rw, ro *sql.DB)
 		return nil, fmt.Errorf("recording: schema: %w", err)
 	}
 
-	return &S3Store{s3: client, bucket: bucket, rw: rw, ro: ro}, nil
+	return &S3Store{
+		s3:           client,
+		bucket:       cfg.Bucket,
+		storageClass: types.StorageClass(cfg.StorageClass),
+		rw:           rw,
+		ro:           ro,
+	}, nil
 }
 
 func (s *S3Store) Save(ctx context.Context, userID string, pcm []byte, sampleRate int) (Recording, error) {
@@ -89,18 +129,21 @@ func (s *S3Store) Save(ctx context.Context, userID string, pcm []byte, sampleRat
 		SizeBytes:  int64(buf.Len()),
 	}
 
-	_, err := s.s3.PutObject(ctx, &s3.PutObjectInput{
+	input := &s3.PutObjectInput{
 		Bucket:          aws.String(s.bucket),
 		Key:             aws.String(key),
 		Body:            bytes.NewReader(buf.Bytes()),
 		ContentType:     aws.String("audio/wav"),
 		ContentEncoding: aws.String("gzip"), // lets a browser fetch decompress transparently
-	})
-	if err != nil {
+	}
+	if s.storageClass != "" {
+		input.StorageClass = s.storageClass
+	}
+	if _, err := s.s3.PutObject(ctx, input); err != nil {
 		return Recording{}, fmt.Errorf("recording: put object: %w", err)
 	}
 
-	_, err = s.rw.ExecContext(ctx, `
+	_, err := s.rw.ExecContext(ctx, `
 		INSERT INTO `+table+` (id, user_id, s3_key, duration_ms, size_bytes, created_at)
 		VALUES (?, ?, ?, ?, ?, ?)
 	`, rec.ID, rec.UserID, key, rec.DurationMS, rec.SizeBytes, rec.CreatedAt.Unix())
