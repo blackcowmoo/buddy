@@ -79,37 +79,30 @@ type Config struct {
 	// Empty (default) means the app is mounted at "/", unchanged.
 	RootPath string
 
-	// Temporary audio backup (internal/audiostore): each incoming utterance's
-	// raw PCM is streamed to an S3-compatible bucket, e.g. Ceph RGW. Disabled
-	// (zero-setup default) unless S3Endpoint is set. PathStyle and
-	// StorageClass exist specifically for Ceph: RGW commonly needs path-style
-	// addressing (bucket in the URL path, not a virtual-host subdomain), and a
-	// storage class lets the deployer steer these disposable recordings onto
-	// a cheaper/temporary disk pool instead of the bucket's default. This is
-	// a separate, unrelated feature from RecordingS3* below — see
-	// internal/recording's package doc for why the two S3 upload paths
-	// coexist instead of sharing one.
+	// S3-compatible object storage, shared by two independent features that
+	// both archive WS utterance audio to the same kind of endpoint:
+	//   - internal/audiostore: each incoming utterance's raw PCM streamed to
+	//     the bucket as a disposable, temporary backup (e.g. Ceph RGW) —
+	//     nothing lists or plays it back.
+	//   - internal/recording: the same audio, gzip-compressed WAV, archived
+	//     with metadata in MySQL so it can be listed/replayed from the
+	//     "recordings" page.
+	// Both are disabled (zero-setup default) until S3Bucket is set. PathStyle
+	// and StorageClass exist specifically for Ceph/MinIO-style endpoints: RGW
+	// commonly needs path-style addressing (bucket in the URL path, not a
+	// virtual-host subdomain), and a storage class lets the deployer steer
+	// these onto a cheaper/temporary disk pool instead of the bucket's
+	// default. These come from a shared secret store, so they use the plain
+	// S3_* names (no BUDDY_ prefix), same convention as MYSQL_*/REDIS_*
+	// above — static credentials, not the AWS default credential chain, so
+	// this works the same whether the endpoint is real AWS S3 or a
+	// self-hosted Ceph/MinIO cluster.
 	S3Endpoint     string
 	S3PathStyle    bool
 	S3AccessKey    string
 	S3SecretKey    string
 	S3Bucket       string
 	S3StorageClass string
-
-	// Voice recording archive (internal/recording): every utterance's raw
-	// mic audio is compressed and stored in S3, keyed by the learner's user
-	// ID, so it can be replayed later from the "recordings" page — nothing
-	// consumes it yet, this is pure archival for now. RecordingS3Bucket empty
-	// (default) disables recording storage entirely, the same
-	// optional-feature convention as RedisClusterHost above: local/dev runs
-	// with zero setup, and the WS handler simply skips saving. Credentials
-	// are picked up from the standard AWS environment/instance-role
-	// credential chain (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, or an IAM
-	// role in Kubernetes) rather than a bespoke BUDDY_* pair, so this works
-	// unchanged with IRSA in a real deployment.
-	RecordingS3Bucket   string // BUDDY_S3_BUCKET; empty disables recording storage
-	RecordingS3Region   string // BUDDY_S3_REGION
-	RecordingS3Endpoint string // BUDDY_S3_ENDPOINT; optional S3-compatible endpoint (e.g. MinIO) for local dev
 }
 
 func Load() Config {
@@ -158,10 +151,6 @@ func Load() Config {
 		S3SecretKey:    env("S3_SECRET_KEY", ""),
 		S3Bucket:       env("S3_BUCKET", ""),
 		S3StorageClass: env("S3_STORAGE_CLASS", ""),
-
-		RecordingS3Bucket:   env("BUDDY_S3_BUCKET", ""),
-		RecordingS3Region:   env("BUDDY_S3_REGION", "us-east-1"),
-		RecordingS3Endpoint: env("BUDDY_S3_ENDPOINT", ""),
 	}
 }
 

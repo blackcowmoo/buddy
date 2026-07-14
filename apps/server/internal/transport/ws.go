@@ -43,7 +43,7 @@ type Handler struct {
 	ident      identity.Identifier
 	store      store.Store
 	audio      AudioSaver
-	recordings recording.Store // nil disables recording archival (see config.RecordingS3Bucket)
+	recordings recording.Store // nil disables recording archival (see config.Config's S3Bucket)
 }
 
 func NewHandler(p *pipeline.Pipeline, ident identity.Identifier, st store.Store, audio AudioSaver, recordings recording.Store) *Handler {

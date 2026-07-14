@@ -103,10 +103,13 @@ func runContainerTests(m *testing.M) int {
 		return m.Run()
 	}
 
-	os.Setenv("AWS_ACCESS_KEY_ID", minioC.Username)
-	os.Setenv("AWS_SECRET_ACCESS_KEY", minioC.Password)
-
-	st, err := NewS3(ctx, testBucket, "us-east-1", endpoint, rw, ro)
+	st, err := NewS3(ctx, S3Config{
+		Endpoint:  endpoint,
+		PathStyle: true,
+		AccessKey: minioC.Username,
+		SecretKey: minioC.Password,
+		Bucket:    testBucket,
+	}, rw, ro)
 	if err != nil {
 		sharedStoreErr = err
 		return m.Run()

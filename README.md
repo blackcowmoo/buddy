@@ -113,9 +113,12 @@ better model down the line).
   alongside `pipeline.HandleUtterance` in `internal/transport/ws.go`, not
   inside it, so a save failure never disrupts the live conversation and STT
   quality/latency has no bearing on what gets archived.
-- **Optional, disabled by default**: leave `BUDDY_S3_BUCKET` unset and this
+- **Optional, disabled by default**: leave `S3_BUCKET` unset and this
   feature is a no-op (same convention as `REDIS_CLUSTER_HOST` above) — the WS
-  handler skips saving, and `/api/recordings*` answer `503`.
+  handler skips saving, and `/api/recordings*` answer `503`. Shares its
+  `S3_*` config with `internal/audiostore`'s unrelated temporary backup
+  feature (see the S3 section below) — both point at the same
+  endpoint/credentials, since both archive the same utterance audio.
 - **Per-user scoping**: both listing and playback are scoped to the caller's
   resolved identity (`internal/identity`) — one user can never list or play
   back another user's recordings, even by guessing an ID.
@@ -211,17 +214,16 @@ the app would still be rejected.
 | `REDIS_PORT` | Port for `REDIS_CLUSTER_HOST` (default `6379`); skip it if the host value already carries its own port. |
 | `REDIS_PASSWORD` | Only if your cluster needs it. |
 
-**Optional (enables the voice recording archive — see above):**
+**Optional (enables the voice recording archive above, and `internal/audiostore`'s
+temporary raw-audio backup — both share this one S3-compatible config block):**
 
 | Variable | Purpose |
 |---|---|
-| `BUDDY_S3_BUCKET` | S3 bucket to archive recordings into. Unset (default) disables the feature entirely. |
-| `BUDDY_S3_REGION` | Bucket's region (default `us-east-1`). |
-| `BUDDY_S3_ENDPOINT` | Only for an S3-compatible endpoint (e.g. MinIO) in local dev; leave unset for real AWS S3. |
-
-Credentials come from the standard AWS credential chain
-(`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, or an IAM role/IRSA in
-Kubernetes) — not a bespoke `BUDDY_*` pair.
+| `S3_BUCKET` | Bucket to archive into. Unset (default) disables both features entirely. |
+| `S3_ENDPOINT` | Optional S3-compatible endpoint (e.g. MinIO, Ceph RGW); leave unset for real AWS S3. |
+| `S3_PATH_STYLE` | `true` for MinIO/Ceph RGW-style endpoints that need the bucket in the URL path rather than a virtual-host subdomain. |
+| `S3_ACCESS_KEY` / `S3_SECRET_KEY` | Static credentials — no `BUDDY_` prefix, same convention as `MYSQL_*`/`REDIS_*` above, for a shared secret store to inject directly. |
+| `S3_STORAGE_CLASS` | e.g. `STANDARD_IA`; empty uses the bucket's default. |
 
 **Everything else is optional** (sane defaults, see `.env.example`):
 `BUDDY_ADDR`, `BUDDY_FEEDBACK_LANG`, `BUDDY_MAX_HISTORY_MESSAGES`,
