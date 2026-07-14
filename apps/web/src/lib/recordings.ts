@@ -29,3 +29,15 @@ export async function fetchRecordings(): Promise<Recording[] | null> {
 export function recordingAudioURL(id: string): string {
   return `api/recordings/${encodeURIComponent(id)}/audio`;
 }
+
+// Deletes one archived recording. Returns whether the request succeeded, so
+// the caller can decide what to do on failure (e.g. leave the row in the
+// list) instead of assuming success.
+export async function deleteRecording(id: string): Promise<boolean> {
+  try {
+    const res = await fetch(`api/recordings/${encodeURIComponent(id)}`, { method: "DELETE" });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchRecordings, recordingAudioURL } from "./recordings";
+import { deleteRecording, fetchRecordings, recordingAudioURL } from "./recordings";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -35,5 +35,25 @@ describe("recordingAudioURL", () => {
     expect(recordingAudioURL("weird id/../x")).toBe(
       "api/recordings/weird%20id%2F..%2Fx/audio",
     );
+  });
+});
+
+describe("deleteRecording", () => {
+  it("sends a DELETE request and returns true on success", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(deleteRecording("weird id/1")).resolves.toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith("api/recordings/weird%20id%2F1", { method: "DELETE" });
+  });
+
+  it("returns false on a non-ok response", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
+    await expect(deleteRecording("rec-1")).resolves.toBe(false);
+  });
+
+  it("returns false when fetch rejects", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
+    await expect(deleteRecording("rec-1")).resolves.toBe(false);
   });
 });

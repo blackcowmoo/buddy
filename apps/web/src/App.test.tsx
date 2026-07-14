@@ -52,11 +52,12 @@ vi.mock("./lib/me", () => ({
 vi.mock("./lib/sessions", () => ({
   fetchSessions: vi.fn(),
   fetchSessionDetail: vi.fn(),
+  deleteSession: vi.fn(),
 }));
 
 import { App } from "./App";
 import { fetchMe } from "./lib/me";
-import { fetchSessionDetail, fetchSessions } from "./lib/sessions";
+import { deleteSession, fetchSessionDetail, fetchSessions } from "./lib/sessions";
 import { KokoroSpeaker } from "./tts/kokoro";
 import { BuddyClient } from "./lib/ws";
 
@@ -165,6 +166,51 @@ describe("room list", () => {
     expect(await screen.findByText("hello!")).toBeInTheDocument();
     expect(fetchSessionDetail).toHaveBeenCalledWith("s1");
     expect(lastClientInstance().connect).toHaveBeenCalledWith("s1");
+  });
+
+  it("asks for confirmation, deletes, and removes the row on confirmed success", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+    ]);
+    vi.mocked(deleteSession).mockResolvedValue(true);
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "대화 삭제" }));
+
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(deleteSession).toHaveBeenCalledWith("s1");
+    expect(await screen.findByText(/아직 대화 기록이 없어요/)).toBeInTheDocument();
+  });
+
+  it("does not delete a session when the confirmation is declined", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+    ]);
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "대화 삭제" }));
+
+    expect(deleteSession).not.toHaveBeenCalled();
+    expect(screen.getByText("hello there")).toBeInTheDocument();
+  });
+
+  it("keeps the session in the list when the delete request fails", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+    ]);
+    vi.mocked(deleteSession).mockResolvedValue(false);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "대화 삭제" }));
+
+    expect(deleteSession).toHaveBeenCalledWith("s1");
+    expect(screen.getByText("hello there")).toBeInTheDocument();
   });
 
   it('"back to list" closes the connection and re-shows the room list', async () => {

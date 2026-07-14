@@ -5,7 +5,7 @@ import { PCMRecorder } from "./audio/recorder";
 import { KokoroSpeaker } from "./tts/kokoro";
 import { prPath } from "./lib/rootPath";
 import { fetchMe } from "./lib/me";
-import { fetchSessionDetail, fetchSessions, type SessionSummary } from "./lib/sessions";
+import { deleteSession, fetchSessionDetail, fetchSessions, type SessionSummary } from "./lib/sessions";
 import { applyTheme, getStoredTheme, setStoredTheme, type Theme } from "./lib/theme";
 import {
   MAX_EXTRA_RATES,
@@ -114,6 +114,17 @@ export function App() {
   useEffect(() => {
     refreshSessions();
   }, [refreshSessions]);
+
+  // Deletes a chat room from the list without opening it. The server also
+  // cascades to any recordings archived under that room (see
+  // httpserver.sessionDeleteHandler), so this is the one action that clears
+  // both the transcript and its audio.
+  const handleDeleteSession = useCallback(async (id: string) => {
+    if (!window.confirm("이 대화를 삭제할까요? 저장된 녹음도 함께 삭제됩니다.")) return;
+    if (await deleteSession(id)) {
+      setSessions((list) => list.filter((s) => s.id !== id));
+    }
+  }, []);
 
   // Opens a room and enters chat view. sessionId omitted starts a brand-new
   // room (server mints the ID, delivered on the "ready" event); given an
@@ -332,10 +343,19 @@ export function App() {
           ) : (
             <ul>
               {sessions.map((s) => (
-                <li key={s.id}>
+                <li key={s.id} className="session-row">
                   <button className="session-item" onClick={() => void enterChat(s.id)}>
                     <span className="title">{s.title}</span>
                     <span className="time">{formatRelativeTime(s.updatedAt)}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost icon-btn session-delete"
+                    onClick={() => void handleDeleteSession(s.id)}
+                    aria-label="대화 삭제"
+                    title="대화 삭제"
+                  >
+                    🗑
                   </button>
                 </li>
               ))}
