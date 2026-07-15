@@ -16,19 +16,51 @@ type Config struct {
 	WebDist string // dir served in prod
 	ViteURL string // reverse-proxy target in dev
 
-	// STT
-	FastSTT          string // "mock" | "whisper"
-	SlowSTT          string // "mock" | "whisper"
+	// STT: legacy per-track switch, used only when no server engine below is
+	// configured. "mock" (zero setup) or "whisper" (whisper.cpp subprocess,
+	// internal/stt/whisper.go).
+	FastSTT          string
+	SlowSTT          string
 	WhisperBin       string
 	WhisperFastModel string
 	WhisperSlowModel string
 
+	// STT server engine: any OpenAI-compatible /v1/audio/transcriptions
+	// server (whisper.cpp's `server` example, parakeet.cpp, or similar).
+	// sttEngines (below) is checked in priority order; the first engine whose
+	// *_URLS env var is set wins and its URLs/model land here. Comma-separated
+	// URLs round-robin across replicas of the same engine. One model per
+	// deployment, so the same engine serves both the fast and refine track.
+	// Empty STTEngine (none configured) falls back to FastSTT/SlowSTT above.
+	// Adding a future engine (e.g. parakeet.cpp) is an entry in sttEngines,
+	// not a code change here.
+	STTEngine string
+	STTURLs   []string
+	STTModel  string
+
 	// LLM: any OpenAI-compatible chat-completions server (llama.cpp's
-	// llama-server, vLLM, LM Studio, or the OpenAI API itself).
-	LLMBaseURL      string // the /v1 root, e.g. http://localhost:8081/v1
-	LLMAPIKey       string // optional bearer token
-	LLMChatModel    string
-	LLMCorrectModel string
+	// llama-server, vLLM, LM Studio, or the OpenAI API itself). Three
+	// independent purposes, matching the two-track pipeline
+	// (internal/pipeline.Pipeline):
+	//   - Chat:     FAST track's streamed reply. One endpoint (*_URL).
+	//   - Analysis: REFINE track's grammar-correction/compaction pass. Every
+	//     configured endpoint is called concurrently as an ensemble, so this
+	//     is comma-separated (*_URLS/*_MODELS, paired by index — a shorter
+	//     model list repeats its last entry for the remaining URLs).
+	//   - Judge:    synthesizes the analysis ensemble's outputs into the one
+	//     result the pipeline uses. One endpoint (*_URL). Skipped when
+	//     Analysis has a single candidate (pipeline.Pipeline.analyze) — a
+	//     lone model has nothing to synthesize against.
+	LLMAPIKey string // optional bearer token, shared by all of the above
+
+	LLMChatURL   string
+	LLMChatModel string
+
+	LLMAnalysisURLs   []string
+	LLMAnalysisModels []string
+
+	LLMJudgeURL   string
+	LLMJudgeModel string
 
 	// Feedback language: the learner's native language for correction
 	// explanations (BCP-47-ish code, e.g. "ko", "en", "ja"). The corrected
@@ -105,7 +137,46 @@ type Config struct {
 	S3StorageClass string
 }
 
+// sttEngines lists known STT server engines in priority order — Load() picks
+// the first one whose *_URLS env var is set. No BUDDY_ prefix: these name
+// the external engine/server itself (like WHISPER_SERVER_URLS), not a
+// buddy-specific knob. Supporting a future engine (e.g. parakeet.cpp) is a
+// new row here, nothing else changes.
+var sttEngines = []struct {
+	name     string
+	urlsEnv  string
+	modelEnv string
+}{
+	{"whisper", "WHISPER_SERVER_URLS", "WHISPER_SERVER_MODEL"},
+	{"parakeet", "PARAKEET_SERVER_URLS", "PARAKEET_SERVER_MODEL"},
+}
+
+// loadSTTEngine picks the first configured server engine from sttEngines, or
+// ("", nil, "") if none are set — Config.STTEngine stays empty and the
+// server falls back to FastSTT/SlowSTT (mock/subprocess whisper).
+func loadSTTEngine() (name string, urls []string, model string) {
+	for _, e := range sttEngines {
+		if v, ok := os.LookupEnv(e.urlsEnv); ok && v != "" {
+			return e.name, splitCSV(v), env(e.modelEnv, "")
+		}
+	}
+	return "", nil, ""
+}
+
+// splitCSV parses a comma-separated env value into a trimmed, non-empty list.
+func splitCSV(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
 func Load() Config {
+	sttName, sttURLs, sttModel := loadSTTEngine()
+
 	return Config{
 		Env:  env("BUDDY_ENV", "dev"),
 		Addr: env("BUDDY_ADDR", ":8080"),
@@ -119,10 +190,20 @@ func Load() Config {
 		WhisperFastModel: env("BUDDY_WHISPER_FAST_MODEL", "models/ggml-tiny.en.bin"),
 		WhisperSlowModel: env("BUDDY_WHISPER_SLOW_MODEL", "models/ggml-large-v3.bin"),
 
-		LLMBaseURL:      env("BUDDY_LLM_BASE_URL", "http://localhost:8081/v1"),
-		LLMAPIKey:       env("BUDDY_LLM_API_KEY", ""),
-		LLMChatModel:    env("BUDDY_LLM_CHAT_MODEL", "local-model"),
-		LLMCorrectModel: env("BUDDY_LLM_CORRECT_MODEL", "local-model"),
+		STTEngine: sttName,
+		STTURLs:   sttURLs,
+		STTModel:  sttModel,
+
+		LLMAPIKey: env("BUDDY_LLM_API_KEY", ""),
+
+		LLMChatURL:   env("BUDDY_LLM_CHAT_URL", "http://localhost:8081/v1"),
+		LLMChatModel: env("BUDDY_LLM_CHAT_MODEL", "local-model"),
+
+		LLMAnalysisURLs:   splitCSV(env("BUDDY_LLM_ANALYSIS_URLS", "http://localhost:8081/v1")),
+		LLMAnalysisModels: splitCSV(env("BUDDY_LLM_ANALYSIS_MODELS", "local-model")),
+
+		LLMJudgeURL:   env("BUDDY_LLM_JUDGE_URL", "http://localhost:8081/v1"),
+		LLMJudgeModel: env("BUDDY_LLM_JUDGE_MODEL", "local-model"),
 
 		FeedbackLang: env("BUDDY_FEEDBACK_LANG", "ko"),
 

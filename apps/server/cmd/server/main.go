@@ -30,12 +30,15 @@ func main() {
 	log.SetFlags(log.Ltime)
 	cfg := config.Load()
 
+	fastSTT, slowSTT := buildSTT(cfg)
 	pipe := &pipeline.Pipeline{
-		FastSTT:            buildSTT(cfg.FastSTT, "fast", cfg),
-		SlowSTT:            buildSTT(cfg.SlowSTT, "slow", cfg),
-		LLM:                llm.NewOpenAI(cfg.LLMBaseURL, cfg.LLMAPIKey),
+		FastSTT:            fastSTT,
+		SlowSTT:            slowSTT,
+		LLM:                llm.NewOpenAI(cfg.LLMChatURL, cfg.LLMAPIKey),
 		ChatModel:          cfg.LLMChatModel,
-		CorrectModel:       cfg.LLMCorrectModel,
+		Analysis:           buildAnalysisCandidates(cfg),
+		Judge:              llm.NewOpenAI(cfg.LLMJudgeURL, cfg.LLMAPIKey),
+		JudgeModel:         cfg.LLMJudgeModel,
 		FeedbackLang:       cfg.FeedbackLang,
 		MaxHistoryMessages: cfg.MaxHistoryMessages,
 	}
@@ -160,9 +163,22 @@ func buildRecordingStore(ctx context.Context, cfg config.Config, st *store.MySQL
 	return rec
 }
 
-// buildSTT selects an STT engine from config. "mock" needs zero setup;
-// "whisper" shells out to whisper.cpp (see internal/stt/whisper.go).
-func buildSTT(kind, label string, cfg config.Config) stt.Recognizer {
+// buildSTT selects the STT engine(s) for the fast and refine tracks. A
+// server engine (cfg.STTEngine — WHISPER_SERVER_URLS, PARAKEET_SERVER_URLS,
+// ...; see config.sttEngines) takes priority when configured: it's one
+// model/deployment, so the same recognizer instance serves both tracks
+// (its URLs already round-robin across replicas — see stt.HTTPTranscriber).
+// Otherwise falls back to the legacy per-track switch: "mock" (zero setup)
+// or "whisper" (whisper.cpp subprocess, internal/stt/whisper.go).
+func buildSTT(cfg config.Config) (fast, slow stt.Recognizer) {
+	if cfg.STTEngine != "" {
+		r := stt.NewHTTPTranscriber(cfg.STTEngine, cfg.STTURLs, cfg.STTModel)
+		return r, r
+	}
+	return buildLegacySTT(cfg.FastSTT, "fast", cfg), buildLegacySTT(cfg.SlowSTT, "slow", cfg)
+}
+
+func buildLegacySTT(kind, label string, cfg config.Config) stt.Recognizer {
 	switch kind {
 	case "whisper":
 		model := cfg.WhisperFastModel
@@ -177,4 +193,21 @@ func buildSTT(kind, label string, cfg config.Config) stt.Recognizer {
 		}
 		return stt.NewMock(label, delay)
 	}
+}
+
+// buildAnalysisCandidates builds one ensemble candidate per
+// BUDDY_LLM_ANALYSIS_URLS entry, paired by index with
+// BUDDY_LLM_ANALYSIS_MODELS — a shorter model list repeats its last entry
+// for the remaining URLs (the common case: one model replicated across
+// several server instances). See pipeline.Pipeline.Analysis/analyze().
+func buildAnalysisCandidates(cfg config.Config) []pipeline.Candidate {
+	cands := make([]pipeline.Candidate, len(cfg.LLMAnalysisURLs))
+	for i, u := range cfg.LLMAnalysisURLs {
+		model := cfg.LLMAnalysisModels[len(cfg.LLMAnalysisModels)-1]
+		if i < len(cfg.LLMAnalysisModels) {
+			model = cfg.LLMAnalysisModels[i]
+		}
+		cands[i] = pipeline.Candidate{LLM: llm.NewOpenAI(u, cfg.LLMAPIKey), Model: model}
+	}
+	return cands
 }

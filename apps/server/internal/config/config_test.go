@@ -10,8 +10,13 @@ var allBuddyEnvVars = []string{
 	"BUDDY_ENV", "BUDDY_ADDR", "BUDDY_WEB_DIST", "BUDDY_VITE_URL",
 	"BUDDY_FAST_STT", "BUDDY_SLOW_STT", "BUDDY_WHISPER_BIN",
 	"BUDDY_WHISPER_FAST_MODEL", "BUDDY_WHISPER_SLOW_MODEL",
-	"BUDDY_LLM_BASE_URL", "BUDDY_LLM_API_KEY", "BUDDY_LLM_CHAT_MODEL",
-	"BUDDY_LLM_CORRECT_MODEL", "BUDDY_FEEDBACK_LANG",
+	"WHISPER_SERVER_URLS", "WHISPER_SERVER_MODEL",
+	"PARAKEET_SERVER_URLS", "PARAKEET_SERVER_MODEL",
+	"BUDDY_LLM_API_KEY",
+	"BUDDY_LLM_CHAT_URL", "BUDDY_LLM_CHAT_MODEL",
+	"BUDDY_LLM_ANALYSIS_URLS", "BUDDY_LLM_ANALYSIS_MODELS",
+	"BUDDY_LLM_JUDGE_URL", "BUDDY_LLM_JUDGE_MODEL",
+	"BUDDY_FEEDBACK_LANG",
 	"MYSQL_RW_HOSTNAME", "MYSQL_RO_HOSTNAME", "MYSQL_PORT",
 	"MYSQL_USERNAME", "MYSQL_PASSWORD", "MYSQL_DATABASE",
 	"BUDDY_MAX_HISTORY_MESSAGES",
@@ -33,28 +38,29 @@ func TestLoadDefaults(t *testing.T) {
 	c := Load()
 
 	str := map[string]struct{ got, want string }{
-		"Env":                 {c.Env, "dev"},
-		"Addr":                {c.Addr, ":8080"},
-		"FastSTT":             {c.FastSTT, "mock"},
-		"SlowSTT":             {c.SlowSTT, "mock"},
-		"LLMBaseURL":          {c.LLMBaseURL, "http://localhost:8081/v1"},
-		"LLMChatModel":        {c.LLMChatModel, "local-model"},
-		"LLMCorrectModel":     {c.LLMCorrectModel, "local-model"},
-		"FeedbackLang":        {c.FeedbackLang, "ko"},
-		"MySQLRWHost":         {c.MySQLRWHost, "localhost"},
-		"MySQLROHost":         {c.MySQLROHost, ""},
-		"MySQLUser":           {c.MySQLUser, "buddy"},
-		"MySQLPassword":       {c.MySQLPassword, "buddy"},
-		"MySQLDatabase":       {c.MySQLDatabase, "buddy"},
-		"IdentityMode":        {c.IdentityMode, "cookie"},
-		"OIDCIssuerURL":       {c.OIDCIssuerURL, ""},
-		"OIDCClientID":        {c.OIDCClientID, "buddy"},
-		"RootPath":            {c.RootPath, ""},
-		"S3Endpoint":          {c.S3Endpoint, ""},
-		"S3AccessKey":         {c.S3AccessKey, ""},
-		"S3SecretKey":         {c.S3SecretKey, ""},
-		"S3Bucket":            {c.S3Bucket, ""},
-		"S3StorageClass":      {c.S3StorageClass, ""},
+		"Env":            {c.Env, "dev"},
+		"Addr":           {c.Addr, ":8080"},
+		"FastSTT":        {c.FastSTT, "mock"},
+		"SlowSTT":        {c.SlowSTT, "mock"},
+		"LLMChatURL":     {c.LLMChatURL, "http://localhost:8081/v1"},
+		"LLMChatModel":   {c.LLMChatModel, "local-model"},
+		"LLMJudgeURL":    {c.LLMJudgeURL, "http://localhost:8081/v1"},
+		"LLMJudgeModel":  {c.LLMJudgeModel, "local-model"},
+		"FeedbackLang":   {c.FeedbackLang, "ko"},
+		"MySQLRWHost":    {c.MySQLRWHost, "localhost"},
+		"MySQLROHost":    {c.MySQLROHost, ""},
+		"MySQLUser":      {c.MySQLUser, "buddy"},
+		"MySQLPassword":  {c.MySQLPassword, "buddy"},
+		"MySQLDatabase":  {c.MySQLDatabase, "buddy"},
+		"IdentityMode":   {c.IdentityMode, "cookie"},
+		"OIDCIssuerURL":  {c.OIDCIssuerURL, ""},
+		"OIDCClientID":   {c.OIDCClientID, "buddy"},
+		"RootPath":       {c.RootPath, ""},
+		"S3Endpoint":     {c.S3Endpoint, ""},
+		"S3AccessKey":    {c.S3AccessKey, ""},
+		"S3SecretKey":    {c.S3SecretKey, ""},
+		"S3Bucket":       {c.S3Bucket, ""},
+		"S3StorageClass": {c.S3StorageClass, ""},
 	}
 	for name, tc := range str {
 		if tc.got != tc.want {
@@ -73,6 +79,74 @@ func TestLoadDefaults(t *testing.T) {
 	if c.S3PathStyle {
 		t.Errorf("S3PathStyle = true, want false by default")
 	}
+	if c.STTEngine != "" {
+		t.Errorf("STTEngine = %q, want empty (no server engine configured)", c.STTEngine)
+	}
+	if len(c.LLMAnalysisURLs) != 1 || c.LLMAnalysisURLs[0] != "http://localhost:8081/v1" {
+		t.Errorf("LLMAnalysisURLs = %v, want a single default entry", c.LLMAnalysisURLs)
+	}
+	if len(c.LLMAnalysisModels) != 1 || c.LLMAnalysisModels[0] != "local-model" {
+		t.Errorf("LLMAnalysisModels = %v, want a single default entry", c.LLMAnalysisModels)
+	}
+}
+
+func TestLoadSTTEnginePicksFirstConfiguredInPriorityOrder(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("WHISPER_SERVER_URLS", "http://w1:8082/v1, http://w2:8082/v1")
+	t.Setenv("WHISPER_SERVER_MODEL", "whisper-large-v3-turbo")
+	t.Setenv("PARAKEET_SERVER_URLS", "http://p1:8083/v1")
+
+	c := Load()
+	if c.STTEngine != "whisper" {
+		t.Fatalf("STTEngine = %q, want whisper (checked before parakeet)", c.STTEngine)
+	}
+	if want := []string{"http://w1:8082/v1", "http://w2:8082/v1"}; !equalStrings(c.STTURLs, want) {
+		t.Fatalf("STTURLs = %v, want %v", c.STTURLs, want)
+	}
+	if c.STTModel != "whisper-large-v3-turbo" {
+		t.Fatalf("STTModel = %q, want whisper-large-v3-turbo", c.STTModel)
+	}
+}
+
+func TestLoadSTTEngineFallsBackToNextEngine(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("PARAKEET_SERVER_URLS", "http://p1:8083/v1")
+
+	c := Load()
+	if c.STTEngine != "parakeet" {
+		t.Fatalf("STTEngine = %q, want parakeet", c.STTEngine)
+	}
+	if want := []string{"http://p1:8083/v1"}; !equalStrings(c.STTURLs, want) {
+		t.Fatalf("STTURLs = %v, want %v", c.STTURLs, want)
+	}
+}
+
+func TestLoadLLMAnalysisURLsAndModelsSplitOnComma(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("BUDDY_LLM_ANALYSIS_URLS", "http://a:8081/v1, http://b:8081/v1 ,http://c:8081/v1")
+	t.Setenv("BUDDY_LLM_ANALYSIS_MODELS", "gemma-4-e4b,qwen3-6-35b-a3b")
+
+	c := Load()
+	wantURLs := []string{"http://a:8081/v1", "http://b:8081/v1", "http://c:8081/v1"}
+	if !equalStrings(c.LLMAnalysisURLs, wantURLs) {
+		t.Fatalf("LLMAnalysisURLs = %v, want %v", c.LLMAnalysisURLs, wantURLs)
+	}
+	wantModels := []string{"gemma-4-e4b", "qwen3-6-35b-a3b"}
+	if !equalStrings(c.LLMAnalysisModels, wantModels) {
+		t.Fatalf("LLMAnalysisModels = %v, want %v", c.LLMAnalysisModels, wantModels)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestLoadOverrides(t *testing.T) {

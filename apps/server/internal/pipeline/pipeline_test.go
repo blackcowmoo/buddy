@@ -167,10 +167,10 @@ func TestCompactNoopBelowThreshold(t *testing.T) {
 	sess.AppendAssistant("a1")
 	calls := 0
 	p := &Pipeline{
-		LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 			calls++
 			return "should not be called", nil
-		}},
+		}}}},
 		MaxHistoryMessages: 20,
 	}
 
@@ -192,9 +192,9 @@ func TestCompactFoldsOldestAtThreshold(t *testing.T) {
 		sess.AppendAssistant(fmt.Sprintf("a%d", i))
 	}
 	p := &Pipeline{
-		LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 			return "rolled-up summary", nil
-		}},
+		}}}},
 		MaxHistoryMessages: 4,
 	}
 
@@ -218,9 +218,9 @@ func TestCompactLeavesHistoryOnLLMError(t *testing.T) {
 	_, before := sess.Export()
 
 	p := &Pipeline{
-		LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 			return "", errors.New("llm down")
-		}},
+		}}}},
 		MaxHistoryMessages: 4,
 	}
 	p.compact(sess)
@@ -238,10 +238,9 @@ func TestCompactLeavesHistoryOnLLMError(t *testing.T) {
 
 func TestCorrectEmitsEventWhenChanged(t *testing.T) {
 	p := &Pipeline{
-		CorrectModel: "m",
-		LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 			return `{"corrected":"I like pizza.","issues":[{"type":"grammar","span":"I likes","suggestion":"I like","explanation":"수 일치 오류"}]}`, nil
-		}},
+		}}}},
 	}
 	var got []protocol.ServerEvent
 	p.correct(context.Background(), 1, "I likes pizza", func(ev protocol.ServerEvent) { got = append(got, ev) })
@@ -259,10 +258,9 @@ func TestCorrectEmitsEventWhenChanged(t *testing.T) {
 
 func TestCorrectSkipsWhenAlreadyCorrect(t *testing.T) {
 	p := &Pipeline{
-		CorrectModel: "m",
-		LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 			return `{"corrected":"I like pizza.","issues":[]}`, nil
-		}},
+		}}}},
 	}
 	var got []protocol.ServerEvent
 	p.correct(context.Background(), 1, "I like pizza.", func(ev protocol.ServerEvent) { got = append(got, ev) })
@@ -274,10 +272,9 @@ func TestCorrectSkipsWhenAlreadyCorrect(t *testing.T) {
 
 func TestCorrectIgnoresMalformedJSON(t *testing.T) {
 	p := &Pipeline{
-		CorrectModel: "m",
-		LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 			return "not json", nil
-		}},
+		}}}},
 	}
 	var got []protocol.ServerEvent
 	p.correct(context.Background(), 1, "whatever", func(ev protocol.ServerEvent) { got = append(got, ev) })
@@ -288,15 +285,145 @@ func TestCorrectIgnoresMalformedJSON(t *testing.T) {
 
 func TestCorrectIgnoresLLMError(t *testing.T) {
 	p := &Pipeline{
-		CorrectModel: "m",
-		LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 			return "", errors.New("down")
-		}},
+		}}}},
 	}
 	var got []protocol.ServerEvent
 	p.correct(context.Background(), 1, "whatever", func(ev protocol.ServerEvent) { got = append(got, ev) })
 	if len(got) != 0 {
 		t.Fatalf("expected no event when the LLM call fails, got %+v", got)
+	}
+}
+
+// ---- analyze() -----------------------------------------------------------------
+
+func TestAnalyzeSingleCandidateSkipsJudge(t *testing.T) {
+	judgeCalls := 0
+	p := &Pipeline{
+		Analysis: []Candidate{{Model: "solo", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			return "solo answer", nil
+		}}}},
+		Judge: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			judgeCalls++
+			return "should not be called", nil
+		}},
+		JudgeModel: "judge",
+	}
+	got, err := p.analyze(context.Background(), "sys", "input", false)
+	if err != nil {
+		t.Fatalf("analyze() error = %v", err)
+	}
+	if got != "solo answer" {
+		t.Fatalf("analyze() = %q, want %q", got, "solo answer")
+	}
+	if judgeCalls != 0 {
+		t.Fatalf("judge should not be called for a single candidate, got %d calls", judgeCalls)
+	}
+}
+
+func TestAnalyzeMultipleCandidatesSynthesizedByJudge(t *testing.T) {
+	var judgeInput string
+	p := &Pipeline{
+		Analysis: []Candidate{
+			{Model: "gemma-4-e4b", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+				return "candidate A", nil
+			}}},
+			{Model: "qwen3-6-35b-a3b", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+				return "candidate B", nil
+			}}},
+		},
+		Judge: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			judgeInput = msgs[len(msgs)-1].Content
+			return "synthesized answer", nil
+		}},
+		JudgeModel: "judge-model",
+	}
+	got, err := p.analyze(context.Background(), "sys", "input", false)
+	if err != nil {
+		t.Fatalf("analyze() error = %v", err)
+	}
+	if got != "synthesized answer" {
+		t.Fatalf("analyze() = %q, want %q", got, "synthesized answer")
+	}
+	if !strings.Contains(judgeInput, "candidate A") || !strings.Contains(judgeInput, "candidate B") {
+		t.Fatalf("judge input should include both candidates' outputs, got %q", judgeInput)
+	}
+}
+
+func TestAnalyzeFallsBackToFirstCandidateOnJudgeError(t *testing.T) {
+	p := &Pipeline{
+		Analysis: []Candidate{
+			{Model: "first", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+				return "first candidate answer", nil
+			}}},
+			{Model: "second", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+				return "second candidate answer", nil
+			}}},
+		},
+		Judge: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			return "", errors.New("judge down")
+		}},
+		JudgeModel: "judge-model",
+	}
+	got, err := p.analyze(context.Background(), "sys", "input", false)
+	if err != nil {
+		t.Fatalf("analyze() error = %v", err)
+	}
+	if got != "first candidate answer" {
+		t.Fatalf("analyze() = %q, want the first configured candidate's answer", got)
+	}
+}
+
+func TestAnalyzeSkipsFailedCandidateWithoutCallingJudge(t *testing.T) {
+	judgeCalls := 0
+	p := &Pipeline{
+		Analysis: []Candidate{
+			{Model: "flaky", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+				return "", errors.New("down")
+			}}},
+			{Model: "ok", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+				return "only surviving answer", nil
+			}}},
+		},
+		Judge: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			judgeCalls++
+			return "unused", nil
+		}},
+		JudgeModel: "judge-model",
+	}
+	got, err := p.analyze(context.Background(), "sys", "input", false)
+	if err != nil {
+		t.Fatalf("analyze() error = %v", err)
+	}
+	if got != "only surviving answer" {
+		t.Fatalf("analyze() = %q, want %q", got, "only surviving answer")
+	}
+	if judgeCalls != 0 {
+		t.Fatalf("judge should not be called when only one candidate survives, got %d calls", judgeCalls)
+	}
+}
+
+func TestAnalyzeAllCandidatesFailReturnsError(t *testing.T) {
+	p := &Pipeline{
+		Analysis: []Candidate{
+			{Model: "a", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+				return "", errors.New("down a")
+			}}},
+			{Model: "b", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+				return "", errors.New("down b")
+			}}},
+		},
+	}
+	if _, err := p.analyze(context.Background(), "sys", "input", false); err == nil {
+		t.Fatal("expected an error when every candidate fails")
+	}
+}
+
+func TestAnalyzeNoCandidatesConfiguredReturnsError(t *testing.T) {
+	p := &Pipeline{}
+	if _, err := p.analyze(context.Background(), "sys", "input", false); err == nil {
+		t.Fatal("expected an error when no candidates are configured")
 	}
 }
 
@@ -338,14 +465,17 @@ func TestFallbackReplyEchoesLastUserMessage(t *testing.T) {
 // ---- HandleText / HandleUtterance (integration) --------------------------------
 
 func TestHandleTextEndToEnd(t *testing.T) {
-	p := &Pipeline{
-		LLM: &fakeLLM{
-			chatReply: "Nice to meet you!",
-			complete: func(msgs []llm.Message) (string, error) {
-				return `{"corrected":"Hello, my name is Alex.","issues":[{"type":"grammar","span":"name Alex","suggestion":"my name is Alex","explanation":"주어 누락"}]}`, nil
-			},
+	shared := &fakeLLM{
+		chatReply: "Nice to meet you!",
+		complete: func(msgs []llm.Message) (string, error) {
+			return `{"corrected":"Hello, my name is Alex.","issues":[{"type":"grammar","span":"name Alex","suggestion":"my name is Alex","explanation":"주어 누락"}]}`, nil
 		},
-		ChatModel: "chat-model", CorrectModel: "correct-model", FeedbackLang: "ko",
+	}
+	p := &Pipeline{
+		LLM:          shared,
+		ChatModel:    "chat-model",
+		Analysis:     []Candidate{{Model: "correct-model", LLM: shared}},
+		FeedbackLang: "ko",
 	}
 	sess := session.New("sys")
 	events := make(chan protocol.ServerEvent, 16)
@@ -414,16 +544,19 @@ func TestHandleUtteranceSTTErrorEmitsError(t *testing.T) {
 // higher-quality STT re-transcription (accuracy), never to the grammar-
 // corrected version — the learner's actual mistakes must stay in context.
 func TestHandleUtteranceFullFlowUpgradesContextViaRefine(t *testing.T) {
-	p := &Pipeline{
-		FastSTT: fakeSTT{text: "i are hungry"},
-		SlowSTT: fakeSTT{text: "I am hungry"}, // higher-quality re-transcription
-		LLM: &fakeLLM{
-			chatReply: "Let's get you some food!",
-			complete: func(msgs []llm.Message) (string, error) {
-				return `{"corrected":"I am hungry.","issues":[{"type":"grammar","span":"I are","suggestion":"I am","explanation":"be동사 인칭 오류"}]}`, nil
-			},
+	shared := &fakeLLM{
+		chatReply: "Let's get you some food!",
+		complete: func(msgs []llm.Message) (string, error) {
+			return `{"corrected":"I am hungry.","issues":[{"type":"grammar","span":"I are","suggestion":"I am","explanation":"be동사 인칭 오류"}]}`, nil
 		},
-		ChatModel: "chat-model", CorrectModel: "correct-model", FeedbackLang: "ko",
+	}
+	p := &Pipeline{
+		FastSTT:      fakeSTT{text: "i are hungry"},
+		SlowSTT:      fakeSTT{text: "I am hungry"}, // higher-quality re-transcription
+		LLM:          shared,
+		ChatModel:    "chat-model",
+		Analysis:     []Candidate{{Model: "correct-model", LLM: shared}},
+		FeedbackLang: "ko",
 	}
 	sess := session.New("sys")
 	events := make(chan protocol.ServerEvent, 16)

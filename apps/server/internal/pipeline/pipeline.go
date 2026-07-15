@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 
 	"buddy/server/internal/llm"
 	"buddy/server/internal/protocol"
@@ -29,12 +30,33 @@ Keep the conversation flowing naturally: reply in 1-3 short spoken-style sentenc
 ask a follow-up question, and match the learner's level. Do NOT correct grammar
 inline — corrections are handled separately. Never mention that you are an AI.`
 
+// Candidate is one ensemble member consulted during REFINE-track analysis
+// (grammar correction, context compaction): a model and the endpoint that
+// serves it. See Pipeline.Analysis and analyze().
+type Candidate struct {
+	LLM   llm.Client
+	Model string
+}
+
 type Pipeline struct {
-	FastSTT      stt.Recognizer
-	SlowSTT      stt.Recognizer
-	LLM          llm.Client
-	ChatModel    string
-	CorrectModel string
+	FastSTT stt.Recognizer
+	SlowSTT stt.Recognizer
+
+	// LLM/ChatModel: FAST track's streamed reply — one model, low latency.
+	LLM       llm.Client
+	ChatModel string
+
+	// Analysis: REFINE track's grammar-correction/compaction pass. Every
+	// candidate is asked concurrently (analyze()); a lone candidate is used
+	// directly, and two or more are synthesized by Judge. This is how
+	// multiple local models (e.g. several checkpoints behind llama.cpp) get
+	// combined into one higher-confidence result instead of picking just one.
+	Analysis []Candidate
+	// Judge synthesizes the Analysis ensemble's outputs into the single
+	// result analyze() returns. Unused (and may be nil) when len(Analysis)<=1.
+	Judge      llm.Client
+	JudgeModel string
+
 	// FeedbackLang is the learner's native language for correction
 	// explanations (e.g. "ko"). The corrected sentence stays in English.
 	FeedbackLang string
@@ -103,6 +125,91 @@ func (p *Pipeline) reply(ctx context.Context, sess *session.Session, turn int, e
 	go p.compact(sess) // background: fold old turns into the long-term summary
 }
 
+// analyze runs one REFINE-track task (grammar correction or compaction)
+// across every Analysis candidate concurrently. A single successful
+// candidate is returned as-is — nothing to synthesize. Two or more are
+// handed to Judge, which picks/merges them into the one final answer; if
+// Judge itself fails, the first candidate's answer is used so a flaky judge
+// degrades gracefully instead of losing the turn.
+func (p *Pipeline) analyze(ctx context.Context, systemPrompt, input string, jsonMode bool) (string, error) {
+	if len(p.Analysis) == 0 {
+		return "", fmt.Errorf("analyze: no candidates configured")
+	}
+
+	type candidateResult struct {
+		model string
+		text  string
+		ok    bool
+	}
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: systemPrompt},
+		{Role: llm.RoleUser, Content: input},
+	}
+
+	// Each goroutine owns a fixed slot by index, so the results slice stays
+	// in Analysis's configured order regardless of completion timing — the
+	// judge-error fallback below always means "the first configured
+	// candidate", not "whichever happened to finish first".
+	slots := make([]candidateResult, len(p.Analysis))
+	var wg sync.WaitGroup
+	for i, c := range p.Analysis {
+		wg.Add(1)
+		go func(i int, c Candidate) {
+			defer wg.Done()
+			text, err := c.LLM.Complete(ctx, c.Model, msgs, jsonMode)
+			if err != nil {
+				log.Printf("analyze: candidate %s: %v", c.Model, err)
+				return
+			}
+			if text = strings.TrimSpace(text); text == "" {
+				return
+			}
+			slots[i] = candidateResult{model: c.Model, text: text, ok: true}
+		}(i, c)
+	}
+	wg.Wait()
+
+	var results []candidateResult
+	for _, r := range slots {
+		if r.ok {
+			results = append(results, r)
+		}
+	}
+
+	if len(results) == 0 {
+		return "", fmt.Errorf("analyze: every candidate failed")
+	}
+	if len(results) == 1 {
+		return results[0].text, nil
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Original task:\n%s\n\nOriginal input:\n%s\n\n", systemPrompt, input)
+	for _, r := range results {
+		fmt.Fprintf(&b, "--- candidate (%s) ---\n%s\n\n", r.model, r.text)
+	}
+	judgeMsgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: judgeSystemPrompt},
+		{Role: llm.RoleUser, Content: b.String()},
+	}
+	final, err := p.Judge.Complete(ctx, p.JudgeModel, judgeMsgs, jsonMode)
+	if err != nil {
+		log.Printf("analyze: judge: %v; falling back to first candidate", err)
+		return results[0].text, nil
+	}
+	if final = strings.TrimSpace(final); final == "" {
+		return results[0].text, nil
+	}
+	return final, nil
+}
+
+const judgeSystemPrompt = `Several candidate models independently performed the same task below.
+Synthesize them into the single best final answer, following the ORIGINAL
+task's instructions and required output format EXACTLY (e.g. if it asked for
+strict JSON, output strict JSON and nothing else). Output ONLY the final
+answer — no preamble, no meta-commentary about the candidates or the judging
+process.`
+
 // compact folds the oldest verbatim turns into the session's long-term
 // summary once the window exceeds MaxHistoryMessages, so long conversations
 // stay cheap to send to the LLM and to persist (internal/store). It uses
@@ -113,11 +220,7 @@ func (p *Pipeline) compact(sess *session.Session) {
 	if !ok {
 		return
 	}
-	msgs := []llm.Message{
-		{Role: llm.RoleSystem, Content: compactionSystemPrompt},
-		{Role: llm.RoleUser, Content: renderCompactionInput(curSummary, old)},
-	}
-	newSummary, err := p.LLM.Complete(context.Background(), p.CorrectModel, msgs, false)
+	newSummary, err := p.analyze(context.Background(), compactionSystemPrompt, renderCompactionInput(curSummary, old), false)
 	if err != nil {
 		log.Printf("compact: %v", err) // leave history untouched; retried next turn
 		return
@@ -165,13 +268,10 @@ func (p *Pipeline) refine(ctx context.Context, sess *session.Session, turn int, 
 	p.correct(ctx, turn, refined, emit)
 }
 
-// correct asks the LLM for grammar/vocabulary feedback as strict JSON.
+// correct asks the analysis ensemble for grammar/vocabulary feedback as
+// strict JSON, synthesized down to one result by analyze().
 func (p *Pipeline) correct(ctx context.Context, turn int, text string, emit Emit) {
-	msgs := []llm.Message{
-		{Role: llm.RoleSystem, Content: correctionSystemPrompt(p.FeedbackLang)},
-		{Role: llm.RoleUser, Content: text},
-	}
-	raw, err := p.LLM.Complete(ctx, p.CorrectModel, msgs, true)
+	raw, err := p.analyze(ctx, correctionSystemPrompt(p.FeedbackLang), text, true)
 	if err != nil {
 		log.Printf("correct: %v", err)
 		return
