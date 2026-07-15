@@ -83,5 +83,10 @@ type Store interface {
 	// Returns ErrNotFound if it doesn't exist or belongs to a different user.
 	SessionDetail(ctx context.Context, userID, sessionID string) (SessionMeta, []Turn, error)
 
+	// DeleteSession removes a session and its full transcript. A no-op (nil
+	// error) if sessionID doesn't exist or belongs to a different user — same
+	// indistinguishable-from-missing contract as Load.
+	DeleteSession(ctx context.Context, userID, sessionID string) error
+
 	Close() error
 }

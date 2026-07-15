@@ -76,3 +76,26 @@ func recordingAudioHandler(ident identity.Identifier, recordings recording.Store
 		}
 	}
 }
+
+// recordingDeleteHandler removes one archived recording. Scoped to the
+// caller's own userID the same way recordingsListHandler/recordingAudioHandler
+// are — a recording can only ever be deleted by the user who made it.
+func recordingDeleteHandler(ident identity.Identifier, recordings recording.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if recordings == nil {
+			http.Error(w, "recording storage is not configured", http.StatusServiceUnavailable)
+			return
+		}
+		userID, ok := ident.Identify(w, r)
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if err := recordings.Delete(r.Context(), userID, r.PathValue("id")); err != nil {
+			log.Printf("recordings: delete %s: %v", userID, err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}

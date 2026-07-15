@@ -23,7 +23,7 @@ type fakeRecordingStore struct {
 	err    error
 }
 
-func (f *fakeRecordingStore) Save(ctx context.Context, userID string, pcm []byte, sampleRate int) (recording.Recording, error) {
+func (f *fakeRecordingStore) Save(ctx context.Context, userID, sessionID string, pcm []byte, sampleRate int) (recording.Recording, error) {
 	return recording.Recording{}, errors.New("not used by these tests")
 }
 
@@ -41,6 +41,38 @@ func (f *fakeRecordingStore) Open(ctx context.Context, userID, id string) (recor
 		}
 	}
 	return recording.Recording{}, nil, errors.New("not found")
+}
+
+// Delete removes id from userID's recordings — a no-op (not an error) if it
+// isn't there, mirroring S3Store's indistinguishable-from-missing contract.
+func (f *fakeRecordingStore) Delete(ctx context.Context, userID, id string) error {
+	if f.err != nil {
+		return f.err
+	}
+	out := f.byUser[userID][:0]
+	for _, rec := range f.byUser[userID] {
+		if rec.ID != id {
+			out = append(out, rec)
+		}
+	}
+	f.byUser[userID] = out
+	return nil
+}
+
+// DeleteBySession removes every recording under sessionID — used by the
+// cascading-delete handler tests.
+func (f *fakeRecordingStore) DeleteBySession(ctx context.Context, userID, sessionID string) error {
+	if f.err != nil {
+		return f.err
+	}
+	out := f.byUser[userID][:0]
+	for _, rec := range f.byUser[userID] {
+		if rec.SessionID != sessionID {
+			out = append(out, rec)
+		}
+	}
+	f.byUser[userID] = out
+	return nil
 }
 
 func (f *fakeRecordingStore) Close() error { return nil }
@@ -157,5 +189,65 @@ func TestRecordingAudioServiceUnavailableWhenDisabled(t *testing.T) {
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+}
+
+func TestRecordingDeleteRemovesOnlyTheGivenRecording(t *testing.T) {
+	store := &fakeRecordingStore{byUser: map[string][]recording.Recording{
+		"alex": {{ID: "rec-1", UserID: "alex"}, {ID: "rec-2", UserID: "alex"}},
+	}}
+	h := recordingDeleteHandler(fakeIdentifier{id: "alex", ok: true}, store)
+
+	req := httptest.NewRequest("DELETE", "/api/recordings/rec-1", nil)
+	req.SetPathValue("id", "rec-1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+	remaining := store.byUser["alex"]
+	if len(remaining) != 1 || remaining[0].ID != "rec-2" {
+		t.Fatalf("byUser[alex] = %+v, want only rec-2 left", remaining)
+	}
+}
+
+func TestRecordingDeleteUnauthorizedWhenIdentifyFails(t *testing.T) {
+	h := recordingDeleteHandler(fakeIdentifier{ok: false}, &fakeRecordingStore{})
+
+	req := httptest.NewRequest("DELETE", "/api/recordings/rec-1", nil)
+	req.SetPathValue("id", "rec-1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestRecordingDeleteServiceUnavailableWhenDisabled(t *testing.T) {
+	h := recordingDeleteHandler(fakeIdentifier{id: "alex", ok: true}, nil)
+
+	req := httptest.NewRequest("DELETE", "/api/recordings/rec-1", nil)
+	req.SetPathValue("id", "rec-1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+}
+
+func TestRecordingDeleteInternalErrorOnStoreFailure(t *testing.T) {
+	store := &fakeRecordingStore{err: errors.New("s3 unreachable")}
+	h := recordingDeleteHandler(fakeIdentifier{id: "alex", ok: true}, store)
+
+	req := httptest.NewRequest("DELETE", "/api/recordings/rec-1", nil)
+	req.SetPathValue("id", "rec-1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
 	}
 }

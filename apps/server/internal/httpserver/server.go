@@ -42,10 +42,12 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 		})
 	})
 	mux.HandleFunc("/api/me", meHandler(cfg.IdentityMode, ident))
-	mux.HandleFunc("/api/sessions", sessionsListHandler(ident, st))
-	mux.HandleFunc("/api/sessions/{id}", sessionDetailHandler(ident, st))
+	mux.HandleFunc("GET /api/sessions", sessionsListHandler(ident, st))
+	mux.HandleFunc("GET /api/sessions/{id}", sessionDetailHandler(ident, st))
+	mux.HandleFunc("DELETE /api/sessions/{id}", sessionDeleteHandler(ident, st, recordings))
 	mux.HandleFunc("GET /api/recordings", recordingsListHandler(ident, recordings))
 	mux.HandleFunc("GET /api/recordings/{id}/audio", recordingAudioHandler(ident, recordings))
+	mux.HandleFunc("DELETE /api/recordings/{id}", recordingDeleteHandler(ident, recordings))
 	registerStalePRRedirect(mux, cfg.RootPath)
 
 	// Frontend.
@@ -173,6 +175,35 @@ func sessionDetailHandler(ident identity.Identifier, st store.Store) http.Handle
 			return
 		}
 		writeJSON(w, map[string]any{"session": meta, "turns": turns})
+	}
+}
+
+// sessionDeleteHandler removes one chat room and its full transcript, and —
+// when recording archival is enabled — every recording captured in that room
+// (see recording.Store.DeleteBySession), so deleting a conversation doesn't
+// leave orphaned audio behind. The recordings cascade is best-effort: a
+// failure there is logged but doesn't block deleting the session itself,
+// the same "side-effect independent of the primary action" pattern
+// transport.Handler.backupAudio uses for its own S3 writes.
+func sessionDeleteHandler(ident identity.Identifier, st store.Store, recordings recording.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := ident.Identify(w, r)
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		sessionID := r.PathValue("id")
+		if recordings != nil {
+			if err := recordings.DeleteBySession(r.Context(), userID, sessionID); err != nil {
+				log.Printf("delete session: cascade recordings %s/%s: %v", userID, sessionID, err)
+			}
+		}
+		if err := st.DeleteSession(r.Context(), userID, sessionID); err != nil {
+			log.Printf("delete session: %v", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 

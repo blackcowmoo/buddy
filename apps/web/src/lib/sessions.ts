@@ -35,3 +35,16 @@ export async function fetchSessions(): Promise<SessionSummary[]> {
 export async function fetchSessionDetail(id: string): Promise<SessionDetail | null> {
   return fetchJSON<SessionDetail | null>(`api/sessions/${encodeURIComponent(id)}`, null);
 }
+
+// Deletes one chat room and its transcript (the server also cascades to any
+// recordings archived under it — see httpserver.sessionDeleteHandler).
+// Returns whether the request succeeded, so the caller can decide what to do
+// on failure (e.g. leave the room in the list) instead of assuming success.
+export async function deleteSession(id: string): Promise<boolean> {
+  try {
+    const res = await fetch(`api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}

@@ -28,6 +28,7 @@ import (
 type Recording struct {
 	ID         string
 	UserID     string
+	SessionID  string // chat room this utterance was recorded in; "" for older rows saved before this field existed
 	CreatedAt  time.Time
 	DurationMS int
 	SizeBytes  int64 // compressed (gzip) size, i.e. what's actually stored
@@ -36,8 +37,8 @@ type Recording struct {
 // Store persists and serves back recorded utterance audio, scoped per user.
 type Store interface {
 	// Save compresses pcm (mono 16-bit PCM at sampleRate) and archives it
-	// under userID.
-	Save(ctx context.Context, userID string, pcm []byte, sampleRate int) (Recording, error)
+	// under userID/sessionID.
+	Save(ctx context.Context, userID, sessionID string, pcm []byte, sampleRate int) (Recording, error)
 
 	// List returns userID's recordings, most recent first.
 	List(ctx context.Context, userID string) ([]Recording, error)
@@ -47,6 +48,15 @@ type Store interface {
 	// returned reader. Returns an error if id doesn't exist or doesn't
 	// belong to userID — callers must not leak one user's audio to another.
 	Open(ctx context.Context, userID, id string) (Recording, io.ReadCloser, error)
+
+	// Delete removes one recording (its S3 object and its buddy_recordings
+	// row). A no-op if id doesn't exist or doesn't belong to userID.
+	Delete(ctx context.Context, userID, id string) error
+
+	// DeleteBySession removes every recording archived under sessionID — used
+	// to cascade a chat room deletion to its recordings. A no-op if userID
+	// has no recordings for that session.
+	DeleteBySession(ctx context.Context, userID, sessionID string) error
 
 	Close() error
 }

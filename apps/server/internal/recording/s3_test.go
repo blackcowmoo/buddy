@@ -151,7 +151,7 @@ func TestSaveThenListRoundTrips(t *testing.T) {
 		pcm[i] = byte(i)
 	}
 
-	rec, err := st.Save(ctx, "alex-list", pcm, 16000)
+	rec, err := st.Save(ctx, "alex-list", "sess-list", pcm, 16000)
 	if err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
@@ -169,6 +169,9 @@ func TestSaveThenListRoundTrips(t *testing.T) {
 	if len(list) != 1 || list[0].ID != rec.ID {
 		t.Fatalf("List() = %+v, want exactly rec %+v", list, rec)
 	}
+	if list[0].SessionID != "sess-list" {
+		t.Errorf("SessionID = %q, want sess-list", list[0].SessionID)
+	}
 }
 
 func TestListOrdersMostRecentFirst(t *testing.T) {
@@ -176,12 +179,12 @@ func TestListOrdersMostRecentFirst(t *testing.T) {
 	ctx := context.Background()
 	pcm := make([]byte, 100)
 
-	first, err := st.Save(ctx, "alex-order", pcm, 16000)
+	first, err := st.Save(ctx, "alex-order", "sess-order", pcm, 16000)
 	if err != nil {
 		t.Fatalf("Save() #1 error = %v", err)
 	}
 	time.Sleep(1100 * time.Millisecond) // created_at has 1s resolution (UNIX seconds)
-	second, err := st.Save(ctx, "alex-order", pcm, 16000)
+	second, err := st.Save(ctx, "alex-order", "sess-order", pcm, 16000)
 	if err != nil {
 		t.Fatalf("Save() #2 error = %v", err)
 	}
@@ -200,7 +203,7 @@ func TestOpenReturnsDecompressibleAudio(t *testing.T) {
 	ctx := context.Background()
 	pcm := []byte{1, 2, 3, 4, 5, 6, 7, 8}
 
-	rec, err := st.Save(ctx, "alex-open", pcm, 16000)
+	rec, err := st.Save(ctx, "alex-open", "sess-open", pcm, 16000)
 	if err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
@@ -230,7 +233,7 @@ func TestOpenReturnsDecompressibleAudio(t *testing.T) {
 func TestOpenRejectsWrongUser(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
-	rec, err := st.Save(ctx, "owner", []byte{1, 2, 3, 4}, 16000)
+	rec, err := st.Save(ctx, "owner", "sess-owner", []byte{1, 2, 3, 4}, 16000)
 	if err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
@@ -248,5 +251,89 @@ func TestListUnknownUserReturnsEmpty(t *testing.T) {
 	}
 	if len(list) != 0 {
 		t.Fatalf("List() = %+v, want empty", list)
+	}
+}
+
+func TestDeleteRemovesRowAndObject(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	rec, err := st.Save(ctx, "alex-delete", "sess-delete", []byte{1, 2, 3, 4}, 16000)
+	if err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	if err := st.Delete(ctx, "alex-delete", rec.ID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+
+	list, err := st.List(ctx, "alex-delete")
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("List() after delete = %+v, want empty", list)
+	}
+	if _, _, err := st.Open(ctx, "alex-delete", rec.ID); err == nil {
+		t.Fatal("Open() after delete should error (S3 object should be gone too), got nil")
+	}
+}
+
+func TestDeleteIsNoopForUnknownID(t *testing.T) {
+	st := requireStore(t)
+	if err := st.Delete(context.Background(), "alex-delete", "no-such-id"); err != nil {
+		t.Fatalf("Delete() error = %v, want nil (no-op)", err)
+	}
+}
+
+// TestDeleteDoesNotAffectOtherUsers mirrors the recording package's
+// user-isolation guarantee (see TestOpenRejectsWrongUser): a delete scoped to
+// one user must never remove another user's recording, even if the IDs were
+// somehow guessed or collided.
+func TestDeleteDoesNotAffectOtherUsers(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	victim, err := st.Save(ctx, "victim-delete", "sess-victim", []byte{1, 2, 3, 4}, 16000)
+	if err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	if err := st.Delete(ctx, "attacker-delete", victim.ID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+
+	if _, _, err := st.Open(ctx, "victim-delete", victim.ID); err != nil {
+		t.Fatalf("victim's recording should survive attacker's delete, Open() error = %v", err)
+	}
+}
+
+func TestDeleteBySessionRemovesOnlyThatSessionsRecordings(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	const userID = "alex-cascade"
+	inSession, err := st.Save(ctx, userID, "sess-a", []byte{1, 2, 3, 4}, 16000)
+	if err != nil {
+		t.Fatalf("Save(sess-a) error = %v", err)
+	}
+	otherSession, err := st.Save(ctx, userID, "sess-b", []byte{5, 6, 7, 8}, 16000)
+	if err != nil {
+		t.Fatalf("Save(sess-b) error = %v", err)
+	}
+
+	if err := st.DeleteBySession(ctx, userID, "sess-a"); err != nil {
+		t.Fatalf("DeleteBySession() error = %v", err)
+	}
+
+	if _, _, err := st.Open(ctx, userID, inSession.ID); err == nil {
+		t.Fatal("Open() for the deleted session's recording should error, got nil")
+	}
+	if _, _, err := st.Open(ctx, userID, otherSession.ID); err != nil {
+		t.Fatalf("other session's recording should survive, Open() error = %v", err)
+	}
+}
+
+func TestDeleteBySessionIsNoopWhenNoneMatch(t *testing.T) {
+	st := requireStore(t)
+	if err := st.DeleteBySession(context.Background(), "alex-cascade", "no-such-session"); err != nil {
+		t.Fatalf("DeleteBySession() error = %v, want nil (no-op)", err)
 	}
 }
