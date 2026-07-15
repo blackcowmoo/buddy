@@ -159,8 +159,10 @@ llama-server -m ./models/qwen3-6-35b-a3b.gguf --port 8085  # analysis candidate 
 BUDDY_LLM_CHAT_URL=http://localhost:8081/v1
 BUDDY_LLM_CHAT_MODEL=gemma-4-e2b
 
-BUDDY_LLM_ANALYSIS_URLS=http://localhost:8084/v1,http://localhost:8085/v1
-BUDDY_LLM_ANALYSIS_MODELS=gemma-4-e4b,qwen3-6-35b-a3b
+# "model@url" pairs, comma-separated — one env var per endpoint, not a
+# second _MODELS list to keep in sync by index (see internal/config
+# .parseModelURLPairs).
+BUDDY_LLM_ANALYSIS_URLS=gemma-4-e4b@http://localhost:8084/v1,qwen3-6-35b-a3b@http://localhost:8085/v1
 
 BUDDY_LLM_JUDGE_URL=http://localhost:8085/v1
 BUDDY_LLM_JUDGE_MODEL=qwen3-6-35b-a3b
@@ -181,8 +183,10 @@ git clone https://github.com/ggml-org/whisper.cpp && cd whisper.cpp && make
 ```
 
 ```bash
-WHISPER_SERVER_URLS=http://localhost:8082/v1   # comma-separate for more replicas
-WHISPER_SERVER_MODEL=whisper-large-v3-turbo
+# "model@url" pairs, comma-separated — add more for more replicas
+# (whisper-large-v3-turbo@http://localhost:8083/v1, ...); a bare "url" with
+# no "model@" prefix works too, it just omits the "model" field.
+WHISPER_SERVER_URLS=whisper-large-v3-turbo@http://localhost:8082/v1
 ```
 
 This is a server engine (as opposed to the legacy `BUDDY_FAST_STT`/
@@ -229,10 +233,10 @@ this table is a deployment-focused summary).
 | `MYSQL_USERNAME`, `MYSQL_PASSWORD`, `MYSQL_DATABASE` | Credentials and database for the store. `MYSQL_PORT` defaults to `3306`. |
 | `MYSQL_RO_HOSTNAME` | Optional read replica; `Load` reads from it to offload the primary. Leave unset to read from the primary (strongly consistent). |
 | `BUDDY_LLM_CHAT_URL` | Your OpenAI-compatible endpoint for the FAST track's reply (llama.cpp `llama-server`, vLLM, LM Studio, hosted API). Without it, chat silently degrades to an offline echo. |
-| `BUDDY_LLM_ANALYSIS_URLS` | Comma-separated endpoint(s) for the REFINE track's grammar-correction/compaction ensemble — every one is called concurrently. Paired by index with `BUDDY_LLM_ANALYSIS_MODELS`. |
+| `BUDDY_LLM_ANALYSIS_URLS` | Comma-separated `model@url` pairs for the REFINE track's grammar-correction/compaction ensemble — every one is called concurrently. One env var per endpoint (not a second `_MODELS` list kept in sync by index); a bare `url` with no `model@` prefix is also accepted. |
 | `BUDDY_LLM_JUDGE_URL` | Endpoint that synthesizes the analysis ensemble's outputs into one result. Unused when `BUDDY_LLM_ANALYSIS_URLS` has a single entry. |
 | `BUDDY_LLM_API_KEY` | Only if your LLM endpoints need a bearer token (e.g. a hosted API) — shared by all three above. |
-| `WHISPER_SERVER_URLS` | Comma-separated whisper.cpp `server`-style (OpenAI-compatible `/v1/audio/transcriptions`) endpoint(s); serves both the fast and refine track. Takes priority over `BUDDY_FAST_STT`/`BUDDY_SLOW_STT` below once set. See `internal/config.sttEngines` for adding another engine (e.g. `PARAKEET_SERVER_URLS`). |
+| `WHISPER_SERVER_URLS` | Comma-separated `model@url` pairs for whisper.cpp `server`-style (OpenAI-compatible `/v1/audio/transcriptions`) endpoint(s); serves both the fast and refine track, round-robining across entries. Takes priority over `BUDDY_FAST_STT`/`BUDDY_SLOW_STT` below once set. See `internal/config.sttEngines` for adding another engine (e.g. `PARAKEET_SERVER_URLS`). |
 | `BUDDY_IDENTITY_MODE=oidc` | Switches from the anonymous local-dev cookie to verifying a Dex-issued JWT. |
 | `BUDDY_OIDC_ISSUER_URL` | Dex's issuer URL, e.g. `https://dex.example.com`. The server fetches Dex's discovery document + JWKS from this at startup. |
 | `BUDDY_OIDC_CLIENT_ID` | Expected token audience (default `buddy`). |
@@ -265,8 +269,8 @@ temporary raw-audio backup — both share this one S3-compatible config block):*
 
 **Everything else is optional** (sane defaults, see `.env.example`):
 `BUDDY_ADDR`, `BUDDY_FEEDBACK_LANG`, `BUDDY_MAX_HISTORY_MESSAGES`,
-`BUDDY_LLM_CHAT_MODEL`/`BUDDY_LLM_ANALYSIS_MODELS`/`BUDDY_LLM_JUDGE_MODEL`,
-`WHISPER_SERVER_MODEL`/`PARAKEET_SERVER_URLS`/`PARAKEET_SERVER_MODEL`, and the
+`BUDDY_LLM_CHAT_MODEL`/`BUDDY_LLM_JUDGE_MODEL`, `PARAKEET_SERVER_URLS`
+(reserved for a future engine — see `internal/config.sttEngines`), and the
 legacy `BUDDY_FAST_STT`/`BUDDY_SLOW_STT` (with the matching `BUDDY_WHISPER_*`
 vars if you set either to `whisper`) used only when no `*_SERVER_URLS` engine
 is configured. `BUDDY_WEB_DIST`/`BUDDY_VITE_URL` only matter in dev — a prod
@@ -346,7 +350,7 @@ without touching the pipeline:
 | **Server-side TTS** | Implement `tts.Synthesizer` (e.g. shell out to piper) and stream audio frames down the socket for non-browser clients. |
 | **Lower TTS latency** | Speak per sentence as `assistant_delta`s arrive instead of on `assistant_done`. |
 | **Different LLM host** | `llm.OpenAI` already works with any OpenAI-compatible server (llama.cpp, vLLM, LM Studio, hosted APIs) — just change `BUDDY_LLM_CHAT_URL`/`BUDDY_LLM_ANALYSIS_URLS`/`BUDDY_LLM_JUDGE_URL`. |
-| **Another STT server engine** (e.g. parakeet.cpp) | Add a row to `sttEngines` in `internal/config/config.go` (its `*_URLS`/`*_MODEL` env var names); `stt.HTTPTranscriber` already speaks the generic OpenAI-compatible transcription API, so no new Go type is needed unless the engine's wire format differs. |
+| **Another STT server engine** (e.g. parakeet.cpp) | Add a row to `sttEngines` in `internal/config/config.go` (its `*_URLS` env var name — `model@url` pairs, parsed by `parseModelURLPairs`); `stt.HTTPTranscriber` already speaks the generic OpenAI-compatible transcription API, so no new Go type is needed unless the engine's wire format differs. |
 | **Real auth** | Done: `BUDDY_IDENTITY_MODE=oidc` verifies a Dex-issued JWT from the `Authorization` header directly against Dex. For a different provider/setup, implement `identity.Identifier` — `internal/store` doesn't care where the ID came from. |
 
 ## Roadmap — what's still not done

@@ -28,36 +28,42 @@ type Config struct {
 	// STT server engine: any OpenAI-compatible /v1/audio/transcriptions
 	// server (whisper.cpp's `server` example, parakeet.cpp, or similar).
 	// sttEngines (below) is checked in priority order; the first engine whose
-	// *_URLS env var is set wins and its URLs/model land here. Comma-separated
-	// URLs round-robin across replicas of the same engine. One model per
-	// deployment, so the same engine serves both the fast and refine track.
+	// *_URLS env var is set wins and its entries land here, parsed by
+	// parseModelURLPairs (each entry is "model@url", or a bare "url" for an
+	// engine that doesn't need one) — see that function's doc for why a
+	// *_URLS var never gets a separate single *_MODEL(S) field: a comma list
+	// is presumed to allow different models per endpoint, so the model
+	// travels with its URL, one env var, not two kept in sync by index.
+	// Comma-separated entries round-robin across the listed endpoints.
 	// Empty STTEngine (none configured) falls back to FastSTT/SlowSTT above.
 	// Adding a future engine (e.g. parakeet.cpp) is an entry in sttEngines,
 	// not a code change here.
 	STTEngine string
 	STTURLs   []string
-	STTModel  string
+	STTModels []string // paired by index with STTURLs
 
 	// LLM: any OpenAI-compatible chat-completions server (llama.cpp's
 	// llama-server, vLLM, LM Studio, or the OpenAI API itself). Three
 	// independent purposes, matching the two-track pipeline
 	// (internal/pipeline.Pipeline):
-	//   - Chat:     FAST track's streamed reply. One endpoint (*_URL).
+	//   - Chat:     FAST track's streamed reply. One endpoint+model
+	//     (*_URL/*_MODEL — unambiguous as a single pair, no list to fold).
 	//   - Analysis: REFINE track's grammar-correction/compaction pass. Every
 	//     configured endpoint is called concurrently as an ensemble, so this
-	//     is comma-separated (*_URLS/*_MODELS, paired by index — a shorter
-	//     model list repeats its last entry for the remaining URLs).
+	//     is a single comma-separated *_URLS var of "model@url" pairs (see
+	//     parseModelURLPairs) rather than parallel *_URLS/*_MODELS lists.
 	//   - Judge:    synthesizes the analysis ensemble's outputs into the one
-	//     result the pipeline uses. One endpoint (*_URL). Skipped when
-	//     Analysis has a single candidate (pipeline.Pipeline.analyze) — a
-	//     lone model has nothing to synthesize against.
+	//     result the pipeline uses. One endpoint+model (*_URL/*_MODEL).
+	//     Skipped when Analysis has a single candidate
+	//     (pipeline.Pipeline.analyze) — a lone model has nothing to
+	//     synthesize against.
 	LLMAPIKey string // optional bearer token, shared by all of the above
 
 	LLMChatURL   string
 	LLMChatModel string
 
 	LLMAnalysisURLs   []string
-	LLMAnalysisModels []string
+	LLMAnalysisModels []string // paired by index with LLMAnalysisURLs
 
 	LLMJudgeURL   string
 	LLMJudgeModel string
@@ -143,24 +149,24 @@ type Config struct {
 // buddy-specific knob. Supporting a future engine (e.g. parakeet.cpp) is a
 // new row here, nothing else changes.
 var sttEngines = []struct {
-	name     string
-	urlsEnv  string
-	modelEnv string
+	name    string
+	urlsEnv string
 }{
-	{"whisper", "WHISPER_SERVER_URLS", "WHISPER_SERVER_MODEL"},
-	{"parakeet", "PARAKEET_SERVER_URLS", "PARAKEET_SERVER_MODEL"},
+	{"whisper", "WHISPER_SERVER_URLS"},
+	{"parakeet", "PARAKEET_SERVER_URLS"},
 }
 
 // loadSTTEngine picks the first configured server engine from sttEngines, or
-// ("", nil, "") if none are set — Config.STTEngine stays empty and the
+// ("", nil, nil) if none are set — Config.STTEngine stays empty and the
 // server falls back to FastSTT/SlowSTT (mock/subprocess whisper).
-func loadSTTEngine() (name string, urls []string, model string) {
+func loadSTTEngine() (name string, urls, models []string) {
 	for _, e := range sttEngines {
 		if v, ok := os.LookupEnv(e.urlsEnv); ok && v != "" {
-			return e.name, splitCSV(v), env(e.modelEnv, "")
+			pairModels, pairURLs := parseModelURLPairs(v)
+			return e.name, pairURLs, pairModels
 		}
 	}
-	return "", nil, ""
+	return "", nil, nil
 }
 
 // splitCSV parses a comma-separated env value into a trimmed, non-empty list.
@@ -174,8 +180,33 @@ func splitCSV(s string) []string {
 	return out
 }
 
+// parseModelURLPairs parses a comma-separated list of "model@url" entries
+// into parallel models/urls slices (same index i is one pair). A bare entry
+// with no "@" is also accepted as just a url, with an empty model — callers
+// that need a model name treat "" as "omit it" rather than guessing one.
+//
+// This is the format for every *_URLS env var (WHISPER_SERVER_URLS,
+// BUDDY_LLM_ANALYSIS_URLS, ...): a comma list is presumed to allow a
+// different model behind each endpoint, so pairing them via a second
+// same-length *_MODELS list (kept in sync by index across two env vars) is
+// both redundant and fragile. Folding the model into its own entry means
+// there is exactly one thing to edit per endpoint.
+func parseModelURLPairs(s string) (models, urls []string) {
+	for _, part := range splitCSV(s) {
+		if model, url, ok := strings.Cut(part, "@"); ok {
+			models = append(models, strings.TrimSpace(model))
+			urls = append(urls, strings.TrimSpace(url))
+			continue
+		}
+		models = append(models, "")
+		urls = append(urls, part)
+	}
+	return models, urls
+}
+
 func Load() Config {
-	sttName, sttURLs, sttModel := loadSTTEngine()
+	sttName, sttURLs, sttModels := loadSTTEngine()
+	analysisModels, analysisURLs := parseModelURLPairs(env("BUDDY_LLM_ANALYSIS_URLS", "local-model@http://localhost:8081/v1"))
 
 	return Config{
 		Env:  env("BUDDY_ENV", "dev"),
@@ -192,15 +223,15 @@ func Load() Config {
 
 		STTEngine: sttName,
 		STTURLs:   sttURLs,
-		STTModel:  sttModel,
+		STTModels: sttModels,
 
 		LLMAPIKey: env("BUDDY_LLM_API_KEY", ""),
 
 		LLMChatURL:   env("BUDDY_LLM_CHAT_URL", "http://localhost:8081/v1"),
 		LLMChatModel: env("BUDDY_LLM_CHAT_MODEL", "local-model"),
 
-		LLMAnalysisURLs:   splitCSV(env("BUDDY_LLM_ANALYSIS_URLS", "http://localhost:8081/v1")),
-		LLMAnalysisModels: splitCSV(env("BUDDY_LLM_ANALYSIS_MODELS", "local-model")),
+		LLMAnalysisURLs:   analysisURLs,
+		LLMAnalysisModels: analysisModels,
 
 		LLMJudgeURL:   env("BUDDY_LLM_JUDGE_URL", "http://localhost:8081/v1"),
 		LLMJudgeModel: env("BUDDY_LLM_JUDGE_MODEL", "local-model"),

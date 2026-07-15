@@ -19,39 +19,52 @@ import (
 //
 //	whisper-server -m ggml-large-v3-turbo.bin --port 8082   # OpenAI-compatible
 //
-// Multiple URLs round-robin across replicas of the same engine, so one slow
-// request can't queue behind another on a single instance.
+// Multiple URLs round-robin across replicas, so one slow request can't queue
+// behind another on a single instance. Models is paired by index with URLs
+// (config.parseModelURLPairs parses "model@url" entries from one env var) so
+// a fleet of replicas running different models is expressible without a
+// second list to keep in sync — an empty slot just omits the "model" field
+// for that endpoint.
 type HTTPTranscriber struct {
 	Engine string   // label for Name(), e.g. "whisper", "parakeet"
 	URLs   []string // one or more "/v1" roots
-	Model  string   // sent as the "model" form field; omitted if empty
+	Models []string // paired by index with URLs; "" omits the "model" field
 
 	http *http.Client
 	next uint64
 }
 
-func NewHTTPTranscriber(engine string, urls []string, model string) *HTTPTranscriber {
+func NewHTTPTranscriber(engine string, urls, models []string) *HTTPTranscriber {
 	return &HTTPTranscriber{
 		Engine: engine,
 		URLs:   urls,
-		Model:  model,
+		Models: models,
 		http:   &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
-func (h *HTTPTranscriber) Name() string { return h.Engine + "-server(" + h.Model + ")" }
+func (h *HTTPTranscriber) Name() string {
+	return h.Engine + "-server(" + strings.Join(uniqueNonEmpty(h.Models), ",") + ")"
+}
 
-// pickURL round-robins across URLs so concurrent fast/refine-track calls
-// spread across replicas instead of piling onto the first one.
-func (h *HTTPTranscriber) pickURL() string {
+// pickEndpoint round-robins across URLs (so concurrent fast/refine-track
+// calls spread across replicas instead of piling onto the first one) and
+// returns the model paired with whichever URL was picked.
+func (h *HTTPTranscriber) pickEndpoint() (url, model string) {
 	i := atomic.AddUint64(&h.next, 1) - 1
-	return h.URLs[i%uint64(len(h.URLs))]
+	idx := i % uint64(len(h.URLs))
+	url = h.URLs[idx]
+	if idx < uint64(len(h.Models)) {
+		model = h.Models[idx]
+	}
+	return url, model
 }
 
 func (h *HTTPTranscriber) Transcribe(ctx context.Context, pcm []byte) (Result, error) {
 	if len(h.URLs) == 0 {
 		return Result{}, fmt.Errorf("%s: no server URLs configured", h.Engine)
 	}
+	url, model := h.pickEndpoint()
 
 	var wav bytes.Buffer
 	if err := writeWAV(&wav, pcm, 16000, 1); err != nil {
@@ -67,15 +80,14 @@ func (h *HTTPTranscriber) Transcribe(ctx context.Context, pcm []byte) (Result, e
 	if _, err := io.Copy(fw, &wav); err != nil {
 		return Result{}, err
 	}
-	if h.Model != "" {
-		_ = mw.WriteField("model", h.Model)
+	if model != "" {
+		_ = mw.WriteField("model", model)
 	}
 	if err := mw.Close(); err != nil {
 		return Result{}, err
 	}
 
-	url := strings.TrimRight(h.pickURL(), "/") + "/audio/transcriptions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(url, "/")+"/audio/transcriptions", &body)
 	if err != nil {
 		return Result{}, err
 	}
@@ -98,4 +110,17 @@ func (h *HTTPTranscriber) Transcribe(ctx context.Context, pcm []byte) (Result, e
 		return Result{}, err
 	}
 	return Result{Text: strings.TrimSpace(parsed.Text), Confidence: 0.9}, nil
+}
+
+func uniqueNonEmpty(ss []string) []string {
+	seen := make(map[string]bool, len(ss))
+	var out []string
+	for _, s := range ss {
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
 }

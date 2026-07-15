@@ -10,11 +10,10 @@ var allBuddyEnvVars = []string{
 	"BUDDY_ENV", "BUDDY_ADDR", "BUDDY_WEB_DIST", "BUDDY_VITE_URL",
 	"BUDDY_FAST_STT", "BUDDY_SLOW_STT", "BUDDY_WHISPER_BIN",
 	"BUDDY_WHISPER_FAST_MODEL", "BUDDY_WHISPER_SLOW_MODEL",
-	"WHISPER_SERVER_URLS", "WHISPER_SERVER_MODEL",
-	"PARAKEET_SERVER_URLS", "PARAKEET_SERVER_MODEL",
+	"WHISPER_SERVER_URLS", "PARAKEET_SERVER_URLS",
 	"BUDDY_LLM_API_KEY",
 	"BUDDY_LLM_CHAT_URL", "BUDDY_LLM_CHAT_MODEL",
-	"BUDDY_LLM_ANALYSIS_URLS", "BUDDY_LLM_ANALYSIS_MODELS",
+	"BUDDY_LLM_ANALYSIS_URLS",
 	"BUDDY_LLM_JUDGE_URL", "BUDDY_LLM_JUDGE_MODEL",
 	"BUDDY_FEEDBACK_LANG",
 	"MYSQL_RW_HOSTNAME", "MYSQL_RO_HOSTNAME", "MYSQL_PORT",
@@ -88,12 +87,14 @@ func TestLoadDefaults(t *testing.T) {
 	if len(c.LLMAnalysisModels) != 1 || c.LLMAnalysisModels[0] != "local-model" {
 		t.Errorf("LLMAnalysisModels = %v, want a single default entry", c.LLMAnalysisModels)
 	}
+	if c.STTModels != nil {
+		t.Errorf("STTModels = %v, want nil (no server engine configured)", c.STTModels)
+	}
 }
 
 func TestLoadSTTEnginePicksFirstConfiguredInPriorityOrder(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("WHISPER_SERVER_URLS", "http://w1:8082/v1, http://w2:8082/v1")
-	t.Setenv("WHISPER_SERVER_MODEL", "whisper-large-v3-turbo")
+	t.Setenv("WHISPER_SERVER_URLS", "whisper-large-v3-turbo@http://w1:8082/v1, whisper-large-v3-turbo@http://w2:8082/v1")
 	t.Setenv("PARAKEET_SERVER_URLS", "http://p1:8083/v1")
 
 	c := Load()
@@ -103,8 +104,8 @@ func TestLoadSTTEnginePicksFirstConfiguredInPriorityOrder(t *testing.T) {
 	if want := []string{"http://w1:8082/v1", "http://w2:8082/v1"}; !equalStrings(c.STTURLs, want) {
 		t.Fatalf("STTURLs = %v, want %v", c.STTURLs, want)
 	}
-	if c.STTModel != "whisper-large-v3-turbo" {
-		t.Fatalf("STTModel = %q, want whisper-large-v3-turbo", c.STTModel)
+	if want := []string{"whisper-large-v3-turbo", "whisper-large-v3-turbo"}; !equalStrings(c.STTModels, want) {
+		t.Fatalf("STTModels = %v, want %v", c.STTModels, want)
 	}
 }
 
@@ -119,21 +120,35 @@ func TestLoadSTTEngineFallsBackToNextEngine(t *testing.T) {
 	if want := []string{"http://p1:8083/v1"}; !equalStrings(c.STTURLs, want) {
 		t.Fatalf("STTURLs = %v, want %v", c.STTURLs, want)
 	}
+	if want := []string{""}; !equalStrings(c.STTModels, want) {
+		t.Fatalf("STTModels = %v, want %v (bare url, no \"model@\" prefix)", c.STTModels, want)
+	}
 }
 
-func TestLoadLLMAnalysisURLsAndModelsSplitOnComma(t *testing.T) {
+func TestLoadLLMAnalysisURLsParsesModelAtURLPairs(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("BUDDY_LLM_ANALYSIS_URLS", "http://a:8081/v1, http://b:8081/v1 ,http://c:8081/v1")
-	t.Setenv("BUDDY_LLM_ANALYSIS_MODELS", "gemma-4-e4b,qwen3-6-35b-a3b")
+	t.Setenv("BUDDY_LLM_ANALYSIS_URLS", "gemma-4-e4b@http://a:8081/v1, qwen3-6-35b-a3b@http://b:8081/v1 ,http://c:8081/v1")
 
 	c := Load()
 	wantURLs := []string{"http://a:8081/v1", "http://b:8081/v1", "http://c:8081/v1"}
 	if !equalStrings(c.LLMAnalysisURLs, wantURLs) {
 		t.Fatalf("LLMAnalysisURLs = %v, want %v", c.LLMAnalysisURLs, wantURLs)
 	}
-	wantModels := []string{"gemma-4-e4b", "qwen3-6-35b-a3b"}
+	wantModels := []string{"gemma-4-e4b", "qwen3-6-35b-a3b", ""}
 	if !equalStrings(c.LLMAnalysisModels, wantModels) {
 		t.Fatalf("LLMAnalysisModels = %v, want %v", c.LLMAnalysisModels, wantModels)
+	}
+}
+
+func TestParseModelURLPairs(t *testing.T) {
+	models, urls := parseModelURLPairs("gemma-4-e4b@http://a:8081/v1,http://b:8081/v1, qwen3@http://c:8081/v1 ")
+	wantModels := []string{"gemma-4-e4b", "", "qwen3"}
+	wantURLs := []string{"http://a:8081/v1", "http://b:8081/v1", "http://c:8081/v1"}
+	if !equalStrings(models, wantModels) {
+		t.Fatalf("models = %v, want %v", models, wantModels)
+	}
+	if !equalStrings(urls, wantURLs) {
+		t.Fatalf("urls = %v, want %v", urls, wantURLs)
 	}
 }
 

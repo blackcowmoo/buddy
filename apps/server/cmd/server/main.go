@@ -165,14 +165,14 @@ func buildRecordingStore(ctx context.Context, cfg config.Config, st *store.MySQL
 
 // buildSTT selects the STT engine(s) for the fast and refine tracks. A
 // server engine (cfg.STTEngine — WHISPER_SERVER_URLS, PARAKEET_SERVER_URLS,
-// ...; see config.sttEngines) takes priority when configured: it's one
-// model/deployment, so the same recognizer instance serves both tracks
-// (its URLs already round-robin across replicas — see stt.HTTPTranscriber).
-// Otherwise falls back to the legacy per-track switch: "mock" (zero setup)
-// or "whisper" (whisper.cpp subprocess, internal/stt/whisper.go).
+// ...; see config.sttEngines) takes priority when configured: the same
+// recognizer instance serves both tracks, round-robining across its
+// URLs/paired models (see stt.HTTPTranscriber). Otherwise falls back to the
+// legacy per-track switch: "mock" (zero setup) or "whisper" (whisper.cpp
+// subprocess, internal/stt/whisper.go).
 func buildSTT(cfg config.Config) (fast, slow stt.Recognizer) {
 	if cfg.STTEngine != "" {
-		r := stt.NewHTTPTranscriber(cfg.STTEngine, cfg.STTURLs, cfg.STTModel)
+		r := stt.NewHTTPTranscriber(cfg.STTEngine, cfg.STTURLs, cfg.STTModels)
 		return r, r
 	}
 	return buildLegacySTT(cfg.FastSTT, "fast", cfg), buildLegacySTT(cfg.SlowSTT, "slow", cfg)
@@ -196,18 +196,14 @@ func buildLegacySTT(kind, label string, cfg config.Config) stt.Recognizer {
 }
 
 // buildAnalysisCandidates builds one ensemble candidate per
-// BUDDY_LLM_ANALYSIS_URLS entry, paired by index with
-// BUDDY_LLM_ANALYSIS_MODELS — a shorter model list repeats its last entry
-// for the remaining URLs (the common case: one model replicated across
-// several server instances). See pipeline.Pipeline.Analysis/analyze().
+// BUDDY_LLM_ANALYSIS_URLS entry ("model@url" pairs — see
+// config.parseModelURLPairs), so LLMAnalysisURLs/LLMAnalysisModels are
+// always the same length, one candidate per pair. See
+// pipeline.Pipeline.Analysis/analyze().
 func buildAnalysisCandidates(cfg config.Config) []pipeline.Candidate {
 	cands := make([]pipeline.Candidate, len(cfg.LLMAnalysisURLs))
 	for i, u := range cfg.LLMAnalysisURLs {
-		model := cfg.LLMAnalysisModels[len(cfg.LLMAnalysisModels)-1]
-		if i < len(cfg.LLMAnalysisModels) {
-			model = cfg.LLMAnalysisModels[i]
-		}
-		cands[i] = pipeline.Candidate{LLM: llm.NewOpenAI(u, cfg.LLMAPIKey), Model: model}
+		cands[i] = pipeline.Candidate{LLM: llm.NewOpenAI(u, cfg.LLMAPIKey), Model: cfg.LLMAnalysisModels[i]}
 	}
 	return cands
 }
