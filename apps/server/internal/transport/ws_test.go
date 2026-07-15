@@ -174,6 +174,13 @@ func (f *fakeStore) SessionDetail(ctx context.Context, userID, sessionID string)
 	return d.meta, turns, nil
 }
 
+func (f *fakeStore) DeleteSession(ctx context.Context, userID, sessionID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.sessions, fakeStoreKey(userID, sessionID))
+	return nil
+}
+
 func (f *fakeStore) Close() error { return nil }
 
 // fakeAudioSaver is an in-memory AudioSaver: these tests only care that
@@ -225,15 +232,16 @@ type fakeRecordingStore struct {
 }
 
 type recordingSave struct {
-	userID string
-	pcm    []byte
+	userID    string
+	sessionID string
+	pcm       []byte
 }
 
-func (f *fakeRecordingStore) Save(ctx context.Context, userID string, pcm []byte, sampleRate int) (recording.Recording, error) {
+func (f *fakeRecordingStore) Save(ctx context.Context, userID, sessionID string, pcm []byte, sampleRate int) (recording.Recording, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.saved = append(f.saved, recordingSave{userID, append([]byte(nil), pcm...)})
-	return recording.Recording{ID: "fake-id", UserID: userID}, nil
+	f.saved = append(f.saved, recordingSave{userID, sessionID, append([]byte(nil), pcm...)})
+	return recording.Recording{ID: "fake-id", UserID: userID, SessionID: sessionID}, nil
 }
 
 func (f *fakeRecordingStore) List(ctx context.Context, userID string) ([]recording.Recording, error) {
@@ -242,6 +250,14 @@ func (f *fakeRecordingStore) List(ctx context.Context, userID string) ([]recordi
 
 func (f *fakeRecordingStore) Open(ctx context.Context, userID, id string) (recording.Recording, io.ReadCloser, error) {
 	return recording.Recording{}, nil, errors.New("fakeRecordingStore: Open not implemented")
+}
+
+func (f *fakeRecordingStore) Delete(ctx context.Context, userID, id string) error {
+	return errors.New("fakeRecordingStore: Delete not implemented")
+}
+
+func (f *fakeRecordingStore) DeleteBySession(ctx context.Context, userID, sessionID string) error {
+	return errors.New("fakeRecordingStore: DeleteBySession not implemented")
 }
 
 func (f *fakeRecordingStore) Close() error { return nil }
@@ -670,7 +686,7 @@ func TestWSBinaryFrameSavesRecording(t *testing.T) {
 	rec := &fakeRecordingStore{}
 	srv := newTestServerWithRecordings(t, newTestStore(t), rec)
 	c, _ := dial(t, srv, "voice-user", "")
-	readEvent(t, c) // ready
+	ready := readEvent(t, c) // ready
 
 	pcm := []byte{1, 2, 3, 4, 5, 6, 7, 8}
 	if err := c.Write(context.Background(), websocket.MessageBinary, pcm); err != nil {
@@ -683,6 +699,11 @@ func TestWSBinaryFrameSavesRecording(t *testing.T) {
 		if saved := rec.all(); len(saved) == 1 {
 			if saved[0].userID != "voice-user" {
 				t.Fatalf("saved userID = %q, want voice-user", saved[0].userID)
+			}
+			// sessionID must be threaded through so a later session delete can
+			// cascade to this recording (see recording.Store.DeleteBySession).
+			if saved[0].sessionID != ready.Session {
+				t.Fatalf("saved sessionID = %q, want %q (the minted WS session)", saved[0].sessionID, ready.Session)
 			}
 			if string(saved[0].pcm) != string(pcm) {
 				t.Fatalf("saved pcm = %v, want %v", saved[0].pcm, pcm)

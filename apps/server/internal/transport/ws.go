@@ -176,7 +176,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				go func() {
 					sctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer cancel()
-					if _, err := h.recordings.Save(sctx, userID, pcm, pcmSampleRate); err != nil {
+					if _, err := h.recordings.Save(sctx, userID, sessionID, pcm, pcmSampleRate); err != nil {
 						log.Printf("recording: save %s: %v", userID, err)
 					}
 				}()

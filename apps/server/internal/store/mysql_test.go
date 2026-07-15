@@ -385,6 +385,57 @@ func TestMySQLListSessionsOrderedByRecency(t *testing.T) {
 	}
 }
 
+func TestMySQLDeleteSessionRemovesSessionAndTurns(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	sessionID := "sess-delete"
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "hi", false); err != nil {
+		t.Fatalf("SaveTurn() error = %v", err)
+	}
+	if err := st.DeleteSession(ctx, "alex", sessionID); err != nil {
+		t.Fatalf("DeleteSession() error = %v", err)
+	}
+
+	if _, _, err := st.SessionDetail(ctx, "alex", sessionID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SessionDetail() after delete error = %v, want ErrNotFound", err)
+	}
+	var n int
+	if err := st.rw.QueryRowContext(ctx, `SELECT count(*) FROM `+turnsTable+` WHERE user_id = ? AND session_id = ?`, "alex", sessionID).Scan(&n); err != nil {
+		t.Fatalf("count query: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("expected buddy_turns rows to be gone, found %d", n)
+	}
+}
+
+func TestMySQLDeleteSessionIsNoopForUnknownSession(t *testing.T) {
+	st := requireStore(t)
+	if err := st.DeleteSession(context.Background(), "alex", "no-such-session"); err != nil {
+		t.Fatalf("DeleteSession() error = %v, want nil (no-op)", err)
+	}
+}
+
+// TestMySQLDeleteSessionDoesNotAffectOtherUsers guards the same isolation
+// property as TestMySQLUsersAreIsolated, but for deletion: a delete scoped to
+// one user must never touch another user's row for the same session ID.
+func TestMySQLDeleteSessionDoesNotAffectOtherUsers(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	const sessionID = "s-shared-delete"
+	if err := st.SaveTurn(ctx, "victim", sessionID, 1, "user", "victim's message", false); err != nil {
+		t.Fatalf("SaveTurn(victim) error = %v", err)
+	}
+	if err := st.SaveTurn(ctx, "attacker", sessionID, 1, "user", "attacker's message", false); err != nil {
+		t.Fatalf("SaveTurn(attacker) error = %v", err)
+	}
+	if err := st.DeleteSession(ctx, "attacker", sessionID); err != nil {
+		t.Fatalf("DeleteSession(attacker) error = %v", err)
+	}
+	if _, _, err := st.SessionDetail(ctx, "victim", sessionID); err != nil {
+		t.Fatalf("victim's session should survive attacker's delete, SessionDetail() error = %v", err)
+	}
+}
+
 // TestMySQLSessionDetailNotFoundForWrongUser is the key security property of
 // the composite-key schema: a session ID guessed or leaked from another user
 // must not be readable, even though the ID itself exists in the table.

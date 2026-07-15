@@ -15,7 +15,16 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
+)
+
+// MySQL error numbers for "column already exists" / "index name already
+// exists" — expected, steady-state outcomes of addSessionIDColumn below once
+// a deployment has already migrated, not failures.
+const (
+	erDupFieldname = 1060
+	erDupKeyname   = 1061
 )
 
 // table carries a buddy_ prefix for the same reason as internal/store's
@@ -57,6 +66,13 @@ type S3Store struct {
 	rw, ro       *sql.DB
 }
 
+// isMySQLError reports whether err is a *mysql.MySQLError carrying the given
+// server error number (see the erDup* constants above).
+func isMySQLError(err error, number uint16) bool {
+	var mysqlErr *mysql.MySQLError
+	return errors.As(err, &mysqlErr) && mysqlErr.Number == number
+}
+
 // newS3Client builds the AWS SDK client from cfg's static credentials —
 // split out from NewS3 so the endpoint/path-style/credential wiring can be
 // tested (internal/recording/s3_config_test.go) without a real database.
@@ -88,15 +104,29 @@ func NewS3(ctx context.Context, cfg S3Config, rw, ro *sql.DB) (*S3Store, error) 
 	const schema = `CREATE TABLE IF NOT EXISTS ` + table + ` (
 		id          VARCHAR(64)  NOT NULL,
 		user_id     VARCHAR(255) NOT NULL,
+		session_id  VARCHAR(64)  NOT NULL DEFAULT '',
 		s3_key      VARCHAR(512) NOT NULL,
 		duration_ms INT          NOT NULL,
 		size_bytes  BIGINT       NOT NULL,
 		created_at  BIGINT       NOT NULL,
 		PRIMARY KEY (id),
-		KEY idx_user_created (user_id, created_at)
+		KEY idx_user_created (user_id, created_at),
+		KEY idx_user_session (user_id, session_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
 	if _, err := rw.ExecContext(ctx, schema); err != nil {
 		return nil, fmt.Errorf("recording: schema: %w", err)
+	}
+	// session_id was added after buddy_recordings first shipped; existing
+	// deployments' tables predate the column, and CREATE TABLE IF NOT EXISTS
+	// above is a no-op against them. "ADD COLUMN/INDEX IF NOT EXISTS" isn't
+	// supported by every MySQL 8.0 point release this app has run against, so
+	// the idempotency comes from ignoring the specific "already there" errors
+	// instead of relying on that clause.
+	if _, err := rw.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN session_id VARCHAR(64) NOT NULL DEFAULT '' AFTER user_id`); err != nil && !isMySQLError(err, erDupFieldname) {
+		return nil, fmt.Errorf("recording: migrate session_id: %w", err)
+	}
+	if _, err := rw.ExecContext(ctx, `ALTER TABLE `+table+` ADD INDEX idx_user_session (user_id, session_id)`); err != nil && !isMySQLError(err, erDupKeyname) {
+		return nil, fmt.Errorf("recording: migrate session_id index: %w", err)
 	}
 
 	return &S3Store{
@@ -108,7 +138,7 @@ func NewS3(ctx context.Context, cfg S3Config, rw, ro *sql.DB) (*S3Store, error) 
 	}, nil
 }
 
-func (s *S3Store) Save(ctx context.Context, userID string, pcm []byte, sampleRate int) (Recording, error) {
+func (s *S3Store) Save(ctx context.Context, userID, sessionID string, pcm []byte, sampleRate int) (Recording, error) {
 	id := uuid.NewString()
 	key := userID + "/" + id + ".wav.gz"
 
@@ -124,6 +154,7 @@ func (s *S3Store) Save(ctx context.Context, userID string, pcm []byte, sampleRat
 	rec := Recording{
 		ID:         id,
 		UserID:     userID,
+		SessionID:  sessionID,
 		CreatedAt:  time.Now(),
 		DurationMS: durationMS(pcm, sampleRate),
 		SizeBytes:  int64(buf.Len()),
@@ -144,9 +175,9 @@ func (s *S3Store) Save(ctx context.Context, userID string, pcm []byte, sampleRat
 	}
 
 	_, err := s.rw.ExecContext(ctx, `
-		INSERT INTO `+table+` (id, user_id, s3_key, duration_ms, size_bytes, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, rec.ID, rec.UserID, key, rec.DurationMS, rec.SizeBytes, rec.CreatedAt.Unix())
+		INSERT INTO `+table+` (id, user_id, session_id, s3_key, duration_ms, size_bytes, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, rec.ID, rec.UserID, rec.SessionID, key, rec.DurationMS, rec.SizeBytes, rec.CreatedAt.Unix())
 	if err != nil {
 		return Recording{}, fmt.Errorf("recording: insert: %w", err)
 	}
@@ -155,7 +186,7 @@ func (s *S3Store) Save(ctx context.Context, userID string, pcm []byte, sampleRat
 
 func (s *S3Store) List(ctx context.Context, userID string) ([]Recording, error) {
 	rows, err := s.ro.QueryContext(ctx, `
-		SELECT id, duration_ms, size_bytes, created_at FROM `+table+`
+		SELECT id, session_id, duration_ms, size_bytes, created_at FROM `+table+`
 		WHERE user_id = ? ORDER BY created_at DESC
 	`, userID)
 	if err != nil {
@@ -167,7 +198,7 @@ func (s *S3Store) List(ctx context.Context, userID string) ([]Recording, error) 
 	for rows.Next() {
 		var rec Recording
 		var createdAt int64
-		if err := rows.Scan(&rec.ID, &rec.DurationMS, &rec.SizeBytes, &createdAt); err != nil {
+		if err := rows.Scan(&rec.ID, &rec.SessionID, &rec.DurationMS, &rec.SizeBytes, &createdAt); err != nil {
 			return nil, fmt.Errorf("recording: scan: %w", err)
 		}
 		rec.UserID = userID
@@ -203,6 +234,86 @@ func (s *S3Store) Open(ctx context.Context, userID, id string) (Recording, io.Re
 		return Recording{}, nil, fmt.Errorf("recording: get object: %w", err)
 	}
 	return rec, out.Body, nil
+}
+
+// Delete removes one recording: its S3 object and its buddy_recordings row.
+// A no-op if id doesn't exist or belongs to a different user — same
+// indistinguishable-from-missing contract as Open. Reads via rw (not ro) so
+// a recording saved moments ago is never missed because of replica lag,
+// which would otherwise leave its S3 object stranded.
+func (s *S3Store) Delete(ctx context.Context, userID, id string) error {
+	var s3Key string
+	err := s.rw.QueryRowContext(ctx, `
+		SELECT s3_key FROM `+table+` WHERE id = ? AND user_id = ?
+	`, id, userID).Scan(&s3Key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("recording: delete: lookup: %w", err)
+	}
+
+	if _, err := s.s3.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(s3Key),
+	}); err != nil {
+		return fmt.Errorf("recording: delete: object: %w", err)
+	}
+	if _, err := s.rw.ExecContext(ctx, `
+		DELETE FROM `+table+` WHERE id = ? AND user_id = ?
+	`, id, userID); err != nil {
+		return fmt.Errorf("recording: delete: row: %w", err)
+	}
+	return nil
+}
+
+// DeleteBySession removes every recording archived under sessionID — used to
+// cascade a chat room deletion (see store.Store.DeleteSession) to its
+// recordings. A no-op if userID has none. Deletes objects one at a time
+// (DeleteObject, not the batch DeleteObjects API) since a single chat room's
+// utterance count never justifies the batch API's overhead, and several
+// S3-compatible targets (e.g. this package's own MinIO-backed tests) reject
+// DeleteObjects' XML body outright without a Content-MD5 the SDK doesn't
+// always attach.
+func (s *S3Store) DeleteBySession(ctx context.Context, userID, sessionID string) error {
+	rows, err := s.rw.QueryContext(ctx, `
+		SELECT s3_key FROM `+table+` WHERE user_id = ? AND session_id = ?
+	`, userID, sessionID)
+	if err != nil {
+		return fmt.Errorf("recording: delete by session: lookup: %w", err)
+	}
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			rows.Close()
+			return fmt.Errorf("recording: delete by session: scan: %w", err)
+		}
+		keys = append(keys, key)
+	}
+	closeErr := rows.Err()
+	rows.Close()
+	if closeErr != nil {
+		return fmt.Errorf("recording: delete by session: rows: %w", closeErr)
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+
+	for _, key := range keys {
+		if _, err := s.s3.DeleteObject(ctx, &s3.DeleteObjectInput{
+			Bucket: aws.String(s.bucket),
+			Key:    aws.String(key),
+		}); err != nil {
+			return fmt.Errorf("recording: delete by session: object %q: %w", key, err)
+		}
+	}
+	if _, err := s.rw.ExecContext(ctx, `
+		DELETE FROM `+table+` WHERE user_id = ? AND session_id = ?
+	`, userID, sessionID); err != nil {
+		return fmt.Errorf("recording: delete by session: rows: %w", err)
+	}
+	return nil
 }
 
 // Close is a no-op: the rw/ro pools are owned by internal/store's

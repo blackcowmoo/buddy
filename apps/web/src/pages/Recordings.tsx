@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { fetchRecordings, recordingAudioURL, type Recording } from "../lib/recordings";
+import { deleteRecording, fetchRecordings, recordingAudioURL, type Recording } from "../lib/recordings";
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -17,6 +17,13 @@ export function Recordings() {
       setState("ready");
     });
   }, []);
+
+  const handleDelete = async (id: string) => {
+    if (!window.confirm("이 녹음을 삭제할까요?")) return;
+    if (await deleteRecording(id)) {
+      setRecordings((list) => list.filter((r) => r.id !== id));
+    }
+  };
 
   return (
     <div className="app">
@@ -46,11 +53,22 @@ export function Recordings() {
         {state === "ready" &&
           recordings.map((r) => (
             <div key={r.id} className="recording-row">
-              <div className="recording-meta">
-                <span className="recording-time">{formatDate(r.createdAt)}</span>
-                <span className="recording-sub">
-                  {formatDuration(r.durationMs)} · {formatSize(r.sizeBytes)}
-                </span>
+              <div className="recording-header">
+                <div className="recording-meta">
+                  <span className="recording-time">{formatDate(r.createdAt)}</span>
+                  <span className="recording-sub">
+                    {formatDuration(r.durationMs)} · {formatSize(r.sizeBytes)}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="ghost icon-btn recording-delete"
+                  onClick={() => void handleDelete(r.id)}
+                  aria-label="녹음 삭제"
+                  title="녹음 삭제"
+                >
+                  🗑
+                </button>
               </div>
               <audio controls preload="none" src={recordingAudioURL(r.id)} />
             </div>

@@ -320,6 +320,32 @@ func (s *MySQLStore) SessionDetail(ctx context.Context, userID, sessionID string
 	return meta, turns, nil
 }
 
+// DeleteSession removes a session and its transcript in one transaction, so
+// a crash or error partway through never leaves an orphaned buddy_turns row
+// pointing at a session that no longer exists in buddy_sessions.
+func (s *MySQLStore) DeleteSession(ctx context.Context, userID, sessionID string) error {
+	tx, err := s.rw.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: delete session: begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op once Commit succeeds
+
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM `+turnsTable+` WHERE user_id = ? AND session_id = ?
+	`, userID, sessionID); err != nil {
+		return fmt.Errorf("store: delete session: turns: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM `+sessionsTable+` WHERE user_id = ? AND id = ?
+	`, userID, sessionID); err != nil {
+		return fmt.Errorf("store: delete session: session: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: delete session: commit: %w", err)
+	}
+	return nil
+}
+
 // DB exposes the underlying read-write and read-only pools so other stores
 // that persist to the same MySQL instance (e.g. internal/recording) can share
 // these connections instead of opening a second pool to the same host.
