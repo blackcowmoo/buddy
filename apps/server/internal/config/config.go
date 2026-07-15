@@ -45,18 +45,18 @@ type Config struct {
 	// LLM: any OpenAI-compatible chat-completions server (llama.cpp's
 	// llama-server, vLLM, LM Studio, or the OpenAI API itself). Three
 	// independent purposes, matching the two-track pipeline
-	// (internal/pipeline.Pipeline):
-	//   - Chat:     FAST track's streamed reply. One endpoint+model
-	//     (*_URL/*_MODEL — unambiguous as a single pair, no list to fold).
+	// (internal/pipeline.Pipeline), every one of them a "model@url" env var
+	// (parseModelURLPair/parseModelURLPairs) rather than a *_URL + *_MODEL
+	// pair kept in sync separately — same format whether the var holds one
+	// endpoint or several, so there's exactly one place to look:
+	//   - Chat:     FAST track's streamed reply. One endpoint (*_URL).
 	//   - Analysis: REFINE track's grammar-correction/compaction pass. Every
 	//     configured endpoint is called concurrently as an ensemble, so this
-	//     is a single comma-separated *_URLS var of "model@url" pairs (see
-	//     parseModelURLPairs) rather than parallel *_URLS/*_MODELS lists.
+	//     one is comma-separated (*_URLS).
 	//   - Judge:    synthesizes the analysis ensemble's outputs into the one
-	//     result the pipeline uses. One endpoint+model (*_URL/*_MODEL).
-	//     Skipped when Analysis has a single candidate
-	//     (pipeline.Pipeline.analyze) — a lone model has nothing to
-	//     synthesize against.
+	//     result the pipeline uses. One endpoint (*_URL). Skipped when
+	//     Analysis has a single candidate (pipeline.Pipeline.analyze) — a
+	//     lone model has nothing to synthesize against.
 	LLMAPIKey string // optional bearer token, shared by all of the above
 
 	LLMChatURL   string
@@ -190,7 +190,10 @@ func splitCSV(s string) []string {
 // different model behind each endpoint, so pairing them via a second
 // same-length *_MODELS list (kept in sync by index across two env vars) is
 // both redundant and fragile. Folding the model into its own entry means
-// there is exactly one thing to edit per endpoint.
+// there is exactly one thing to edit per endpoint. parseModelURLPair below
+// is the singular counterpart, used by the *_URL vars (Chat, Judge) so a
+// single endpoint follows the exact same format instead of falling back to
+// a separate *_URL/*_MODEL pair — "model@url" either way, list or not.
 func parseModelURLPairs(s string) (models, urls []string) {
 	for _, part := range splitCSV(s) {
 		if model, url, ok := strings.Cut(part, "@"); ok {
@@ -204,9 +207,21 @@ func parseModelURLPairs(s string) (models, urls []string) {
 	return models, urls
 }
 
+// parseModelURLPair parses a single "model@url" value (or a bare "url" with
+// no model) into (model, url) — see parseModelURLPairs for why every
+// URL-shaped env var in this package shares this format.
+func parseModelURLPair(s string) (model, url string) {
+	if model, url, ok := strings.Cut(s, "@"); ok {
+		return strings.TrimSpace(model), strings.TrimSpace(url)
+	}
+	return "", strings.TrimSpace(s)
+}
+
 func Load() Config {
 	sttName, sttURLs, sttModels := loadSTTEngine()
+	chatModel, chatURL := parseModelURLPair(env("BUDDY_LLM_CHAT_URL", "local-model@http://localhost:8081/v1"))
 	analysisModels, analysisURLs := parseModelURLPairs(env("BUDDY_LLM_ANALYSIS_URLS", "local-model@http://localhost:8081/v1"))
+	judgeModel, judgeURL := parseModelURLPair(env("BUDDY_LLM_JUDGE_URL", "local-model@http://localhost:8081/v1"))
 
 	return Config{
 		Env:  env("BUDDY_ENV", "dev"),
@@ -227,14 +242,14 @@ func Load() Config {
 
 		LLMAPIKey: env("BUDDY_LLM_API_KEY", ""),
 
-		LLMChatURL:   env("BUDDY_LLM_CHAT_URL", "http://localhost:8081/v1"),
-		LLMChatModel: env("BUDDY_LLM_CHAT_MODEL", "local-model"),
+		LLMChatURL:   chatURL,
+		LLMChatModel: chatModel,
 
 		LLMAnalysisURLs:   analysisURLs,
 		LLMAnalysisModels: analysisModels,
 
-		LLMJudgeURL:   env("BUDDY_LLM_JUDGE_URL", "http://localhost:8081/v1"),
-		LLMJudgeModel: env("BUDDY_LLM_JUDGE_MODEL", "local-model"),
+		LLMJudgeURL:   judgeURL,
+		LLMJudgeModel: judgeModel,
 
 		FeedbackLang: env("BUDDY_FEEDBACK_LANG", "ko"),
 

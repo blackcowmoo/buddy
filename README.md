@@ -156,23 +156,22 @@ llama-server -m ./models/qwen3-6-35b-a3b.gguf --port 8085  # analysis candidate 
 ```
 
 ```bash
-BUDDY_LLM_CHAT_URL=http://localhost:8081/v1
-BUDDY_LLM_CHAT_MODEL=gemma-4-e2b
+# Every var below is "model@url" (config.parseModelURLPair/parseModelURLPairs)
+# — the model travels with its own endpoint, so there's no separate _MODEL(S)
+# list to keep in sync by index. Comma-separate for Analysis's ensemble; Chat
+# and Judge take exactly one pair each.
+BUDDY_LLM_CHAT_URL=gemma-4-e2b@http://localhost:8081/v1
 
-# "model@url" pairs, comma-separated — one env var per endpoint, not a
-# second _MODELS list to keep in sync by index (see internal/config
-# .parseModelURLPairs).
 BUDDY_LLM_ANALYSIS_URLS=gemma-4-e4b@http://localhost:8084/v1,qwen3-6-35b-a3b@http://localhost:8085/v1
 
-BUDDY_LLM_JUDGE_URL=http://localhost:8085/v1
-BUDDY_LLM_JUDGE_MODEL=qwen3-6-35b-a3b
+BUDDY_LLM_JUDGE_URL=qwen3-6-35b-a3b@http://localhost:8085/v1
 ```
 
 Any OpenAI-compatible endpoint works for any of the three — vLLM, LM Studio,
 or `https://api.openai.com/v1` (with `BUDDY_LLM_API_KEY`). Zero-setup default:
-all three point at `http://localhost:8081/v1` with model `local-model`, so a
-single `llama-server` still works (Analysis collapses to one candidate, so
-Judge is never called).
+all three point at `local-model@http://localhost:8081/v1`, so a single
+`llama-server` still works (Analysis collapses to one candidate, so Judge is
+never called).
 
 **Quality STT — whisper.cpp server (no Python):**
 
@@ -202,10 +201,10 @@ pass config with `-e`:
 ```bash
 docker run --rm -p 8080:8080 \
   --add-host host.docker.internal:host-gateway \
-  -e BUDDY_LLM_CHAT_URL=http://host.docker.internal:8081/v1 \
-  -e BUDDY_LLM_ANALYSIS_URLS=http://host.docker.internal:8084/v1 \
-  -e BUDDY_LLM_JUDGE_URL=http://host.docker.internal:8084/v1 \
-  -e WHISPER_SERVER_URLS=http://host.docker.internal:8082/v1 \
+  -e BUDDY_LLM_CHAT_URL=gemma-4-e2b@http://host.docker.internal:8081/v1 \
+  -e BUDDY_LLM_ANALYSIS_URLS=gemma-4-e4b@http://host.docker.internal:8084/v1 \
+  -e BUDDY_LLM_JUDGE_URL=gemma-4-e4b@http://host.docker.internal:8084/v1 \
+  -e WHISPER_SERVER_URLS=whisper-large-v3-turbo@http://host.docker.internal:8082/v1 \
   -e MYSQL_RW_HOSTNAME=host.docker.internal -e MYSQL_PORT=3306 \
   -e MYSQL_USERNAME=buddy -e MYSQL_PASSWORD=buddy -e MYSQL_DATABASE=buddy \
   buddy
@@ -232,9 +231,9 @@ this table is a deployment-focused summary).
 | `MYSQL_RW_HOSTNAME` | MySQL primary (read-write) host. Required — the server fails to start if it can't connect. The table it creates is `buddy_profiles` (prefixed so it can share a database with other services). |
 | `MYSQL_USERNAME`, `MYSQL_PASSWORD`, `MYSQL_DATABASE` | Credentials and database for the store. `MYSQL_PORT` defaults to `3306`. |
 | `MYSQL_RO_HOSTNAME` | Optional read replica; `Load` reads from it to offload the primary. Leave unset to read from the primary (strongly consistent). |
-| `BUDDY_LLM_CHAT_URL` | Your OpenAI-compatible endpoint for the FAST track's reply (llama.cpp `llama-server`, vLLM, LM Studio, hosted API). Without it, chat silently degrades to an offline echo. |
-| `BUDDY_LLM_ANALYSIS_URLS` | Comma-separated `model@url` pairs for the REFINE track's grammar-correction/compaction ensemble — every one is called concurrently. One env var per endpoint (not a second `_MODELS` list kept in sync by index); a bare `url` with no `model@` prefix is also accepted. |
-| `BUDDY_LLM_JUDGE_URL` | Endpoint that synthesizes the analysis ensemble's outputs into one result. Unused when `BUDDY_LLM_ANALYSIS_URLS` has a single entry. |
+| `BUDDY_LLM_CHAT_URL` | Your `model@url` OpenAI-compatible endpoint for the FAST track's reply (llama.cpp `llama-server`, vLLM, LM Studio, hosted API) — a bare `url` with no `model@` prefix is also accepted. Without it, chat silently degrades to an offline echo. |
+| `BUDDY_LLM_ANALYSIS_URLS` | Comma-separated `model@url` pairs for the REFINE track's grammar-correction/compaction ensemble — every one is called concurrently. One env var per endpoint (not a second `_MODELS` list kept in sync by index). |
+| `BUDDY_LLM_JUDGE_URL` | `model@url` endpoint that synthesizes the analysis ensemble's outputs into one result. Unused when `BUDDY_LLM_ANALYSIS_URLS` has a single entry. |
 | `BUDDY_LLM_API_KEY` | Only if your LLM endpoints need a bearer token (e.g. a hosted API) — shared by all three above. |
 | `WHISPER_SERVER_URLS` | Comma-separated `model@url` pairs for whisper.cpp `server`-style (OpenAI-compatible `/v1/audio/transcriptions`) endpoint(s); serves both the fast and refine track, round-robining across entries. Takes priority over `BUDDY_FAST_STT`/`BUDDY_SLOW_STT` below once set. See `internal/config.sttEngines` for adding another engine (e.g. `PARAKEET_SERVER_URLS`). |
 | `BUDDY_IDENTITY_MODE=oidc` | Switches from the anonymous local-dev cookie to verifying a Dex-issued JWT. |
@@ -269,10 +268,10 @@ temporary raw-audio backup — both share this one S3-compatible config block):*
 
 **Everything else is optional** (sane defaults, see `.env.example`):
 `BUDDY_ADDR`, `BUDDY_FEEDBACK_LANG`, `BUDDY_MAX_HISTORY_MESSAGES`,
-`BUDDY_LLM_CHAT_MODEL`/`BUDDY_LLM_JUDGE_MODEL`, `PARAKEET_SERVER_URLS`
-(reserved for a future engine — see `internal/config.sttEngines`), and the
-legacy `BUDDY_FAST_STT`/`BUDDY_SLOW_STT` (with the matching `BUDDY_WHISPER_*`
-vars if you set either to `whisper`) used only when no `*_SERVER_URLS` engine
+`PARAKEET_SERVER_URLS` (reserved for a future engine — see
+`internal/config.sttEngines`), and the legacy `BUDDY_FAST_STT`/`BUDDY_SLOW_STT`
+(with the matching `BUDDY_WHISPER_*` vars if you set either to `whisper`) used
+only when no `*_SERVER_URLS` engine
 is configured. `BUDDY_WEB_DIST`/`BUDDY_VITE_URL` only matter in dev — a prod
 image embeds the frontend and ignores them.
 

@@ -12,9 +12,7 @@ var allBuddyEnvVars = []string{
 	"BUDDY_WHISPER_FAST_MODEL", "BUDDY_WHISPER_SLOW_MODEL",
 	"WHISPER_SERVER_URLS", "PARAKEET_SERVER_URLS",
 	"BUDDY_LLM_API_KEY",
-	"BUDDY_LLM_CHAT_URL", "BUDDY_LLM_CHAT_MODEL",
-	"BUDDY_LLM_ANALYSIS_URLS",
-	"BUDDY_LLM_JUDGE_URL", "BUDDY_LLM_JUDGE_MODEL",
+	"BUDDY_LLM_CHAT_URL", "BUDDY_LLM_ANALYSIS_URLS", "BUDDY_LLM_JUDGE_URL",
 	"BUDDY_FEEDBACK_LANG",
 	"MYSQL_RW_HOSTNAME", "MYSQL_RO_HOSTNAME", "MYSQL_PORT",
 	"MYSQL_USERNAME", "MYSQL_PASSWORD", "MYSQL_DATABASE",
@@ -137,6 +135,49 @@ func TestLoadLLMAnalysisURLsParsesModelAtURLPairs(t *testing.T) {
 	wantModels := []string{"gemma-4-e4b", "qwen3-6-35b-a3b", ""}
 	if !equalStrings(c.LLMAnalysisModels, wantModels) {
 		t.Fatalf("LLMAnalysisModels = %v, want %v", c.LLMAnalysisModels, wantModels)
+	}
+}
+
+func TestLoadLLMChatAndJudgeURLParseModelAtURLPair(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("BUDDY_LLM_CHAT_URL", "gemma-4-e2b@http://localhost:8081/v1")
+	t.Setenv("BUDDY_LLM_JUDGE_URL", "qwen3-6-35b-a3b@http://localhost:8085/v1")
+
+	c := Load()
+	if c.LLMChatModel != "gemma-4-e2b" || c.LLMChatURL != "http://localhost:8081/v1" {
+		t.Fatalf("Chat model/url = %q/%q, want gemma-4-e2b/http://localhost:8081/v1", c.LLMChatModel, c.LLMChatURL)
+	}
+	if c.LLMJudgeModel != "qwen3-6-35b-a3b" || c.LLMJudgeURL != "http://localhost:8085/v1" {
+		t.Fatalf("Judge model/url = %q/%q, want qwen3-6-35b-a3b/http://localhost:8085/v1", c.LLMJudgeModel, c.LLMJudgeURL)
+	}
+}
+
+func TestLoadLLMChatURLBareURLOmitsModel(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("BUDDY_LLM_CHAT_URL", "http://localhost:8081/v1")
+
+	c := Load()
+	if c.LLMChatModel != "" {
+		t.Fatalf("LLMChatModel = %q, want empty for a bare url with no \"model@\" prefix", c.LLMChatModel)
+	}
+	if c.LLMChatURL != "http://localhost:8081/v1" {
+		t.Fatalf("LLMChatURL = %q, want http://localhost:8081/v1", c.LLMChatURL)
+	}
+}
+
+func TestParseModelURLPair(t *testing.T) {
+	cases := []struct {
+		in, wantModel, wantURL string
+	}{
+		{"gemma-4-e2b@http://localhost:8081/v1", "gemma-4-e2b", "http://localhost:8081/v1"},
+		{"http://localhost:8081/v1", "", "http://localhost:8081/v1"},
+		{" gemma-4-e2b @ http://localhost:8081/v1 ", "gemma-4-e2b", "http://localhost:8081/v1"},
+	}
+	for _, tc := range cases {
+		model, url := parseModelURLPair(tc.in)
+		if model != tc.wantModel || url != tc.wantURL {
+			t.Errorf("parseModelURLPair(%q) = (%q, %q), want (%q, %q)", tc.in, model, url, tc.wantModel, tc.wantURL)
+		}
 	}
 }
 
