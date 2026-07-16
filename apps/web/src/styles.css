@@ -241,7 +241,13 @@ a.icon-btn.ghost {
 .session-list ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .session-row { display: flex; align-items: center; gap: 8px; }
 .session-item {
-  width: 100%;
+  /* flex: 1 (not width: 100%) so this button shares the row with its
+     .session-delete sibling instead of claiming the row's full width and
+     forcing the delete button off it — width: 100% resolves against the
+     row's own width regardless of siblings, which is exactly the overflow
+     this caused before .session-delete existed to compete for space. */
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;

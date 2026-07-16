@@ -40,6 +40,7 @@ type Config struct {
 
 // Store uploads audio streams to one bucket via the S3 API.
 type Store struct {
+	client       *s3.Client
 	uploader     *manager.Uploader
 	bucket       string
 	storageClass types.StorageClass
@@ -60,6 +61,7 @@ func New(cfg Config) (*Store, error) {
 	})
 
 	return &Store{
+		client:       client,
 		uploader:     manager.NewUploader(client),
 		bucket:       cfg.Bucket,
 		storageClass: types.StorageClass(cfg.StorageClass),
@@ -80,6 +82,51 @@ func (s *Store) SaveStream(ctx context.Context, key string, r io.Reader) error {
 	}
 	if _, err := s.uploader.Upload(ctx, input); err != nil {
 		return fmt.Errorf("audiostore: upload %s: %w", key, err)
+	}
+	return nil
+}
+
+// DeleteBySession removes every object backed up under userID/sessionID's
+// key prefix (see transport.Handler.backupAudio, which writes keys as
+// userID/sessionID/<uuid>.pcm) — used to cascade a chat room deletion to its
+// temporary audio backups, the same way internal/recording.S3Store's
+// DeleteBySession cascades to the durable recordings archive. A no-op if
+// nothing matches the prefix.
+//
+// Objects are deleted one at a time (DeleteObject, not the batch
+// DeleteObjects API) for the same reason internal/recording.S3Store does:
+// several S3-compatible targets reject DeleteObjects' XML body outright
+// without a Content-MD5 the SDK doesn't always attach.
+func (s *Store) DeleteBySession(ctx context.Context, userID, sessionID string) error {
+	prefix := userID + "/" + sessionID + "/"
+
+	var keys []string
+	var token *string
+	for {
+		out, err := s.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket:            aws.String(s.bucket),
+			Prefix:            aws.String(prefix),
+			ContinuationToken: token,
+		})
+		if err != nil {
+			return fmt.Errorf("audiostore: delete by session: list: %w", err)
+		}
+		for _, obj := range out.Contents {
+			keys = append(keys, aws.ToString(obj.Key))
+		}
+		if !aws.ToBool(out.IsTruncated) {
+			break
+		}
+		token = out.NextContinuationToken
+	}
+
+	for _, key := range keys {
+		if _, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+			Bucket: aws.String(s.bucket),
+			Key:    aws.String(key),
+		}); err != nil {
+			return fmt.Errorf("audiostore: delete by session: object %q: %w", key, err)
+		}
 	}
 	return nil
 }

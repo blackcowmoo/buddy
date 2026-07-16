@@ -206,6 +206,20 @@ func (f *fakeAudioSaver) SaveStream(ctx context.Context, key string, r io.Reader
 	return nil
 }
 
+// DeleteBySession removes every saved key prefixed userID/sessionID/ — the
+// same prefix convention Handler.backupAudio writes (see ws.go).
+func (f *fakeAudioSaver) DeleteBySession(ctx context.Context, userID, sessionID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	prefix := userID + "/" + sessionID + "/"
+	for k := range f.saved {
+		if strings.HasPrefix(k, prefix) {
+			delete(f.saved, k)
+		}
+	}
+	return nil
+}
+
 func (f *fakeAudioSaver) count() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -464,7 +478,7 @@ func TestWSBinaryFrameBacksUpAudio(t *testing.T) {
 	audio := newFakeAudioSaver()
 	srv := newTestServerWithAudio(t, newTestStore(t), audio)
 	c, _ := dial(t, srv, "", "")
-	readEvent(t, c) // ready
+	ready := readEvent(t, c) // ready
 
 	pcm := []byte("fake pcm bytes")
 	if err := c.Write(context.Background(), websocket.MessageBinary, pcm); err != nil {
@@ -479,13 +493,45 @@ func TestWSBinaryFrameBacksUpAudio(t *testing.T) {
 	if audio.count() != 1 {
 		t.Fatalf("audio saves = %d, want 1", audio.count())
 	}
+	// The key must be prefixed with the session ID (not just the user ID) so
+	// AudioSaver.DeleteBySession can find it once the room is deleted.
+	wantPrefix := "/" + ready.Session + "/"
 	for key, saved := range audio.snapshot() {
 		if !strings.HasSuffix(key, ".pcm") {
 			t.Errorf("key = %q, want a .pcm suffix", key)
 		}
+		if !strings.Contains(key, wantPrefix) {
+			t.Errorf("key = %q, want it to contain session prefix %q", key, wantPrefix)
+		}
 		if string(saved) != string(pcm) {
 			t.Errorf("saved bytes = %q, want %q", saved, pcm)
 		}
+	}
+}
+
+// TestWSAudioBackupDeleteBySessionRemovesOnlyThatSessionsBackups verifies the
+// cascade-delete contract AudioSaver.DeleteBySession promises: only backups
+// under the given (userID, sessionID) prefix are removed, so deleting one
+// chat room's temporary audio backups can never touch another room's.
+func TestWSAudioBackupDeleteBySessionRemovesOnlyThatSessionsBackups(t *testing.T) {
+	audio := newFakeAudioSaver()
+	if err := audio.SaveStream(context.Background(), "alex/s1/a.pcm", strings.NewReader("a")); err != nil {
+		t.Fatalf("SaveStream() error = %v", err)
+	}
+	if err := audio.SaveStream(context.Background(), "alex/s2/b.pcm", strings.NewReader("b")); err != nil {
+		t.Fatalf("SaveStream() error = %v", err)
+	}
+
+	if err := audio.DeleteBySession(context.Background(), "alex", "s1"); err != nil {
+		t.Fatalf("DeleteBySession() error = %v", err)
+	}
+
+	remaining := audio.snapshot()
+	if _, ok := remaining["alex/s1/a.pcm"]; ok {
+		t.Errorf("alex/s1/a.pcm should have been deleted")
+	}
+	if _, ok := remaining["alex/s2/b.pcm"]; !ok {
+		t.Errorf("alex/s2/b.pcm should still be present")
 	}
 }
 
