@@ -3,8 +3,10 @@ package httpserver
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"buddy/server/internal/protocol"
@@ -54,9 +56,37 @@ func (f *fakeSessionStore) DeleteSession(ctx context.Context, userID, sessionID 
 
 func (f *fakeSessionStore) Close() error { return nil }
 
+// fakeAudioBackupStore is an in-memory transport.AudioSaver for
+// sessionDeleteHandler tests — real S3 behavior is covered by
+// internal/audiostore's own tests.
+type fakeAudioBackupStore struct {
+	byUser map[string][]string // userID -> keys, formatted "sessionID/objectID"
+	err    error
+}
+
+func (f *fakeAudioBackupStore) SaveStream(ctx context.Context, key string, r io.Reader) error {
+	return errors.New("not used by these tests")
+}
+
+// DeleteBySession removes every key recorded under (userID, sessionID) —
+// used by the cascading-delete handler tests.
+func (f *fakeAudioBackupStore) DeleteBySession(ctx context.Context, userID, sessionID string) error {
+	if f.err != nil {
+		return f.err
+	}
+	out := f.byUser[userID][:0]
+	for _, key := range f.byUser[userID] {
+		if !strings.HasPrefix(key, sessionID+"/") {
+			out = append(out, key)
+		}
+	}
+	f.byUser[userID] = out
+	return nil
+}
+
 func TestSessionDeleteRemovesTheSession(t *testing.T) {
 	st := &fakeSessionStore{}
-	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, nil)
+	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil)
 
 	req := httptest.NewRequest("DELETE", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")
@@ -72,7 +102,7 @@ func TestSessionDeleteRemovesTheSession(t *testing.T) {
 }
 
 func TestSessionDeleteUnauthorizedWhenIdentifyFails(t *testing.T) {
-	h := sessionDeleteHandler(fakeIdentifier{ok: false}, &fakeSessionStore{}, nil)
+	h := sessionDeleteHandler(fakeIdentifier{ok: false}, &fakeSessionStore{}, nil, nil)
 
 	req := httptest.NewRequest("DELETE", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")
@@ -86,7 +116,7 @@ func TestSessionDeleteUnauthorizedWhenIdentifyFails(t *testing.T) {
 
 func TestSessionDeleteInternalErrorOnStoreFailure(t *testing.T) {
 	st := &fakeSessionStore{err: errors.New("mysql unreachable")}
-	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, nil)
+	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil)
 
 	req := httptest.NewRequest("DELETE", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")
@@ -111,7 +141,7 @@ func TestSessionDeleteCascadesToRecordings(t *testing.T) {
 			{ID: "rec-3", UserID: "alex", SessionID: "s2"},
 		},
 	}}
-	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, recStore)
+	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, recStore)
 
 	req := httptest.NewRequest("DELETE", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")
@@ -127,12 +157,38 @@ func TestSessionDeleteCascadesToRecordings(t *testing.T) {
 	}
 }
 
+// TestSessionDeleteCascadesToAudioBackups verifies deleting a chat room also
+// removes its temporary raw-audio backups (see transport.AudioSaver.
+// DeleteBySession) — the "임시 녹음본" (temporary recordings) that otherwise
+// silently outlive the conversation, since this is a separate S3-backed
+// feature from the recordings archive tested above.
+func TestSessionDeleteCascadesToAudioBackups(t *testing.T) {
+	st := &fakeSessionStore{}
+	audioStore := &fakeAudioBackupStore{byUser: map[string][]string{
+		"alex": {"s1/a.pcm", "s1/b.pcm", "s2/c.pcm"},
+	}}
+	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, audioStore, nil)
+
+	req := httptest.NewRequest("DELETE", "/api/sessions/s1", nil)
+	req.SetPathValue("id", "s1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+	remaining := audioStore.byUser["alex"]
+	if len(remaining) != 1 || remaining[0] != "s2/c.pcm" {
+		t.Fatalf("byUser[alex] = %+v, want only s2/c.pcm left", remaining)
+	}
+}
+
 // TestSessionDeleteSucceedsWhenRecordingsDisabled documents that a nil
 // recording.Store (archival disabled — see buildRecordingStore) doesn't
 // block deleting the session itself.
 func TestSessionDeleteSucceedsWhenRecordingsDisabled(t *testing.T) {
 	st := &fakeSessionStore{}
-	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, nil)
+	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil)
 
 	req := httptest.NewRequest("DELETE", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")
@@ -151,7 +207,7 @@ func TestSessionDeleteSucceedsWhenRecordingsDisabled(t *testing.T) {
 func TestSessionDeleteSucceedsWhenRecordingsCascadeFails(t *testing.T) {
 	st := &fakeSessionStore{}
 	recStore := &fakeRecordingStore{err: errors.New("s3 unreachable")}
-	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, recStore)
+	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, recStore)
 
 	req := httptest.NewRequest("DELETE", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")
@@ -160,6 +216,27 @@ func TestSessionDeleteSucceedsWhenRecordingsCascadeFails(t *testing.T) {
 
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204 even though the recordings cascade failed", rec.Code)
+	}
+	if len(st.deleted) != 1 {
+		t.Fatalf("session delete should still have happened, deleted = %+v", st.deleted)
+	}
+}
+
+// TestSessionDeleteSucceedsWhenAudioCascadeFails documents the same
+// best-effort contract for the audio-backup cascade: a failure there must
+// not block deleting the session itself.
+func TestSessionDeleteSucceedsWhenAudioCascadeFails(t *testing.T) {
+	st := &fakeSessionStore{}
+	audioStore := &fakeAudioBackupStore{err: errors.New("s3 unreachable")}
+	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, audioStore, nil)
+
+	req := httptest.NewRequest("DELETE", "/api/sessions/s1", nil)
+	req.SetPathValue("id", "s1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 even though the audio backup cascade failed", rec.Code)
 	}
 	if len(st.deleted) != 1 {
 		t.Fatalf("session delete should still have happened, deleted = %+v", st.deleted)
