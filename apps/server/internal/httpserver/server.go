@@ -44,7 +44,7 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux.HandleFunc("/api/me", meHandler(cfg.IdentityMode, ident))
 	mux.HandleFunc("GET /api/sessions", sessionsListHandler(ident, st))
 	mux.HandleFunc("GET /api/sessions/{id}", sessionDetailHandler(ident, st))
-	mux.HandleFunc("DELETE /api/sessions/{id}", sessionDeleteHandler(ident, st, recordings))
+	mux.HandleFunc("DELETE /api/sessions/{id}", sessionDeleteHandler(ident, st, audio, recordings))
 	mux.HandleFunc("GET /api/recordings", recordingsListHandler(ident, recordings))
 	mux.HandleFunc("GET /api/recordings/{id}/audio", recordingAudioHandler(ident, recordings))
 	mux.HandleFunc("DELETE /api/recordings/{id}", recordingDeleteHandler(ident, recordings))
@@ -178,14 +178,19 @@ func sessionDetailHandler(ident identity.Identifier, st store.Store) http.Handle
 	}
 }
 
-// sessionDeleteHandler removes one chat room and its full transcript, and —
-// when recording archival is enabled — every recording captured in that room
-// (see recording.Store.DeleteBySession), so deleting a conversation doesn't
-// leave orphaned audio behind. The recordings cascade is best-effort: a
-// failure there is logged but doesn't block deleting the session itself,
-// the same "side-effect independent of the primary action" pattern
-// transport.Handler.backupAudio uses for its own S3 writes.
-func sessionDeleteHandler(ident identity.Identifier, st store.Store, recordings recording.Store) http.HandlerFunc {
+// sessionDeleteHandler removes one chat room and its full transcript, and
+// cascades to that room's audio: every recording captured in it (see
+// recording.Store.DeleteBySession, when archival is enabled) and every
+// temporary backup of its raw utterance audio (see
+// transport.AudioSaver.DeleteBySession, when backup is enabled) — these are
+// two independent S3-backed features (see internal/recording's package doc),
+// so both cascades run regardless of which one, if either, is configured.
+// Deleting a conversation must not leave orphaned audio of either kind
+// behind. Both cascades are best-effort: a failure is logged but doesn't
+// block deleting the session itself, the same "side-effect independent of
+// the primary action" pattern transport.Handler.backupAudio uses for its own
+// S3 writes.
+func sessionDeleteHandler(ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := ident.Identify(w, r)
 		if !ok {
@@ -193,6 +198,11 @@ func sessionDeleteHandler(ident identity.Identifier, st store.Store, recordings 
 			return
 		}
 		sessionID := r.PathValue("id")
+		if audio != nil {
+			if err := audio.DeleteBySession(r.Context(), userID, sessionID); err != nil {
+				log.Printf("delete session: cascade audio backups %s/%s: %v", userID, sessionID, err)
+			}
+		}
 		if recordings != nil {
 			if err := recordings.DeleteBySession(r.Context(), userID, sessionID); err != nil {
 				log.Printf("delete session: cascade recordings %s/%s: %v", userID, sessionID, err)
