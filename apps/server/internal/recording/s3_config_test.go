@@ -116,7 +116,7 @@ func TestSaveOmitsStorageClassWhenUnset(t *testing.T) {
 	// but only after the S3 PutObject this test cares about already ran.
 	st := &S3Store{s3: client, bucket: "recordings", rw: newFailingDB(t)}
 
-	_, err = st.Save(context.Background(), "user-1", "session-1", []byte{1, 2, 3, 4}, 16000)
+	_, err = st.Save(context.Background(), "user-1", "session-1", "rec-1", []byte{1, 2, 3, 4}, 16000)
 	if err == nil {
 		t.Fatal("Save() should still fail at the INSERT step (failDriver), but the S3 PUT above it must have run")
 	}

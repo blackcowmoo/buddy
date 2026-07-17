@@ -37,8 +37,12 @@ type Recording struct {
 // Store persists and serves back recorded utterance audio, scoped per user.
 type Store interface {
 	// Save compresses pcm (mono 16-bit PCM at sampleRate) and archives it
-	// under userID/sessionID.
-	Save(ctx context.Context, userID, sessionID string, pcm []byte, sampleRate int) (Recording, error)
+	// under userID/sessionID, keyed by id. id is caller-supplied (not
+	// generated internally) so it can match the id transport.Handler uses for
+	// the same utterance's temporary internal/audiostore backup — that shared
+	// id is what lets a single recording's delete cascade to its backup (see
+	// httpserver.recordingDeleteHandler).
+	Save(ctx context.Context, userID, sessionID, id string, pcm []byte, sampleRate int) (Recording, error)
 
 	// List returns userID's recordings, most recent first.
 	List(ctx context.Context, userID string) ([]Recording, error)
@@ -50,8 +54,11 @@ type Store interface {
 	Open(ctx context.Context, userID, id string) (Recording, io.ReadCloser, error)
 
 	// Delete removes one recording (its S3 object and its buddy_recordings
-	// row). A no-op if id doesn't exist or doesn't belong to userID.
-	Delete(ctx context.Context, userID, id string) error
+	// row) and returns it, so callers can cascade to whatever else shares its
+	// id (e.g. transport.AudioSaver's matching temporary backup). A no-op —
+	// zero Recording, nil error — if id doesn't exist or doesn't belong to
+	// userID.
+	Delete(ctx context.Context, userID, id string) (Recording, error)
 
 	// DeleteBySession removes every recording archived under sessionID — used
 	// to cascade a chat room deletion to its recordings. A no-op if userID

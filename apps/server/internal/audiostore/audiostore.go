@@ -86,6 +86,24 @@ func (s *Store) SaveStream(ctx context.Context, key string, r io.Reader) error {
 	return nil
 }
 
+// Delete removes one object backed up under userID/sessionID/id.pcm (see
+// transport.Handler.backupAudio) — used to cascade deleting a single
+// recording (internal/recording.Store.Delete) to its matching temporary
+// backup, since both are saved under the same caller-supplied id for exactly
+// this purpose. Deleting a nonexistent key is not an error (S3's
+// DeleteObject is idempotent), so this is naturally a no-op if id has no
+// backup — e.g. audio backup was disabled when this utterance was recorded.
+func (s *Store) Delete(ctx context.Context, userID, sessionID, id string) error {
+	key := userID + "/" + sessionID + "/" + id + ".pcm"
+	if _, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	}); err != nil {
+		return fmt.Errorf("audiostore: delete %s: %w", key, err)
+	}
+	return nil
+}
+
 // DeleteBySession removes every object backed up under userID/sessionID's
 // key prefix (see transport.Handler.backupAudio, which writes keys as
 // userID/sessionID/<uuid>.pcm) — used to cascade a chat room deletion to its

@@ -171,6 +171,34 @@ func newTestStore(t *testing.T, srv *httptest.Server) *Store {
 	return store
 }
 
+func TestDeleteRemovesOnlyTheGivenBackup(t *testing.T) {
+	srv, fake := newFakeObjectStore(t, "alex/s1/a.pcm", "alex/s1/b.pcm")
+	store := newTestStore(t, srv)
+
+	if err := store.Delete(context.Background(), "alex", "s1", "a"); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+
+	if fake.keys["alex/s1/a.pcm"] {
+		t.Errorf("alex/s1/a.pcm should have been deleted")
+	}
+	if !fake.keys["alex/s1/b.pcm"] {
+		t.Errorf("alex/s1/b.pcm should still be present")
+	}
+}
+
+func TestDeleteIsNoopForUnknownID(t *testing.T) {
+	srv, fake := newFakeObjectStore(t, "alex/s1/a.pcm")
+	store := newTestStore(t, srv)
+
+	if err := store.Delete(context.Background(), "alex", "s1", "no-such-id"); err != nil {
+		t.Fatalf("Delete() error = %v, want nil (no-op)", err)
+	}
+	if !fake.keys["alex/s1/a.pcm"] {
+		t.Errorf("alex/s1/a.pcm should still be present")
+	}
+}
+
 func TestDeleteBySessionRemovesOnlyThatSessionsBackups(t *testing.T) {
 	srv, fake := newFakeObjectStore(t, "alex/s1/a.pcm", "alex/s1/b.pcm", "alex/s2/c.pcm")
 	store := newTestStore(t, srv)

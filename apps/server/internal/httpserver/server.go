@@ -50,7 +50,7 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux.HandleFunc("DELETE /api/sessions/{id}", sessionDeleteHandler(ident, st, audio, recordings))
 	mux.HandleFunc("GET /api/recordings", recordingsListHandler(ident, recordings))
 	mux.HandleFunc("GET /api/recordings/{id}/audio", recordingAudioHandler(ident, recordings))
-	mux.HandleFunc("DELETE /api/recordings/{id}", recordingDeleteHandler(ident, recordings))
+	mux.HandleFunc("DELETE /api/recordings/{id}", recordingDeleteHandler(ident, audio, recordings))
 	registerStalePRRedirect(mux, cfg.RootPath)
 
 	// Frontend.
