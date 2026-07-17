@@ -36,6 +36,13 @@ const (
 type AudioSaver interface {
 	SaveStream(ctx context.Context, key string, r io.Reader) error
 
+	// Delete removes one backup, keyed the same way Handler.backupAudio wrote
+	// it: userID/sessionID/id.pcm. id is the same one internal/recording.Save
+	// was given for this utterance, so httpserver.recordingDeleteHandler can
+	// cascade a single recording's delete to its matching backup. A no-op if
+	// id has no backup.
+	Delete(ctx context.Context, userID, sessionID, id string) error
+
 	// DeleteBySession removes every backup archived under sessionID — used
 	// to cascade a chat room deletion to its temporary audio backups (see
 	// httpserver.sessionDeleteHandler). A no-op if userID has none.
@@ -173,15 +180,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// closing the tab right after speaking must not abort an upload
 			// already in flight. A save failure never disrupts the live
 			// conversation — just logged. These are two separate, unrelated
-			// features (see internal/recording's package doc for why).
+			// features (see internal/recording's package doc for why), but
+			// they share one id for this utterance so a single recording's
+			// delete can cascade to its matching temporary backup (see
+			// httpserver.recordingDeleteHandler) the same way session delete
+			// already cascades to every backup in bulk.
+			utteranceID := uuid.New().String()
 			if h.audio != nil {
-				go h.backupAudio(userID, sessionID, pcm)
+				go h.backupAudio(userID, sessionID, utteranceID, pcm)
 			}
 			if h.recordings != nil {
 				go func() {
 					sctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer cancel()
-					if _, err := h.recordings.Save(sctx, userID, sessionID, pcm, pcmSampleRate); err != nil {
+					if _, err := h.recordings.Save(sctx, userID, sessionID, utteranceID, pcm, pcmSampleRate); err != nil {
 						log.Printf("recording: save %s: %v", userID, err)
 					}
 				}()
@@ -251,9 +263,12 @@ func saveCorrection(st store.Store, userID, sessionID string, turn int, c protoc
 // The key is prefixed with sessionID (not just userID) so
 // AudioSaver.DeleteBySession can find and remove every backup belonging to a
 // room once its chat session is deleted — otherwise these temporary backups
-// would outlive the conversation they belong to indefinitely.
-func (h *Handler) backupAudio(userID, sessionID string, pcm []byte) {
-	key := userID + "/" + sessionID + "/" + uuid.New().String() + ".pcm"
+// would outlive the conversation they belong to indefinitely. id is the same
+// one passed to internal/recording.Store.Save for this utterance (see the
+// ServeHTTP call site), so AudioSaver.Delete can also remove this one backup
+// when just its matching recording — not the whole session — is deleted.
+func (h *Handler) backupAudio(userID, sessionID, id string, pcm []byte) {
+	key := userID + "/" + sessionID + "/" + id + ".pcm"
 	ctx, cancel := context.WithTimeout(context.Background(), audioSaveTimeout)
 	defer cancel()
 	if err := h.audio.SaveStream(ctx, key, bytes.NewReader(pcm)); err != nil {

@@ -206,6 +206,15 @@ func (f *fakeAudioSaver) SaveStream(ctx context.Context, key string, r io.Reader
 	return nil
 }
 
+// Delete removes one saved key, mirroring the userID/sessionID/id.pcm
+// convention Handler.backupAudio writes (see ws.go).
+func (f *fakeAudioSaver) Delete(ctx context.Context, userID, sessionID, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.saved, userID+"/"+sessionID+"/"+id+".pcm")
+	return nil
+}
+
 // DeleteBySession removes every saved key prefixed userID/sessionID/ — the
 // same prefix convention Handler.backupAudio writes (see ws.go).
 func (f *fakeAudioSaver) DeleteBySession(ctx context.Context, userID, sessionID string) error {
@@ -248,14 +257,15 @@ type fakeRecordingStore struct {
 type recordingSave struct {
 	userID    string
 	sessionID string
+	id        string
 	pcm       []byte
 }
 
-func (f *fakeRecordingStore) Save(ctx context.Context, userID, sessionID string, pcm []byte, sampleRate int) (recording.Recording, error) {
+func (f *fakeRecordingStore) Save(ctx context.Context, userID, sessionID, id string, pcm []byte, sampleRate int) (recording.Recording, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.saved = append(f.saved, recordingSave{userID, sessionID, append([]byte(nil), pcm...)})
-	return recording.Recording{ID: "fake-id", UserID: userID, SessionID: sessionID}, nil
+	f.saved = append(f.saved, recordingSave{userID, sessionID, id, append([]byte(nil), pcm...)})
+	return recording.Recording{ID: id, UserID: userID, SessionID: sessionID}, nil
 }
 
 func (f *fakeRecordingStore) List(ctx context.Context, userID string) ([]recording.Recording, error) {
@@ -266,8 +276,8 @@ func (f *fakeRecordingStore) Open(ctx context.Context, userID, id string) (recor
 	return recording.Recording{}, nil, errors.New("fakeRecordingStore: Open not implemented")
 }
 
-func (f *fakeRecordingStore) Delete(ctx context.Context, userID, id string) error {
-	return errors.New("fakeRecordingStore: Delete not implemented")
+func (f *fakeRecordingStore) Delete(ctx context.Context, userID, id string) (recording.Recording, error) {
+	return recording.Recording{}, errors.New("fakeRecordingStore: Delete not implemented")
 }
 
 func (f *fakeRecordingStore) DeleteBySession(ctx context.Context, userID, sessionID string) error {
@@ -505,6 +515,40 @@ func TestWSBinaryFrameBacksUpAudio(t *testing.T) {
 		}
 		if string(saved) != string(pcm) {
 			t.Errorf("saved bytes = %q, want %q", saved, pcm)
+		}
+	}
+}
+
+// TestWSBinaryFrameSharesIDBetweenBackupAndRecording verifies the audio
+// backup and the durable recording archive save the same utterance under the
+// same id — the correlation httpserver.recordingDeleteHandler relies on to
+// cascade deleting one recording to its matching temporary backup, since
+// otherwise the two independently-generated ids would have nothing in common
+// (see AudioSaver.Delete's and recording.Store.Save's doc comments).
+func TestWSBinaryFrameSharesIDBetweenBackupAndRecording(t *testing.T) {
+	audio := newFakeAudioSaver()
+	rec := &fakeRecordingStore{}
+	srv := newTestServerFull(t, newTestStore(t), audio, rec)
+	c, _ := dial(t, srv, "", "")
+	readEvent(t, c) // ready
+
+	if err := c.Write(context.Background(), websocket.MessageBinary, []byte("fake pcm bytes")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	readUntil(t, c, protocol.EvFinal)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && (audio.count() == 0 || len(rec.all()) == 0) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	saves := rec.all()
+	if len(saves) != 1 {
+		t.Fatalf("recording saves = %d, want 1", len(saves))
+	}
+	wantSuffix := "/" + saves[0].id + ".pcm"
+	for key := range audio.snapshot() {
+		if !strings.HasSuffix(key, wantSuffix) {
+			t.Errorf("audio backup key = %q, want it to end with the recording's id %q", key, wantSuffix)
 		}
 	}
 }

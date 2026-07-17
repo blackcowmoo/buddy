@@ -68,6 +68,23 @@ func (f *fakeAudioBackupStore) SaveStream(ctx context.Context, key string, r io.
 	return errors.New("not used by these tests")
 }
 
+// Delete removes one key formatted "sessionID/id" from userID's backups —
+// used by recordingDeleteHandler's cascade tests (see recordings_test.go).
+func (f *fakeAudioBackupStore) Delete(ctx context.Context, userID, sessionID, id string) error {
+	if f.err != nil {
+		return f.err
+	}
+	key := sessionID + "/" + id
+	out := f.byUser[userID][:0]
+	for _, k := range f.byUser[userID] {
+		if k != key {
+			out = append(out, k)
+		}
+	}
+	f.byUser[userID] = out
+	return nil
+}
+
 // DeleteBySession removes every key recorded under (userID, sessionID) —
 // used by the cascading-delete handler tests.
 func (f *fakeAudioBackupStore) DeleteBySession(ctx context.Context, userID, sessionID string) error {
