@@ -33,12 +33,15 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	// Realtime + API first (exact patterns win over the "/" catch-all).
 	mux.Handle("/ws", transport.NewHandler(pipe, ident, st, audio, recordings))
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
+		sttNames := make([]string, len(pipe.STT))
+		for i, rec := range pipe.STT {
+			sttNames[i] = rec.Name()
+		}
 		writeJSON(w, map[string]any{
-			"ok":       true,
-			"env":      cfg.Env,
-			"fast_stt": pipe.FastSTT.Name(),
-			"slow_stt": pipe.SlowSTT.Name(),
-			"chat":     cfg.LLMChatModel,
+			"ok":   true,
+			"env":  cfg.Env,
+			"stt":  sttNames,
+			"chat": cfg.LLMChatModel,
 		})
 	})
 	mux.HandleFunc("/api/me", meHandler(cfg.IdentityMode, ident))

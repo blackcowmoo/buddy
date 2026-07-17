@@ -25,22 +25,20 @@ type Config struct {
 	WhisperFastModel string
 	WhisperSlowModel string
 
-	// STT server engine: any OpenAI-compatible /v1/audio/transcriptions
+	// STT server engines: any OpenAI-compatible /v1/audio/transcriptions
 	// server (whisper.cpp's `server` example, parakeet.cpp, or similar).
-	// sttEngines (below) is checked in priority order; the first engine whose
-	// *_URLS env var is set wins and its entries land here, parsed by
-	// parseModelURLPairs (each entry is "model@url", or a bare "url" for an
-	// engine that doesn't need one) — see that function's doc for why a
-	// *_URLS var never gets a separate single *_MODEL(S) field: a comma list
-	// is presumed to allow different models per endpoint, so the model
-	// travels with its URL, one env var, not two kept in sync by index.
-	// Comma-separated entries round-robin across the listed endpoints.
-	// Empty STTEngine (none configured) falls back to FastSTT/SlowSTT above.
-	// Adding a future engine (e.g. parakeet.cpp) is an entry in sttEngines,
-	// not a code change here.
-	STTEngine string
-	STTURLs   []string
-	STTModels []string // paired by index with STTURLs
+	// EVERY engine below whose *_URLS env var is set becomes one ensemble
+	// member — all are called concurrently on each utterance
+	// (pipeline.Pipeline.transcribe), not "first configured wins": STT
+	// accuracy matters more than latency here, so disagreements between
+	// engines get reconciled by an LLM instead of picking just one. Each
+	// engine's own *_URLS entries are parsed by parseModelURLPairs ("model@url"
+	// pairs, or a bare "url") and still round-robin internally across that
+	// one engine's own replicas — the ensemble is across engines, replication
+	// is within one. No STTEngines configured falls back to FastSTT/SlowSTT
+	// above. Adding a future engine (e.g. parakeet.cpp) is a new row in
+	// sttEngines, not a code change here.
+	STTEngines []STTEngineConfig
 
 	// LLM: any OpenAI-compatible chat-completions server (llama.cpp's
 	// llama-server, vLLM, LM Studio, or the OpenAI API itself). Three
@@ -143,11 +141,20 @@ type Config struct {
 	S3StorageClass string
 }
 
-// sttEngines lists known STT server engines in priority order — Load() picks
-// the first one whose *_URLS env var is set. No BUDDY_ prefix: these name
-// the external engine/server itself (like WHISPER_SERVER_URLS), not a
-// buddy-specific knob. Supporting a future engine (e.g. parakeet.cpp) is a
-// new row here, nothing else changes.
+// STTEngineConfig is one ensemble member for pipeline.Pipeline.STT: an
+// engine's name (for logging/stt.HTTPTranscriber.Name()) and its
+// "model@url" entries, already parsed by parseModelURLPairs.
+type STTEngineConfig struct {
+	Name   string
+	URLs   []string
+	Models []string // paired by index with URLs
+}
+
+// sttEngines lists known STT server engines — every one whose *_URLS env var
+// is set becomes an STTEngineConfig (see loadSTTEngines). No BUDDY_ prefix:
+// these name the external engine/server itself (like WHISPER_SERVER_URLS),
+// not a buddy-specific knob. Supporting a future engine (e.g. parakeet.cpp)
+// is a new row here, nothing else changes.
 var sttEngines = []struct {
 	name    string
 	urlsEnv string
@@ -156,17 +163,20 @@ var sttEngines = []struct {
 	{"parakeet", "PARAKEET_SERVER_URLS"},
 }
 
-// loadSTTEngine picks the first configured server engine from sttEngines, or
-// ("", nil, nil) if none are set — Config.STTEngine stays empty and the
-// server falls back to FastSTT/SlowSTT (mock/subprocess whisper).
-func loadSTTEngine() (name string, urls, models []string) {
+// loadSTTEngines collects every configured server engine from sttEngines, or
+// nil if none are set — Config.STTEngines stays empty and the server falls
+// back to FastSTT/SlowSTT (mock/subprocess whisper).
+func loadSTTEngines() []STTEngineConfig {
+	var out []STTEngineConfig
 	for _, e := range sttEngines {
-		if v, ok := os.LookupEnv(e.urlsEnv); ok && v != "" {
-			pairModels, pairURLs := parseModelURLPairs(v)
-			return e.name, pairURLs, pairModels
+		v, ok := os.LookupEnv(e.urlsEnv)
+		if !ok || v == "" {
+			continue
 		}
+		models, urls := parseModelURLPairs(v)
+		out = append(out, STTEngineConfig{Name: e.name, URLs: urls, Models: models})
 	}
-	return "", nil, nil
+	return out
 }
 
 // splitCSV parses a comma-separated env value into a trimmed, non-empty list.
@@ -218,7 +228,7 @@ func parseModelURLPair(s string) (model, url string) {
 }
 
 func Load() Config {
-	sttName, sttURLs, sttModels := loadSTTEngine()
+	sttEngineConfigs := loadSTTEngines()
 	chatModel, chatURL := parseModelURLPair(env("BUDDY_LLM_CHAT_URL", "local-model@http://localhost:8081/v1"))
 	analysisModels, analysisURLs := parseModelURLPairs(env("BUDDY_LLM_ANALYSIS_URLS", "local-model@http://localhost:8081/v1"))
 	judgeModel, judgeURL := parseModelURLPair(env("BUDDY_LLM_JUDGE_URL", "local-model@http://localhost:8081/v1"))
@@ -236,9 +246,7 @@ func Load() Config {
 		WhisperFastModel: env("BUDDY_WHISPER_FAST_MODEL", "models/ggml-tiny.en.bin"),
 		WhisperSlowModel: env("BUDDY_WHISPER_SLOW_MODEL", "models/ggml-large-v3.bin"),
 
-		STTEngine: sttName,
-		STTURLs:   sttURLs,
-		STTModels: sttModels,
+		STTEngines: sttEngineConfigs,
 
 		LLMAPIKey: env("BUDDY_LLM_API_KEY", ""),
 

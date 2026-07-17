@@ -76,8 +76,8 @@ func TestLoadDefaults(t *testing.T) {
 	if c.S3PathStyle {
 		t.Errorf("S3PathStyle = true, want false by default")
 	}
-	if c.STTEngine != "" {
-		t.Errorf("STTEngine = %q, want empty (no server engine configured)", c.STTEngine)
+	if c.STTEngines != nil {
+		t.Errorf("STTEngines = %v, want nil (no server engine configured)", c.STTEngines)
 	}
 	if len(c.LLMAnalysisURLs) != 1 || c.LLMAnalysisURLs[0] != "http://localhost:8081/v1" {
 		t.Errorf("LLMAnalysisURLs = %v, want a single default entry", c.LLMAnalysisURLs)
@@ -85,41 +85,45 @@ func TestLoadDefaults(t *testing.T) {
 	if len(c.LLMAnalysisModels) != 1 || c.LLMAnalysisModels[0] != "local-model" {
 		t.Errorf("LLMAnalysisModels = %v, want a single default entry", c.LLMAnalysisModels)
 	}
-	if c.STTModels != nil {
-		t.Errorf("STTModels = %v, want nil (no server engine configured)", c.STTModels)
-	}
 }
 
-func TestLoadSTTEnginePicksFirstConfiguredInPriorityOrder(t *testing.T) {
+func TestLoadSTTEnginesCollectsEveryConfiguredEngine(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("WHISPER_SERVER_URLS", "whisper-large-v3-turbo@http://w1:8082/v1, whisper-large-v3-turbo@http://w2:8082/v1")
 	t.Setenv("PARAKEET_SERVER_URLS", "http://p1:8083/v1")
 
 	c := Load()
-	if c.STTEngine != "whisper" {
-		t.Fatalf("STTEngine = %q, want whisper (checked before parakeet)", c.STTEngine)
+	if len(c.STTEngines) != 2 {
+		t.Fatalf("STTEngines = %+v, want 2 entries (whisper AND parakeet, both configured)", c.STTEngines)
 	}
-	if want := []string{"http://w1:8082/v1", "http://w2:8082/v1"}; !equalStrings(c.STTURLs, want) {
-		t.Fatalf("STTURLs = %v, want %v", c.STTURLs, want)
+	whisper, parakeet := c.STTEngines[0], c.STTEngines[1]
+	if whisper.Name != "whisper" {
+		t.Fatalf("STTEngines[0].Name = %q, want whisper (checked before parakeet)", whisper.Name)
 	}
-	if want := []string{"whisper-large-v3-turbo", "whisper-large-v3-turbo"}; !equalStrings(c.STTModels, want) {
-		t.Fatalf("STTModels = %v, want %v", c.STTModels, want)
+	if want := []string{"http://w1:8082/v1", "http://w2:8082/v1"}; !equalStrings(whisper.URLs, want) {
+		t.Fatalf("whisper.URLs = %v, want %v", whisper.URLs, want)
+	}
+	if want := []string{"whisper-large-v3-turbo", "whisper-large-v3-turbo"}; !equalStrings(whisper.Models, want) {
+		t.Fatalf("whisper.Models = %v, want %v", whisper.Models, want)
+	}
+	if parakeet.Name != "parakeet" {
+		t.Fatalf("STTEngines[1].Name = %q, want parakeet", parakeet.Name)
+	}
+	if want := []string{"http://p1:8083/v1"}; !equalStrings(parakeet.URLs, want) {
+		t.Fatalf("parakeet.URLs = %v, want %v", parakeet.URLs, want)
+	}
+	if want := []string{""}; !equalStrings(parakeet.Models, want) {
+		t.Fatalf("parakeet.Models = %v, want %v (bare url, no \"model@\" prefix)", parakeet.Models, want)
 	}
 }
 
-func TestLoadSTTEngineFallsBackToNextEngine(t *testing.T) {
+func TestLoadSTTEnginesOnlyIncludesConfiguredOnes(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("PARAKEET_SERVER_URLS", "http://p1:8083/v1")
 
 	c := Load()
-	if c.STTEngine != "parakeet" {
-		t.Fatalf("STTEngine = %q, want parakeet", c.STTEngine)
-	}
-	if want := []string{"http://p1:8083/v1"}; !equalStrings(c.STTURLs, want) {
-		t.Fatalf("STTURLs = %v, want %v", c.STTURLs, want)
-	}
-	if want := []string{""}; !equalStrings(c.STTModels, want) {
-		t.Fatalf("STTModels = %v, want %v (bare url, no \"model@\" prefix)", c.STTModels, want)
+	if len(c.STTEngines) != 1 || c.STTEngines[0].Name != "parakeet" {
+		t.Fatalf("STTEngines = %+v, want a single parakeet entry (whisper unset)", c.STTEngines)
 	}
 }
 

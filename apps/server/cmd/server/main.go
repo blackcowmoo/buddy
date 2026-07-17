@@ -30,10 +30,8 @@ func main() {
 	log.SetFlags(log.Ltime)
 	cfg := config.Load()
 
-	fastSTT, slowSTT := buildSTT(cfg)
 	pipe := &pipeline.Pipeline{
-		FastSTT:            fastSTT,
-		SlowSTT:            slowSTT,
+		STT:                buildSTT(cfg),
 		LLM:                llm.NewOpenAI(cfg.LLMChatURL, cfg.LLMAPIKey),
 		ChatModel:          cfg.LLMChatModel,
 		Analysis:           buildAnalysisCandidates(cfg),
@@ -92,8 +90,12 @@ func main() {
 	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings)
 
 	go func() {
-		log.Printf("buddy up on %s  env=%s  fast=%s  slow=%s  feedback=%s",
-			cfg.Addr, cfg.Env, pipe.FastSTT.Name(), pipe.SlowSTT.Name(), cfg.FeedbackLang)
+		names := make([]string, len(pipe.STT))
+		for i, r := range pipe.STT {
+			names[i] = r.Name()
+		}
+		log.Printf("buddy up on %s  env=%s  stt=%v  feedback=%s",
+			cfg.Addr, cfg.Env, names, cfg.FeedbackLang)
 		if err := srv.ListenAndServe(); err != nil && err.Error() != "http: Server closed" {
 			log.Fatalf("listen: %v", err)
 		}
@@ -163,19 +165,26 @@ func buildRecordingStore(ctx context.Context, cfg config.Config, st *store.MySQL
 	return rec
 }
 
-// buildSTT selects the STT engine(s) for the fast and refine tracks. A
-// server engine (cfg.STTEngine — WHISPER_SERVER_URLS, PARAKEET_SERVER_URLS,
-// ...; see config.sttEngines) takes priority when configured: the same
-// recognizer instance serves both tracks, round-robining across its
-// URLs/paired models (see stt.HTTPTranscriber). Otherwise falls back to the
-// legacy per-track switch: "mock" (zero setup) or "whisper" (whisper.cpp
-// subprocess, internal/stt/whisper.go).
-func buildSTT(cfg config.Config) (fast, slow stt.Recognizer) {
-	if cfg.STTEngine != "" {
-		r := stt.NewHTTPTranscriber(cfg.STTEngine, cfg.STTURLs, cfg.STTModels)
-		return r, r
+// buildSTT builds the STT ensemble for pipeline.Pipeline.STT: one Recognizer
+// per configured server engine (cfg.STTEngines — WHISPER_SERVER_URLS,
+// PARAKEET_SERVER_URLS, ...; see config.sttEngines), all called concurrently
+// per utterance (see pipeline.Pipeline.transcribe) — each engine's own
+// entries still round-robin internally across that engine's replicas (see
+// stt.HTTPTranscriber). Falls back to the legacy fast+slow pair (mock/
+// subprocess whisper, internal/stt/whisper.go) as a two-member ensemble when
+// no server engine is configured at all.
+func buildSTT(cfg config.Config) []stt.Recognizer {
+	if len(cfg.STTEngines) > 0 {
+		recs := make([]stt.Recognizer, len(cfg.STTEngines))
+		for i, e := range cfg.STTEngines {
+			recs[i] = stt.NewHTTPTranscriber(e.Name, e.URLs, e.Models)
+		}
+		return recs
 	}
-	return buildLegacySTT(cfg.FastSTT, "fast", cfg), buildLegacySTT(cfg.SlowSTT, "slow", cfg)
+	return []stt.Recognizer{
+		buildLegacySTT(cfg.FastSTT, "fast", cfg),
+		buildLegacySTT(cfg.SlowSTT, "slow", cfg),
+	}
 }
 
 func buildLegacySTT(kind, label string, cfg config.Config) stt.Recognizer {
