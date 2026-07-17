@@ -13,11 +13,11 @@ import (
 	"time"
 )
 
-// HTTPTranscriber talks to any OpenAI-compatible /v1/audio/transcriptions
-// server — whisper.cpp's `server` example, parakeet.cpp, or similar. Point
-// URLs at a different server/engine to swap it, no pipeline changes needed.
+// HTTPTranscriber talks to whisper.cpp's `server` example's native
+// `/inference` endpoint — parakeet.cpp or similar can be swapped in as long
+// as they speak the same multipart contract, no pipeline changes needed.
 //
-//	whisper-server -m ggml-large-v3-turbo.bin --port 8082   # OpenAI-compatible
+//	whisper-server -m ggml-large-v3-turbo.bin --port 8082
 //
 // Multiple URLs round-robin across replicas, so one slow request can't queue
 // behind another on a single instance. Models is paired by index with URLs
@@ -27,7 +27,7 @@ import (
 // for that endpoint.
 type HTTPTranscriber struct {
 	Engine string   // label for Name(), e.g. "whisper", "parakeet"
-	URLs   []string // one or more "/v1" roots
+	URLs   []string // one or more server roots
 	Models []string // paired by index with URLs; "" omits the "model" field
 
 	http *http.Client
@@ -83,11 +83,12 @@ func (h *HTTPTranscriber) Transcribe(ctx context.Context, pcm []byte) (Result, e
 	if model != "" {
 		_ = mw.WriteField("model", model)
 	}
+	_ = mw.WriteField("response_format", "json")
 	if err := mw.Close(); err != nil {
 		return Result{}, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(url, "/")+"/audio/transcriptions", &body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(url, "/")+"/inference", &body)
 	if err != nil {
 		return Result{}, err
 	}
