@@ -25,8 +25,8 @@ type Config struct {
 	WhisperFastModel string
 	WhisperSlowModel string
 
-	// STT server engines: any OpenAI-compatible /v1/audio/transcriptions
-	// server (whisper.cpp's `server` example, parakeet.cpp, or similar).
+	// STT server engines: whisper.cpp's `server` example's native /inference
+	// endpoint (parakeet.cpp or similar, if it speaks the same contract).
 	// EVERY engine below whose *_URLS env var is set becomes one ensemble
 	// member — all are called concurrently on each utterance
 	// (pipeline.Pipeline.transcribe), not "first configured wins": STT

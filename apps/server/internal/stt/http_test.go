@@ -11,13 +11,14 @@ import (
 )
 
 func TestHTTPTranscriberPostsMultipartWithModel(t *testing.T) {
-	var gotPath, gotModel string
+	var gotPath, gotModel, gotResponseFormat string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			t.Fatalf("ParseMultipartForm: %v", err)
 		}
 		gotModel = r.FormValue("model")
+		gotResponseFormat = r.FormValue("response_format")
 		f, _, err := r.FormFile("file")
 		if err != nil {
 			t.Fatalf("FormFile: %v", err)
@@ -39,11 +40,14 @@ func TestHTTPTranscriberPostsMultipartWithModel(t *testing.T) {
 	if res.Text != "hello world" {
 		t.Fatalf("Text = %q, want %q", res.Text, "hello world")
 	}
-	if gotPath != "/audio/transcriptions" {
-		t.Fatalf("path = %q, want /audio/transcriptions", gotPath)
+	if gotPath != "/inference" {
+		t.Fatalf("path = %q, want /inference", gotPath)
 	}
 	if gotModel != "whisper-large-v3-turbo" {
 		t.Fatalf("model field = %q, want whisper-large-v3-turbo", gotModel)
+	}
+	if gotResponseFormat != "json" {
+		t.Fatalf("response_format field = %q, want json", gotResponseFormat)
 	}
 }
 
