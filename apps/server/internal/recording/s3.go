@@ -16,7 +16,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/go-sql-driver/mysql"
-	"github.com/google/uuid"
 )
 
 // MySQL error numbers for "column already exists" / "index name already
@@ -138,8 +137,7 @@ func NewS3(ctx context.Context, cfg S3Config, rw, ro *sql.DB) (*S3Store, error) 
 	}, nil
 }
 
-func (s *S3Store) Save(ctx context.Context, userID, sessionID string, pcm []byte, sampleRate int) (Recording, error) {
-	id := uuid.NewString()
+func (s *S3Store) Save(ctx context.Context, userID, sessionID, id string, pcm []byte, sampleRate int) (Recording, error) {
 	key := userID + "/" + id + ".wav.gz"
 
 	var buf bytes.Buffer
@@ -237,34 +235,42 @@ func (s *S3Store) Open(ctx context.Context, userID, id string) (Recording, io.Re
 }
 
 // Delete removes one recording: its S3 object and its buddy_recordings row.
-// A no-op if id doesn't exist or belongs to a different user — same
-// indistinguishable-from-missing contract as Open. Reads via rw (not ro) so
-// a recording saved moments ago is never missed because of replica lag,
-// which would otherwise leave its S3 object stranded.
-func (s *S3Store) Delete(ctx context.Context, userID, id string) error {
+// Returns the deleted Recording (SessionID included) so callers can cascade
+// to whatever else shares its id — see recording.Store.Delete's doc. A
+// no-op — zero Recording, nil error — if id doesn't exist or belongs to a
+// different user, the same indistinguishable-from-missing contract as Open.
+// Reads via rw (not ro) so a recording saved moments ago is never missed
+// because of replica lag, which would otherwise leave its S3 object
+// stranded.
+func (s *S3Store) Delete(ctx context.Context, userID, id string) (Recording, error) {
+	var rec Recording
 	var s3Key string
+	var createdAt int64
 	err := s.rw.QueryRowContext(ctx, `
-		SELECT s3_key FROM `+table+` WHERE id = ? AND user_id = ?
-	`, id, userID).Scan(&s3Key)
+		SELECT session_id, s3_key, duration_ms, size_bytes, created_at FROM `+table+` WHERE id = ? AND user_id = ?
+	`, id, userID).Scan(&rec.SessionID, &s3Key, &rec.DurationMS, &rec.SizeBytes, &createdAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil
+		return Recording{}, nil
 	}
 	if err != nil {
-		return fmt.Errorf("recording: delete: lookup: %w", err)
+		return Recording{}, fmt.Errorf("recording: delete: lookup: %w", err)
 	}
+	rec.ID = id
+	rec.UserID = userID
+	rec.CreatedAt = time.Unix(createdAt, 0)
 
 	if _, err := s.s3.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(s3Key),
 	}); err != nil {
-		return fmt.Errorf("recording: delete: object: %w", err)
+		return Recording{}, fmt.Errorf("recording: delete: object: %w", err)
 	}
 	if _, err := s.rw.ExecContext(ctx, `
 		DELETE FROM `+table+` WHERE id = ? AND user_id = ?
 	`, id, userID); err != nil {
-		return fmt.Errorf("recording: delete: row: %w", err)
+		return Recording{}, fmt.Errorf("recording: delete: row: %w", err)
 	}
-	return nil
+	return rec, nil
 }
 
 // DeleteBySession removes every recording archived under sessionID — used to

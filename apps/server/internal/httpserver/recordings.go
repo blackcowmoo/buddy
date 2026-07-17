@@ -8,6 +8,7 @@ import (
 
 	"buddy/server/internal/identity"
 	"buddy/server/internal/recording"
+	"buddy/server/internal/transport"
 )
 
 // recordingsListHandler returns the caller's own archived recordings
@@ -77,10 +78,15 @@ func recordingAudioHandler(ident identity.Identifier, recordings recording.Store
 	}
 }
 
-// recordingDeleteHandler removes one archived recording. Scoped to the
-// caller's own userID the same way recordingsListHandler/recordingAudioHandler
-// are — a recording can only ever be deleted by the user who made it.
-func recordingDeleteHandler(ident identity.Identifier, recordings recording.Store) http.HandlerFunc {
+// recordingDeleteHandler removes one archived recording, and — when temporary
+// audio backup is enabled — that same utterance's internal/audiostore
+// backup, since Save gives both the same id for exactly this cascade (see
+// transport.Handler.ServeHTTP). Scoped to the caller's own userID the same
+// way recordingsListHandler/recordingAudioHandler are — a recording can only
+// ever be deleted by the user who made it. The audio cascade is best-effort,
+// same as sessionDeleteHandler's: a failure there is logged but doesn't
+// block deleting the recording itself.
+func recordingDeleteHandler(ident identity.Identifier, audio transport.AudioSaver, recordings recording.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if recordings == nil {
 			http.Error(w, "recording storage is not configured", http.StatusServiceUnavailable)
@@ -91,10 +97,16 @@ func recordingDeleteHandler(ident identity.Identifier, recordings recording.Stor
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		if err := recordings.Delete(r.Context(), userID, r.PathValue("id")); err != nil {
+		rec, err := recordings.Delete(r.Context(), userID, r.PathValue("id"))
+		if err != nil {
 			log.Printf("recordings: delete %s: %v", userID, err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
+		}
+		if audio != nil && rec.ID != "" {
+			if err := audio.Delete(r.Context(), userID, rec.SessionID, rec.ID); err != nil {
+				log.Printf("recordings: delete: cascade audio backup %s/%s: %v", userID, rec.ID, err)
+			}
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}

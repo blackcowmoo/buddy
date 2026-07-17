@@ -13,6 +13,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/google/uuid"
 	"github.com/testcontainers/testcontainers-go"
 	tcminio "github.com/testcontainers/testcontainers-go/modules/minio"
 	tcmysql "github.com/testcontainers/testcontainers-go/modules/mysql"
@@ -151,7 +152,7 @@ func TestSaveThenListRoundTrips(t *testing.T) {
 		pcm[i] = byte(i)
 	}
 
-	rec, err := st.Save(ctx, "alex-list", "sess-list", pcm, 16000)
+	rec, err := st.Save(ctx, "alex-list", "sess-list", uuid.NewString(), pcm, 16000)
 	if err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
@@ -179,12 +180,12 @@ func TestListOrdersMostRecentFirst(t *testing.T) {
 	ctx := context.Background()
 	pcm := make([]byte, 100)
 
-	first, err := st.Save(ctx, "alex-order", "sess-order", pcm, 16000)
+	first, err := st.Save(ctx, "alex-order", "sess-order", uuid.NewString(), pcm, 16000)
 	if err != nil {
 		t.Fatalf("Save() #1 error = %v", err)
 	}
 	time.Sleep(1100 * time.Millisecond) // created_at has 1s resolution (UNIX seconds)
-	second, err := st.Save(ctx, "alex-order", "sess-order", pcm, 16000)
+	second, err := st.Save(ctx, "alex-order", "sess-order", uuid.NewString(), pcm, 16000)
 	if err != nil {
 		t.Fatalf("Save() #2 error = %v", err)
 	}
@@ -203,7 +204,7 @@ func TestOpenReturnsDecompressibleAudio(t *testing.T) {
 	ctx := context.Background()
 	pcm := []byte{1, 2, 3, 4, 5, 6, 7, 8}
 
-	rec, err := st.Save(ctx, "alex-open", "sess-open", pcm, 16000)
+	rec, err := st.Save(ctx, "alex-open", "sess-open", uuid.NewString(), pcm, 16000)
 	if err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
@@ -233,7 +234,7 @@ func TestOpenReturnsDecompressibleAudio(t *testing.T) {
 func TestOpenRejectsWrongUser(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
-	rec, err := st.Save(ctx, "owner", "sess-owner", []byte{1, 2, 3, 4}, 16000)
+	rec, err := st.Save(ctx, "owner", "sess-owner", uuid.NewString(), []byte{1, 2, 3, 4}, 16000)
 	if err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
@@ -257,13 +258,17 @@ func TestListUnknownUserReturnsEmpty(t *testing.T) {
 func TestDeleteRemovesRowAndObject(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
-	rec, err := st.Save(ctx, "alex-delete", "sess-delete", []byte{1, 2, 3, 4}, 16000)
+	rec, err := st.Save(ctx, "alex-delete", "sess-delete", uuid.NewString(), []byte{1, 2, 3, 4}, 16000)
 	if err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
 
-	if err := st.Delete(ctx, "alex-delete", rec.ID); err != nil {
+	deleted, err := st.Delete(ctx, "alex-delete", rec.ID)
+	if err != nil {
 		t.Fatalf("Delete() error = %v", err)
+	}
+	if deleted.ID != rec.ID || deleted.SessionID != "sess-delete" {
+		t.Errorf("Delete() = %+v, want the deleted recording (id=%q, session=sess-delete)", deleted, rec.ID)
 	}
 
 	list, err := st.List(ctx, "alex-delete")
@@ -280,8 +285,12 @@ func TestDeleteRemovesRowAndObject(t *testing.T) {
 
 func TestDeleteIsNoopForUnknownID(t *testing.T) {
 	st := requireStore(t)
-	if err := st.Delete(context.Background(), "alex-delete", "no-such-id"); err != nil {
+	deleted, err := st.Delete(context.Background(), "alex-delete", "no-such-id")
+	if err != nil {
 		t.Fatalf("Delete() error = %v, want nil (no-op)", err)
+	}
+	if deleted.ID != "" {
+		t.Errorf("Delete() = %+v, want zero Recording for an unknown id", deleted)
 	}
 }
 
@@ -292,12 +301,12 @@ func TestDeleteIsNoopForUnknownID(t *testing.T) {
 func TestDeleteDoesNotAffectOtherUsers(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
-	victim, err := st.Save(ctx, "victim-delete", "sess-victim", []byte{1, 2, 3, 4}, 16000)
+	victim, err := st.Save(ctx, "victim-delete", "sess-victim", uuid.NewString(), []byte{1, 2, 3, 4}, 16000)
 	if err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
 
-	if err := st.Delete(ctx, "attacker-delete", victim.ID); err != nil {
+	if _, err := st.Delete(ctx, "attacker-delete", victim.ID); err != nil {
 		t.Fatalf("Delete() error = %v", err)
 	}
 
@@ -310,11 +319,11 @@ func TestDeleteBySessionRemovesOnlyThatSessionsRecordings(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
 	const userID = "alex-cascade"
-	inSession, err := st.Save(ctx, userID, "sess-a", []byte{1, 2, 3, 4}, 16000)
+	inSession, err := st.Save(ctx, userID, "sess-a", uuid.NewString(), []byte{1, 2, 3, 4}, 16000)
 	if err != nil {
 		t.Fatalf("Save(sess-a) error = %v", err)
 	}
-	otherSession, err := st.Save(ctx, userID, "sess-b", []byte{5, 6, 7, 8}, 16000)
+	otherSession, err := st.Save(ctx, userID, "sess-b", uuid.NewString(), []byte{5, 6, 7, 8}, 16000)
 	if err != nil {
 		t.Fatalf("Save(sess-b) error = %v", err)
 	}
