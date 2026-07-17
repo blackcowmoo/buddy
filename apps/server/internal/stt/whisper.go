@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -64,7 +65,7 @@ func (w *Whisper) Transcribe(ctx context.Context, pcm []byte) (Result, error) {
 }
 
 // writeWAV emits a minimal 16-bit PCM WAV around the raw samples.
-func writeWAV(f *os.File, pcm []byte, sampleRate, channels int) error {
+func writeWAV(f io.Writer, pcm []byte, sampleRate, channels int) error {
 	const bitsPerSample = 16
 	byteRate := sampleRate * channels * bitsPerSample / 8
 	blockAlign := channels * bitsPerSample / 8

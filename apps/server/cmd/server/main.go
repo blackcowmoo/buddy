@@ -31,11 +31,12 @@ func main() {
 	cfg := config.Load()
 
 	pipe := &pipeline.Pipeline{
-		FastSTT:            buildSTT(cfg.FastSTT, "fast", cfg),
-		SlowSTT:            buildSTT(cfg.SlowSTT, "slow", cfg),
-		LLM:                llm.NewOpenAI(cfg.LLMBaseURL, cfg.LLMAPIKey),
+		STT:                buildSTT(cfg),
+		LLM:                llm.NewOpenAI(cfg.LLMChatURL, cfg.LLMAPIKey),
 		ChatModel:          cfg.LLMChatModel,
-		CorrectModel:       cfg.LLMCorrectModel,
+		Analysis:           buildAnalysisCandidates(cfg),
+		Judge:              llm.NewOpenAI(cfg.LLMJudgeURL, cfg.LLMAPIKey),
+		JudgeModel:         cfg.LLMJudgeModel,
 		FeedbackLang:       cfg.FeedbackLang,
 		MaxHistoryMessages: cfg.MaxHistoryMessages,
 	}
@@ -89,8 +90,12 @@ func main() {
 	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings)
 
 	go func() {
-		log.Printf("buddy up on %s  env=%s  fast=%s  slow=%s  feedback=%s",
-			cfg.Addr, cfg.Env, pipe.FastSTT.Name(), pipe.SlowSTT.Name(), cfg.FeedbackLang)
+		names := make([]string, len(pipe.STT))
+		for i, r := range pipe.STT {
+			names[i] = r.Name()
+		}
+		log.Printf("buddy up on %s  env=%s  stt=%v  feedback=%s",
+			cfg.Addr, cfg.Env, names, cfg.FeedbackLang)
 		if err := srv.ListenAndServe(); err != nil && err.Error() != "http: Server closed" {
 			log.Fatalf("listen: %v", err)
 		}
@@ -160,9 +165,29 @@ func buildRecordingStore(ctx context.Context, cfg config.Config, st *store.MySQL
 	return rec
 }
 
-// buildSTT selects an STT engine from config. "mock" needs zero setup;
-// "whisper" shells out to whisper.cpp (see internal/stt/whisper.go).
-func buildSTT(kind, label string, cfg config.Config) stt.Recognizer {
+// buildSTT builds the STT ensemble for pipeline.Pipeline.STT: one Recognizer
+// per configured server engine (cfg.STTEngines — WHISPER_SERVER_URLS,
+// PARAKEET_SERVER_URLS, ...; see config.sttEngines), all called concurrently
+// per utterance (see pipeline.Pipeline.transcribe) — each engine's own
+// entries still round-robin internally across that engine's replicas (see
+// stt.HTTPTranscriber). Falls back to the legacy fast+slow pair (mock/
+// subprocess whisper, internal/stt/whisper.go) as a two-member ensemble when
+// no server engine is configured at all.
+func buildSTT(cfg config.Config) []stt.Recognizer {
+	if len(cfg.STTEngines) > 0 {
+		recs := make([]stt.Recognizer, len(cfg.STTEngines))
+		for i, e := range cfg.STTEngines {
+			recs[i] = stt.NewHTTPTranscriber(e.Name, e.URLs, e.Models)
+		}
+		return recs
+	}
+	return []stt.Recognizer{
+		buildLegacySTT(cfg.FastSTT, "fast", cfg),
+		buildLegacySTT(cfg.SlowSTT, "slow", cfg),
+	}
+}
+
+func buildLegacySTT(kind, label string, cfg config.Config) stt.Recognizer {
 	switch kind {
 	case "whisper":
 		model := cfg.WhisperFastModel
@@ -177,4 +202,17 @@ func buildSTT(kind, label string, cfg config.Config) stt.Recognizer {
 		}
 		return stt.NewMock(label, delay)
 	}
+}
+
+// buildAnalysisCandidates builds one ensemble candidate per
+// BUDDY_LLM_ANALYSIS_URLS entry ("model@url" pairs — see
+// config.parseModelURLPairs), so LLMAnalysisURLs/LLMAnalysisModels are
+// always the same length, one candidate per pair. See
+// pipeline.Pipeline.Analysis/analyze().
+func buildAnalysisCandidates(cfg config.Config) []pipeline.Candidate {
+	cands := make([]pipeline.Candidate, len(cfg.LLMAnalysisURLs))
+	for i, u := range cfg.LLMAnalysisURLs {
+		cands[i] = pipeline.Candidate{LLM: llm.NewOpenAI(u, cfg.LLMAPIKey), Model: cfg.LLMAnalysisModels[i]}
+	}
+	return cands
 }

@@ -16,19 +16,55 @@ type Config struct {
 	WebDist string // dir served in prod
 	ViteURL string // reverse-proxy target in dev
 
-	// STT
-	FastSTT          string // "mock" | "whisper"
-	SlowSTT          string // "mock" | "whisper"
+	// STT: legacy per-track switch, used only when no server engine below is
+	// configured. "mock" (zero setup) or "whisper" (whisper.cpp subprocess,
+	// internal/stt/whisper.go).
+	FastSTT          string
+	SlowSTT          string
 	WhisperBin       string
 	WhisperFastModel string
 	WhisperSlowModel string
 
+	// STT server engines: any OpenAI-compatible /v1/audio/transcriptions
+	// server (whisper.cpp's `server` example, parakeet.cpp, or similar).
+	// EVERY engine below whose *_URLS env var is set becomes one ensemble
+	// member — all are called concurrently on each utterance
+	// (pipeline.Pipeline.transcribe), not "first configured wins": STT
+	// accuracy matters more than latency here, so disagreements between
+	// engines get reconciled by an LLM instead of picking just one. Each
+	// engine's own *_URLS entries are parsed by parseModelURLPairs ("model@url"
+	// pairs, or a bare "url") and still round-robin internally across that
+	// one engine's own replicas — the ensemble is across engines, replication
+	// is within one. No STTEngines configured falls back to FastSTT/SlowSTT
+	// above. Adding a future engine (e.g. parakeet.cpp) is a new row in
+	// sttEngines, not a code change here.
+	STTEngines []STTEngineConfig
+
 	// LLM: any OpenAI-compatible chat-completions server (llama.cpp's
-	// llama-server, vLLM, LM Studio, or the OpenAI API itself).
-	LLMBaseURL      string // the /v1 root, e.g. http://localhost:8081/v1
-	LLMAPIKey       string // optional bearer token
-	LLMChatModel    string
-	LLMCorrectModel string
+	// llama-server, vLLM, LM Studio, or the OpenAI API itself). Three
+	// independent purposes, matching the two-track pipeline
+	// (internal/pipeline.Pipeline), every one of them a "model@url" env var
+	// (parseModelURLPair/parseModelURLPairs) rather than a *_URL + *_MODEL
+	// pair kept in sync separately — same format whether the var holds one
+	// endpoint or several, so there's exactly one place to look:
+	//   - Chat:     FAST track's streamed reply. One endpoint (*_URL).
+	//   - Analysis: REFINE track's grammar-correction/compaction pass. Every
+	//     configured endpoint is called concurrently as an ensemble, so this
+	//     one is comma-separated (*_URLS).
+	//   - Judge:    synthesizes the analysis ensemble's outputs into the one
+	//     result the pipeline uses. One endpoint (*_URL). Skipped when
+	//     Analysis has a single candidate (pipeline.Pipeline.analyze) — a
+	//     lone model has nothing to synthesize against.
+	LLMAPIKey string // optional bearer token, shared by all of the above
+
+	LLMChatURL   string
+	LLMChatModel string
+
+	LLMAnalysisURLs   []string
+	LLMAnalysisModels []string // paired by index with LLMAnalysisURLs
+
+	LLMJudgeURL   string
+	LLMJudgeModel string
 
 	// Feedback language: the learner's native language for correction
 	// explanations (BCP-47-ish code, e.g. "ko", "en", "ja"). The corrected
@@ -105,7 +141,98 @@ type Config struct {
 	S3StorageClass string
 }
 
+// STTEngineConfig is one ensemble member for pipeline.Pipeline.STT: an
+// engine's name (for logging/stt.HTTPTranscriber.Name()) and its
+// "model@url" entries, already parsed by parseModelURLPairs.
+type STTEngineConfig struct {
+	Name   string
+	URLs   []string
+	Models []string // paired by index with URLs
+}
+
+// sttEngines lists known STT server engines — every one whose *_URLS env var
+// is set becomes an STTEngineConfig (see loadSTTEngines). No BUDDY_ prefix:
+// these name the external engine/server itself (like WHISPER_SERVER_URLS),
+// not a buddy-specific knob. Supporting a future engine (e.g. parakeet.cpp)
+// is a new row here, nothing else changes.
+var sttEngines = []struct {
+	name    string
+	urlsEnv string
+}{
+	{"whisper", "WHISPER_SERVER_URLS"},
+	{"parakeet", "PARAKEET_SERVER_URLS"},
+}
+
+// loadSTTEngines collects every configured server engine from sttEngines, or
+// nil if none are set — Config.STTEngines stays empty and the server falls
+// back to FastSTT/SlowSTT (mock/subprocess whisper).
+func loadSTTEngines() []STTEngineConfig {
+	var out []STTEngineConfig
+	for _, e := range sttEngines {
+		v, ok := os.LookupEnv(e.urlsEnv)
+		if !ok || v == "" {
+			continue
+		}
+		models, urls := parseModelURLPairs(v)
+		out = append(out, STTEngineConfig{Name: e.name, URLs: urls, Models: models})
+	}
+	return out
+}
+
+// splitCSV parses a comma-separated env value into a trimmed, non-empty list.
+func splitCSV(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+// parseModelURLPairs parses a comma-separated list of "model@url" entries
+// into parallel models/urls slices (same index i is one pair). A bare entry
+// with no "@" is also accepted as just a url, with an empty model — callers
+// that need a model name treat "" as "omit it" rather than guessing one.
+//
+// This is the format for every *_URLS env var (WHISPER_SERVER_URLS,
+// BUDDY_LLM_ANALYSIS_URLS, ...): a comma list is presumed to allow a
+// different model behind each endpoint, so pairing them via a second
+// same-length *_MODELS list (kept in sync by index across two env vars) is
+// both redundant and fragile. Folding the model into its own entry means
+// there is exactly one thing to edit per endpoint. parseModelURLPair below
+// is the singular counterpart, used by the *_URL vars (Chat, Judge) so a
+// single endpoint follows the exact same format instead of falling back to
+// a separate *_URL/*_MODEL pair — "model@url" either way, list or not.
+func parseModelURLPairs(s string) (models, urls []string) {
+	for _, part := range splitCSV(s) {
+		if model, url, ok := strings.Cut(part, "@"); ok {
+			models = append(models, strings.TrimSpace(model))
+			urls = append(urls, strings.TrimSpace(url))
+			continue
+		}
+		models = append(models, "")
+		urls = append(urls, part)
+	}
+	return models, urls
+}
+
+// parseModelURLPair parses a single "model@url" value (or a bare "url" with
+// no model) into (model, url) — see parseModelURLPairs for why every
+// URL-shaped env var in this package shares this format.
+func parseModelURLPair(s string) (model, url string) {
+	if model, url, ok := strings.Cut(s, "@"); ok {
+		return strings.TrimSpace(model), strings.TrimSpace(url)
+	}
+	return "", strings.TrimSpace(s)
+}
+
 func Load() Config {
+	sttEngineConfigs := loadSTTEngines()
+	chatModel, chatURL := parseModelURLPair(env("BUDDY_LLM_CHAT_URL", "local-model@http://localhost:8081/v1"))
+	analysisModels, analysisURLs := parseModelURLPairs(env("BUDDY_LLM_ANALYSIS_URLS", "local-model@http://localhost:8081/v1"))
+	judgeModel, judgeURL := parseModelURLPair(env("BUDDY_LLM_JUDGE_URL", "local-model@http://localhost:8081/v1"))
+
 	return Config{
 		Env:  env("BUDDY_ENV", "dev"),
 		Addr: env("BUDDY_ADDR", ":8080"),
@@ -119,10 +246,18 @@ func Load() Config {
 		WhisperFastModel: env("BUDDY_WHISPER_FAST_MODEL", "models/ggml-tiny.en.bin"),
 		WhisperSlowModel: env("BUDDY_WHISPER_SLOW_MODEL", "models/ggml-large-v3.bin"),
 
-		LLMBaseURL:      env("BUDDY_LLM_BASE_URL", "http://localhost:8081/v1"),
-		LLMAPIKey:       env("BUDDY_LLM_API_KEY", ""),
-		LLMChatModel:    env("BUDDY_LLM_CHAT_MODEL", "local-model"),
-		LLMCorrectModel: env("BUDDY_LLM_CORRECT_MODEL", "local-model"),
+		STTEngines: sttEngineConfigs,
+
+		LLMAPIKey: env("BUDDY_LLM_API_KEY", ""),
+
+		LLMChatURL:   chatURL,
+		LLMChatModel: chatModel,
+
+		LLMAnalysisURLs:   analysisURLs,
+		LLMAnalysisModels: analysisModels,
+
+		LLMJudgeURL:   judgeURL,
+		LLMJudgeModel: judgeModel,
 
 		FeedbackLang: env("BUDDY_FEEDBACK_LANG", "ko"),
 

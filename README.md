@@ -1,12 +1,14 @@
 # Buddy — streaming English free-talking tutor
 
-A voice conversation web app for English practice. You speak, Buddy replies
-(streamed + spoken via **kokoro-82M in the browser**), and a background track
-re-transcribes with a higher-quality model and shows **grammar / vocabulary
+A voice conversation web app for English practice. You speak, every
+configured STT engine transcribes it concurrently, Buddy replies (streamed +
+spoken via **kokoro-82M in the browser**), and a background track double-checks
+the transcript with a stronger model and shows **grammar / vocabulary
 corrections**.
 
 - **Backend:** Go (single binary, no Python anywhere)
-- **STT:** pluggable — `mock` (zero setup) → whisper.cpp (subprocess) → Vosk (streaming)
+- **STT:** pluggable ensemble — `mock` (zero setup) → whisper.cpp/parakeet.cpp
+  servers, any number of them called concurrently and reconciled by an LLM
 - **LLM:** any OpenAI-compatible server over local HTTP (llama.cpp's
   llama-server, vLLM, LM Studio, or the OpenAI API) — chat + correction
 - **TTS:** kokoro-82M in the browser (WebGPU), so the server stays audio-free
@@ -20,29 +22,40 @@ corrections**.
 ## Two-track pipeline
 
 ```
-                                    ┌─────────────────────────────────────────────┐
- browser                            │               Go backend                    │
-┌──────────────────┐   WS(binary)   │  ┌──────────────┐                           │
-│ mic → PCM 16k    │───utterance───▶│  │  FAST track  │  fast STT (mock/          │
-│  (AudioWorklet)  │                │  │ (low latency)│  whisper-tiny/vosk)       │
-│                  │                │  └──────┬───────┘          │                │
-│                  │                │         ▼ transcript       ▼                │
-│                  │◀──assistant────│   LLM.ChatStream(OpenAI API) ─ token stream │
-│ kokoro-82M TTS   │   delta        │         │                                   │
-│  (WebGPU) ◀──────│◀─assistant_done│         │                                   │
-│                  │                │  ┌──────▼──────────────────────────┐        │
-│ correction cards │◀─correction────│  │ REFINE track (goroutine)        │        │
-│ refined subtitle │◀─refined_──────│  │ slow STT (whisper-large)        │        │
-└──────────────────┘   transcript   │  │  → LLM grammar/context fix      │        │
-                                    │  │  → upgrade session context      │        │
-                                    │  └─────────────────────────────────┘        │
-                                    └─────────────────────────────────────────────┘
+                                    ┌───────────────────────────────────────────────┐
+ browser                            │                 Go backend                    │
+┌──────────────────┐   WS(binary)   │  ┌────────────────────┐                       │
+│ mic → PCM 16k    │───utterance───▶│  │ STT ensemble       │  every configured     │
+│  (AudioWorklet)  │                │  │ (concurrent calls) │  engine at once       │
+│                  │                │  └─────────┬──────────┘  (whisper/parakeet/   │
+│                  │                │            ▼ candidates   mock)               │
+│                  │                │  ┌─────────────────────┐                      │
+│                  │                │  │ FAST track:         │  quick reconciliation │
+│                  │                │  │ chat-model pick     │  (skipped if only 1   │
+│                  │                │  └─────────┬───────────┘  candidate)          │
+│                  │                │            ▼ transcript                       │
+│                  │◀──assistant────│   LLM.ChatStream(OpenAI API) ─ token stream   │
+│ kokoro-82M TTS   │   delta        │            │                                  │
+│  (WebGPU) ◀──────│◀─assistant_done│            │                                  │
+│                  │                │  ┌─────────▼───────────────────────┐          │
+│ correction cards │◀─correction────│  │ REFINE track (goroutine):       │          │
+│ refined subtitle │◀─refined_──────│  │ same candidates, Judge-model    │          │
+└──────────────────┘   transcript   │  │ reconciliation → LLM grammar/   │          │
+                                    │  │ context fix → upgrade session   │          │
+                                    │  └──────────────────────────────────┘         │
+                                    └───────────────────────────────────────────────┘
 ```
 
-- **FAST** gives the "real-time" feel: quick transcript + token-streamed reply.
-- **REFINE** runs in the background: better transcription, correction feedback,
-  and it rewrites the last user turn in the shared session so future replies use
-  accurate context. This is the "middle LLM cleans the context" idea.
+- **FAST** gives the "real-time" feel: every STT engine is called concurrently,
+  a quick chat-model pass reconciles disagreements (e.g. mis-heard homophones)
+  using the conversation for context, and the reply streams from that transcript.
+- **REFINE** runs in the background: the exact same STT candidates go to Judge
+  (a stronger model, more care, same context) for a second opinion — no
+  re-transcription needed — then runs grammar/vocabulary correction. If Judge's
+  reconciliation differs from FAST's quick pick, it rewrites the last user turn
+  in the shared session so future replies use the more accurate wording. This is
+  the "middle LLM cleans the context" idea, now also applied to what was heard,
+  not just what was said.
 
 ## Persistent per-user memory
 
@@ -139,34 +152,83 @@ replies (Chrome recommended for WebGPU).
 
 ## Turn on the real engines
 
-**LLM (chat + correction) — llama.cpp:**
+**LLM (chat + analysis) — llama.cpp:**
+
+The pipeline calls three independent LLM purposes (see
+`internal/pipeline.Pipeline`): **Chat** (FAST track's streamed reply, one
+endpoint), **Analysis** (REFINE track's grammar-correction/compaction pass —
+every configured endpoint is called concurrently as an ensemble), and
+**Judge** (synthesizes the Analysis ensemble into the one result used —
+skipped automatically when Analysis has just one candidate).
 
 ```bash
-# build llama.cpp, then run its OpenAI-compatible server:
-llama-server -m ./models/your-model.gguf --port 8081
-# server talks to http://localhost:8081/v1 by default (BUDDY_LLM_BASE_URL)
+# build llama.cpp, then run its OpenAI-compatible server (one per model):
+llama-server -m ./models/gemma-4-e2b.gguf --port 8081   # chat: low latency
+llama-server -m ./models/gemma-4-e4b.gguf --port 8084   # analysis candidate
+llama-server -m ./models/qwen3-6-35b-a3b.gguf --port 8085  # analysis candidate + judge
 ```
 
-Any OpenAI-compatible endpoint works — point `BUDDY_LLM_BASE_URL` at vLLM, LM
-Studio, or `https://api.openai.com/v1` (with `BUDDY_LLM_API_KEY`).
+```bash
+# Every var below is "model@url" (config.parseModelURLPair/parseModelURLPairs)
+# — the model travels with its own endpoint, so there's no separate _MODEL(S)
+# list to keep in sync by index. Comma-separate for Analysis's ensemble; Chat
+# and Judge take exactly one pair each.
+BUDDY_LLM_CHAT_URL=gemma-4-e2b@http://localhost:8081/v1
 
-**Quality STT (whisper.cpp, no Python):**
+BUDDY_LLM_ANALYSIS_URLS=gemma-4-e4b@http://localhost:8084/v1,qwen3-6-35b-a3b@http://localhost:8085/v1
+
+BUDDY_LLM_JUDGE_URL=qwen3-6-35b-a3b@http://localhost:8085/v1
+```
+
+Any OpenAI-compatible endpoint works for any of the three — vLLM, LM Studio,
+or `https://api.openai.com/v1` (with `BUDDY_LLM_API_KEY`). Zero-setup default:
+all three point at `local-model@http://localhost:8081/v1`, so a single
+`llama-server` still works (Analysis collapses to one candidate, so Judge is
+never called).
+
+**Quality STT — whisper.cpp/parakeet.cpp servers, called concurrently:**
+
+Unlike the three LLM purposes above, **every** configured STT engine below
+becomes one ensemble member — all of them are called concurrently on each
+utterance (`pipeline.Pipeline.transcribe`), not "first configured wins".
+Accuracy matters more than shaving a few dozen milliseconds here, so
+disagreements between engines (STT mishearing a homophone, say) are
+reconciled by an LLM using the conversation for context, rather than trusting
+whichever engine happens to be listed first.
 
 ```bash
 git clone https://github.com/ggml-org/whisper.cpp && cd whisper.cpp && make
-# put whisper-cli on PATH
-sh ./models/download-ggml-model.sh tiny.en     # fast track
-sh ./models/download-ggml-model.sh large-v3    # slow/quality track
-# copy the .bin files into buddy/models/, then:
+# run its OpenAI-compatible transcription server:
+./server -m ./models/ggml-large-v3-turbo.bin --port 8082
 ```
 
-Point the container at your (externally managed) LLM and MySQL, and pass
-config with `-e`:
+```bash
+# "model@url" pairs, comma-separated — add more for more replicas of the SAME
+# engine (whisper-large-v3-turbo@http://localhost:8083/v1, ...); a bare "url"
+# with no "model@" prefix works too, it just omits the "model" field.
+WHISPER_SERVER_URLS=whisper-large-v3-turbo@http://localhost:8082/v1
+# A second, DIFFERENT engine (e.g. parakeet.cpp) is a separate ensemble
+# member too — both get called on every utterance, not just one:
+# PARAKEET_SERVER_URLS=parakeet-tdt@http://localhost:8083/v1
+```
+
+This is a server engine (as opposed to the legacy `BUDDY_FAST_STT`/
+`BUDDY_SLOW_STT=whisper` subprocess mode, used as a two-member ensemble when no
+server engine is configured at all). `sttEngines` in `internal/config/config.go`
+lists every known engine env var (`WHISPER_SERVER_URLS`, `PARAKEET_SERVER_URLS`,
+...); every one that's set contributes a candidate — adding e.g. parakeet.cpp
+support later is a new row there, not a code change.
+
+Point the container at your (externally managed) LLM, STT, and MySQL, and
+pass config with `-e`:
 
 ```bash
 docker run --rm -p 8080:8080 \
   --add-host host.docker.internal:host-gateway \
-  -e BUDDY_LLM_BASE_URL=http://host.docker.internal:8081/v1 \
+  -e BUDDY_LLM_CHAT_URL=gemma-4-e2b@http://host.docker.internal:8081/v1 \
+  -e BUDDY_LLM_ANALYSIS_URLS=gemma-4-e4b@http://host.docker.internal:8084/v1 \
+  -e BUDDY_LLM_JUDGE_URL=gemma-4-e4b@http://host.docker.internal:8084/v1 \
+  -e WHISPER_SERVER_URLS=whisper-large-v3-turbo@http://host.docker.internal:8082/v1 \
   -e MYSQL_RW_HOSTNAME=host.docker.internal -e MYSQL_PORT=3306 \
   -e MYSQL_USERNAME=buddy -e MYSQL_PASSWORD=buddy -e MYSQL_DATABASE=buddy \
   buddy
@@ -193,8 +255,11 @@ this table is a deployment-focused summary).
 | `MYSQL_RW_HOSTNAME` | MySQL primary (read-write) host. Required — the server fails to start if it can't connect. The table it creates is `buddy_profiles` (prefixed so it can share a database with other services). |
 | `MYSQL_USERNAME`, `MYSQL_PASSWORD`, `MYSQL_DATABASE` | Credentials and database for the store. `MYSQL_PORT` defaults to `3306`. |
 | `MYSQL_RO_HOSTNAME` | Optional read replica; `Load` reads from it to offload the primary. Leave unset to read from the primary (strongly consistent). |
-| `BUDDY_LLM_BASE_URL` | Your OpenAI-compatible endpoint (llama.cpp `llama-server`, vLLM, LM Studio, hosted API). Without it, chat/correction silently degrade to an offline echo. |
-| `BUDDY_LLM_API_KEY` | Only if your LLM endpoint needs a bearer token (e.g. a hosted API). |
+| `BUDDY_LLM_CHAT_URL` | Your `model@url` OpenAI-compatible endpoint for the FAST track's reply (llama.cpp `llama-server`, vLLM, LM Studio, hosted API) — a bare `url` with no `model@` prefix is also accepted. Without it, chat silently degrades to an offline echo. |
+| `BUDDY_LLM_ANALYSIS_URLS` | Comma-separated `model@url` pairs for the REFINE track's grammar-correction/compaction ensemble — every one is called concurrently. One env var per endpoint (not a second `_MODELS` list kept in sync by index). |
+| `BUDDY_LLM_JUDGE_URL` | `model@url` endpoint that synthesizes the analysis ensemble's outputs into one result. Unused when `BUDDY_LLM_ANALYSIS_URLS` has a single entry. |
+| `BUDDY_LLM_API_KEY` | Only if your LLM endpoints need a bearer token (e.g. a hosted API) — shared by all three above. |
+| `WHISPER_SERVER_URLS` | Comma-separated `model@url` pairs for whisper.cpp `server`-style (OpenAI-compatible `/v1/audio/transcriptions`) endpoint(s); one ensemble member, called concurrently with every other configured STT engine on each utterance and reconciled by an LLM (round-robining internally if it has multiple entries of its own). Setting any `*_SERVER_URLS` var takes priority over `BUDDY_FAST_STT`/`BUDDY_SLOW_STT` below. See `internal/config.sttEngines` for adding another engine (e.g. `PARAKEET_SERVER_URLS`) — every engine set contributes a candidate, they don't compete for priority. |
 | `BUDDY_IDENTITY_MODE=oidc` | Switches from the anonymous local-dev cookie to verifying a Dex-issued JWT. |
 | `BUDDY_OIDC_ISSUER_URL` | Dex's issuer URL, e.g. `https://dex.example.com`. The server fetches Dex's discovery document + JWKS from this at startup. |
 | `BUDDY_OIDC_CLIENT_ID` | Expected token audience (default `buddy`). |
@@ -227,10 +292,12 @@ temporary raw-audio backup — both share this one S3-compatible config block):*
 
 **Everything else is optional** (sane defaults, see `.env.example`):
 `BUDDY_ADDR`, `BUDDY_FEEDBACK_LANG`, `BUDDY_MAX_HISTORY_MESSAGES`,
-`BUDDY_LLM_CHAT_MODEL`/`BUDDY_LLM_CORRECT_MODEL`, `BUDDY_FAST_STT`/`BUDDY_SLOW_STT`
-(and the matching `BUDDY_WHISPER_*` vars if you set either to `whisper`).
-`BUDDY_WEB_DIST`/`BUDDY_VITE_URL` only matter in dev — a prod image embeds the
-frontend and ignores them.
+`PARAKEET_SERVER_URLS` (reserved for a future engine — see
+`internal/config.sttEngines`), and the legacy `BUDDY_FAST_STT`/`BUDDY_SLOW_STT`
+(with the matching `BUDDY_WHISPER_*` vars if you set either to `whisper`) used
+only when no `*_SERVER_URLS` engine
+is configured. `BUDDY_WEB_DIST`/`BUDDY_VITE_URL` only matter in dev — a prod
+image embeds the frontend and ignores them.
 
 | `ROOT_PATH` | Mounts the whole app under a path prefix instead of `/`, e.g. `ROOT_PATH=/pr/14` for a PR-preview deployment that an external router sends `/pr/14/*` to. The app strips the prefix itself (`httpserver.withRootPath`); the frontend resolves its own asset/WS/worklet URLs relative to the page URL, so no rebuild is needed per prefix. Unset (default) mounts at `/`, unchanged. The hamburger menu's PR-path field (`lib/rootPath.ts`) lets a user jump straight to another `/pr/<n>/` deployment without typing the URL by hand. |
 
@@ -305,7 +372,8 @@ without touching the pipeline:
 | **In-process STT (no subprocess)** | Swap `stt.Whisper` for the whisper.cpp CGo bindings; same `Recognizer` interface. |
 | **Server-side TTS** | Implement `tts.Synthesizer` (e.g. shell out to piper) and stream audio frames down the socket for non-browser clients. |
 | **Lower TTS latency** | Speak per sentence as `assistant_delta`s arrive instead of on `assistant_done`. |
-| **Different LLM host** | `llm.OpenAI` already works with any OpenAI-compatible server (llama.cpp, vLLM, LM Studio, hosted APIs) — just change `BUDDY_LLM_BASE_URL`. |
+| **Different LLM host** | `llm.OpenAI` already works with any OpenAI-compatible server (llama.cpp, vLLM, LM Studio, hosted APIs) — just change `BUDDY_LLM_CHAT_URL`/`BUDDY_LLM_ANALYSIS_URLS`/`BUDDY_LLM_JUDGE_URL`. |
+| **Another STT server engine** (e.g. parakeet.cpp) | Add a row to `sttEngines` in `internal/config/config.go` (its `*_URLS` env var name — `model@url` pairs, parsed by `parseModelURLPairs`); `stt.HTTPTranscriber` already speaks the generic OpenAI-compatible transcription API, so no new Go type is needed unless the engine's wire format differs. |
 | **Real auth** | Done: `BUDDY_IDENTITY_MODE=oidc` verifies a Dex-issued JWT from the `Authorization` header directly against Dex. For a different provider/setup, implement `identity.Identifier` — `internal/store` doesn't care where the ID came from. |
 
 ## Roadmap — what's still not done

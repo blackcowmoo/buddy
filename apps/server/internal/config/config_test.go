@@ -10,8 +10,10 @@ var allBuddyEnvVars = []string{
 	"BUDDY_ENV", "BUDDY_ADDR", "BUDDY_WEB_DIST", "BUDDY_VITE_URL",
 	"BUDDY_FAST_STT", "BUDDY_SLOW_STT", "BUDDY_WHISPER_BIN",
 	"BUDDY_WHISPER_FAST_MODEL", "BUDDY_WHISPER_SLOW_MODEL",
-	"BUDDY_LLM_BASE_URL", "BUDDY_LLM_API_KEY", "BUDDY_LLM_CHAT_MODEL",
-	"BUDDY_LLM_CORRECT_MODEL", "BUDDY_FEEDBACK_LANG",
+	"WHISPER_SERVER_URLS", "PARAKEET_SERVER_URLS",
+	"BUDDY_LLM_API_KEY",
+	"BUDDY_LLM_CHAT_URL", "BUDDY_LLM_ANALYSIS_URLS", "BUDDY_LLM_JUDGE_URL",
+	"BUDDY_FEEDBACK_LANG",
 	"MYSQL_RW_HOSTNAME", "MYSQL_RO_HOSTNAME", "MYSQL_PORT",
 	"MYSQL_USERNAME", "MYSQL_PASSWORD", "MYSQL_DATABASE",
 	"BUDDY_MAX_HISTORY_MESSAGES",
@@ -33,28 +35,29 @@ func TestLoadDefaults(t *testing.T) {
 	c := Load()
 
 	str := map[string]struct{ got, want string }{
-		"Env":                 {c.Env, "dev"},
-		"Addr":                {c.Addr, ":8080"},
-		"FastSTT":             {c.FastSTT, "mock"},
-		"SlowSTT":             {c.SlowSTT, "mock"},
-		"LLMBaseURL":          {c.LLMBaseURL, "http://localhost:8081/v1"},
-		"LLMChatModel":        {c.LLMChatModel, "local-model"},
-		"LLMCorrectModel":     {c.LLMCorrectModel, "local-model"},
-		"FeedbackLang":        {c.FeedbackLang, "ko"},
-		"MySQLRWHost":         {c.MySQLRWHost, "localhost"},
-		"MySQLROHost":         {c.MySQLROHost, ""},
-		"MySQLUser":           {c.MySQLUser, "buddy"},
-		"MySQLPassword":       {c.MySQLPassword, "buddy"},
-		"MySQLDatabase":       {c.MySQLDatabase, "buddy"},
-		"IdentityMode":        {c.IdentityMode, "cookie"},
-		"OIDCIssuerURL":       {c.OIDCIssuerURL, ""},
-		"OIDCClientID":        {c.OIDCClientID, "buddy"},
-		"RootPath":            {c.RootPath, ""},
-		"S3Endpoint":          {c.S3Endpoint, ""},
-		"S3AccessKey":         {c.S3AccessKey, ""},
-		"S3SecretKey":         {c.S3SecretKey, ""},
-		"S3Bucket":            {c.S3Bucket, ""},
-		"S3StorageClass":      {c.S3StorageClass, ""},
+		"Env":            {c.Env, "dev"},
+		"Addr":           {c.Addr, ":8080"},
+		"FastSTT":        {c.FastSTT, "mock"},
+		"SlowSTT":        {c.SlowSTT, "mock"},
+		"LLMChatURL":     {c.LLMChatURL, "http://localhost:8081/v1"},
+		"LLMChatModel":   {c.LLMChatModel, "local-model"},
+		"LLMJudgeURL":    {c.LLMJudgeURL, "http://localhost:8081/v1"},
+		"LLMJudgeModel":  {c.LLMJudgeModel, "local-model"},
+		"FeedbackLang":   {c.FeedbackLang, "ko"},
+		"MySQLRWHost":    {c.MySQLRWHost, "localhost"},
+		"MySQLROHost":    {c.MySQLROHost, ""},
+		"MySQLUser":      {c.MySQLUser, "buddy"},
+		"MySQLPassword":  {c.MySQLPassword, "buddy"},
+		"MySQLDatabase":  {c.MySQLDatabase, "buddy"},
+		"IdentityMode":   {c.IdentityMode, "cookie"},
+		"OIDCIssuerURL":  {c.OIDCIssuerURL, ""},
+		"OIDCClientID":   {c.OIDCClientID, "buddy"},
+		"RootPath":       {c.RootPath, ""},
+		"S3Endpoint":     {c.S3Endpoint, ""},
+		"S3AccessKey":    {c.S3AccessKey, ""},
+		"S3SecretKey":    {c.S3SecretKey, ""},
+		"S3Bucket":       {c.S3Bucket, ""},
+		"S3StorageClass": {c.S3StorageClass, ""},
 	}
 	for name, tc := range str {
 		if tc.got != tc.want {
@@ -73,6 +76,137 @@ func TestLoadDefaults(t *testing.T) {
 	if c.S3PathStyle {
 		t.Errorf("S3PathStyle = true, want false by default")
 	}
+	if c.STTEngines != nil {
+		t.Errorf("STTEngines = %v, want nil (no server engine configured)", c.STTEngines)
+	}
+	if len(c.LLMAnalysisURLs) != 1 || c.LLMAnalysisURLs[0] != "http://localhost:8081/v1" {
+		t.Errorf("LLMAnalysisURLs = %v, want a single default entry", c.LLMAnalysisURLs)
+	}
+	if len(c.LLMAnalysisModels) != 1 || c.LLMAnalysisModels[0] != "local-model" {
+		t.Errorf("LLMAnalysisModels = %v, want a single default entry", c.LLMAnalysisModels)
+	}
+}
+
+func TestLoadSTTEnginesCollectsEveryConfiguredEngine(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("WHISPER_SERVER_URLS", "whisper-large-v3-turbo@http://w1:8082/v1, whisper-large-v3-turbo@http://w2:8082/v1")
+	t.Setenv("PARAKEET_SERVER_URLS", "http://p1:8083/v1")
+
+	c := Load()
+	if len(c.STTEngines) != 2 {
+		t.Fatalf("STTEngines = %+v, want 2 entries (whisper AND parakeet, both configured)", c.STTEngines)
+	}
+	whisper, parakeet := c.STTEngines[0], c.STTEngines[1]
+	if whisper.Name != "whisper" {
+		t.Fatalf("STTEngines[0].Name = %q, want whisper (checked before parakeet)", whisper.Name)
+	}
+	if want := []string{"http://w1:8082/v1", "http://w2:8082/v1"}; !equalStrings(whisper.URLs, want) {
+		t.Fatalf("whisper.URLs = %v, want %v", whisper.URLs, want)
+	}
+	if want := []string{"whisper-large-v3-turbo", "whisper-large-v3-turbo"}; !equalStrings(whisper.Models, want) {
+		t.Fatalf("whisper.Models = %v, want %v", whisper.Models, want)
+	}
+	if parakeet.Name != "parakeet" {
+		t.Fatalf("STTEngines[1].Name = %q, want parakeet", parakeet.Name)
+	}
+	if want := []string{"http://p1:8083/v1"}; !equalStrings(parakeet.URLs, want) {
+		t.Fatalf("parakeet.URLs = %v, want %v", parakeet.URLs, want)
+	}
+	if want := []string{""}; !equalStrings(parakeet.Models, want) {
+		t.Fatalf("parakeet.Models = %v, want %v (bare url, no \"model@\" prefix)", parakeet.Models, want)
+	}
+}
+
+func TestLoadSTTEnginesOnlyIncludesConfiguredOnes(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("PARAKEET_SERVER_URLS", "http://p1:8083/v1")
+
+	c := Load()
+	if len(c.STTEngines) != 1 || c.STTEngines[0].Name != "parakeet" {
+		t.Fatalf("STTEngines = %+v, want a single parakeet entry (whisper unset)", c.STTEngines)
+	}
+}
+
+func TestLoadLLMAnalysisURLsParsesModelAtURLPairs(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("BUDDY_LLM_ANALYSIS_URLS", "gemma-4-e4b@http://a:8081/v1, qwen3-6-35b-a3b@http://b:8081/v1 ,http://c:8081/v1")
+
+	c := Load()
+	wantURLs := []string{"http://a:8081/v1", "http://b:8081/v1", "http://c:8081/v1"}
+	if !equalStrings(c.LLMAnalysisURLs, wantURLs) {
+		t.Fatalf("LLMAnalysisURLs = %v, want %v", c.LLMAnalysisURLs, wantURLs)
+	}
+	wantModels := []string{"gemma-4-e4b", "qwen3-6-35b-a3b", ""}
+	if !equalStrings(c.LLMAnalysisModels, wantModels) {
+		t.Fatalf("LLMAnalysisModels = %v, want %v", c.LLMAnalysisModels, wantModels)
+	}
+}
+
+func TestLoadLLMChatAndJudgeURLParseModelAtURLPair(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("BUDDY_LLM_CHAT_URL", "gemma-4-e2b@http://localhost:8081/v1")
+	t.Setenv("BUDDY_LLM_JUDGE_URL", "qwen3-6-35b-a3b@http://localhost:8085/v1")
+
+	c := Load()
+	if c.LLMChatModel != "gemma-4-e2b" || c.LLMChatURL != "http://localhost:8081/v1" {
+		t.Fatalf("Chat model/url = %q/%q, want gemma-4-e2b/http://localhost:8081/v1", c.LLMChatModel, c.LLMChatURL)
+	}
+	if c.LLMJudgeModel != "qwen3-6-35b-a3b" || c.LLMJudgeURL != "http://localhost:8085/v1" {
+		t.Fatalf("Judge model/url = %q/%q, want qwen3-6-35b-a3b/http://localhost:8085/v1", c.LLMJudgeModel, c.LLMJudgeURL)
+	}
+}
+
+func TestLoadLLMChatURLBareURLOmitsModel(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("BUDDY_LLM_CHAT_URL", "http://localhost:8081/v1")
+
+	c := Load()
+	if c.LLMChatModel != "" {
+		t.Fatalf("LLMChatModel = %q, want empty for a bare url with no \"model@\" prefix", c.LLMChatModel)
+	}
+	if c.LLMChatURL != "http://localhost:8081/v1" {
+		t.Fatalf("LLMChatURL = %q, want http://localhost:8081/v1", c.LLMChatURL)
+	}
+}
+
+func TestParseModelURLPair(t *testing.T) {
+	cases := []struct {
+		in, wantModel, wantURL string
+	}{
+		{"gemma-4-e2b@http://localhost:8081/v1", "gemma-4-e2b", "http://localhost:8081/v1"},
+		{"http://localhost:8081/v1", "", "http://localhost:8081/v1"},
+		{" gemma-4-e2b @ http://localhost:8081/v1 ", "gemma-4-e2b", "http://localhost:8081/v1"},
+	}
+	for _, tc := range cases {
+		model, url := parseModelURLPair(tc.in)
+		if model != tc.wantModel || url != tc.wantURL {
+			t.Errorf("parseModelURLPair(%q) = (%q, %q), want (%q, %q)", tc.in, model, url, tc.wantModel, tc.wantURL)
+		}
+	}
+}
+
+func TestParseModelURLPairs(t *testing.T) {
+	models, urls := parseModelURLPairs("gemma-4-e4b@http://a:8081/v1,http://b:8081/v1, qwen3@http://c:8081/v1 ")
+	wantModels := []string{"gemma-4-e4b", "", "qwen3"}
+	wantURLs := []string{"http://a:8081/v1", "http://b:8081/v1", "http://c:8081/v1"}
+	if !equalStrings(models, wantModels) {
+		t.Fatalf("models = %v, want %v", models, wantModels)
+	}
+	if !equalStrings(urls, wantURLs) {
+		t.Fatalf("urls = %v, want %v", urls, wantURLs)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestLoadOverrides(t *testing.T) {

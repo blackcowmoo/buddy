@@ -312,8 +312,7 @@ func newTestServerWithRecordings(t *testing.T, st store.Store, recordings record
 func newTestServerFull(t *testing.T, st store.Store, audio AudioSaver, recordings recording.Store) *httptest.Server {
 	t.Helper()
 	pipe := &pipeline.Pipeline{
-		FastSTT:            fakeSTT{text: "hello there"},
-		SlowSTT:            fakeSTT{text: "hello there"},
+		STT:                []stt.Recognizer{fakeSTT{text: "hello there"}},
 		LLM:                fakeLLM{},
 		MaxHistoryMessages: 20,
 	}
@@ -415,7 +414,7 @@ func TestWSFirstVisitSetsAnonymousCookie(t *testing.T) {
 // Identify finds no verified identity (e.g. no valid Dex JWT), the handler
 // must refuse before ever attempting the WS upgrade.
 func TestWSRejectsWhenIdentityFails(t *testing.T) {
-	pipe := &pipeline.Pipeline{FastSTT: fakeSTT{text: "hi"}, SlowSTT: fakeSTT{text: "hi"}, LLM: fakeLLM{}}
+	pipe := &pipeline.Pipeline{STT: []stt.Recognizer{fakeSTT{text: "hi"}}, LLM: fakeLLM{}}
 	h := NewHandler(pipe, fakeHeaderIdentifier{"X-Auth-Request-Email"}, newFakeStore(), nil, nil)
 	srv := httptest.NewServer(h)
 	defer srv.Close()
@@ -433,7 +432,7 @@ func TestWSRejectsWhenIdentityFails(t *testing.T) {
 // TestWSHeaderIdentityConnectsWhenHeaderPresent is the same fail-closed
 // contract, but with identity resolving successfully.
 func TestWSHeaderIdentityConnectsWhenHeaderPresent(t *testing.T) {
-	pipe := &pipeline.Pipeline{FastSTT: fakeSTT{text: "hi"}, SlowSTT: fakeSTT{text: "hi"}, LLM: fakeLLM{}}
+	pipe := &pipeline.Pipeline{STT: []stt.Recognizer{fakeSTT{text: "hi"}}, LLM: fakeLLM{}}
 	h := NewHandler(pipe, fakeHeaderIdentifier{"X-Auth-Request-Email"}, newFakeStore(), nil, nil)
 	srv := httptest.NewServer(h)
 	defer srv.Close()
