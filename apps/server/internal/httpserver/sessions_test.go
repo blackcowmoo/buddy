@@ -20,6 +20,13 @@ import (
 type fakeSessionStore struct {
 	deleted []struct{ userID, sessionID string }
 	err     error
+
+	// detailMeta/detailTurns/detailErr back SessionDetail for
+	// sessionDetailHandler tests (see sessions_detail_test.go); left zero for
+	// the sessionDeleteHandler tests in this file, which don't call it.
+	detailMeta  store.SessionMeta
+	detailTurns []store.Turn
+	detailErr   error
 }
 
 func (f *fakeSessionStore) Load(ctx context.Context, userID, sessionID string) (store.Profile, error) {
@@ -47,7 +54,13 @@ func (f *fakeSessionStore) ListSessions(ctx context.Context, userID string) ([]s
 }
 
 func (f *fakeSessionStore) SessionDetail(ctx context.Context, userID, sessionID string) (store.SessionMeta, []store.Turn, error) {
-	return store.SessionMeta{}, nil, errors.New("not used by these tests")
+	if f.detailTurns == nil && f.detailErr == nil {
+		return store.SessionMeta{}, nil, errors.New("not used by these tests")
+	}
+	if f.detailErr != nil {
+		return store.SessionMeta{}, nil, f.detailErr
+	}
+	return f.detailMeta, f.detailTurns, nil
 }
 
 func (f *fakeSessionStore) DeleteSession(ctx context.Context, userID, sessionID string) error {

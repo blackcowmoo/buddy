@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"buddy/server/internal/audiostore"
+	"buddy/server/internal/backfill"
 	"buddy/server/internal/config"
 	"buddy/server/internal/httpserver"
 	"buddy/server/internal/identity"
@@ -41,9 +42,15 @@ func main() {
 		MaxHistoryMessages: cfg.MaxHistoryMessages,
 	}
 
+	// Shared Redis Cluster client, backing two independent optional
+	// features below (OIDC verification cache, translation backfill
+	// queue/lock) — both come up, or both stay disabled, together based on
+	// REDIS_CLUSTER_HOST, rather than each opening its own connection.
+	rdb, redisCloser := buildRedis(cfg)
+	defer redisCloser.Close()
+
 	// Persistent per-user memory.
-	ident, identCloser := buildIdentity(context.Background(), cfg)
-	defer identCloser.Close()
+	ident := buildIdentity(context.Background(), cfg, rdb)
 	st, err := store.NewMySQL(store.MySQLConfig{
 		RWHost:   cfg.MySQLRWHost,
 		ROHost:   cfg.MySQLROHost,
@@ -56,6 +63,19 @@ func main() {
 		log.Fatalf("store: %v", err)
 	}
 	defer st.Close()
+
+	// Translation backfill: fills in the native-language translation for
+	// turns that never got one (see internal/backfill's doc comment).
+	// Disabled (translateQueue stays nil, Enqueue becomes a no-op) unless
+	// Redis is configured — same "zero setup by default" convention as
+	// audio/recordings below.
+	backfillCtx, backfillCancel := context.WithCancel(context.Background())
+	defer backfillCancel()
+	var translateQueue *backfill.Queue
+	if rdb != nil {
+		translateQueue = backfill.NewQueue(rdb)
+		go backfill.NewWorker(rdb, st, pipe).Run(backfillCtx)
+	}
 
 	// Temporary audio backup: only enabled once an endpoint is configured, so
 	// the server still boots with zero setup by default (see internal/audiostore).
@@ -87,7 +107,7 @@ func main() {
 		defer recordings.Close()
 	}
 
-	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings)
+	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, translateQueue)
 
 	go func() {
 		names := make([]string, len(pipe.STT))
@@ -111,25 +131,17 @@ func main() {
 	_ = srv.Shutdown(ctx)
 }
 
-// buildIdentity selects how learners are identified. "cookie" needs zero
-// setup (local dev); "oidc" verifies the Dex-issued JWT in the Authorization
-// header directly against Dex — see internal/identity/oidc.go. When
-// REDIS_CLUSTER_HOST is set, "oidc" results are additionally cached in a
-// Redis Cluster (internal/identity/cached_oidc.go) so the auth path stays
-// fast even if Dex is slow or briefly unavailable; leaving it unset keeps
-// today's behavior of verifying directly every time. The returned io.Closer
-// releases whatever resources were opened (the Redis client, if any) and is
-// always safe to defer-close, even when it's a no-op.
-func buildIdentity(ctx context.Context, cfg config.Config) (identity.Identifier, io.Closer) {
-	if cfg.IdentityMode != "oidc" {
-		return identity.NewCookieIdentifier(), io.NopCloser(nil)
-	}
-	ident, err := identity.NewOIDCIdentifier(ctx, cfg.OIDCIssuerURL, cfg.OIDCClientID)
-	if err != nil {
-		log.Fatalf("oidc identity: %v", err)
-	}
+// buildRedis constructs the shared Redis Cluster client used by two
+// independent optional features — buildIdentity's OIDC verification cache
+// and the translation backfill queue/lock (internal/backfill) — so both come
+// up, or both stay disabled, together based on the same REDIS_CLUSTER_HOST
+// config, instead of each opening its own connection. Returns a nil client
+// (every caller's own "optional feature, do nothing" branch handles that)
+// and a no-op closer when RedisClusterHost is unset; the returned io.Closer
+// is always safe to defer-close either way.
+func buildRedis(cfg config.Config) (redis.UniversalClient, io.Closer) {
 	if cfg.RedisClusterHost == "" {
-		return ident, io.NopCloser(nil)
+		return nil, io.NopCloser(nil)
 	}
 	rdb := redis.NewClusterClient(&redis.ClusterOptions{
 		// One seed node is enough: go-redis discovers the rest of the
@@ -137,7 +149,28 @@ func buildIdentity(ctx context.Context, cfg config.Config) (identity.Identifier,
 		Addrs:    []string{store.HostPort(cfg.RedisClusterHost, cfg.RedisPort)},
 		Password: cfg.RedisPassword,
 	})
-	return identity.NewCachedOIDCIdentifier(ident, rdb), rdb
+	return rdb, rdb
+}
+
+// buildIdentity selects how learners are identified. "cookie" needs zero
+// setup (local dev); "oidc" verifies the Dex-issued JWT in the Authorization
+// header directly against Dex — see internal/identity/oidc.go. When rdb is
+// non-nil (REDIS_CLUSTER_HOST set — see buildRedis), "oidc" results are
+// additionally cached in Redis (internal/identity/cached_oidc.go) so the
+// auth path stays fast even if Dex is slow or briefly unavailable; a nil rdb
+// keeps today's behavior of verifying directly every time.
+func buildIdentity(ctx context.Context, cfg config.Config, rdb redis.UniversalClient) identity.Identifier {
+	if cfg.IdentityMode != "oidc" {
+		return identity.NewCookieIdentifier()
+	}
+	ident, err := identity.NewOIDCIdentifier(ctx, cfg.OIDCIssuerURL, cfg.OIDCClientID)
+	if err != nil {
+		log.Fatalf("oidc identity: %v", err)
+	}
+	if rdb == nil {
+		return ident
+	}
+	return identity.NewCachedOIDCIdentifier(ident, rdb)
 }
 
 // buildRecordingStore builds the voice-recording archive (internal/recording)
