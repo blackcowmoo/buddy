@@ -34,6 +34,11 @@ export function App() {
   const [status, setStatus] = useState<Status>("connecting");
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [corrections, setCorrections] = useState<Record<number, Correction>>({});
+  // Turns whose grammar check is still running, tracked only for turns sent
+  // during THIS live connection — never set for hydrated history, so an old
+  // turn with no saved correction shows as "no data" rather than spinning
+  // forever (see enterChat/backToList resets below).
+  const [pendingCorrections, setPendingCorrections] = useState<Record<number, boolean>>({});
   // Keyed separately (not one map keyed by turn) because a user turn and its
   // paired assistant reply share the same turn number.
   const [userTranslations, setUserTranslations] = useState<Record<number, string>>({});
@@ -43,9 +48,11 @@ export function App() {
   const [tts, setTts] = useState<TtsState>("idle");
   const [ttsProgress, setTtsProgress] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
-  // Index into msgs of the row whose study popover is open, or null — only
-  // one open at a time.
-  const [openStudyRow, setOpenStudyRow] = useState<number | null>(null);
+  // Which per-row popover (rate study panel or grammar feedback) is open, or
+  // null — only one open at a time across the whole row.
+  const [openPanel, setOpenPanel] = useState<{ index: number; kind: "rate" | "grammar" } | null>(
+    null,
+  );
   const [prInput, setPrInput] = useState("");
   const [prError, setPrError] = useState(false);
   const [email, setEmail] = useState<string | null>(null);
@@ -65,6 +72,7 @@ export function App() {
         break;
       case "final_transcript":
         setMsgs((m) => [...m, { turn: e.turn, role: "user", text: e.text ?? "" }]);
+        setPendingCorrections((p) => ({ ...p, [e.turn]: true }));
         break;
       case "refined_transcript":
         setMsgs((m) =>
@@ -85,6 +93,12 @@ export function App() {
       case "correction":
         if (e.correction)
           setCorrections((c) => ({ ...c, [e.turn]: e.correction as Correction }));
+        setPendingCorrections((p) => {
+          if (!(e.turn in p)) return p;
+          const next = { ...p };
+          delete next[e.turn];
+          return next;
+        });
         break;
       case "user_translation":
         setUserTranslations((t) => ({ ...t, [e.turn]: e.text ?? "" }));
@@ -147,6 +161,7 @@ export function App() {
   // it doesn't replay old chat bubbles.
   const enterChat = useCallback(async (sessionId?: string) => {
     setCorrections({});
+    setPendingCorrections({});
     setUserTranslations({});
     setAssistantTranslations({});
     if (sessionId) {
@@ -184,6 +199,7 @@ export function App() {
     clientRef.current?.close();
     setMsgs([]);
     setCorrections({});
+    setPendingCorrections({});
     setUserTranslations({});
     setAssistantTranslations({});
     setMenuOpen(false);
@@ -311,14 +327,15 @@ export function App() {
     };
   }, [menuOpen]);
 
-  // Click-outside / Escape closes the study popover, same as the menu.
+  // Click-outside / Escape closes whichever per-row popover is open, same as
+  // the menu.
   useEffect(() => {
-    if (openStudyRow === null) return;
+    if (openPanel === null) return;
     const onPointerDown = (e: PointerEvent) => {
-      if (studyRef.current && !studyRef.current.contains(e.target as Node)) setOpenStudyRow(null);
+      if (studyRef.current && !studyRef.current.contains(e.target as Node)) setOpenPanel(null);
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpenStudyRow(null);
+      if (e.key === "Escape") setOpenPanel(null);
     };
     document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
@@ -326,7 +343,7 @@ export function App() {
       document.removeEventListener("pointerdown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
     };
-  }, [openStudyRow]);
+  }, [openPanel]);
 
   const goToPath = useCallback(
     (e: React.FormEvent) => {
@@ -475,19 +492,36 @@ export function App() {
                 {m.role === "user" && m.refined && <span className="tag">refined</span>}
               </div>
               {translation && <div className="translation">{translation}</div>}
-              {m.role === "user" && corrections[m.turn] && (
-                <CorrectionCard c={corrections[m.turn]} />
-              )}
               {m.text && (
-                <StudyControl
-                  index={i}
-                  text={m.text}
-                  rates={playRates}
-                  open={openStudyRow === i}
-                  onToggle={setOpenStudyRow}
-                  onPlay={playMessage}
-                  panelRef={openStudyRow === i ? studyRef : undefined}
-                />
+                <div className="msg-tools">
+                  {m.role === "user" && (
+                    <GrammarControl
+                      index={i}
+                      pending={!!pendingCorrections[m.turn]}
+                      correction={corrections[m.turn]}
+                      open={openPanel?.index === i && openPanel.kind === "grammar"}
+                      onToggle={(idx) =>
+                        setOpenPanel(idx === null ? null : { index: idx, kind: "grammar" })
+                      }
+                      panelRef={
+                        openPanel?.index === i && openPanel.kind === "grammar" ? studyRef : undefined
+                      }
+                    />
+                  )}
+                  <StudyControl
+                    index={i}
+                    text={m.text}
+                    rates={playRates}
+                    open={openPanel?.index === i && openPanel.kind === "rate"}
+                    onToggle={(idx) =>
+                      setOpenPanel(idx === null ? null : { index: idx, kind: "rate" })
+                    }
+                    onPlay={playMessage}
+                    panelRef={
+                      openPanel?.index === i && openPanel.kind === "rate" ? studyRef : undefined
+                    }
+                  />
+                </div>
               )}
             </div>
           );
@@ -541,10 +575,69 @@ function upsertAssistant(m: Msg[], turn: number, patch: (prev: string) => string
   return [...m, { turn, role: "assistant", text: patch("") }];
 }
 
+// GrammarControl collapses the background grammar-check result into one
+// small button, next to StudyControl's 🔊, instead of an always-visible card:
+// it spins while correct() is still running for this turn, then opens a
+// popover with the CorrectionCard (or a "no issues" message) on click.
+function GrammarControl({
+  index,
+  pending,
+  correction,
+  open,
+  onToggle,
+  panelRef,
+}: {
+  index: number;
+  pending: boolean;
+  correction?: Correction;
+  open: boolean;
+  onToggle: (index: number | null) => void;
+  panelRef?: React.RefObject<HTMLDivElement | null>;
+}) {
+  if (!pending && !correction) return null; // no data (e.g. old session predating this feature)
+
+  const hasIssues =
+    !!correction &&
+    (correction.corrected.trim().toLowerCase() !== correction.original.trim().toLowerCase() ||
+      (correction.issues?.length ?? 0) > 0);
+
+  const glyph = pending ? "⏳" : hasIssues ? "✎" : "✓";
+  const label = pending
+    ? "문법 확인 중"
+    : hasIssues
+      ? "문법 피드백 열기"
+      : "문법 피드백 열기 (문제 없음)";
+
+  return (
+    <div className="grammar-control" ref={panelRef}>
+      <button
+        type="button"
+        className="ghost icon-btn grammar-btn"
+        aria-haspopup="true"
+        aria-expanded={open}
+        aria-busy={pending}
+        aria-label={label}
+        disabled={pending}
+        onClick={() => onToggle(open ? null : index)}
+      >
+        <span className={pending ? "spinning" : undefined}>{glyph}</span>
+      </button>
+      {open && correction && (
+        <div className="study-panel grammar-panel" role="menu">
+          {hasIssues ? (
+            <CorrectionCard c={correction} />
+          ) : (
+            <div className="grammar-clean">문법 문제가 없어요 👍</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // StudyControl collapses per-rate playback into one small button that opens
-// a popover — this is also the anchor point for future per-message practice
-// content (e.g. grammar detail), kept separate from the bubble/correction
-// card so it doesn't compete with them for visual weight.
+// a popover, kept separate from the bubble/correction card so it doesn't
+// compete with them for visual weight.
 function StudyControl({
   index,
   text,

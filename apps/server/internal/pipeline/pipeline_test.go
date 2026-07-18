@@ -285,7 +285,7 @@ func TestCorrectEmitsEventWhenChanged(t *testing.T) {
 	}
 }
 
-func TestCorrectSkipsWhenAlreadyCorrect(t *testing.T) {
+func TestCorrectEmitsEventWithNoIssuesWhenAlreadyCorrect(t *testing.T) {
 	p := &Pipeline{
 		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 			return `{"corrected":"I like pizza.","issues":[]}`, nil
@@ -294,8 +294,11 @@ func TestCorrectSkipsWhenAlreadyCorrect(t *testing.T) {
 	var got []protocol.ServerEvent
 	p.correct(context.Background(), 1, "I like pizza.", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
 
-	if len(got) != 0 {
-		t.Fatalf("expected no event for an already-correct sentence with no translation, got %+v", got)
+	if len(got) != 1 || got[0].Type != protocol.EvCorrection {
+		t.Fatalf("expected exactly one correction event (no translation in the fixture), got %+v", got)
+	}
+	if got[0].Correction.Corrected != "I like pizza." || len(got[0].Correction.Issues) != 0 {
+		t.Fatalf("expected a no-issue correction event, got %+v", got[0].Correction)
 	}
 }
 
@@ -311,11 +314,14 @@ func TestCorrectEmitsTranslationEvenWhenAlreadyCorrect(t *testing.T) {
 	var got []protocol.ServerEvent
 	p.correct(context.Background(), 1, "I like pizza.", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
 
-	if len(got) != 1 || got[0].Type != protocol.EvUserTranslation {
-		t.Fatalf("expected only a translation event, got %+v", got)
+	if len(got) != 2 || got[0].Type != protocol.EvCorrection || got[1].Type != protocol.EvUserTranslation {
+		t.Fatalf("expected a no-issue correction event followed by a translation event, got %+v", got)
 	}
-	if got[0].Text != "저는 피자를 좋아해요." {
-		t.Fatalf("translation text = %q", got[0].Text)
+	if len(got[0].Correction.Issues) != 0 {
+		t.Fatalf("expected no issues, got %+v", got[0].Correction)
+	}
+	if got[1].Text != "저는 피자를 좋아해요." {
+		t.Fatalf("translation text = %q", got[1].Text)
 	}
 }
 
