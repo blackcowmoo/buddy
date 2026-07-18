@@ -97,6 +97,12 @@ function openMenu(user: ReturnType<typeof userEvent.setup>) {
   return user.click(screen.getByRole("button", { name: "Menu" }));
 }
 
+// Play-rate buttons live behind a per-message study popover, not inline —
+// open it before a test tries to find/click one of the rate buttons.
+async function openStudyPopover(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole("button", { name: "발음 연습 열기" }));
+}
+
 // The app always lands on the room list, and the room list has its own
 // hamburger menu (identity, theme, PR nav). Tests for chat-only menu items
 // (voice/playback speed, reset) need to get into a room first, the same way
@@ -407,6 +413,7 @@ describe("per-message tts playback", () => {
     render(<App />);
     await enterNewChat(user);
     act(() => emit({ type: "assistant_done", turn: 1, text: "Hello there" }));
+    await openStudyPopover(user);
     expect(
       await screen.findByRole("button", { name: "1배속(원어민 속도)으로 재생" }),
     ).toBeInTheDocument();
@@ -419,11 +426,81 @@ describe("per-message tts playback", () => {
     render(<App />);
     await enterNewChat(user);
     act(() => emit({ type: "assistant_done", turn: 1, text: "Hello there" }));
+    await openStudyPopover(user);
     await user.click(await screen.findByRole("button", { name: "0.5배속으로 재생" }));
     const speaker = vi.mocked(KokoroSpeaker).mock.instances[0] as unknown as {
       speak: ReturnType<typeof vi.fn>;
     };
     expect(speaker.speak).toHaveBeenCalledWith("Hello there", 0.5);
+  });
+});
+
+describe("study popover", () => {
+  it("hides the rate buttons until the study button is clicked", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "assistant_done", turn: 1, text: "Hello there" }));
+    await screen.findByRole("button", { name: "발음 연습 열기" });
+    expect(screen.queryByRole("button", { name: "0.5배속으로 재생" })).not.toBeInTheDocument();
+    await openStudyPopover(user);
+    expect(screen.getByRole("button", { name: "0.5배속으로 재생" })).toBeInTheDocument();
+  });
+
+  it("closes when clicking outside the popover", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "assistant_done", turn: 1, text: "Hello there" }));
+    await openStudyPopover(user);
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+    await user.click(document.body);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("closes on Escape", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "assistant_done", turn: 1, text: "Hello there" }));
+    await openStudyPopover(user);
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+});
+
+describe("per-message translations", () => {
+  it("shows a small translation line under both the user and assistant bubbles", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "final_transcript", turn: 1, text: "I are fine." }));
+    act(() => emit({ type: "user_translation", turn: 1, text: "저는 괜찮아요." }));
+    act(() => emit({ type: "assistant_done", turn: 1, text: "Glad to hear it!" }));
+    act(() => emit({ type: "assistant_translation", turn: 1, text: "다행이네요!" }));
+
+    expect(await screen.findByText("저는 괜찮아요.")).toBeInTheDocument();
+    expect(await screen.findByText("다행이네요!")).toBeInTheDocument();
+  });
+
+  it("hydrates persisted translations for both roles when reopening a session", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+      turns: [
+        { turn: 1, role: "user", text: "hi", refined: false, translation: "안녕" },
+        { turn: 1, role: "assistant", text: "hello!", refined: false, translation: "안녕하세요!" },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+
+    expect(await screen.findByText("안녕")).toBeInTheDocument();
+    expect(await screen.findByText("안녕하세요!")).toBeInTheDocument();
   });
 });
 
@@ -453,9 +530,12 @@ describe("tts speed settings", () => {
     act(() => emit({ type: "assistant_done", turn: 1, text: "Hello there" }));
     await openMenu(user);
     await user.click(screen.getByRole("button", { name: "0.5x 속도 삭제" }));
-    expect(screen.queryByRole("button", { name: "0.5배속으로 재생" })).not.toBeInTheDocument();
     expect(screen.getByLabelText("새 재생 속도")).toBeInTheDocument();
     expect(localStorage.getItem("buddy.tts.extraRates")).toBe(JSON.stringify([0.8]));
+    // Opening the study popover closes the menu (click lands outside it),
+    // which is fine — the assertions above already ran against the menu.
+    await openStudyPopover(user);
+    expect(screen.queryByRole("button", { name: "0.5배속으로 재생" })).not.toBeInTheDocument();
   });
 
   it("adds a custom speed once a slot is free and persists it", async () => {

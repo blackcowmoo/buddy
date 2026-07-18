@@ -142,6 +142,23 @@ func (f *fakeStore) SaveCorrection(ctx context.Context, userID, sessionID string
 	return nil
 }
 
+func (f *fakeStore) SaveTranslation(ctx context.Context, userID, sessionID string, turn int, role, translation string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.sessions[fakeStoreKey(userID, sessionID)]
+	if d == nil {
+		return nil
+	}
+	tk := fmt.Sprintf("%d|%s", turn, role)
+	t, ok := d.turns[tk]
+	if !ok {
+		return nil // matches MySQLStore.SaveTranslation: no-op if the turn isn't saved yet
+	}
+	t.Translation = translation
+	d.turns[tk] = t
+	return nil
+}
+
 func (f *fakeStore) ListSessions(ctx context.Context, userID string) ([]store.SessionMeta, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -741,6 +758,45 @@ func TestWSFinalAndAssistantTurnsArePersisted(t *testing.T) {
 	}
 	if turns[1].Role != "assistant" || turns[1].Text == "" {
 		t.Fatalf("turn[1] = %+v, want a non-empty assistant reply", turns[1])
+	}
+}
+
+// TestPersistEventSavesTranslationsByRole checks the persistEvent cases
+// added for EvUserTranslation/EvAssistantTranslation: each must reach
+// SaveTranslation with the role that disambiguates it from the turn's other
+// role, since persistEvent runs its saves off the hot path in goroutines
+// where a mixed-up role would silently overwrite the wrong row.
+func TestPersistEventSavesTranslationsByRole(t *testing.T) {
+	st := newFakeStore()
+	ctx := context.Background()
+	if err := st.SaveTurn(ctx, "alex", "sess-1", 1, "user", "he go school", false); err != nil {
+		t.Fatalf("SaveTurn(user) error = %v", err)
+	}
+	if err := st.SaveTurn(ctx, "alex", "sess-1", 1, "assistant", "Nice!", false); err != nil {
+		t.Fatalf("SaveTurn(assistant) error = %v", err)
+	}
+
+	persistEvent(st, "alex", "sess-1", protocol.ServerEvent{Type: protocol.EvUserTranslation, Turn: 1, Text: "그는 학교에 간다"})
+	persistEvent(st, "alex", "sess-1", protocol.ServerEvent{Type: protocol.EvAssistantTranslation, Turn: 1, Text: "좋아요!"})
+
+	var turns []store.Turn
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		_, ts, err := st.SessionDetail(ctx, "alex", "sess-1")
+		if err == nil && len(ts) == 2 && ts[0].Translation != "" && ts[1].Translation != "" {
+			turns = ts
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(turns) != 2 {
+		t.Fatalf("translations did not persist in time: %+v", turns)
+	}
+	if turns[0].Role != "user" || turns[0].Translation != "그는 학교에 간다" {
+		t.Fatalf("user turn = %+v", turns[0])
+	}
+	if turns[1].Role != "assistant" || turns[1].Translation != "좋아요!" {
+		t.Fatalf("assistant turn = %+v", turns[1])
 	}
 }
 

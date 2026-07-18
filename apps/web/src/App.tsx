@@ -34,11 +34,18 @@ export function App() {
   const [status, setStatus] = useState<Status>("connecting");
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [corrections, setCorrections] = useState<Record<number, Correction>>({});
+  // Keyed separately (not one map keyed by turn) because a user turn and its
+  // paired assistant reply share the same turn number.
+  const [userTranslations, setUserTranslations] = useState<Record<number, string>>({});
+  const [assistantTranslations, setAssistantTranslations] = useState<Record<number, string>>({});
   const [mic, setMic] = useState(false);
   const [text, setText] = useState("");
   const [tts, setTts] = useState<TtsState>("idle");
   const [ttsProgress, setTtsProgress] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
+  // Index into msgs of the row whose study popover is open, or null — only
+  // one open at a time.
+  const [openStudyRow, setOpenStudyRow] = useState<number | null>(null);
   const [prInput, setPrInput] = useState("");
   const [prError, setPrError] = useState(false);
   const [email, setEmail] = useState<string | null>(null);
@@ -50,6 +57,7 @@ export function App() {
   const recorderRef = useRef<PCMRecorder | null>(null);
   const speakerRef = useRef<KokoroSpeaker | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const studyRef = useRef<HTMLDivElement>(null);
 
   const onEvent = useCallback((e: ServerEvent) => {
     switch (e.type) {
@@ -77,6 +85,12 @@ export function App() {
       case "correction":
         if (e.correction)
           setCorrections((c) => ({ ...c, [e.turn]: e.correction as Correction }));
+        break;
+      case "user_translation":
+        setUserTranslations((t) => ({ ...t, [e.turn]: e.text ?? "" }));
+        break;
+      case "assistant_translation":
+        setAssistantTranslations((t) => ({ ...t, [e.turn]: e.text ?? "" }));
         break;
       case "error":
         console.error("server error:", e.text);
@@ -133,6 +147,8 @@ export function App() {
   // it doesn't replay old chat bubbles.
   const enterChat = useCallback(async (sessionId?: string) => {
     setCorrections({});
+    setUserTranslations({});
+    setAssistantTranslations({});
     if (sessionId) {
       // Fire the WS handshake alongside the transcript fetch — they're
       // independent round trips — instead of waiting for the fetch first.
@@ -144,8 +160,18 @@ export function App() {
       }
       setMsgs(detail.turns.map((t) => ({ turn: t.turn, role: t.role, text: t.text, refined: t.refined })));
       const corr: Record<number, Correction> = {};
-      for (const t of detail.turns) if (t.correction) corr[t.turn] = t.correction;
+      const ut: Record<number, string> = {};
+      const at: Record<number, string> = {};
+      for (const t of detail.turns) {
+        if (t.correction) corr[t.turn] = t.correction;
+        if (t.translation) {
+          if (t.role === "user") ut[t.turn] = t.translation;
+          else at[t.turn] = t.translation;
+        }
+      }
       setCorrections(corr);
+      setUserTranslations(ut);
+      setAssistantTranslations(at);
     } else {
       setMsgs([]);
       clientRef.current?.connect(undefined);
@@ -158,6 +184,8 @@ export function App() {
     clientRef.current?.close();
     setMsgs([]);
     setCorrections({});
+    setUserTranslations({});
+    setAssistantTranslations({});
     setMenuOpen(false);
     setView("list");
     refreshSessions();
@@ -282,6 +310,23 @@ export function App() {
       document.removeEventListener("keydown", onKeyDown);
     };
   }, [menuOpen]);
+
+  // Click-outside / Escape closes the study popover, same as the menu.
+  useEffect(() => {
+    if (openStudyRow === null) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (studyRef.current && !studyRef.current.contains(e.target as Node)) setOpenStudyRow(null);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpenStudyRow(null);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [openStudyRow]);
 
   const goToPath = useCallback(
     (e: React.FormEvent) => {
@@ -420,18 +465,33 @@ export function App() {
             send. Or just type below.
           </p>
         )}
-        {msgs.map((m, i) => (
-          <div key={i} className={`row ${m.role}`}>
-            <div className="bubble">
-              {m.text || <span className="cursor">▋</span>}
-              {m.role === "user" && m.refined && <span className="tag">refined</span>}
+        {msgs.map((m, i) => {
+          const translation =
+            m.role === "user" ? userTranslations[m.turn] : assistantTranslations[m.turn];
+          return (
+            <div key={i} className={`row ${m.role}`}>
+              <div className="bubble">
+                {m.text || <span className="cursor">▋</span>}
+                {m.role === "user" && m.refined && <span className="tag">refined</span>}
+              </div>
+              {translation && <div className="translation">{translation}</div>}
+              {m.role === "user" && corrections[m.turn] && (
+                <CorrectionCard c={corrections[m.turn]} />
+              )}
+              {m.text && (
+                <StudyControl
+                  index={i}
+                  text={m.text}
+                  rates={playRates}
+                  open={openStudyRow === i}
+                  onToggle={setOpenStudyRow}
+                  onPlay={playMessage}
+                  panelRef={openStudyRow === i ? studyRef : undefined}
+                />
+              )}
             </div>
-            {m.role === "user" && corrections[m.turn] && (
-              <CorrectionCard c={corrections[m.turn]} />
-            )}
-            {m.text && <PlayButtons text={m.text} rates={playRates} onPlay={playMessage} />}
-          </div>
-        ))}
+          );
+        })}
       </main>
 
       <footer className="composer">
@@ -481,30 +541,58 @@ function upsertAssistant(m: Msg[], turn: number, patch: (prev: string) => string
   return [...m, { turn, role: "assistant", text: patch("") }];
 }
 
-function PlayButtons({
+// StudyControl collapses per-rate playback into one small button that opens
+// a popover — this is also the anchor point for future per-message practice
+// content (e.g. grammar detail), kept separate from the bubble/correction
+// card so it doesn't compete with them for visual weight.
+function StudyControl({
+  index,
   text,
   rates,
+  open,
+  onToggle,
   onPlay,
+  panelRef,
 }: {
+  index: number;
   text: string;
   rates: number[];
+  open: boolean;
+  onToggle: (index: number | null) => void;
   onPlay: (text: string, rate: number) => void;
+  panelRef?: React.RefObject<HTMLDivElement | null>;
 }) {
   return (
-    <div className="tts-controls">
-      {rates.map((rate) => (
-        <button
-          key={rate}
-          type="button"
-          className="ghost tts-btn"
-          onClick={() => onPlay(text, rate)}
-          aria-label={
-            rate === NATIVE_RATE ? `${rate}배속(원어민 속도)으로 재생` : `${rate}배속으로 재생`
-          }
-        >
-          {rate === NATIVE_RATE ? `🔊 ${rate}x` : `${rate}x`}
-        </button>
-      ))}
+    <div className="study-control" ref={panelRef}>
+      <button
+        type="button"
+        className="ghost icon-btn study-btn"
+        aria-haspopup="true"
+        aria-expanded={open}
+        aria-label="발음 연습 열기"
+        onClick={() => onToggle(open ? null : index)}
+      >
+        🔊
+      </button>
+      {open && (
+        <div className="study-panel" role="menu">
+          <div className="tts-controls">
+            {rates.map((rate) => (
+              <button
+                key={rate}
+                type="button"
+                className="ghost tts-btn"
+                onClick={() => onPlay(text, rate)}
+                aria-label={
+                  rate === NATIVE_RATE ? `${rate}배속(원어민 속도)으로 재생` : `${rate}배속으로 재생`
+                }
+              >
+                {rate === NATIVE_RATE ? `🔊 ${rate}x` : `${rate}x`}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

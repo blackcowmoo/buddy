@@ -53,6 +53,9 @@ func TestHostPort(t *testing.T) {
 var (
 	sharedStore    *MySQLStore
 	sharedStoreErr error
+	// sharedStoreConfig is reused by tests that need to reconnect to the same
+	// already-migrated container, e.g. TestMySQLNewMySQLIsIdempotent.
+	sharedStoreConfig MySQLConfig
 )
 
 func TestMain(m *testing.M) {
@@ -94,13 +97,14 @@ func runMySQLTests(m *testing.M) int {
 		return m.Run()
 	}
 
-	st, err := NewMySQL(MySQLConfig{
+	sharedStoreConfig = MySQLConfig{
 		RWHost:   host,
 		Port:     int(port.Num()),
 		User:     "buddy",
 		Password: "buddy",
 		Database: "buddy",
-	})
+	}
+	st, err := NewMySQL(sharedStoreConfig)
 	if err != nil {
 		sharedStoreErr = err
 		return m.Run()
@@ -117,6 +121,22 @@ func requireStore(t *testing.T) *MySQLStore {
 		t.Skipf("mysql testcontainer unavailable (no/unreachable Docker?): %v", sharedStoreErr)
 	}
 	return sharedStore
+}
+
+// TestMySQLNewMySQLIsIdempotent guards a real incident this test caught: the
+// additive "translation" column migration originally used MariaDB-only
+// `ADD COLUMN IF NOT EXISTS` syntax, which is a syntax error on real MySQL
+// and made every boot after the first fail with "store: schema: ...". A
+// second NewMySQL against an already-migrated database (as happens on every
+// pod restart in production) must succeed, not just the first.
+func TestMySQLNewMySQLIsIdempotent(t *testing.T) {
+	requireStore(t) // ensures TestMain's container is up and already migrated
+
+	st, err := NewMySQL(sharedStoreConfig)
+	if err != nil {
+		t.Fatalf("NewMySQL() on an already-migrated database: error = %v", err)
+	}
+	_ = st.Close()
 }
 
 func TestMySQLLoadUnknownUserReturnsZeroProfile(t *testing.T) {
@@ -340,6 +360,58 @@ func TestMySQLSaveCorrectionNoopWhenTurnMissing(t *testing.T) {
 		t.Fatalf("SaveCorrection() error = %v, want nil (no-op)", err)
 	}
 	_, _, err = st.SessionDetail(ctx, "alex", "sess-missing-turn")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SessionDetail() error = %v, want ErrNotFound (no session should have been created)", err)
+	}
+}
+
+// TestMySQLSaveTranslationAttachesToCorrectRole guards the reason
+// SaveTranslation takes role in its WHERE clause instead of just
+// (session, turn): a user turn and its paired assistant turn share the same
+// turn number, so without role-scoping a translation could land on the
+// wrong row.
+func TestMySQLSaveTranslationAttachesToCorrectRole(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	sessionID := "sess-translation"
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "he go school", false); err != nil {
+		t.Fatalf("SaveTurn(user) error = %v", err)
+	}
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "assistant", "Nice!", false); err != nil {
+		t.Fatalf("SaveTurn(assistant) error = %v", err)
+	}
+	if err := st.SaveTranslation(ctx, "alex", sessionID, 1, "user", "그는 학교에 간다"); err != nil {
+		t.Fatalf("SaveTranslation(user) error = %v", err)
+	}
+	if err := st.SaveTranslation(ctx, "alex", sessionID, 1, "assistant", "좋아요!"); err != nil {
+		t.Fatalf("SaveTranslation(assistant) error = %v", err)
+	}
+	_, turns, err := st.SessionDetail(ctx, "alex", sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if len(turns) != 2 || turns[0].Role != "user" || turns[1].Role != "assistant" {
+		t.Fatalf("turns = %+v, want [user, assistant]", turns)
+	}
+	if turns[0].Translation != "그는 학교에 간다" {
+		t.Fatalf("user translation = %q", turns[0].Translation)
+	}
+	if turns[1].Translation != "좋아요!" {
+		t.Fatalf("assistant translation = %q", turns[1].Translation)
+	}
+}
+
+// TestMySQLSaveTranslationNoopWhenTurnMissing mirrors
+// TestMySQLSaveCorrectionNoopWhenTurnMissing: SaveTranslation only ever
+// UPDATEs an existing row, never fabricates one.
+func TestMySQLSaveTranslationNoopWhenTurnMissing(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	err := st.SaveTranslation(ctx, "alex", "sess-missing-turn-translation", 1, "user", "번역")
+	if err != nil {
+		t.Fatalf("SaveTranslation() error = %v, want nil (no-op)", err)
+	}
+	_, _, err = st.SessionDetail(ctx, "alex", "sess-missing-turn-translation")
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SessionDetail() error = %v, want ErrNotFound (no session should have been created)", err)
 	}

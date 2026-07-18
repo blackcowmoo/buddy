@@ -114,6 +114,32 @@ func TestReplyEmitsDeltaThenDoneAndAppends(t *testing.T) {
 	}
 }
 
+func TestReplyEmitsAssistantTranslation(t *testing.T) {
+	sess := session.New("sys")
+	sess.AppendUser("hello")
+	p := &Pipeline{
+		LLM:       &fakeLLM{chatReply: "hi there"},
+		ChatModel: "m",
+		Analysis: []Candidate{{Model: "t", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			return "안녕하세요", nil
+		}}}},
+	}
+
+	events := make(chan protocol.ServerEvent, 8)
+	p.reply(context.Background(), sess, 1, func(ev protocol.ServerEvent) { events <- ev })
+
+	got := collectUntilQuiet(t, events, 200*time.Millisecond, 2*time.Second)
+	var translations []protocol.ServerEvent
+	for _, ev := range got {
+		if ev.Type == protocol.EvAssistantTranslation {
+			translations = append(translations, ev)
+		}
+	}
+	if len(translations) != 1 || translations[0].Text != "안녕하세요" || translations[0].Turn != 1 {
+		t.Fatalf("expected one assistant_translation event, got %+v (all events: %+v)", translations, got)
+	}
+}
+
 func TestReplyBargeInSkipsDoneAndAppend(t *testing.T) {
 	sess := session.New("sys")
 	sess.AppendUser("hello")
@@ -239,20 +265,23 @@ func TestCompactLeavesHistoryOnLLMError(t *testing.T) {
 func TestCorrectEmitsEventWhenChanged(t *testing.T) {
 	p := &Pipeline{
 		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
-			return `{"corrected":"I like pizza.","issues":[{"type":"grammar","span":"I likes","suggestion":"I like","explanation":"수 일치 오류"}]}`, nil
+			return `{"corrected":"I like pizza.","translation":"저는 피자를 좋아해요.","issues":[{"type":"grammar","span":"I likes","suggestion":"I like","explanation":"수 일치 오류"}]}`, nil
 		}}}},
 	}
 	var got []protocol.ServerEvent
 	p.correct(context.Background(), 1, "I likes pizza", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
 
-	if len(got) != 1 || got[0].Type != protocol.EvCorrection {
-		t.Fatalf("expected one correction event, got %+v", got)
+	if len(got) != 2 || got[0].Type != protocol.EvCorrection || got[1].Type != protocol.EvUserTranslation {
+		t.Fatalf("expected a correction event followed by a translation event, got %+v", got)
 	}
 	if got[0].Correction.Corrected != "I like pizza." {
 		t.Fatalf("Correction.Corrected = %q", got[0].Correction.Corrected)
 	}
 	if got[0].Correction.Issues[0].Explanation != "수 일치 오류" {
 		t.Fatalf("explanation not passed through: %+v", got[0].Correction.Issues[0])
+	}
+	if got[1].Text != "저는 피자를 좋아해요." || got[1].Turn != 1 {
+		t.Fatalf("translation event wrong: %+v", got[1])
 	}
 }
 
@@ -266,7 +295,27 @@ func TestCorrectSkipsWhenAlreadyCorrect(t *testing.T) {
 	p.correct(context.Background(), 1, "I like pizza.", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
 
 	if len(got) != 0 {
-		t.Fatalf("expected no event for an already-correct sentence, got %+v", got)
+		t.Fatalf("expected no event for an already-correct sentence with no translation, got %+v", got)
+	}
+}
+
+// TestCorrectEmitsTranslationEvenWhenAlreadyCorrect guards the meaning-check
+// use case: a learner should still get a translation to compare against what
+// they meant to say even when the sentence needed no grammar teaching.
+func TestCorrectEmitsTranslationEvenWhenAlreadyCorrect(t *testing.T) {
+	p := &Pipeline{
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			return `{"corrected":"I like pizza.","translation":"저는 피자를 좋아해요.","issues":[]}`, nil
+		}}}},
+	}
+	var got []protocol.ServerEvent
+	p.correct(context.Background(), 1, "I like pizza.", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
+
+	if len(got) != 1 || got[0].Type != protocol.EvUserTranslation {
+		t.Fatalf("expected only a translation event, got %+v", got)
+	}
+	if got[0].Text != "저는 피자를 좋아해요." {
+		t.Fatalf("translation text = %q", got[0].Text)
 	}
 }
 
@@ -293,6 +342,51 @@ func TestCorrectIgnoresLLMError(t *testing.T) {
 	p.correct(context.Background(), 1, "whatever", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
 	if len(got) != 0 {
 		t.Fatalf("expected no event when the LLM call fails, got %+v", got)
+	}
+}
+
+// ---- translateAssistant() -------------------------------------------------------
+
+func TestTranslateAssistantEmitsEvent(t *testing.T) {
+	p := &Pipeline{
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			return "안녕하세요, 오늘 어때요?", nil
+		}}}},
+	}
+	var got []protocol.ServerEvent
+	p.translateAssistant(context.Background(), 3, "Hello, how are you today?", func(ev protocol.ServerEvent) { got = append(got, ev) })
+
+	if len(got) != 1 || got[0].Type != protocol.EvAssistantTranslation {
+		t.Fatalf("expected one assistant_translation event, got %+v", got)
+	}
+	if got[0].Text != "안녕하세요, 오늘 어때요?" || got[0].Turn != 3 {
+		t.Fatalf("translation event wrong: %+v", got[0])
+	}
+}
+
+func TestTranslateAssistantIgnoresLLMError(t *testing.T) {
+	p := &Pipeline{
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			return "", errors.New("down")
+		}}}},
+	}
+	var got []protocol.ServerEvent
+	p.translateAssistant(context.Background(), 1, "whatever", func(ev protocol.ServerEvent) { got = append(got, ev) })
+	if len(got) != 0 {
+		t.Fatalf("expected no event when the LLM call fails, got %+v", got)
+	}
+}
+
+func TestTranslateAssistantSkipsEmptyResult(t *testing.T) {
+	p := &Pipeline{
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			return "   ", nil
+		}}}},
+	}
+	var got []protocol.ServerEvent
+	p.translateAssistant(context.Background(), 1, "whatever", func(ev protocol.ServerEvent) { got = append(got, ev) })
+	if len(got) != 0 {
+		t.Fatalf("expected no event for a blank translation, got %+v", got)
 	}
 }
 
@@ -727,6 +821,13 @@ func TestCorrectionSystemPromptNamesTargetLanguage(t *testing.T) {
 	}
 }
 
+func TestTranslationSystemPromptNamesTargetLanguage(t *testing.T) {
+	p := translationSystemPrompt("ko")
+	if !strings.Contains(p, "Korean") {
+		t.Fatalf("prompt should mention Korean: %s", p)
+	}
+}
+
 func TestFallbackReplyEchoesLastUserMessage(t *testing.T) {
 	msgs := []llm.Message{
 		{Role: llm.RoleSystem, Content: "sys"},
@@ -908,11 +1009,19 @@ func TestHandleUtteranceCorrectionContextExcludesCurrentTurn(t *testing.T) {
 	captured := append([]string(nil), inputs...)
 	analysis.mu.Unlock()
 
-	if len(captured) != 1 {
-		t.Fatalf("expected exactly one correction call, got %+v", captured)
+	// The same Analysis ensemble also serves translateAssistant's reply
+	// translation now, so filter down to the correction call specifically.
+	var correctionCalls []string
+	for _, in := range captured {
+		if strings.Contains(in, "Sentence to correct:") {
+			correctionCalls = append(correctionCalls, in)
+		}
+	}
+	if len(correctionCalls) != 1 {
+		t.Fatalf("expected exactly one correction call, got %+v (all analysis calls: %+v)", correctionCalls, captured)
 	}
 	const marker = "\nSentence to correct:\nI are sad"
-	in := captured[0]
+	in := correctionCalls[0]
 	if !strings.HasSuffix(in, marker) {
 		t.Fatalf("correction input should end with the current sentence, got %q", in)
 	}

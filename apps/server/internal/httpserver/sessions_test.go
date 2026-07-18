@@ -38,6 +38,10 @@ func (f *fakeSessionStore) SaveCorrection(ctx context.Context, userID, sessionID
 	return errors.New("not used by these tests")
 }
 
+func (f *fakeSessionStore) SaveTranslation(ctx context.Context, userID, sessionID string, turn int, role, translation string) error {
+	return errors.New("not used by these tests")
+}
+
 func (f *fakeSessionStore) ListSessions(ctx context.Context, userID string) ([]store.SessionMeta, error) {
 	return nil, errors.New("not used by these tests")
 }
