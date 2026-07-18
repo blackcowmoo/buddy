@@ -25,6 +25,12 @@ const (
 	turnsTable    = "buddy_turns"
 )
 
+// errDupFieldName is MySQL's ER_DUP_FIELDNAME — returned by ADD COLUMN
+// against a column that already exists. MySQL (unlike MariaDB) has no ADD
+// COLUMN IF NOT EXISTS, so this is how NewMySQL's additive migrations stay
+// idempotent across repeated boots.
+const errDupFieldName = 1060
+
 // MySQLConfig describes how to reach MySQL. RWHost is the primary: all writes
 // and the schema bootstrap go there. ROHost is an optional read replica that
 // Load reads from to take load off the primary; leave it empty (or equal to
@@ -90,15 +96,16 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 			INDEX idx_user_updated (user_id, updated_at)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		`CREATE TABLE IF NOT EXISTS ` + turnsTable + ` (
-			user_id    VARCHAR(255) NOT NULL,
-			session_id VARCHAR(64)  NOT NULL,
-			turn       INT          NOT NULL,
-			role       VARCHAR(16)  NOT NULL,
-			text       TEXT         NOT NULL,
-			refined    TINYINT(1)   NOT NULL DEFAULT 0,
-			correction TEXT         NULL,
-			meta       TEXT         NULL,
-			created_at BIGINT       NOT NULL,
+			user_id     VARCHAR(255) NOT NULL,
+			session_id  VARCHAR(64)  NOT NULL,
+			turn        INT          NOT NULL,
+			role        VARCHAR(16)  NOT NULL,
+			text        TEXT         NOT NULL,
+			refined     TINYINT(1)   NOT NULL DEFAULT 0,
+			correction  TEXT         NULL,
+			translation TEXT         NULL,
+			meta        TEXT         NULL,
+			created_at  BIGINT       NOT NULL,
 			PRIMARY KEY (user_id, session_id, turn, role)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 	}
@@ -109,6 +116,22 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 				ro.Close()
 			}
 			return nil, fmt.Errorf("store: schema: %w", err)
+		}
+	}
+	// Additive: buddy_turns predates the translation feature, so existing
+	// deployments need this column added on top of their already-created
+	// table — the CREATE TABLE IF NOT EXISTS above only helps fresh ones.
+	// MySQL (unlike MariaDB) has no ADD COLUMN IF NOT EXISTS, so a rerun
+	// against an already-migrated table hits ER_DUP_FIELDNAME (1060), which
+	// is swallowed here as the "already applied" case.
+	if _, err := rw.Exec(`ALTER TABLE ` + turnsTable + ` ADD COLUMN translation TEXT NULL`); err != nil {
+		var mysqlErr *mysql.MySQLError
+		if !errors.As(err, &mysqlErr) || mysqlErr.Number != errDupFieldName {
+			rw.Close()
+			if ro != rw {
+				ro.Close()
+			}
+			return nil, fmt.Errorf("store: schema: add translation column: %w", err)
 		}
 	}
 	return &MySQLStore{rw: rw, ro: ro}, nil
@@ -251,6 +274,16 @@ func (s *MySQLStore) SaveCorrection(ctx context.Context, userID, sessionID strin
 	return nil
 }
 
+func (s *MySQLStore) SaveTranslation(ctx context.Context, userID, sessionID string, turn int, role, translation string) error {
+	if _, err := s.rw.ExecContext(ctx, `
+		UPDATE `+turnsTable+` SET translation = ?
+		WHERE user_id = ? AND session_id = ? AND turn = ? AND role = ?
+	`, translation, userID, sessionID, turn, role); err != nil {
+		return fmt.Errorf("store: save translation: %w", err)
+	}
+	return nil
+}
+
 func (s *MySQLStore) ListSessions(ctx context.Context, userID string) ([]SessionMeta, error) {
 	rows, err := s.ro.QueryContext(ctx, `
 		SELECT id, title, created_at, updated_at FROM `+sessionsTable+`
@@ -286,7 +319,7 @@ func (s *MySQLStore) SessionDetail(ctx context.Context, userID, sessionID string
 
 	// role = 'assistant' sorts after 'user' within a turn (false < true).
 	rows, err := s.ro.QueryContext(ctx, `
-		SELECT turn, role, text, refined, correction, meta FROM `+turnsTable+`
+		SELECT turn, role, text, refined, correction, translation, meta FROM `+turnsTable+`
 		WHERE user_id = ? AND session_id = ? ORDER BY turn ASC, role = 'assistant' ASC
 	`, userID, sessionID)
 	if err != nil {
@@ -298,8 +331,8 @@ func (s *MySQLStore) SessionDetail(ctx context.Context, userID, sessionID string
 	for rows.Next() {
 		var t Turn
 		var refined int
-		var correctionJSON, metaJSON sql.NullString
-		if err := rows.Scan(&t.Turn, &t.Role, &t.Text, &refined, &correctionJSON, &metaJSON); err != nil {
+		var correctionJSON, translation, metaJSON sql.NullString
+		if err := rows.Scan(&t.Turn, &t.Role, &t.Text, &refined, &correctionJSON, &translation, &metaJSON); err != nil {
 			return SessionMeta{}, nil, fmt.Errorf("store: session detail: %w", err)
 		}
 		t.Refined = refined != 0
@@ -309,6 +342,7 @@ func (s *MySQLStore) SessionDetail(ctx context.Context, userID, sessionID string
 				t.Correction = &c
 			}
 		}
+		t.Translation = translation.String
 		if metaJSON.Valid {
 			t.Meta = json.RawMessage(metaJSON.String)
 		}

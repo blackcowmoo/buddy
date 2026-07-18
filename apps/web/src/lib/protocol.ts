@@ -8,6 +8,8 @@ export type EventType =
   | "assistant_done"
   | "refined_transcript"
   | "correction"
+  | "user_translation"
+  | "assistant_translation"
   | "error";
 
 export interface Issue {

@@ -238,6 +238,10 @@ func persistEvent(st store.Store, userID, sessionID string, ev protocol.ServerEv
 			return
 		}
 		go saveCorrection(st, userID, sessionID, ev.Turn, *ev.Correction)
+	case protocol.EvUserTranslation:
+		go saveTranslation(st, userID, sessionID, ev.Turn, "user", ev.Text)
+	case protocol.EvAssistantTranslation:
+		go saveTranslation(st, userID, sessionID, ev.Turn, "assistant", ev.Text)
 	}
 }
 
@@ -250,6 +254,12 @@ func saveTurn(st store.Store, userID, sessionID string, turn int, role, text str
 func saveCorrection(st store.Store, userID, sessionID string, turn int, c protocol.Correction) {
 	if err := st.SaveCorrection(context.Background(), userID, sessionID, turn, c); err != nil {
 		log.Printf("store: save correction %s/%s#%d: %v", userID, sessionID, turn, err)
+	}
+}
+
+func saveTranslation(st store.Store, userID, sessionID string, turn int, role, translation string) {
+	if err := st.SaveTranslation(context.Background(), userID, sessionID, turn, role, translation); err != nil {
+		log.Printf("store: save translation %s/%s#%d: %v", userID, sessionID, turn, err)
 	}
 }
 

@@ -265,6 +265,9 @@ func (p *Pipeline) reply(ctx context.Context, sess *session.Session, turn int, e
 	}
 	emit(protocol.ServerEvent{Type: protocol.EvAssistantDone, Turn: turn, Text: full})
 	sess.AppendAssistant(full)
+	if strings.TrimSpace(full) != "" {
+		go p.translateAssistant(ctx, turn, full, emit) // background: native-language translation
+	}
 	go p.compact(sess) // background: fold old turns into the long-term summary
 }
 
@@ -437,26 +440,48 @@ func (p *Pipeline) correct(ctx context.Context, turn int, text, contextMsg strin
 		return
 	}
 	var parsed struct {
-		Corrected string           `json:"corrected"`
-		Issues    []protocol.Issue `json:"issues"`
+		Corrected   string           `json:"corrected"`
+		Translation string           `json:"translation"`
+		Issues      []protocol.Issue `json:"issues"`
 	}
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
 		log.Printf("correct: bad json: %v", err)
 		return
 	}
-	// Nothing to teach — skip the card.
-	if strings.EqualFold(strings.TrimSpace(parsed.Corrected), strings.TrimSpace(text)) && len(parsed.Issues) == 0 {
+	// Only emit the teaching card when there's something to teach; the
+	// translation below fires independently so a learner still gets a
+	// meaning check even on an already-correct sentence.
+	if !strings.EqualFold(strings.TrimSpace(parsed.Corrected), strings.TrimSpace(text)) || len(parsed.Issues) > 0 {
+		emit(protocol.ServerEvent{
+			Type: protocol.EvCorrection,
+			Turn: turn,
+			Correction: &protocol.Correction{
+				Original:  text,
+				Corrected: parsed.Corrected,
+				Issues:    parsed.Issues,
+			},
+		})
+	}
+	if strings.TrimSpace(parsed.Translation) != "" {
+		emit(protocol.ServerEvent{Type: protocol.EvUserTranslation, Turn: turn, Text: parsed.Translation})
+	}
+}
+
+// translateAssistant asks the analysis ensemble for a plain native-language
+// translation of the assistant's full reply, synthesized down to one result
+// by analyze() — the same ensemble/Judge machinery correct() uses, just with
+// a plain-text (not JSON) prompt since there's nothing else to parse out.
+func (p *Pipeline) translateAssistant(ctx context.Context, turn int, text string, emit Emit) {
+	raw, err := p.analyze(ctx, translationSystemPrompt(p.FeedbackLang), text, false)
+	if err != nil {
+		log.Printf("translateAssistant: %v", err)
 		return
 	}
-	emit(protocol.ServerEvent{
-		Type: protocol.EvCorrection,
-		Turn: turn,
-		Correction: &protocol.Correction{
-			Original:  text,
-			Corrected: parsed.Corrected,
-			Issues:    parsed.Issues,
-		},
-	})
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return
+	}
+	emit(protocol.ServerEvent{Type: protocol.EvAssistantTranslation, Turn: turn, Text: raw})
 }
 
 // renderCorrectionContext formats the pre-turn long-term summary and recent
@@ -492,8 +517,8 @@ func renderCorrectionInput(contextMsg, text string) string {
 
 // correctionSystemPrompt builds the grammar-coach prompt. The corrected
 // sentence, span, and suggestion stay in English (the language being learned);
-// only the explanation is written in the learner's native language so the
-// feedback is easy to understand.
+// only the explanation and translation are written in the learner's native
+// language so the feedback is easy to understand.
 func correctionSystemPrompt(lang string) string {
 	native := languageName(lang)
 	return fmt.Sprintf(`You are an English writing coach for a %[1]s-speaking learner.
@@ -504,12 +529,23 @@ judge whether that sentence fits (e.g. pronoun/tense agreement with earlier
 turns, actually answering what was asked) — never correct the context itself.
 Return STRICT JSON only, no prose, in exactly this shape:
 {"corrected":"<the sentence rewritten in correct, natural English>",
+ "translation":"<natural, colloquial %[1]s translation of the ORIGINAL sentence under correction, so the learner can check it against what they meant to say>",
  "issues":[{"type":"grammar|vocabulary|phrasing|context","span":"<original English text>","suggestion":"<the English fix>","explanation":"<why it is wrong, written in %[1]s, short and kind>"}]}
 Rules:
 - "corrected", "span", and "suggestion" MUST stay in English.
-- "explanation" MUST be written in %[1]s.
+- "translation" and "explanation" MUST be written in %[1]s.
+- "translation" MUST translate the ORIGINAL sentence, not the corrected one.
 - Use "context" as the issue type only when the sentence is fine in isolation but doesn't fit the conversation (wrong pronoun/tense given earlier turns, doesn't answer what was actually asked, etc.).
-- If the sentence is already correct, return the same text and an empty issues array.`, native)
+- If the sentence is already correct, return the same text and an empty issues array — still fill in "translation".`, native)
+}
+
+// translationSystemPrompt builds a plain-text translation prompt for the
+// assistant's reply, reusing the same native-language config as
+// correctionSystemPrompt so both stay in sync if FeedbackLang changes.
+func translationSystemPrompt(lang string) string {
+	native := languageName(lang)
+	return fmt.Sprintf(`Translate the given English text into natural, colloquial %[1]s for a language learner.
+Return ONLY the translation — no prose, no quotes, no labels, no explanation.`, native)
 }
 
 // languageName maps a short language code to an English name the LLM

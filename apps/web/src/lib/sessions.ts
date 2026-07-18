@@ -15,6 +15,7 @@ export interface TurnRecord {
   text: string;
   refined: boolean;
   correction?: Correction;
+  translation?: string;
 }
 
 export interface SessionDetail {

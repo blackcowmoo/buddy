@@ -16,20 +16,25 @@ package protocol
 type EventType string
 
 const (
-	EvReady          EventType = "ready"              // handshake
-	EvPartial        EventType = "partial_transcript" // fast STT, may change
-	EvFinal          EventType = "final_transcript"   // fast STT, locked
-	EvAssistantDelta EventType = "assistant_delta"    // streamed reply token
-	EvAssistantDone  EventType = "assistant_done"     // full reply (browser speaks this)
-	EvRefined        EventType = "refined_transcript" // slow STT re-transcription
-	EvCorrection     EventType = "correction"         // grammar/vocab feedback
-	EvError          EventType = "error"
+	EvReady                EventType = "ready"                 // handshake
+	EvPartial              EventType = "partial_transcript"    // fast STT, may change
+	EvFinal                EventType = "final_transcript"      // fast STT, locked
+	EvAssistantDelta       EventType = "assistant_delta"       // streamed reply token
+	EvAssistantDone        EventType = "assistant_done"        // full reply (browser speaks this)
+	EvRefined              EventType = "refined_transcript"    // slow STT re-transcription
+	EvCorrection           EventType = "correction"            // grammar/vocab feedback
+	EvUserTranslation      EventType = "user_translation"      // native-language translation of the user's turn
+	EvAssistantTranslation EventType = "assistant_translation" // native-language translation of the assistant's reply
+	EvError                EventType = "error"
 )
 
 type ServerEvent struct {
 	Type EventType `json:"type"`
 	// Turn correlates fast-track and refine-track messages for one utterance.
-	Turn int    `json:"turn"`
+	Turn int `json:"turn"`
+	// Text carries the event's payload text — token/full text for the
+	// transcript/assistant events, or the translated sentence for
+	// EvUserTranslation/EvAssistantTranslation.
 	Text string `json:"text,omitempty"`
 
 	// Session carries the resolved session (chat room) ID. Only set on

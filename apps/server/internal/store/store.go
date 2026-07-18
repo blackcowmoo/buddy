@@ -48,6 +48,10 @@ type Turn struct {
 	Text       string               `json:"text"`
 	Refined    bool                 `json:"refined"`
 	Correction *protocol.Correction `json:"correction,omitempty"`
+	// Translation is a native-language translation of Text, set for both
+	// user and assistant turns (see SaveTranslation). Kept separate from
+	// Correction, which is user-only and scoped to grammar feedback.
+	Translation string `json:"translation,omitempty"`
 	// Meta is an open-ended bag for signals beyond the transcript itself —
 	// e.g. a future emotion/tone classifier's output. Nothing populates it
 	// yet; it exists so that lands as a data addition, not another schema
@@ -75,6 +79,11 @@ type Store interface {
 	// SaveCorrection attaches grammar/vocabulary feedback to an existing
 	// user turn. A no-op if that turn hasn't been saved yet.
 	SaveCorrection(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction) error
+	// SaveTranslation attaches a native-language translation to an existing
+	// turn. role disambiguates a user turn from its paired assistant turn,
+	// since both share the same turn number. A no-op if that turn hasn't
+	// been saved yet.
+	SaveTranslation(ctx context.Context, userID, sessionID string, turn int, role, translation string) error
 
 	// ListSessions returns userID's chat rooms, most recently active first.
 	// Only sessions with at least one saved turn appear (see SaveTurn).
