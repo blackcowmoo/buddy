@@ -13,8 +13,8 @@ import (
 
 func TestChatStreamParsesSSEAndConcatenates(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/chat/completions" {
-			t.Errorf("path = %q, want /chat/completions", r.URL.Path)
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("path = %q, want /v1/chat/completions", r.URL.Path)
 		}
 		var body chatReq
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -150,5 +150,19 @@ func TestNewOpenAITrimsTrailingSlash(t *testing.T) {
 	c := NewOpenAI("http://localhost:8081/v1/", "")
 	if c.BaseURL != "http://localhost:8081/v1" {
 		t.Fatalf("BaseURL = %q, want trailing slash trimmed", c.BaseURL)
+	}
+}
+
+func TestNewOpenAIAppendsMissingV1(t *testing.T) {
+	c := NewOpenAI("http://localhost:8081", "")
+	if c.BaseURL != "http://localhost:8081/v1" {
+		t.Fatalf("BaseURL = %q, want /v1 appended", c.BaseURL)
+	}
+}
+
+func TestNewOpenAIDoesNotDoubleV1(t *testing.T) {
+	c := NewOpenAI("http://localhost:8081/v1", "")
+	if c.BaseURL != "http://localhost:8081/v1" {
+		t.Fatalf("BaseURL = %q, want /v1 kept as-is, not doubled", c.BaseURL)
 	}
 }

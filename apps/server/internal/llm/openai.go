@@ -23,9 +23,16 @@ type OpenAI struct {
 	http    *http.Client
 }
 
+// NewOpenAI normalizes baseURL to end in exactly one "/v1", so a config value
+// with or without the suffix (e.g. a copy-pasted server address that forgot
+// it) both reach POST {baseURL}/chat/completions instead of 404ing.
 func NewOpenAI(baseURL, apiKey string) *OpenAI {
+	baseURL = strings.TrimRight(baseURL, "/")
+	if !strings.HasSuffix(baseURL, "/v1") {
+		baseURL += "/v1"
+	}
 	return &OpenAI{
-		BaseURL: strings.TrimRight(baseURL, "/"),
+		BaseURL: baseURL,
 		APIKey:  apiKey,
 		http:    &http.Client{Timeout: 120 * time.Second},
 	}
