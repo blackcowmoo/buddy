@@ -11,7 +11,7 @@ export type EventType =
   | "error";
 
 export interface Issue {
-  type: string; // "grammar" | "vocabulary" | "phrasing"
+  type: string; // "grammar" | "vocabulary" | "phrasing" | "context"
   span: string;
   suggestion: string;
   explanation: string;

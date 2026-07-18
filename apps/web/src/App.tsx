@@ -669,6 +669,7 @@ const ISSUE_LABELS: Record<string, string> = {
   grammar: "문법",
   vocabulary: "어휘",
   phrasing: "표현",
+  context: "문맥",
 };
 
 function issueLabel(type: string): string {

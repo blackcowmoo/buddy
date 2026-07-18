@@ -243,7 +243,7 @@ func TestCorrectEmitsEventWhenChanged(t *testing.T) {
 		}}}},
 	}
 	var got []protocol.ServerEvent
-	p.correct(context.Background(), 1, "I likes pizza", func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.correct(context.Background(), 1, "I likes pizza", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
 
 	if len(got) != 1 || got[0].Type != protocol.EvCorrection {
 		t.Fatalf("expected one correction event, got %+v", got)
@@ -263,7 +263,7 @@ func TestCorrectSkipsWhenAlreadyCorrect(t *testing.T) {
 		}}}},
 	}
 	var got []protocol.ServerEvent
-	p.correct(context.Background(), 1, "I like pizza.", func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.correct(context.Background(), 1, "I like pizza.", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
 
 	if len(got) != 0 {
 		t.Fatalf("expected no event for an already-correct sentence, got %+v", got)
@@ -277,7 +277,7 @@ func TestCorrectIgnoresMalformedJSON(t *testing.T) {
 		}}}},
 	}
 	var got []protocol.ServerEvent
-	p.correct(context.Background(), 1, "whatever", func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.correct(context.Background(), 1, "whatever", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
 	if len(got) != 0 {
 		t.Fatalf("expected no event for malformed JSON, got %+v", got)
 	}
@@ -290,9 +290,65 @@ func TestCorrectIgnoresLLMError(t *testing.T) {
 		}}}},
 	}
 	var got []protocol.ServerEvent
-	p.correct(context.Background(), 1, "whatever", func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.correct(context.Background(), 1, "whatever", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
 	if len(got) != 0 {
 		t.Fatalf("expected no event when the LLM call fails, got %+v", got)
+	}
+}
+
+func TestCorrectSendsBareSentenceWhenNoContext(t *testing.T) {
+	var gotInput string
+	p := &Pipeline{
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			gotInput = msgs[len(msgs)-1].Content
+			return `{"corrected":"ok","issues":[]}`, nil
+		}}}},
+	}
+	p.correct(context.Background(), 1, "ok", "", func(protocol.ServerEvent) {})
+	if gotInput != "ok" {
+		t.Fatalf("with no context, analyze input should be the bare sentence, got %q", gotInput)
+	}
+}
+
+func TestCorrectFoldsContextInFrontOfSentence(t *testing.T) {
+	var gotInput string
+	p := &Pipeline{
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			gotInput = msgs[len(msgs)-1].Content
+			return `{"corrected":"I am 20 years old.","issues":[]}`, nil
+		}}}},
+	}
+	ctxMsg := "Conversation so far:\nassistant: How old are you?\n"
+	p.correct(context.Background(), 1, "I am 20 years old.", ctxMsg, func(protocol.ServerEvent) {})
+
+	if !strings.Contains(gotInput, "How old are you?") {
+		t.Fatalf("analyze input missing the context block: %q", gotInput)
+	}
+	if !strings.HasSuffix(gotInput, "Sentence to correct:\nI am 20 years old.") {
+		t.Fatalf("the sentence under correction should be delimited at the end: %q", gotInput)
+	}
+}
+
+func TestRenderCorrectionContext(t *testing.T) {
+	if got := renderCorrectionContext("", nil); got != "" {
+		t.Fatalf("expected empty string with no summary/prior turns, got %q", got)
+	}
+	got := renderCorrectionContext("likes hiking", []llm.Message{
+		{Role: llm.RoleUser, Content: "hi"},
+		{Role: llm.RoleAssistant, Content: "hello"},
+	})
+	if !strings.Contains(got, "likes hiking") || !strings.Contains(got, "hi") || !strings.Contains(got, "hello") {
+		t.Fatalf("renderCorrectionContext missing content: %q", got)
+	}
+}
+
+func TestRenderCorrectionInput(t *testing.T) {
+	if got := renderCorrectionInput("", "just the sentence"); got != "just the sentence" {
+		t.Fatalf("no context should pass the sentence through unchanged, got %q", got)
+	}
+	got := renderCorrectionInput("CTX BLOCK\n", "the sentence")
+	if !strings.HasPrefix(got, "CTX BLOCK") || !strings.HasSuffix(got, "Sentence to correct:\nthe sentence") {
+		t.Fatalf("combined input wrong: %q", got)
 	}
 }
 
@@ -816,5 +872,55 @@ func TestHandleUtteranceFullFlowUpgradesContextViaRefine(t *testing.T) {
 	}
 	if recent[1].Content != "Let's get you some food!" {
 		t.Fatalf("assistant reply wrong: %+v", recent[1])
+	}
+}
+
+// TestHandleUtteranceCorrectionContextExcludesCurrentTurn guards the voice
+// path's context capture: HandleUtterance snapshots the conversation with
+// sess.Export() BEFORE appending the new utterance and threads it into
+// refine()'s correction pass. If that capture ever moved after the append
+// (or were recomputed inside refine(), racing reply()'s assistant append),
+// the sentence under correction would leak into its own "prior conversation"
+// block. Here the correction sees the prior turn but never the current words.
+func TestHandleUtteranceCorrectionContextExcludesCurrentTurn(t *testing.T) {
+	var inputs []string
+	analysis := &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		inputs = append(inputs, msgs[len(msgs)-1].Content)
+		return `{"corrected":"I am sad.","issues":[]}`, nil
+	}}
+	p := &Pipeline{
+		STT:          []stt.Recognizer{fakeSTT{text: "I are sad"}},
+		LLM:          &fakeLLM{chatReply: "There, there."},
+		ChatModel:    "chat-model",
+		Analysis:     []Candidate{{Model: "correct-model", LLM: analysis}},
+		FeedbackLang: "ko",
+	}
+	sess := session.New("sys")
+	// A prior, completed turn already in the conversation.
+	sess.AppendUser("I am happy")
+	sess.AppendAssistant("Glad to hear it!")
+
+	events := make(chan protocol.ServerEvent, 32)
+	p.HandleUtterance(context.Background(), sess, []byte("pcm"), func(ev protocol.ServerEvent) { events <- ev })
+	collectUntilQuiet(t, events, 200*time.Millisecond, 2*time.Second)
+
+	analysis.mu.Lock()
+	captured := append([]string(nil), inputs...)
+	analysis.mu.Unlock()
+
+	if len(captured) != 1 {
+		t.Fatalf("expected exactly one correction call, got %+v", captured)
+	}
+	const marker = "\nSentence to correct:\nI are sad"
+	in := captured[0]
+	if !strings.HasSuffix(in, marker) {
+		t.Fatalf("correction input should end with the current sentence, got %q", in)
+	}
+	ctxPart := strings.TrimSuffix(in, marker)
+	if !strings.Contains(ctxPart, "I am happy") || !strings.Contains(ctxPart, "Glad to hear it!") {
+		t.Fatalf("context should carry the prior turn, got %q", ctxPart)
+	}
+	if strings.Contains(ctxPart, "sad") {
+		t.Fatalf("context must not include the current sentence under correction, got %q", ctxPart)
 	}
 }

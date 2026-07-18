@@ -372,6 +372,35 @@ describe("theme switch", () => {
   });
 });
 
+describe("correction cards", () => {
+  it("labels a context-type issue in Korean on the user's turn", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "final_transcript", turn: 1, text: "I are fine." }));
+    act(() =>
+      emit({
+        type: "correction",
+        turn: 1,
+        correction: {
+          original: "I are fine.",
+          corrected: "I am fine.",
+          issues: [
+            {
+              type: "context",
+              span: "I are",
+              suggestion: "I am",
+              explanation: "앞 문맥과 맞지 않아요",
+            },
+          ],
+        },
+      }),
+    );
+    expect(await screen.findByText("문맥")).toBeInTheDocument();
+    expect(screen.getByText("앞 문맥과 맞지 않아요")).toBeInTheDocument();
+  });
+});
+
 describe("per-message tts playback", () => {
   it("shows a play button for the native rate and each configured extra speed", async () => {
     const user = userEvent.setup();
