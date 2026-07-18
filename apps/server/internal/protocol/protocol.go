@@ -49,7 +49,7 @@ type Correction struct {
 }
 
 type Issue struct {
-	Type        string `json:"type"`        // "grammar" | "vocabulary" | "phrasing"
+	Type        string `json:"type"`        // "grammar" | "vocabulary" | "phrasing" | "context"
 	Span        string `json:"span"`        // the problematic text
 	Suggestion  string `json:"suggestion"`  // the fix
 	Explanation string `json:"explanation"` // short, learner-friendly

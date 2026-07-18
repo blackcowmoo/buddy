@@ -237,8 +237,12 @@ func (p *Pipeline) HandleText(ctx context.Context, sess *session.Session, text s
 	}
 	turn := sess.NextTurn()
 	emit(protocol.ServerEvent{Type: protocol.EvFinal, Turn: turn, Text: text})
+	// Capture the conversation as of BEFORE this turn, so the correction
+	// pass can judge whether the sentence fits without the sentence itself
+	// contaminating its own context (mirrors HandleUtterance).
+	contextMsg := renderCorrectionContext(sess.Export())
 	sess.AppendUser(text)
-	go p.correct(ctx, turn, text, emit) // correction only; no slow STT needed
+	go p.correct(ctx, turn, text, contextMsg, emit) // correction only; no slow STT needed
 	p.reply(ctx, sess, turn, emit)
 }
 
@@ -415,13 +419,19 @@ func (p *Pipeline) refine(ctx context.Context, sess *session.Session, turn int, 
 		emit(protocol.ServerEvent{Type: protocol.EvRefined, Turn: turn, Text: refined})
 		sess.ReplaceLastUser(refined) // keep future context accurate
 	}
-	p.correct(ctx, turn, refined, emit)
+	// summary/recent are the pre-turn context captured in HandleUtterance
+	// before this utterance was appended — so it never includes the sentence
+	// under correction, regardless of how the concurrent reply() interleaves.
+	p.correct(ctx, turn, refined, renderCorrectionContext(summary, recent), emit)
 }
 
-// correct asks the analysis ensemble for grammar/vocabulary feedback as
-// strict JSON, synthesized down to one result by analyze().
-func (p *Pipeline) correct(ctx context.Context, turn int, text string, emit Emit) {
-	raw, err := p.analyze(ctx, correctionSystemPrompt(p.FeedbackLang), text, true)
+// correct asks the analysis ensemble for grammar/vocabulary/context feedback
+// as strict JSON, synthesized down to one result by analyze(). contextMsg
+// (from renderCorrectionContext) is the conversation the sentence was said
+// in, folded into the analysis input the same way compaction folds its
+// prior-summary context; it is empty on the first turn.
+func (p *Pipeline) correct(ctx context.Context, turn int, text, contextMsg string, emit Emit) {
+	raw, err := p.analyze(ctx, correctionSystemPrompt(p.FeedbackLang), renderCorrectionInput(contextMsg, text), true)
 	if err != nil {
 		log.Printf("correct: %v", err)
 		return
@@ -449,6 +459,37 @@ func (p *Pipeline) correct(ctx context.Context, turn int, text string, emit Emit
 	})
 }
 
+// renderCorrectionContext formats the pre-turn long-term summary and recent
+// turns as a context block for the correction pass, or "" when there's
+// nothing to give (the learner's first turn). renderCorrectionInput folds it
+// in front of the sentence under correction — kept as delimited data in the
+// analysis input (like renderCompactionInput), not a privileged system
+// message, so a replayed learner utterance can't act as an instruction.
+func renderCorrectionContext(summary string, priorTurns []llm.Message) string {
+	if summary == "" && len(priorTurns) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Conversation so far, for judging fit only — do not correct this part:\n")
+	if summary != "" {
+		b.WriteString("Long-term memory of this learner: " + summary + "\n")
+	}
+	for _, m := range priorTurns {
+		fmt.Fprintf(&b, "%s: %s\n", m.Role, m.Content)
+	}
+	return b.String()
+}
+
+// renderCorrectionInput combines the context block with the sentence under
+// correction into the single analysis input. With no context it's just the
+// bare sentence, so the first turn behaves exactly as before this existed.
+func renderCorrectionInput(contextMsg, text string) string {
+	if contextMsg == "" {
+		return text
+	}
+	return contextMsg + "\nSentence to correct:\n" + text
+}
+
 // correctionSystemPrompt builds the grammar-coach prompt. The corrected
 // sentence, span, and suggestion stay in English (the language being learned);
 // only the explanation is written in the learner's native language so the
@@ -457,12 +498,17 @@ func correctionSystemPrompt(lang string) string {
 	native := languageName(lang)
 	return fmt.Sprintf(`You are an English writing coach for a %[1]s-speaking learner.
 The input is one spoken English sentence, possibly with speech-to-text noise.
+It may be preceded by a "Conversation so far" block for context; if so, correct
+only the sentence after "Sentence to correct:", and use the context solely to
+judge whether that sentence fits (e.g. pronoun/tense agreement with earlier
+turns, actually answering what was asked) — never correct the context itself.
 Return STRICT JSON only, no prose, in exactly this shape:
 {"corrected":"<the sentence rewritten in correct, natural English>",
- "issues":[{"type":"grammar|vocabulary|phrasing","span":"<original English text>","suggestion":"<the English fix>","explanation":"<why it is wrong, written in %[1]s, short and kind>"}]}
+ "issues":[{"type":"grammar|vocabulary|phrasing|context","span":"<original English text>","suggestion":"<the English fix>","explanation":"<why it is wrong, written in %[1]s, short and kind>"}]}
 Rules:
 - "corrected", "span", and "suggestion" MUST stay in English.
 - "explanation" MUST be written in %[1]s.
+- Use "context" as the issue type only when the sentence is fine in isolation but doesn't fit the conversation (wrong pronoun/tense given earlier turns, doesn't answer what was actually asked, etc.).
 - If the sentence is already correct, return the same text and an empty issues array.`, native)
 }
 
