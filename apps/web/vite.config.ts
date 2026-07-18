@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { viteStaticCopy } from "vite-plugin-static-copy";
 
 // Single origin: the browser always talks to the Go server on :8080, which
 // proxies HTML/HMR here in dev. So the HMR socket must report back through
@@ -12,7 +13,25 @@ import react from "@vitejs/plugin-react";
 // index.html was served from. Left as "/" in dev since the Vite dev server
 // (and its HMR client) isn't proxied through a ROOT_PATH prefix.
 export default defineConfig(({ command }) => ({
-  plugins: [react()],
+  plugins: [
+    react(),
+    // recorder.ts's VAD-based silence trimming (@ricky0123/vad-web) fetches
+    // its ONNX model and onnxruntime-web's wasm runtime as plain static
+    // files at request time, the same way pcm-worklet.js already is — so
+    // they need to land next to it at the site root instead of going
+    // through Vite's JS bundling.
+    viteStaticCopy({
+      targets: [
+        {
+          src: "node_modules/@ricky0123/vad-web/dist/silero_vad_legacy.onnx",
+          dest: ".",
+          rename: { stripBase: true },
+        },
+        { src: "node_modules/onnxruntime-web/dist/*.wasm", dest: ".", rename: { stripBase: true } },
+        { src: "node_modules/onnxruntime-web/dist/*.mjs", dest: ".", rename: { stripBase: true } },
+      ],
+    }),
+  ],
   base: command === "build" ? "./" : "/",
   server: {
     port: 5173,

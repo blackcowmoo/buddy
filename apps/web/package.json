@@ -11,7 +11,9 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@ricky0123/vad-web": "^0.0.30",
     "kokoro-js": "^1.2.1",
+    "onnxruntime-web": "1.22.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"
   },
@@ -26,6 +28,7 @@
     "jsdom": "^29.1.1",
     "typescript": "^7.0.2",
     "vite": "^8.1.4",
+    "vite-plugin-static-copy": "^4.1.1",
     "vitest": "^4.1.10"
   }
 }
