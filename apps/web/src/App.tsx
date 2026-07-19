@@ -313,6 +313,19 @@ export function App() {
     [extraRates],
   );
 
+  // All user turns with feedback worth reviewing, in transcript order — feeds
+  // FeedbackSummary. Covers both live turns (corrections populated via the WS
+  // "correction" event) and hydrated history (populated in enterChat), since
+  // both write into the same `corrections` map.
+  const feedbackTurns = useMemo(
+    () =>
+      msgs
+        .filter((m) => m.role === "user" && !!corrections[m.turn])
+        .map((m) => ({ turn: m.turn, text: m.text, correction: corrections[m.turn] }))
+        .filter((t) => correctionHasIssues(t.correction)),
+    [msgs, corrections],
+  );
+
   const playMessage = useCallback(
     async (text: string, rate: number) => {
       const sp = speakerRef.current;
@@ -449,6 +462,7 @@ export function App() {
             <h1>Buddy</h1>
           </>
         }
+        actions={<FeedbackSummary turns={feedbackTurns} />}
         menuOpen={menuOpen}
         onToggleMenu={() => setMenuOpen((o) => !o)}
         menuRef={menuRef}
@@ -582,6 +596,15 @@ function upsertAssistant(m: Msg[], turn: number, patch: (prev: string) => string
   return [...m, { turn, role: "assistant", text: patch("") }];
 }
 
+// Whether a Correction actually flags something worth showing, vs. the
+// sentence coming back unchanged with no issues (the "clean" case).
+function correctionHasIssues(c: Correction): boolean {
+  return (
+    c.corrected.trim().toLowerCase() !== c.original.trim().toLowerCase() ||
+    (c.issues?.length ?? 0) > 0
+  );
+}
+
 // GrammarControl collapses the background grammar-check result into one
 // small button, next to StudyControl's 🔊, instead of an always-visible card:
 // it spins while correct() is still running for this turn, then opens a
@@ -603,10 +626,7 @@ function GrammarControl({
 }) {
   if (!pending && !correction) return null; // no data (e.g. old session predating this feature)
 
-  const hasIssues =
-    !!correction &&
-    (correction.corrected.trim().toLowerCase() !== correction.original.trim().toLowerCase() ||
-      (correction.issues?.length ?? 0) > 0);
+  const hasIssues = !!correction && correctionHasIssues(correction);
 
   const glyph = pending ? "⏳" : hasIssues ? "✎" : "✓";
   const label = pending
@@ -757,12 +777,14 @@ interface ChatMenuProps {
 // title) and whether chat-only MenuPanel items are shown differ between them.
 function TopBar({
   brand,
+  actions,
   menuOpen,
   onToggleMenu,
   menuRef,
   ...menuPanelProps
 }: {
   brand: React.ReactNode;
+  actions?: React.ReactNode;
   menuOpen: boolean;
   onToggleMenu: () => void;
   menuRef: React.RefObject<HTMLDivElement | null>;
@@ -771,6 +793,7 @@ function TopBar({
     <header className="topbar">
       <div className="brand">{brand}</div>
       <div className="menu" ref={menuRef}>
+        {actions}
         <button
           className="ghost icon-btn"
           onClick={onToggleMenu}
@@ -914,6 +937,78 @@ function CorrectionCard({ c }: { c: Correction }) {
           <div className="why">{iss.explanation}</div>
         </div>
       ))}
+    </div>
+  );
+}
+
+interface FeedbackTurn {
+  turn: number;
+  text: string;
+  correction: Correction;
+}
+
+// Session-wide counterpart to GrammarControl: instead of one popover per
+// message, this is a single button (placed in the chat header) that lists
+// every turn's feedback collected so far, so a learner can review recurring
+// mistakes mid-conversation instead of only one bubble at a time. Owns its
+// own open state (like GrammarControl/StudyControl) since it isn't tied to
+// any one message row.
+function FeedbackSummary({ turns }: { turns: FeedbackTurn[] }) {
+  const [open, setOpen] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  useDismiss(open, panelRef, () => setOpen(false));
+
+  const issueCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const t of turns) {
+      for (const iss of t.correction.issues ?? []) {
+        counts[iss.type] = (counts[iss.type] ?? 0) + 1;
+      }
+    }
+    return counts;
+  }, [turns]);
+
+  return (
+    <div className="feedback-summary" ref={panelRef}>
+      <button
+        type="button"
+        className="ghost icon-btn feedback-btn"
+        aria-haspopup="true"
+        aria-expanded={open}
+        aria-label="피드백 모아보기"
+        title="피드백 모아보기"
+        onClick={() => setOpen((o) => !o)}
+      >
+        📋
+      </button>
+      {open && (
+        <div className="study-panel feedback-panel" role="menu">
+          {turns.length === 0 ? (
+            <div className="feedback-empty">아직 피드백이 없어요 👍</div>
+          ) : (
+            <>
+              <div className="feedback-summary-header">
+                지금까지 {turns.length}개 메시지에 피드백이 있어요
+              </div>
+              {Object.keys(issueCounts).length > 0 && (
+                <div className="feedback-summary-counts">
+                  {Object.entries(issueCounts).map(([type, count]) => (
+                    <span key={type} className={`badge ${type}`}>
+                      {issueLabel(type)} {count}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {turns.map((t) => (
+                <div key={t.turn} className="feedback-entry">
+                  <div className="feedback-original">{t.text}</div>
+                  <CorrectionCard c={t.correction} />
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

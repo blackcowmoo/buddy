@@ -179,6 +179,26 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 .grammar-panel { min-width: 220px; max-width: min(85vw, 360px); }
 .grammar-clean { font-size: 13px; color: var(--muted); padding: 2px 4px; }
 
+/* Session-wide feedback list, opened from the chat header — see App.tsx
+   FeedbackSummary. Wider and scrollable, unlike the per-row study panels. */
+.feedback-summary { position: relative; display: inline-flex; }
+.feedback-btn { width: 32px; height: 32px; min-height: 32px; font-size: 14px; }
+.feedback-panel {
+  right: 0;
+  left: auto;
+  width: min(85vw, 340px);
+  max-height: min(70vh, 480px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.feedback-empty { font-size: 13px; color: var(--muted); padding: 2px 4px; }
+.feedback-summary-header { font-size: 13px; color: var(--muted); }
+.feedback-summary-counts { display: flex; flex-wrap: wrap; gap: 6px; }
+.feedback-entry { display: flex; flex-direction: column; gap: 4px; }
+.feedback-original { font-size: 13px; color: var(--muted); padding: 0 2px; }
+
 .spinning { display: inline-block; animation: spin 1s linear infinite; }
 @keyframes spin {
   from { transform: rotate(0deg); }
