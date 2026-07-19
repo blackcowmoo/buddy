@@ -17,8 +17,7 @@ import (
 // played back by the user who made it.
 func recordingsListHandler(ident identity.Identifier, recordings recording.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if recordings == nil {
-			http.Error(w, "recording storage is not configured", http.StatusServiceUnavailable)
+		if !requireRecordings(w, recordings) {
 			return
 		}
 		userID, ok := requireUser(w, r, ident)
@@ -51,8 +50,7 @@ func recordingsListHandler(ident identity.Identifier, recordings recording.Store
 // server CPU is spent decoding just to serve playback.
 func recordingAudioHandler(ident identity.Identifier, recordings recording.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if recordings == nil {
-			http.Error(w, "recording storage is not configured", http.StatusServiceUnavailable)
+		if !requireRecordings(w, recordings) {
 			return
 		}
 		userID, ok := requireUser(w, r, ident)
@@ -85,8 +83,7 @@ func recordingAudioHandler(ident identity.Identifier, recordings recording.Store
 // block deleting the recording itself.
 func recordingDeleteHandler(ident identity.Identifier, audio transport.AudioSaver, recordings recording.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if recordings == nil {
-			http.Error(w, "recording storage is not configured", http.StatusServiceUnavailable)
+		if !requireRecordings(w, recordings) {
 			return
 		}
 		userID, ok := requireUser(w, r, ident)

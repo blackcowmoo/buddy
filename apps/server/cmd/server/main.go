@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -49,18 +50,33 @@ func main() {
 	rdb, redisCloser := buildRedis(cfg)
 	defer redisCloser.Close()
 
-	// Persistent per-user memory.
-	ident := buildIdentity(context.Background(), cfg, rdb)
-	st, err := store.NewMySQL(store.MySQLConfig{
-		RWHost:   cfg.MySQLRWHost,
-		ROHost:   cfg.MySQLROHost,
-		Port:     cfg.MySQLPort,
-		User:     cfg.MySQLUser,
-		Password: cfg.MySQLPassword,
-		Database: cfg.MySQLDatabase,
-	})
-	if err != nil {
-		log.Fatalf("store: %v", err)
+	// Persistent per-user memory. Identity verification and the MySQL
+	// connection/schema bootstrap don't depend on each other, so they run
+	// concurrently rather than paying two sequential network round trips at
+	// startup.
+	var ident identity.Identifier
+	var st *store.MySQLStore
+	var storeErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		ident = buildIdentity(context.Background(), cfg, rdb)
+	}()
+	go func() {
+		defer wg.Done()
+		st, storeErr = store.NewMySQL(store.MySQLConfig{
+			RWHost:   cfg.MySQLRWHost,
+			ROHost:   cfg.MySQLROHost,
+			Port:     cfg.MySQLPort,
+			User:     cfg.MySQLUser,
+			Password: cfg.MySQLPassword,
+			Database: cfg.MySQLDatabase,
+		})
+	}()
+	wg.Wait()
+	if storeErr != nil {
+		log.Fatalf("store: %v", storeErr)
 	}
 	defer st.Close()
 

@@ -9,6 +9,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -55,20 +56,39 @@ type MySQLStore struct {
 // NewMySQL connects to the primary (and the read replica, if one is
 // configured) and ensures buddy_sessions/buddy_turns exist on the primary.
 func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
-	rw, err := openPool(cfg, cfg.RWHost)
-	if err != nil {
-		return nil, err
-	}
-
 	// Reuse the primary pool for reads unless a distinct replica is named, so
 	// the common single-endpoint case doesn't open two pools to one host.
-	ro := rw
-	if cfg.ROHost != "" && cfg.ROHost != cfg.RWHost {
-		ro, err = openPool(cfg, cfg.ROHost)
-		if err != nil {
-			rw.Close()
-			return nil, err
+	distinctRO := cfg.ROHost != "" && cfg.ROHost != cfg.RWHost
+
+	var rw, ro *sql.DB
+	var rwErr, roErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		rw, rwErr = openPool(cfg, cfg.RWHost)
+	}()
+	if distinctRO {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ro, roErr = openPool(cfg, cfg.ROHost)
+		}()
+	}
+	wg.Wait()
+
+	if rwErr != nil {
+		if ro != nil {
+			ro.Close()
 		}
+		return nil, rwErr
+	}
+	if roErr != nil {
+		rw.Close()
+		return nil, roErr
+	}
+	if !distinctRO {
+		ro = rw
 	}
 	// Closes whatever pools ended up open, for the migration failure paths
 	// below — ro may or may not be a distinct connection from rw at this point.
@@ -298,25 +318,51 @@ func (s *MySQLStore) ListSessions(ctx context.Context, userID string) ([]Session
 	return out, rows.Err()
 }
 
+// SessionDetail loads the session's metadata and its turns. The two are
+// independent reads against s.ro (the metadata row isn't needed to look up
+// turns, only to confirm the session exists), so they run concurrently
+// rather than paying two sequential round trips to what may be a
+// network-hop-away replica.
 func (s *MySQLStore) SessionDetail(ctx context.Context, userID, sessionID string) (SessionMeta, []Turn, error) {
 	meta := SessionMeta{ID: sessionID}
-	err := s.ro.QueryRowContext(ctx, `
-		SELECT title, created_at, updated_at FROM `+sessionsTable+` WHERE user_id = ? AND id = ?
-	`, userID, sessionID).Scan(&meta.Title, &meta.CreatedAt, &meta.UpdatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
+	var metaErr, turnsErr error
+	var turns []Turn
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		metaErr = s.ro.QueryRowContext(ctx, `
+			SELECT title, created_at, updated_at FROM `+sessionsTable+` WHERE user_id = ? AND id = ?
+		`, userID, sessionID).Scan(&meta.Title, &meta.CreatedAt, &meta.UpdatedAt)
+	}()
+	go func() {
+		defer wg.Done()
+		turns, turnsErr = s.sessionTurns(ctx, userID, sessionID)
+	}()
+	wg.Wait()
+
+	if errors.Is(metaErr, sql.ErrNoRows) {
 		return SessionMeta{}, nil, ErrNotFound
 	}
-	if err != nil {
-		return SessionMeta{}, nil, fmt.Errorf("store: session detail: %w", err)
+	if metaErr != nil {
+		return SessionMeta{}, nil, fmt.Errorf("store: session detail: %w", metaErr)
 	}
+	if turnsErr != nil {
+		return SessionMeta{}, nil, fmt.Errorf("store: session detail: %w", turnsErr)
+	}
+	return meta, turns, nil
+}
 
-	// role = 'assistant' sorts after 'user' within a turn (false < true).
+// sessionTurns loads every turn in (userID, sessionID), ordered so that
+// role = 'assistant' sorts after 'user' within a turn (false < true).
+func (s *MySQLStore) sessionTurns(ctx context.Context, userID, sessionID string) ([]Turn, error) {
 	rows, err := s.ro.QueryContext(ctx, `
 		SELECT turn, role, text, refined, correction, translation, meta FROM `+turnsTable+`
 		WHERE user_id = ? AND session_id = ? ORDER BY turn ASC, role = 'assistant' ASC
 	`, userID, sessionID)
 	if err != nil {
-		return SessionMeta{}, nil, fmt.Errorf("store: session detail: %w", err)
+		return nil, fmt.Errorf("store: session detail: %w", err)
 	}
 	defer rows.Close()
 
@@ -326,7 +372,7 @@ func (s *MySQLStore) SessionDetail(ctx context.Context, userID, sessionID string
 		var refined int
 		var correctionJSON, translation, metaJSON sql.NullString
 		if err := rows.Scan(&t.Turn, &t.Role, &t.Text, &refined, &correctionJSON, &translation, &metaJSON); err != nil {
-			return SessionMeta{}, nil, fmt.Errorf("store: session detail: %w", err)
+			return nil, fmt.Errorf("store: session detail: %w", err)
 		}
 		t.Refined = refined != 0
 		if correctionJSON.Valid {
@@ -342,9 +388,9 @@ func (s *MySQLStore) SessionDetail(ctx context.Context, userID, sessionID string
 		turns = append(turns, t)
 	}
 	if err := rows.Err(); err != nil {
-		return SessionMeta{}, nil, fmt.Errorf("store: session detail: %w", err)
+		return nil, fmt.Errorf("store: session detail: %w", err)
 	}
-	return meta, turns, nil
+	return turns, nil
 }
 
 // DeleteSession removes a session and its transcript in one transaction, so

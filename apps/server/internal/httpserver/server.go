@@ -261,6 +261,17 @@ func requireUser(w http.ResponseWriter, r *http.Request, ident identity.Identifi
 	return userID, true
 }
 
+// requireRecordings guards the recording-endpoint handlers against a nil
+// Store (archival disabled), writing a 503 and reporting false on failure so
+// callers can `if !requireRecordings(w, recordings) { return }`.
+func requireRecordings(w http.ResponseWriter, recordings recording.Store) bool {
+	if recordings == nil {
+		http.Error(w, "recording storage is not configured", http.StatusServiceUnavailable)
+		return false
+	}
+	return true
+}
+
 // serverError logs err with context and writes a generic 500 — the response
 // body never leaks internal error detail to the caller.
 func serverError(w http.ResponseWriter, context string, err error) {
