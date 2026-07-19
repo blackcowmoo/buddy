@@ -383,6 +383,24 @@ func readEvent(t *testing.T, c *websocket.Conn) protocol.ServerEvent {
 	return ev
 }
 
+// tryReadEvent is readEvent but tolerant of a timeout — used to assert an
+// event does NOT arrive within a window, which a t.Fatalf-on-error read can't
+// express.
+func tryReadEvent(t *testing.T, c *websocket.Conn, timeout time.Duration) (protocol.ServerEvent, bool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	_, data, err := c.Read(ctx)
+	if err != nil {
+		return protocol.ServerEvent{}, false
+	}
+	var ev protocol.ServerEvent
+	if err := json.Unmarshal(data, &ev); err != nil {
+		t.Fatalf("unmarshal event: %v (raw: %s)", err, data)
+	}
+	return ev, true
+}
+
 func readUntil(t *testing.T, c *websocket.Conn, want protocol.EventType) protocol.ServerEvent {
 	t.Helper()
 	for i := 0; i < 20; i++ {
@@ -392,6 +410,21 @@ func readUntil(t *testing.T, c *websocket.Conn, want protocol.EventType) protoco
 		}
 	}
 	t.Fatalf("did not see event type %q within 20 messages", want)
+	return protocol.ServerEvent{}
+}
+
+// readUntilTurn is readUntil plus a turn check, needed wherever a brand-new
+// session's opening-greeting events (turn 0, see pipeline.StartConversation)
+// could otherwise be mistaken for the real turn's events of the same Type.
+func readUntilTurn(t *testing.T, c *websocket.Conn, want protocol.EventType, turn int) protocol.ServerEvent {
+	t.Helper()
+	for i := 0; i < 20; i++ {
+		ev := readEvent(t, c)
+		if ev.Type == want && ev.Turn == turn {
+			return ev
+		}
+	}
+	t.Fatalf("did not see event type %q turn %d within 20 messages", want, turn)
 	return protocol.ServerEvent{}
 }
 
@@ -490,7 +523,11 @@ func TestWSTextTurnRoundTrip(t *testing.T) {
 	if final.Text != "Hello Buddy" {
 		t.Fatalf("final_transcript text = %q", final.Text)
 	}
-	done := readUntil(t, c, protocol.EvAssistantDone)
+	// Turn 1 specifically (not just "the first assistant_done seen") — a
+	// brand-new session like this one also gets an opening-greeting
+	// assistant_done on turn 0 (see pipeline.StartConversation), which could
+	// otherwise be mistaken for the reply to "Hello Buddy".
+	done := readUntilTurn(t, c, protocol.EvAssistantDone, 1)
 	if done.Text == "" {
 		t.Fatalf("assistant_done had empty text")
 	}
@@ -615,7 +652,7 @@ func TestWSMemoryPersistsAcrossReconnects(t *testing.T) {
 		}
 		sessionID = ready.Session // resume this same room on the next send
 		sendText(t, c, text)
-		readUntil(t, c, protocol.EvAssistantDone)
+		readUntilTurn(t, c, protocol.EvAssistantDone, 1) // turn 1: this send's own reply, not the opening greeting's turn 0
 		c.Close(websocket.StatusNormalClosure, "")
 	}
 
@@ -641,14 +678,75 @@ func TestWSMemoryPersistsAcrossReconnects(t *testing.T) {
 	// async relative to the client-side close above — wait for it to land
 	// before opening the next connection with the same session, so it seeds
 	// from this turn instead of racing it (same reasoning as production:
-	// a very fast reconnect can still race the previous save).
-	waitForRecentCount(2)
+	// a very fast reconnect can still race the previous save). 3, not 2:
+	// the first connection is brand-new, so its opening greeting (see
+	// pipeline.StartConversation) lands in history as well, ahead of this turn.
+	waitForRecentCount(3)
 
 	send("What is my name?")
-	profile := waitForRecentCount(4)
+	profile := waitForRecentCount(5)
 
-	if profile.Recent[0].Content != "My name is Alex." || profile.Recent[2].Content != "What is my name?" {
+	if profile.Recent[1].Content != "My name is Alex." || profile.Recent[3].Content != "What is my name?" {
 		t.Fatalf("accumulated turns out of order or wrong: %+v", profile.Recent)
+	}
+}
+
+// TestWSNewSessionGetsOpeningGreeting checks the opening-greeting feature
+// (pipeline.StartConversation) end to end: a brand-new session gets an
+// assistant message on the reserved turn-0 sentinel before the learner ever
+// says anything, and — since it's never persisted per-turn (see
+// persistEvent's turn==0 skip) — an abandoned room still leaves no session
+// row behind, exactly like TestWSListSessionsOnlyShowsSessionsWithMessages
+// expects for a silent connection.
+func TestWSNewSessionGetsOpeningGreeting(t *testing.T) {
+	st := newTestStore(t)
+	srv := newTestServer(t, st)
+	c, _ := dial(t, srv, "greet-user", "")
+	ready := readEvent(t, c)
+
+	done := readUntilTurn(t, c, protocol.EvAssistantDone, 0)
+	if done.Text == "" {
+		t.Fatalf("expected a non-empty opening greeting, got %+v", done)
+	}
+	c.Close(websocket.StatusNormalClosure, "")
+
+	time.Sleep(50 * time.Millisecond) // let the deferred save (a no-op here) run
+	if _, _, err := st.SessionDetail(context.Background(), "greet-user", ready.Session); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("greeting-only session should leave no session row, err = %v", err)
+	}
+}
+
+// TestWSResumedSessionSkipsOpeningGreeting checks a resumed room (?session=)
+// never gets a second greeting — only a bare connection (no ?session=) does.
+func TestWSResumedSessionSkipsOpeningGreeting(t *testing.T) {
+	st := newTestStore(t)
+	srv := newTestServer(t, st)
+	cookie := "resume-user"
+
+	c1, _ := dial(t, srv, cookie, "")
+	ready1 := readEvent(t, c1)
+	sendText(t, c1, "hello")
+	readUntilTurn(t, c1, protocol.EvAssistantDone, 1)
+	c1.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(10 * time.Second) // CI runners can be much slower than local
+	for time.Now().Before(deadline) {
+		if p, _ := st.Load(context.Background(), cookie, ready1.Session); len(p.Recent) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	c2, _ := dial(t, srv, cookie, ready1.Session)
+	readEvent(t, c2) // ready
+	for {
+		ev, ok := tryReadEvent(t, c2, 300*time.Millisecond)
+		if !ok {
+			return // nothing else ever arrived — no second greeting, as expected
+		}
+		if ev.Turn == 0 {
+			t.Fatalf("resumed session should not get a second opening greeting, got %+v", ev)
+		}
 	}
 }
 
@@ -708,16 +806,19 @@ func TestWSDifferentCookiesAreIsolated(t *testing.T) {
 		ready := readEvent(t, c)
 		sessions[tc.cookie] = ready.Session
 		sendText(t, c, tc.text)
-		readUntil(t, c, protocol.EvAssistantDone)
+		readUntilTurn(t, c, protocol.EvAssistantDone, 1) // turn 1: the real reply, not the opening greeting's turn 0
 		c.Close(websocket.StatusNormalClosure, "")
 	}
 
+	// 3, not 1: each of these is a brand-new session, so its opening greeting
+	// (see pipeline.StartConversation) lands in history ahead of the real
+	// user/assistant pair, at index 0.
 	deadline := time.Now().Add(10 * time.Second) // CI runners can be much slower than local
 	for time.Now().Before(deadline) {
 		a, _ := st.Load(context.Background(), "user-a", sessions["user-a"])
 		b, _ := st.Load(context.Background(), "user-b", sessions["user-b"])
-		if len(a.Recent) > 0 && len(b.Recent) > 0 {
-			if a.Recent[0].Content != "I am user A" || b.Recent[0].Content != "I am user B" {
+		if len(a.Recent) >= 3 && len(b.Recent) >= 3 {
+			if a.Recent[1].Content != "I am user A" || b.Recent[1].Content != "I am user B" {
 				t.Fatalf("cross-contamination between users: a=%+v b=%+v", a, b)
 			}
 			return

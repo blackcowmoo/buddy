@@ -27,6 +27,8 @@ export interface Correction {
 
 export interface ServerEvent {
   type: EventType;
+  // 0 is reserved for the connection-opening greeting (see
+  // pipeline.StartConversation server-side) — real turns start at 1.
   turn: number;
   text?: string;
   // Resolved session (chat room) ID. Only set on "ready".

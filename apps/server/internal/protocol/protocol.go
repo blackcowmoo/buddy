@@ -31,6 +31,9 @@ const (
 type ServerEvent struct {
 	Type EventType `json:"type"`
 	// Turn correlates fast-track and refine-track messages for one utterance.
+	// Turn 0 is a reserved sentinel for the connection-opening greeting (see
+	// pipeline.StartConversation) — it never comes from session.NextTurn, so
+	// real turns always start at 1.
 	Turn int `json:"turn"`
 	// Text carries the event's payload text — token/full text for the
 	// transcript/assistant events, or the translated sentence for

@@ -78,7 +78,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// always starts a brand-new room, on purpose — the home screen shows the
 	// room list rather than silently reconnecting to whatever was last open.
 	sessionID := r.URL.Query().Get("session")
-	if sessionID == "" {
+	// A missing ?session= is what triggers the opening greeting below — an
+	// existing ID means the learner is resuming a room that (by definition)
+	// has already been talked in, so it never gets a second greeting.
+	isNewSession := sessionID == ""
+	if isNewSession {
 		// Uniqueness (not unguessability of someone else's) is all that's
 		// required here: every store lookup is scoped by (userID, sessionID)
 		// together, so a collision or a guessed ID from another user still
@@ -159,6 +163,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	emit(protocol.ServerEvent{Type: protocol.EvReady, Session: sessionID})
 
+	if isNewSession {
+		// Runs on the connection's own ctx, not a per-turn tctx (there's no
+		// turn yet to barge into): if the learner sends a real message before
+		// this lands, the two just run concurrently on different turn numbers
+		// (0 vs 1) rather than one cancelling the other.
+		go h.pipe.StartConversation(ctx, sess, emit)
+	}
+
 	// turnCancel implements barge-in: a new input cancels the previous turn.
 	turnCancel := func() {}
 	for {
@@ -226,6 +238,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // still lands even if the client disconnects or barges in right as it
 // completes (same reasoning as pipeline.compact's use of Background).
 func persistEvent(st store.Store, userID, sessionID string, ev protocol.ServerEvent) {
+	if ev.Turn == 0 {
+		// Turn 0 is the reserved sentinel for the opening greeting (see
+		// pipeline.StartConversation) — deliberately never written to the
+		// per-turn transcript, so a room the learner opens and never replies
+		// to leaves no durable row behind, same as if it had never been
+		// visited (matches SaveTurn's own turn==1-from-user gate on the
+		// session row). It still reaches the LLM via the in-memory session
+		// history, and rides along in Profile.Recent once a real turn
+		// persists.
+		return
+	}
 	switch ev.Type {
 	case protocol.EvFinal:
 		go saveTurn(st, userID, sessionID, ev.Turn, "user", ev.Text, false)

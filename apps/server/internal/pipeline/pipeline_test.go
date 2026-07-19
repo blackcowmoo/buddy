@@ -185,6 +185,102 @@ func TestReplyFallbackOnLLMError(t *testing.T) {
 	}
 }
 
+// ---- StartConversation() --------------------------------------------------
+
+func TestStartConversationEmitsDeltaThenDoneOnTurnZeroAndAppends(t *testing.T) {
+	sess := session.New("sys")
+	p := &Pipeline{LLM: &fakeLLM{chatReply: "Hey! What's on your mind today?"}, ChatModel: "m"}
+
+	events := make(chan protocol.ServerEvent, 8)
+	p.StartConversation(context.Background(), sess, func(ev protocol.ServerEvent) { events <- ev })
+	close(events)
+
+	var got []protocol.ServerEvent
+	for ev := range events {
+		got = append(got, ev)
+	}
+	if len(got) != 2 || got[0].Type != protocol.EvAssistantDelta || got[1].Type != protocol.EvAssistantDone {
+		t.Fatalf("unexpected events: %+v", got)
+	}
+	for _, ev := range got {
+		if ev.Turn != 0 {
+			t.Fatalf("opening greeting must use the reserved turn-0 sentinel, got %+v", ev)
+		}
+	}
+	if got[1].Text != "Hey! What's on your mind today?" {
+		t.Fatalf("assistant_done text = %q", got[1].Text)
+	}
+	_, recent := sess.Export()
+	if len(recent) != 1 || recent[0].Role != llm.RoleAssistant || recent[0].Content != "Hey! What's on your mind today?" {
+		t.Fatalf("greeting not appended to session history: %+v", recent)
+	}
+	// The greeting must not consume a turn number — the learner's first real
+	// utterance still has to land on turn 1.
+	if next := sess.NextTurn(); next != 1 {
+		t.Fatalf("NextTurn() after greeting = %d, want 1", next)
+	}
+}
+
+func TestStartConversationEmitsTranslation(t *testing.T) {
+	sess := session.New("sys")
+	p := &Pipeline{
+		LLM:       &fakeLLM{chatReply: "Hi there!"},
+		ChatModel: "m",
+		Analysis: []Candidate{{Model: "t", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			return "안녕하세요!", nil
+		}}}},
+	}
+
+	events := make(chan protocol.ServerEvent, 8)
+	p.StartConversation(context.Background(), sess, func(ev protocol.ServerEvent) { events <- ev })
+
+	got := collectUntilQuiet(t, events, 200*time.Millisecond, 2*time.Second)
+	var translations []protocol.ServerEvent
+	for _, ev := range got {
+		if ev.Type == protocol.EvAssistantTranslation {
+			translations = append(translations, ev)
+		}
+	}
+	if len(translations) != 1 || translations[0].Text != "안녕하세요!" || translations[0].Turn != 0 {
+		t.Fatalf("expected one turn-0 assistant_translation event, got %+v (all events: %+v)", translations, got)
+	}
+}
+
+func TestStartConversationFallbackOnLLMError(t *testing.T) {
+	sess := session.New("sys")
+	p := &Pipeline{LLM: &fakeLLM{chatErr: errors.New("connection refused")}, ChatModel: "m"}
+
+	var got []protocol.ServerEvent
+	p.StartConversation(context.Background(), sess, func(ev protocol.ServerEvent) { got = append(got, ev) })
+
+	if len(got) != 2 || got[0].Text != openingFallback || got[1].Text != openingFallback {
+		t.Fatalf("expected fallback delta + done with the canned opening line, got %+v", got)
+	}
+	_, recent := sess.Export()
+	if len(recent) != 1 || recent[0].Content != openingFallback {
+		t.Fatalf("fallback greeting not appended: %+v", recent)
+	}
+}
+
+func TestStartConversationBargeInSkipsDoneAndAppend(t *testing.T) {
+	sess := session.New("sys")
+	p := &Pipeline{LLM: &fakeLLM{chatReply: "should not be used"}, ChatModel: "m"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled: the learner spoke before the greeting landed
+
+	var got []protocol.ServerEvent
+	p.StartConversation(ctx, sess, func(ev protocol.ServerEvent) { got = append(got, ev) })
+
+	if len(got) != 0 {
+		t.Fatalf("expected no events emitted on barge-in, got %+v", got)
+	}
+	_, recent := sess.Export()
+	if len(recent) != 0 {
+		t.Fatalf("greeting must not be appended on barge-in, got %+v", recent)
+	}
+}
+
 // ---- compact() -----------------------------------------------------------------
 
 func TestCompactNoopBelowThreshold(t *testing.T) {

@@ -258,6 +258,50 @@ func (p *Pipeline) HandleText(ctx context.Context, sess *session.Session, text s
 	p.reply(ctx, sess, turn, emit)
 }
 
+// StartConversation generates the assistant's opening line for a brand-new
+// chat room, so the learner isn't the one who always has to speak first —
+// called once, right after EvReady, only when the connection minted a new
+// session (see transport.ws). It deliberately does NOT call sess.NextTurn():
+// the emitted events carry the reserved sentinel turn 0, so the first real
+// utterance still gets turn 1, and transport.persistEvent skips turn 0
+// entirely — an abandoned "new chat" that's never replied to leaves no
+// durable trace, exactly like before this feature existed (see
+// store.MySQLStore.SaveTurn/Save, which only ever create/touch a session row
+// once the learner's own turn 1 lands). The greeting still lives in the
+// in-memory session history, so the LLM sees it as context, and it rides
+// along in Profile.Recent once a real reply persists.
+func (p *Pipeline) StartConversation(ctx context.Context, sess *session.Session, emit Emit) {
+	const openingTurn = 0
+	msgs := append(sess.Snapshot(), llm.Message{Role: llm.RoleSystem, Content: openingSystemPrompt})
+	full, err := p.LLM.ChatStream(ctx, p.ChatModel, msgs, func(tok string) {
+		emit(protocol.ServerEvent{Type: protocol.EvAssistantDelta, Turn: openingTurn, Text: tok})
+	})
+	// Barged in (learner already spoke before the greeting landed): drop it
+	// rather than talk over them.
+	if ctx.Err() != nil {
+		return
+	}
+	if err != nil {
+		log.Printf("chat: opening: %v", err)
+		if strings.TrimSpace(full) == "" {
+			full = openingFallback
+			emit(protocol.ServerEvent{Type: protocol.EvAssistantDelta, Turn: openingTurn, Text: full})
+		}
+	}
+	emit(protocol.ServerEvent{Type: protocol.EvAssistantDone, Turn: openingTurn, Text: full})
+	sess.AppendAssistant(full)
+	if strings.TrimSpace(full) != "" {
+		go p.translateAssistant(ctx, openingTurn, full, emit)
+	}
+}
+
+const openingSystemPrompt = `Start the conversation: the learner has not said anything yet. Greet them
+warmly in 1-2 short spoken-style sentences and ask one easy opening question
+to get them talking (e.g. their day, an interest, or what they'd like to
+practice). Do not mention that you were told to do this.`
+
+const openingFallback = "Hey there! Glad you're here — what would you like to talk about today?"
+
 // reply streams the assistant response and records it in the session.
 func (p *Pipeline) reply(ctx context.Context, sess *session.Session, turn int, emit Emit) {
 	msgs := sess.Snapshot()
