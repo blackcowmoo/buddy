@@ -103,6 +103,13 @@ async function openStudyPopover(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByRole("button", { name: "발음 연습 열기" }));
 }
 
+// Grammar feedback lives behind a per-message popover too — open it (once
+// the check has finished, so the button isn't disabled/spinning) before a
+// test asserts on the correction content.
+async function openGrammarPopover(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole("button", { name: /^문법 피드백 열기/ }));
+}
+
 // The app always lands on the room list, and the room list has its own
 // hamburger menu (identity, theme, PR nav). Tests for chat-only menu items
 // (voice/playback speed, reset) need to get into a room first, the same way
@@ -402,8 +409,51 @@ describe("correction cards", () => {
         },
       }),
     );
+    await openGrammarPopover(user);
     expect(await screen.findByText("문맥")).toBeInTheDocument();
     expect(screen.getByText("앞 문맥과 맞지 않아요")).toBeInTheDocument();
+  });
+});
+
+describe("grammar feedback button", () => {
+  it("shows a spinner while the grammar check is running", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "final_transcript", turn: 1, text: "I are fine." }));
+    expect(await screen.findByRole("button", { name: "문법 확인 중" })).toBeDisabled();
+  });
+
+  it("shows a clean-sentence message when the check finds no issues", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "final_transcript", turn: 1, text: "I am fine." }));
+    act(() =>
+      emit({
+        type: "correction",
+        turn: 1,
+        correction: { original: "I am fine.", corrected: "I am fine.", issues: [] },
+      }),
+    );
+    await user.click(await screen.findByRole("button", { name: "문법 피드백 열기 (문제 없음)" }));
+    expect(await screen.findByText("문법 문제가 없어요 👍")).toBeInTheDocument();
+  });
+
+  it("does not show a spinner for a hydrated turn with no saved correction", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+      turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+
+    await screen.findByText("hi");
+    expect(screen.queryByRole("button", { name: /^문법/ })).not.toBeInTheDocument();
   });
 });
 
