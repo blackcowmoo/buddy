@@ -1,5 +1,7 @@
 // Playback-speed presets for the per-message TTS buttons (see App.tsx). Pure
 // client preference, so it lives in localStorage rather than the server.
+import { readStored, writeStored } from "./storedValue";
+
 const STORAGE_KEY = "buddy.tts.extraRates";
 
 export const NATIVE_RATE = 1;
@@ -21,28 +23,17 @@ function sanitize(rates: unknown[]): number[] {
 
 /** Reads the extra playback speeds, falling back to the defaults if unset or corrupt. */
 export function loadExtraRates(): number[] {
-  let raw: string | null;
-  try {
-    raw = localStorage.getItem(STORAGE_KEY);
-  } catch {
-    return DEFAULT_EXTRA_RATES;
-  }
-  if (raw === null) return DEFAULT_EXTRA_RATES;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return DEFAULT_EXTRA_RATES;
-    return sanitize(parsed);
-  } catch {
-    return DEFAULT_EXTRA_RATES;
-  }
+  return readStored(
+    STORAGE_KEY,
+    (raw) => {
+      const parsed: unknown = JSON.parse(raw);
+      return Array.isArray(parsed) ? sanitize(parsed) : undefined;
+    },
+    DEFAULT_EXTRA_RATES,
+  );
 }
 
 /** Persists the extra playback speeds, deduped and capped at MAX_EXTRA_RATES. */
 export function saveExtraRates(rates: number[]): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitize(rates)));
-  } catch {
-    // Storage unavailable (private browsing, quota) — the setting just
-    // won't survive a reload; nothing else depends on it.
-  }
+  writeStored(STORAGE_KEY, JSON.stringify(sanitize(rates)));
 }

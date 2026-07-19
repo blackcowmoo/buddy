@@ -1,3 +1,5 @@
+import { fetchJSON, requestOK } from "./fetchJSON";
+
 // Mirrors httpserver.recordingsListHandler's response shape
 // (apps/server/internal/httpserver/recordings.go).
 export interface Recording {
@@ -14,13 +16,7 @@ export interface Recording {
 // (including 503 when recording storage isn't configured), or bad JSON — so
 // the caller can show an empty/error state instead of throwing.
 export async function fetchRecordings(): Promise<Recording[] | null> {
-  try {
-    const res = await fetch("api/recordings");
-    if (!res.ok) return null;
-    return (await res.json()) as Recording[];
-  } catch {
-    return null;
-  }
+  return fetchJSON<Recording[] | null>("api/recordings", null);
 }
 
 // Same-origin relative URL for playing back one recording (see
@@ -34,10 +30,5 @@ export function recordingAudioURL(id: string): string {
 // the caller can decide what to do on failure (e.g. leave the row in the
 // list) instead of assuming success.
 export async function deleteRecording(id: string): Promise<boolean> {
-  try {
-    const res = await fetch(`api/recordings/${encodeURIComponent(id)}`, { method: "DELETE" });
-    return res.ok;
-  } catch {
-    return false;
-  }
+  return requestOK(`api/recordings/${encodeURIComponent(id)}`, { method: "DELETE" });
 }

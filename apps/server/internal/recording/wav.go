@@ -1,7 +1,9 @@
 package recording
 
 import (
-	"encoding/binary"
+	"bytes"
+
+	"buddy/server/internal/wav"
 )
 
 const (
@@ -15,26 +17,10 @@ const (
 // stored file plays directly in a browser <audio> element with no further
 // decoding on our side.
 func encodeWAV(pcm []byte, sampleRate int) []byte {
-	byteRate := sampleRate * channels * bytesPerSample
-	blockAlign := channels * bytesPerSample
-	dataLen := uint32(len(pcm))
-
-	out := make([]byte, 44+len(pcm))
-	copy(out[0:4], "RIFF")
-	binary.LittleEndian.PutUint32(out[4:8], 36+dataLen)
-	copy(out[8:12], "WAVE")
-	copy(out[12:16], "fmt ")
-	binary.LittleEndian.PutUint32(out[16:20], 16) // fmt chunk size
-	binary.LittleEndian.PutUint16(out[20:22], 1)  // PCM
-	binary.LittleEndian.PutUint16(out[22:24], uint16(channels))
-	binary.LittleEndian.PutUint32(out[24:28], uint32(sampleRate))
-	binary.LittleEndian.PutUint32(out[28:32], uint32(byteRate))
-	binary.LittleEndian.PutUint16(out[32:34], uint16(blockAlign))
-	binary.LittleEndian.PutUint16(out[34:36], bitsPerSample)
-	copy(out[36:40], "data")
-	binary.LittleEndian.PutUint32(out[40:44], dataLen)
-	copy(out[44:], pcm)
-	return out
+	var out bytes.Buffer
+	out.Grow(44 + len(pcm))
+	_ = wav.Encode(&out, pcm, sampleRate, channels) // bytes.Buffer.Write never errors
+	return out.Bytes()
 }
 
 // durationMS returns the playback length of raw mono 16-bit PCM at

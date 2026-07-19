@@ -38,11 +38,10 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 
 	// Realtime + API first (exact patterns win over the "/" catch-all).
 	mux.Handle("/ws", transport.NewHandler(pipe, ident, st, audio, recordings))
+	// The STT ensemble is fixed once pipe is constructed, so its name list is
+	// computed once here rather than per health-check request.
+	sttNames := pipe.STTNames()
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
-		sttNames := make([]string, len(pipe.STT))
-		for i, rec := range pipe.STT {
-			sttNames[i] = rec.Name()
-		}
 		writeJSON(w, map[string]any{
 			"ok":   true,
 			"env":  cfg.Env,
@@ -130,9 +129,8 @@ func registerStalePRRedirect(mux *http.ServeMux, rootPath string) {
 // so the frontend only trusts it when identityMode says it's real.
 func meHandler(identityMode string, ident identity.Identifier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		userID, ok := ident.Identify(w, r)
+		userID, ok := requireUser(w, r, ident)
 		if !ok {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		writeJSON(w, map[string]any{
@@ -147,15 +145,13 @@ func meHandler(identityMode string, ident identity.Identifier) http.HandlerFunc 
 // /ws and /api/me use, so a learner only ever sees their own history.
 func sessionsListHandler(ident identity.Identifier, st store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		userID, ok := ident.Identify(w, r)
+		userID, ok := requireUser(w, r, ident)
 		if !ok {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		sessions, err := st.ListSessions(r.Context(), userID)
 		if err != nil {
-			log.Printf("list sessions: %v", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			serverError(w, "list sessions", err)
 			return
 		}
 		writeJSON(w, sessions)
@@ -179,9 +175,8 @@ func sessionsListHandler(ident identity.Identifier, st store.Store) http.Handler
 // immediately and gets the filled-in ones on their next visit.
 func sessionDetailHandler(ident identity.Identifier, st store.Store, translateQueue *backfill.Queue) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		userID, ok := ident.Identify(w, r)
+		userID, ok := requireUser(w, r, ident)
 		if !ok {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		sessionID := r.PathValue("id")
@@ -191,8 +186,7 @@ func sessionDetailHandler(ident identity.Identifier, st store.Store, translateQu
 			return
 		}
 		if err != nil {
-			log.Printf("session detail: %v", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			serverError(w, "session detail", err)
 			return
 		}
 		if needsTranslationBackfill(turns) {
@@ -227,9 +221,8 @@ func needsTranslationBackfill(turns []store.Turn) bool {
 // S3 writes.
 func sessionDeleteHandler(ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		userID, ok := ident.Identify(w, r)
+		userID, ok := requireUser(w, r, ident)
 		if !ok {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		sessionID := r.PathValue("id")
@@ -244,8 +237,7 @@ func sessionDeleteHandler(ident identity.Identifier, st store.Store, audio trans
 			}
 		}
 		if err := st.DeleteSession(r.Context(), userID, sessionID); err != nil {
-			log.Printf("delete session: %v", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			serverError(w, "delete session", err)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -255,6 +247,25 @@ func sessionDeleteHandler(ident identity.Identifier, st store.Store, audio trans
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// requireUser resolves the caller's identity the way every JSON-API handler
+// needs to, writing a 401 and reporting false on failure so callers can
+// `userID, ok := requireUser(...); if !ok { return }`.
+func requireUser(w http.ResponseWriter, r *http.Request, ident identity.Identifier) (string, bool) {
+	userID, ok := ident.Identify(w, r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return "", false
+	}
+	return userID, true
+}
+
+// serverError logs err with context and writes a generic 500 — the response
+// body never leaks internal error detail to the caller.
+func serverError(w http.ResponseWriter, context string, err error) {
+	log.Printf("%s: %v", context, err)
+	http.Error(w, "internal error", http.StatusInternalServerError)
 }
 
 func logging(next http.Handler) http.Handler {

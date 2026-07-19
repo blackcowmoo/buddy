@@ -70,7 +70,10 @@ var (
 	sseDone = []byte("[DONE]")
 )
 
-func (o *OpenAI) newReq(ctx context.Context, body []byte) (*http.Request, error) {
+// do posts body to the chat-completions endpoint and returns the response
+// once its status has checked out OK — callers only need to decode the body
+// (streamed SSE or a single JSON payload) and close it when done.
+func (o *OpenAI) do(ctx context.Context, body []byte) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.BaseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -79,23 +82,24 @@ func (o *OpenAI) newReq(ctx context.Context, body []byte) (*http.Request, error)
 	if o.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+o.APIKey)
 	}
-	return req, nil
+	resp, err := o.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("llm unreachable: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, fmt.Errorf("llm status %d", resp.StatusCode)
+	}
+	return resp, nil
 }
 
 func (o *OpenAI) ChatStream(ctx context.Context, model string, msgs []Message, onToken func(string)) (string, error) {
 	body, _ := json.Marshal(chatReq{Model: model, Messages: msgs, Stream: true})
-	req, err := o.newReq(ctx, body)
+	resp, err := o.do(ctx, body)
 	if err != nil {
 		return "", err
 	}
-	resp, err := o.http.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("llm unreachable: %w", err)
-	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("llm status %d", resp.StatusCode)
-	}
 
 	var full bytes.Buffer
 	sc := bufio.NewScanner(resp.Body)
@@ -130,18 +134,11 @@ func (o *OpenAI) Complete(ctx context.Context, model string, msgs []Message, jso
 		r.ResponseFormat = &responseFormat{Type: "json_object"}
 	}
 	body, _ := json.Marshal(r)
-	req, err := o.newReq(ctx, body)
+	resp, err := o.do(ctx, body)
 	if err != nil {
 		return "", err
 	}
-	resp, err := o.http.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("llm unreachable: %w", err)
-	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("llm status %d", resp.StatusCode)
-	}
 	var cr chatResp
 	if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
 		return "", err

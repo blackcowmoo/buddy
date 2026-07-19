@@ -110,12 +110,8 @@ func main() {
 	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, translateQueue)
 
 	go func() {
-		names := make([]string, len(pipe.STT))
-		for i, r := range pipe.STT {
-			names[i] = r.Name()
-		}
 		log.Printf("buddy up on %s  env=%s  stt=%v  feedback=%s",
-			cfg.Addr, cfg.Env, names, cfg.FeedbackLang)
+			cfg.Addr, cfg.Env, pipe.STTNames(), cfg.FeedbackLang)
 		if err := srv.ListenAndServe(); err != nil && err.Error() != "http: Server closed" {
 			log.Fatalf("listen: %v", err)
 		}

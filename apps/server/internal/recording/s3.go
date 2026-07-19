@@ -15,15 +15,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/go-sql-driver/mysql"
-)
 
-// MySQL error numbers for "column already exists" / "index name already
-// exists" — expected, steady-state outcomes of addSessionIDColumn below once
-// a deployment has already migrated, not failures.
-const (
-	erDupFieldname = 1060
-	erDupKeyname   = 1061
+	"buddy/server/internal/mysqlerr"
 )
 
 // table carries a buddy_ prefix for the same reason as internal/store's
@@ -63,13 +56,6 @@ type S3Store struct {
 	bucket       string
 	storageClass types.StorageClass
 	rw, ro       *sql.DB
-}
-
-// isMySQLError reports whether err is a *mysql.MySQLError carrying the given
-// server error number (see the erDup* constants above).
-func isMySQLError(err error, number uint16) bool {
-	var mysqlErr *mysql.MySQLError
-	return errors.As(err, &mysqlErr) && mysqlErr.Number == number
 }
 
 // newS3Client builds the AWS SDK client from cfg's static credentials —
@@ -121,10 +107,10 @@ func NewS3(ctx context.Context, cfg S3Config, rw, ro *sql.DB) (*S3Store, error) 
 	// supported by every MySQL 8.0 point release this app has run against, so
 	// the idempotency comes from ignoring the specific "already there" errors
 	// instead of relying on that clause.
-	if _, err := rw.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN session_id VARCHAR(64) NOT NULL DEFAULT '' AFTER user_id`); err != nil && !isMySQLError(err, erDupFieldname) {
+	if _, err := rw.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN session_id VARCHAR(64) NOT NULL DEFAULT '' AFTER user_id`); err != nil && !mysqlerr.Is(err, mysqlerr.DupFieldName) {
 		return nil, fmt.Errorf("recording: migrate session_id: %w", err)
 	}
-	if _, err := rw.ExecContext(ctx, `ALTER TABLE `+table+` ADD INDEX idx_user_session (user_id, session_id)`); err != nil && !isMySQLError(err, erDupKeyname) {
+	if _, err := rw.ExecContext(ctx, `ALTER TABLE `+table+` ADD INDEX idx_user_session (user_id, session_id)`); err != nil && !mysqlerr.Is(err, mysqlerr.DupKeyName) {
 		return nil, fmt.Errorf("recording: migrate session_id index: %w", err)
 	}
 

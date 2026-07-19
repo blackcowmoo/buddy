@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"buddy/server/internal/wav"
 )
 
 // HTTPTranscriber talks to whisper.cpp's `server` example's native
@@ -66,8 +68,8 @@ func (h *HTTPTranscriber) Transcribe(ctx context.Context, pcm []byte) (Result, e
 	}
 	url, model := h.pickEndpoint()
 
-	var wav bytes.Buffer
-	if err := writeWAV(&wav, pcm, 16000, 1); err != nil {
+	var wavBuf bytes.Buffer
+	if err := wav.Encode(&wavBuf, pcm, 16000, 1); err != nil {
 		return Result{}, err
 	}
 
@@ -77,7 +79,7 @@ func (h *HTTPTranscriber) Transcribe(ctx context.Context, pcm []byte) (Result, e
 	if err != nil {
 		return Result{}, err
 	}
-	if _, err := io.Copy(fw, &wav); err != nil {
+	if _, err := io.Copy(fw, &wavBuf); err != nil {
 		return Result{}, err
 	}
 	if model != "" {
