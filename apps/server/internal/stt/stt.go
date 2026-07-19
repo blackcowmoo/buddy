@@ -19,13 +19,3 @@ type Recognizer interface {
 	Name() string
 	Transcribe(ctx context.Context, pcm []byte) (Result, error)
 }
-
-// StreamingRecognizer is the upgrade path for true partial results
-// (e.g. Vosk). Not required by the current pipeline — implement it when you
-// wire a Kaldi/Vosk engine and want token-by-token partials.
-type StreamingRecognizer interface {
-	Recognizer
-	// Stream consumes audio chunks from `in` and emits partial/final results
-	// on the returned channel until `in` is closed.
-	Stream(ctx context.Context, in <-chan []byte) (<-chan Result, error)
-}

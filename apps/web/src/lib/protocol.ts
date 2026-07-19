@@ -2,7 +2,6 @@
 
 export type EventType =
   | "ready"
-  | "partial_transcript"
   | "final_transcript"
   | "assistant_delta"
   | "assistant_done"

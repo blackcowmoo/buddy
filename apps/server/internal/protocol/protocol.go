@@ -17,7 +17,6 @@ type EventType string
 
 const (
 	EvReady                EventType = "ready"                 // handshake
-	EvPartial              EventType = "partial_transcript"    // fast STT, may change
 	EvFinal                EventType = "final_transcript"      // fast STT, locked
 	EvAssistantDelta       EventType = "assistant_delta"       // streamed reply token
 	EvAssistantDone        EventType = "assistant_done"        // full reply (browser speaks this)
