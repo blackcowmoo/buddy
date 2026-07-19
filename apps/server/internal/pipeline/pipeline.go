@@ -448,20 +448,21 @@ func (p *Pipeline) correct(ctx context.Context, turn int, text, contextMsg strin
 		log.Printf("correct: bad json: %v", err)
 		return
 	}
-	// Only emit the teaching card when there's something to teach; the
+	// Always emit, even when there's nothing to teach (Corrected == text,
+	// empty Issues) — the client hangs a per-turn pending/spinner state off
+	// this event, so it needs a definitive "the check finished" signal
+	// regardless of outcome, not just when there's a card to show. The
 	// translation below fires independently so a learner still gets a
 	// meaning check even on an already-correct sentence.
-	if !strings.EqualFold(strings.TrimSpace(parsed.Corrected), strings.TrimSpace(text)) || len(parsed.Issues) > 0 {
-		emit(protocol.ServerEvent{
-			Type: protocol.EvCorrection,
-			Turn: turn,
-			Correction: &protocol.Correction{
-				Original:  text,
-				Corrected: parsed.Corrected,
-				Issues:    parsed.Issues,
-			},
-		})
-	}
+	emit(protocol.ServerEvent{
+		Type: protocol.EvCorrection,
+		Turn: turn,
+		Correction: &protocol.Correction{
+			Original:  text,
+			Corrected: parsed.Corrected,
+			Issues:    parsed.Issues,
+		},
+	})
 	if strings.TrimSpace(parsed.Translation) != "" {
 		emit(protocol.ServerEvent{Type: protocol.EvUserTranslation, Turn: turn, Text: parsed.Translation})
 	}

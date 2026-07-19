@@ -153,12 +153,17 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 .tts-controls { display: flex; gap: 6px; flex-wrap: wrap; }
 .tts-btn { font-size: 12px; padding: 4px 10px; min-height: 30px; }
 
+/* Per-row toolbar: the grammar-feedback button sits next to the study
+   (rate-playback) button, both collapsed behind small icon buttons + a
+   popover instead of crowding the row — see App.tsx GrammarControl/
+   StudyControl. */
+.msg-tools { display: flex; gap: 6px; }
+
 /* Collapses per-rate playback into one small button + popover so a message
-   row isn't dominated by a wall of rate buttons — see App.tsx StudyControl.
-   The popover is also the anchor point for future per-message practice
-   content (e.g. grammar detail). */
-.study-control { position: relative; display: inline-flex; }
-.study-btn { width: 32px; height: 32px; min-height: 32px; font-size: 14px; }
+   row isn't dominated by a wall of rate buttons — see App.tsx StudyControl. */
+.study-control, .grammar-control { position: relative; display: inline-flex; }
+.study-btn, .grammar-btn { width: 32px; height: 32px; min-height: 32px; font-size: 14px; }
+.grammar-btn:disabled { opacity: 0.7; }
 .study-panel {
   position: absolute;
   top: calc(100% + 6px);
@@ -171,6 +176,14 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 }
 .row.user .study-panel { right: 0; }
 .row.assistant .study-panel { left: 0; }
+.grammar-panel { min-width: 220px; max-width: min(85vw, 360px); }
+.grammar-clean { font-size: 13px; color: var(--muted); padding: 2px 4px; }
+
+.spinning { display: inline-block; animation: spin 1s linear infinite; }
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
 
 .path-form { display: flex; flex-direction: column; gap: 6px; }
 .path-form label { font-size: 12px; color: var(--muted); }
