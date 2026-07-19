@@ -3,12 +3,12 @@ package stt
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"strings"
+
+	"buddy/server/internal/wav"
 )
 
 // Whisper shells out to whisper.cpp's `whisper-cli`. No CGo, no Python.
@@ -41,7 +41,7 @@ func (w *Whisper) Transcribe(ctx context.Context, pcm []byte) (Result, error) {
 		return Result{}, err
 	}
 	defer os.Remove(tmp.Name())
-	if err := writeWAV(tmp, pcm, 16000, 1); err != nil {
+	if err := wav.Encode(tmp, pcm, 16000, 1); err != nil {
 		tmp.Close()
 		return Result{}, err
 	}
@@ -62,33 +62,4 @@ func (w *Whisper) Transcribe(ctx context.Context, pcm []byte) (Result, error) {
 		return Result{}, fmt.Errorf("whisper-cli: %w: %s", err, errb.String())
 	}
 	return Result{Text: strings.TrimSpace(out.String()), Confidence: 0.9}, nil
-}
-
-// writeWAV emits a minimal 16-bit PCM WAV around the raw samples.
-func writeWAV(f io.Writer, pcm []byte, sampleRate, channels int) error {
-	const bitsPerSample = 16
-	byteRate := sampleRate * channels * bitsPerSample / 8
-	blockAlign := channels * bitsPerSample / 8
-	dataLen := len(pcm)
-
-	var h bytes.Buffer
-	h.WriteString("RIFF")
-	binary.Write(&h, binary.LittleEndian, uint32(36+dataLen))
-	h.WriteString("WAVE")
-	h.WriteString("fmt ")
-	binary.Write(&h, binary.LittleEndian, uint32(16))            // subchunk size
-	binary.Write(&h, binary.LittleEndian, uint16(1))             // PCM
-	binary.Write(&h, binary.LittleEndian, uint16(channels))      //
-	binary.Write(&h, binary.LittleEndian, uint32(sampleRate))    //
-	binary.Write(&h, binary.LittleEndian, uint32(byteRate))      //
-	binary.Write(&h, binary.LittleEndian, uint16(blockAlign))    //
-	binary.Write(&h, binary.LittleEndian, uint16(bitsPerSample)) //
-	h.WriteString("data")
-	binary.Write(&h, binary.LittleEndian, uint32(dataLen))
-
-	if _, err := f.Write(h.Bytes()); err != nil {
-		return err
-	}
-	_, err := f.Write(pcm)
-	return err
 }

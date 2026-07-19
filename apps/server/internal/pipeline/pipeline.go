@@ -81,6 +81,18 @@ type Pipeline struct {
 	MaxHistoryMessages int
 }
 
+// STTNames returns the configured STT engines' Name()s, in registration
+// order. The ensemble is fixed once Pipeline is constructed, so callers that
+// just want a label (main's boot log, httpserver's /api/health) should call
+// this once and reuse the result rather than recomputing it per request.
+func (p *Pipeline) STTNames() []string {
+	names := make([]string, len(p.STT))
+	for i, r := range p.STT {
+		names[i] = r.Name()
+	}
+	return names
+}
+
 // HandleUtterance runs one turn from raw audio.
 func (p *Pipeline) HandleUtterance(ctx context.Context, sess *session.Session, pcm []byte, emit Emit) {
 	turn := sess.NextTurn()

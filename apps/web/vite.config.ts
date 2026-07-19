@@ -27,8 +27,11 @@ export default defineConfig(({ command }) => ({
           dest: ".",
           rename: { stripBase: true },
         },
-        { src: "node_modules/onnxruntime-web/dist/*.wasm", dest: ".", rename: { stripBase: true } },
-        { src: "node_modules/onnxruntime-web/dist/*.mjs", dest: ".", rename: { stripBase: true } },
+        {
+          src: "node_modules/onnxruntime-web/dist/*.{wasm,mjs}",
+          dest: ".",
+          rename: { stripBase: true },
+        },
       ],
     }),
   ],

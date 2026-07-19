@@ -21,15 +21,13 @@ func recordingsListHandler(ident identity.Identifier, recordings recording.Store
 			http.Error(w, "recording storage is not configured", http.StatusServiceUnavailable)
 			return
 		}
-		userID, ok := ident.Identify(w, r)
+		userID, ok := requireUser(w, r, ident)
 		if !ok {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		list, err := recordings.List(r.Context(), userID)
 		if err != nil {
-			log.Printf("recordings: list %s: %v", userID, err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			serverError(w, "recordings: list "+userID, err)
 			return
 		}
 		type item struct {
@@ -57,9 +55,8 @@ func recordingAudioHandler(ident identity.Identifier, recordings recording.Store
 			http.Error(w, "recording storage is not configured", http.StatusServiceUnavailable)
 			return
 		}
-		userID, ok := ident.Identify(w, r)
+		userID, ok := requireUser(w, r, ident)
 		if !ok {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		rec, body, err := recordings.Open(r.Context(), userID, r.PathValue("id"))
@@ -92,15 +89,13 @@ func recordingDeleteHandler(ident identity.Identifier, audio transport.AudioSave
 			http.Error(w, "recording storage is not configured", http.StatusServiceUnavailable)
 			return
 		}
-		userID, ok := ident.Identify(w, r)
+		userID, ok := requireUser(w, r, ident)
 		if !ok {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		rec, err := recordings.Delete(r.Context(), userID, r.PathValue("id"))
 		if err != nil {
-			log.Printf("recordings: delete %s: %v", userID, err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			serverError(w, "recordings: delete "+userID, err)
 			return
 		}
 		if audio != nil && rec.ID != "" {

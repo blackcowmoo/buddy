@@ -191,7 +191,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			if h.recordings != nil {
 				go func() {
-					sctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					sctx, cancel := context.WithTimeout(context.Background(), audioSaveTimeout)
 					defer cancel()
 					if _, err := h.recordings.Save(sctx, userID, sessionID, utteranceID, pcm, pcmSampleRate); err != nil {
 						log.Printf("recording: save %s: %v", userID, err)

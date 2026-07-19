@@ -25,6 +25,27 @@ interface Msg {
 type TtsState = "idle" | "loading" | "ready" | "error";
 type View = "list" | "chat";
 
+// Closes an open dropdown/popover on an outside click or Escape, same
+// behavior any of them need — the panel's ref and its own close callback are
+// the only per-instance bits.
+function useDismiss(open: boolean, ref: React.RefObject<HTMLElement | null>, onClose: () => void) {
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open, ref, onClose]);
+}
+
 export function App() {
   // The home screen always lands on the room list, never a silently
   // reconnected conversation — a WS connection only opens once the learner
@@ -311,39 +332,13 @@ export function App() {
   }, []);
 
   // Click-outside / Escape closes the menu, same as any dropdown.
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onPointerDown = (e: PointerEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMenuOpen(false);
-    };
-    document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [menuOpen]);
+  const closeMenu = useCallback(() => setMenuOpen(false), []);
+  useDismiss(menuOpen, menuRef, closeMenu);
 
   // Click-outside / Escape closes whichever per-row popover is open, same as
   // the menu.
-  useEffect(() => {
-    if (openPanel === null) return;
-    const onPointerDown = (e: PointerEvent) => {
-      if (studyRef.current && !studyRef.current.contains(e.target as Node)) setOpenPanel(null);
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpenPanel(null);
-    };
-    document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [openPanel]);
+  const closePanel = useCallback(() => setOpenPanel(null), []);
+  useDismiss(openPanel !== null, studyRef, closePanel);
 
   const goToPath = useCallback(
     (e: React.FormEvent) => {
@@ -366,35 +361,20 @@ export function App() {
   if (view === "list") {
     return (
       <div className="app">
-        <header className="topbar">
-          <div className="brand">
-            <h1>Buddy</h1>
-          </div>
-          <div className="menu" ref={menuRef}>
-            <button
-              className="ghost icon-btn"
-              onClick={() => setMenuOpen((o) => !o)}
-              aria-label="Menu"
-              aria-haspopup="true"
-              aria-expanded={menuOpen}
-              title="Menu"
-            >
-              ☰
-            </button>
-            {menuOpen && (
-              <MenuPanel
-                email={email}
-                theme={theme}
-                onThemeChange={selectTheme}
-                prInput={prInput}
-                onPrInputChange={handlePrInputChange}
-                prError={prError}
-                onGoToPath={goToPath}
-                onGoToRecordings={goToRecordings}
-              />
-            )}
-          </div>
-        </header>
+        <TopBar
+          brand={<h1>Buddy</h1>}
+          menuOpen={menuOpen}
+          onToggleMenu={() => setMenuOpen((o) => !o)}
+          menuRef={menuRef}
+          email={email}
+          theme={theme}
+          onThemeChange={selectTheme}
+          prInput={prInput}
+          onPrInputChange={handlePrInputChange}
+          prError={prError}
+          onGoToPath={goToPath}
+          onGoToRecordings={goToRecordings}
+        />
 
         <main className="session-list">
           <button className="new-chat" onClick={() => void enterChat()}>
@@ -430,49 +410,38 @@ export function App() {
 
   return (
     <div className="app">
-      <header className="topbar">
-        <div className="brand">
-          <button className="ghost icon-btn" onClick={backToList} aria-label="목록으로" title="목록으로">
-            ←
-          </button>
-          <span className={`dot ${status}`} title={status} />
-          <h1>Buddy</h1>
-        </div>
-        <div className="menu" ref={menuRef}>
-          <button
-            className="ghost icon-btn"
-            onClick={() => setMenuOpen((o) => !o)}
-            aria-label="Menu"
-            aria-haspopup="true"
-            aria-expanded={menuOpen}
-            title="Menu"
-          >
-            ☰
-          </button>
-          {menuOpen && (
-            <MenuPanel
-              email={email}
-              theme={theme}
-              onThemeChange={selectTheme}
-              prInput={prInput}
-              onPrInputChange={handlePrInputChange}
-              prError={prError}
-              onGoToPath={goToPath}
-              onGoToRecordings={goToRecordings}
-              chat={{
-                tts,
-                ttsProgress,
-                onLoadVoice: loadVoice,
-                extraRates,
-                newRateInput,
-                onNewRateInputChange: setNewRateInput,
-                onAddRate: addRate,
-                onRemoveRate: removeRate,
-              }}
-            />
-          )}
-        </div>
-      </header>
+      <TopBar
+        brand={
+          <>
+            <button className="ghost icon-btn" onClick={backToList} aria-label="목록으로" title="목록으로">
+              ←
+            </button>
+            <span className={`dot ${status}`} title={status} />
+            <h1>Buddy</h1>
+          </>
+        }
+        menuOpen={menuOpen}
+        onToggleMenu={() => setMenuOpen((o) => !o)}
+        menuRef={menuRef}
+        email={email}
+        theme={theme}
+        onThemeChange={selectTheme}
+        prInput={prInput}
+        onPrInputChange={handlePrInputChange}
+        prError={prError}
+        onGoToPath={goToPath}
+        onGoToRecordings={goToRecordings}
+        chat={{
+          tts,
+          ttsProgress,
+          onLoadVoice: loadVoice,
+          extraRates,
+          newRateInput,
+          onNewRateInputChange: setNewRateInput,
+          onAddRate: addRate,
+          onRemoveRate: removeRate,
+        }}
+      />
 
       <main className="convo">
         {msgs.length === 0 && (
@@ -745,10 +714,44 @@ interface ChatMenuProps {
   onRemoveRate: (rate: number) => void;
 }
 
-// Shared by both the room list and the chat header, so the menu (identity,
-// theme, PR-preview nav) is reachable before a room is ever opened, not just
-// from within a conversation. `chat` carries the items that only make sense
-// once a room is open (voice/playback speed) — omitted on the list.
+// Shared by both the room list and the chat header (see App's two return
+// branches) — only the brand content (back button + status dot vs. just the
+// title) and whether chat-only MenuPanel items are shown differ between them.
+function TopBar({
+  brand,
+  menuOpen,
+  onToggleMenu,
+  menuRef,
+  ...menuPanelProps
+}: {
+  brand: React.ReactNode;
+  menuOpen: boolean;
+  onToggleMenu: () => void;
+  menuRef: React.RefObject<HTMLDivElement | null>;
+} & React.ComponentProps<typeof MenuPanel>) {
+  return (
+    <header className="topbar">
+      <div className="brand">{brand}</div>
+      <div className="menu" ref={menuRef}>
+        <button
+          className="ghost icon-btn"
+          onClick={onToggleMenu}
+          aria-label="Menu"
+          aria-haspopup="true"
+          aria-expanded={menuOpen}
+          title="Menu"
+        >
+          ☰
+        </button>
+        {menuOpen && <MenuPanel {...menuPanelProps} />}
+      </div>
+    </header>
+  );
+}
+
+// Identity, theme, and PR-preview nav — reachable via TopBar before a room is
+// ever opened. `chat` carries the items that only make sense once a room is
+// open (voice/playback speed) — omitted on the list.
 function MenuPanel({
   email,
   theme,

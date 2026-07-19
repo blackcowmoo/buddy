@@ -1,22 +1,23 @@
 // Theme preference is a client-only setting: it lives in localStorage and is
 // never sent to or read from the server. "system" tracks the OS/browser
 // prefers-color-scheme instead of pinning to one palette.
+import { readStored, writeStored } from "./storedValue";
+
 export type Theme = "white" | "dark" | "system";
 
 const STORAGE_KEY = "buddy-theme";
 const THEMES: readonly Theme[] = ["white", "dark", "system"];
 
-function isTheme(value: string | null): value is Theme {
+function isTheme(value: string): value is Theme {
   return THEMES.includes(value as Theme);
 }
 
 export function getStoredTheme(): Theme {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  return isTheme(raw) ? raw : "system";
+  return readStored(STORAGE_KEY, (raw) => (isTheme(raw) ? raw : undefined), "system");
 }
 
 export function setStoredTheme(theme: Theme): void {
-  localStorage.setItem(STORAGE_KEY, theme);
+  writeStored(STORAGE_KEY, theme);
 }
 
 // The concrete palette a theme choice resolves to once "system" is settled

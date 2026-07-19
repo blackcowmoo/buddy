@@ -14,6 +14,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 
 	"buddy/server/internal/llm"
+	"buddy/server/internal/mysqlerr"
 	"buddy/server/internal/protocol"
 )
 
@@ -24,12 +25,6 @@ const (
 	sessionsTable = "buddy_sessions"
 	turnsTable    = "buddy_turns"
 )
-
-// errDupFieldName is MySQL's ER_DUP_FIELDNAME — returned by ADD COLUMN
-// against a column that already exists. MySQL (unlike MariaDB) has no ADD
-// COLUMN IF NOT EXISTS, so this is how NewMySQL's additive migrations stay
-// idempotent across repeated boots.
-const errDupFieldName = 1060
 
 // MySQLConfig describes how to reach MySQL. RWHost is the primary: all writes
 // and the schema bootstrap go there. ROHost is an optional read replica that
@@ -75,6 +70,14 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 			return nil, err
 		}
 	}
+	// Closes whatever pools ended up open, for the migration failure paths
+	// below — ro may or may not be a distinct connection from rw at this point.
+	closeAll := func() {
+		rw.Close()
+		if ro != rw {
+			ro.Close()
+		}
+	}
 
 	// (user_id, id)/(user_id, session_id, turn, role) composite primary keys
 	// — not a bare id/session_id — so every row is structurally scoped to
@@ -111,28 +114,18 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 	}
 	for _, stmt := range schema {
 		if _, err := rw.Exec(stmt); err != nil {
-			rw.Close()
-			if ro != rw {
-				ro.Close()
-			}
+			closeAll()
 			return nil, fmt.Errorf("store: schema: %w", err)
 		}
 	}
 	// Additive: buddy_turns predates the translation feature, so existing
 	// deployments need this column added on top of their already-created
 	// table — the CREATE TABLE IF NOT EXISTS above only helps fresh ones.
-	// MySQL (unlike MariaDB) has no ADD COLUMN IF NOT EXISTS, so a rerun
-	// against an already-migrated table hits ER_DUP_FIELDNAME (1060), which
-	// is swallowed here as the "already applied" case.
-	if _, err := rw.Exec(`ALTER TABLE ` + turnsTable + ` ADD COLUMN translation TEXT NULL`); err != nil {
-		var mysqlErr *mysql.MySQLError
-		if !errors.As(err, &mysqlErr) || mysqlErr.Number != errDupFieldName {
-			rw.Close()
-			if ro != rw {
-				ro.Close()
-			}
-			return nil, fmt.Errorf("store: schema: add translation column: %w", err)
-		}
+	// See internal/mysqlerr's doc for why ER_DUP_FIELDNAME is swallowed here
+	// as the "already applied" case.
+	if _, err := rw.Exec(`ALTER TABLE ` + turnsTable + ` ADD COLUMN translation TEXT NULL`); err != nil && !mysqlerr.Is(err, mysqlerr.DupFieldName) {
+		closeAll()
+		return nil, fmt.Errorf("store: schema: add translation column: %w", err)
 	}
 	return &MySQLStore{rw: rw, ro: ro}, nil
 }

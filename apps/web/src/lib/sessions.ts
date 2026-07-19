@@ -1,4 +1,4 @@
-import { fetchJSON } from "./fetchJSON";
+import { fetchJSON, requestOK } from "./fetchJSON";
 import type { Correction } from "./protocol";
 
 // Mirrors store.SessionMeta / store.Turn (apps/server/internal/store/store.go).
@@ -42,10 +42,5 @@ export async function fetchSessionDetail(id: string): Promise<SessionDetail | nu
 // Returns whether the request succeeded, so the caller can decide what to do
 // on failure (e.g. leave the room in the list) instead of assuming success.
 export async function deleteSession(id: string): Promise<boolean> {
-  try {
-    const res = await fetch(`api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
-    return res.ok;
-  } catch {
-    return false;
-  }
+  return requestOK(`api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
