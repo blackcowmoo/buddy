@@ -520,6 +520,62 @@ describe("study popover", () => {
   });
 });
 
+describe("typing indicator", () => {
+  it("shows immediately when opening a brand-new chat, before the opening greeting arrives", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    expect(screen.getByRole("status", { name: "답변 생성 중" })).toBeInTheDocument();
+  });
+
+  it("disappears once the opening greeting's first token arrives", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    expect(screen.getByRole("status", { name: "답변 생성 중" })).toBeInTheDocument();
+
+    act(() => emit({ type: "assistant_delta", turn: 0, text: "Hey" }));
+    expect(screen.queryByRole("status", { name: "답변 생성 중" })).not.toBeInTheDocument();
+  });
+
+  it("shows after sending a typed message and disappears once the reply starts streaming", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    // Settle the opening greeting first so its own indicator isn't conflated
+    // with the one this test is actually checking.
+    act(() => emit({ type: "assistant_done", turn: 0, text: "Hey there!" }));
+    expect(screen.queryByRole("status", { name: "답변 생성 중" })).not.toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText("…or type in English"), "Hello Buddy");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(screen.getByRole("status", { name: "답변 생성 중" })).toBeInTheDocument();
+
+    act(() => emit({ type: "final_transcript", turn: 1, text: "Hello Buddy" }));
+    expect(screen.getByRole("status", { name: "답변 생성 중" })).toBeInTheDocument();
+
+    act(() => emit({ type: "assistant_delta", turn: 1, text: "Hi" }));
+    expect(screen.queryByRole("status", { name: "답변 생성 중" })).not.toBeInTheDocument();
+  });
+
+  it("clears if the connection drops while a reply is pending", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "assistant_done", turn: 0, text: "Hey there!" }));
+
+    await user.type(screen.getByPlaceholderText("…or type in English"), "Hello Buddy");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(screen.getByRole("status", { name: "답변 생성 중" })).toBeInTheDocument();
+
+    const setStatus = vi.mocked(BuddyClient).mock.calls[
+      vi.mocked(BuddyClient).mock.calls.length - 1
+    ][1] as (s: string) => void;
+    act(() => setStatus("closed"));
+    expect(screen.queryByRole("status", { name: "답변 생성 중" })).not.toBeInTheDocument();
+  });
+});
+
 describe("per-message translations", () => {
   it("shows a small translation line under both the user and assistant bubbles", async () => {
     const user = userEvent.setup();

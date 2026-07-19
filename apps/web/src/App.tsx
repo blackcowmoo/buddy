@@ -64,6 +64,11 @@ export function App() {
   // paired assistant reply share the same turn number.
   const [userTranslations, setUserTranslations] = useState<Record<number, string>>({});
   const [assistantTranslations, setAssistantTranslations] = useState<Record<number, string>>({});
+  // True from the moment a reply is expected (a message was just sent, or a
+  // brand-new room was just opened and the server is about to volunteer its
+  // opening line) until the first token of that reply arrives — drives the
+  // typing indicator in the empty gap before assistant_delta/assistant_done.
+  const [awaitingReply, setAwaitingReply] = useState(false);
   const [mic, setMic] = useState(false);
   const [text, setText] = useState("");
   const [tts, setTts] = useState<TtsState>("idle");
@@ -105,9 +110,11 @@ export function App() {
         );
         break;
       case "assistant_delta":
+        setAwaitingReply(false);
         setMsgs((m) => upsertAssistant(m, e.turn, (prev) => prev + (e.text ?? "")));
         break;
       case "assistant_done":
+        setAwaitingReply(false);
         setMsgs((m) => upsertAssistant(m, e.turn, () => e.text ?? ""));
         if (e.text && speakerRef.current?.loaded) void speakerRef.current.speak(e.text);
         break;
@@ -128,6 +135,7 @@ export function App() {
         setAssistantTranslations((t) => ({ ...t, [e.turn]: e.text ?? "" }));
         break;
       case "error":
+        setAwaitingReply(false);
         console.error("server error:", e.text);
         break;
     }
@@ -185,6 +193,7 @@ export function App() {
     setPendingCorrections({});
     setUserTranslations({});
     setAssistantTranslations({});
+    setAwaitingReply(false);
     if (sessionId) {
       // Fire the WS handshake alongside the transcript fetch — they're
       // independent round trips — instead of waiting for the fetch first.
@@ -211,6 +220,10 @@ export function App() {
     } else {
       setMsgs([]);
       clientRef.current?.connect(undefined);
+      // A brand-new room gets an opening line from the server before the
+      // learner says anything (see pipeline.StartConversation) — show the
+      // typing indicator right away instead of a bare empty screen.
+      setAwaitingReply(true);
     }
     setMenuOpen(false);
     setView("chat");
@@ -223,6 +236,7 @@ export function App() {
     setPendingCorrections({});
     setUserTranslations({});
     setAssistantTranslations({});
+    setAwaitingReply(false);
     setMenuOpen(false);
     setView("list");
     refreshSessions();
@@ -244,13 +258,22 @@ export function App() {
     setTheme(t);
   }, []);
 
+  // A dropped connection can never deliver the reply the learner is waiting
+  // on, so don't leave the typing indicator spinning forever.
+  useEffect(() => {
+    if (status === "closed" || status === "error") setAwaitingReply(false);
+  }, [status]);
+
   const toggleMic = useCallback(async () => {
     const rec = recorderRef.current;
     if (!rec) return;
     if (rec.isRecording) {
       const pcm = await rec.stop();
       setMic(false);
-      if (pcm.length > 0) clientRef.current?.sendAudio(pcm);
+      if (pcm.length > 0) {
+        clientRef.current?.sendAudio(pcm);
+        setAwaitingReply(true);
+      }
     } else {
       try {
         await rec.start();
@@ -319,6 +342,7 @@ export function App() {
       const t = text.trim();
       if (!t) return;
       clientRef.current?.sendText(t);
+      setAwaitingReply(true);
       setText("");
     },
     [text],
@@ -495,6 +519,15 @@ export function App() {
             </div>
           );
         })}
+        {awaitingReply && (
+          <div className="row assistant">
+            <div className="bubble typing" role="status" aria-label="답변 생성 중">
+              <span className="dot" />
+              <span className="dot" />
+              <span className="dot" />
+            </div>
+          </div>
+        )}
       </main>
 
       <footer className="composer">

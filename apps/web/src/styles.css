@@ -363,6 +363,21 @@ a.icon-btn.ghost {
 .cursor { animation: blink 1s steps(2) infinite; color: var(--muted); }
 @keyframes blink { 50% { opacity: 0; } }
 
+.bubble.typing { display: flex; align-items: center; gap: 4px; padding: 14px 16px; }
+.bubble.typing .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+  animation: typing-bounce 1.2s ease-in-out infinite;
+}
+.bubble.typing .dot:nth-child(2) { animation-delay: 0.15s; }
+.bubble.typing .dot:nth-child(3) { animation-delay: 0.3s; }
+@keyframes typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
 .correction {
   max-width: 85%;
   background: var(--panel);
