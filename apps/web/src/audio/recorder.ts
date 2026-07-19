@@ -25,7 +25,7 @@ export class PCMRecorder {
   async start(): Promise<void> {
     if (this.recording) return;
 
-    this.ctx = new AudioContext({ sampleRate: 16000 });
+    this.ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
     // Relative (not "/pcm-worklet.js"): resolves against the current page
     // URL, so it still works when the app is mounted under a ROOT_PATH
     // prefix like "/pr/14" instead of "/".
@@ -60,13 +60,7 @@ export class PCMRecorder {
 
   async stop(): Promise<Int16Array> {
     this.recording = false;
-    const total = this.chunks.reduce((n, c) => n + c.length, 0);
-    const merged = new Float32Array(total);
-    let off = 0;
-    for (const c of this.chunks) {
-      merged.set(c, off);
-      off += c.length;
-    }
+    const merged = concatFloat32(this.chunks);
     await this.cleanup();
     return floatTo16(await trimSilence(merged));
   }
@@ -87,6 +81,17 @@ export function floatTo16(f: Float32Array): Int16Array {
   for (let i = 0; i < f.length; i++) {
     const s = Math.max(-1, Math.min(1, f[i]));
     out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  return out;
+}
+
+// Concatenate a list of Float32Array chunks into one contiguous buffer.
+function concatFloat32(chunks: Float32Array[]): Float32Array {
+  const out = new Float32Array(chunks.reduce((n, c) => n + c.length, 0));
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.length;
   }
   return out;
 }
@@ -141,12 +146,5 @@ export async function trimSilence(audio: Float32Array): Promise<Float32Array> {
   }
   if (segments.length === 0) return audio;
 
-  const total = segments.reduce((n, s) => n + s.length, 0);
-  const out = new Float32Array(total);
-  let off = 0;
-  for (const s of segments) {
-    out.set(s, off);
-    off += s.length;
-  }
-  return out;
+  return concatFloat32(segments);
 }
