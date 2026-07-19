@@ -457,6 +457,119 @@ describe("grammar feedback button", () => {
   });
 });
 
+// Session-wide feedback list button, next to the ☰ menu in the chat header —
+// lists every user turn's feedback collected so far (see FeedbackSummary).
+describe("feedback summary", () => {
+  function openFeedbackPanel(user: ReturnType<typeof userEvent.setup>) {
+    return user.click(screen.getByRole("button", { name: "피드백 모아보기" }));
+  }
+
+  it("does not appear on the room list", async () => {
+    render(<App />);
+    await screen.findByRole("button", { name: "Menu" });
+    expect(screen.queryByRole("button", { name: "피드백 모아보기" })).not.toBeInTheDocument();
+  });
+
+  it("shows an empty state before any feedback has arrived", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    await openFeedbackPanel(user);
+    expect(await screen.findByText("아직 피드백이 없어요 👍")).toBeInTheDocument();
+  });
+
+  it("lists accumulated feedback across multiple turns and excludes clean ones", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+
+    act(() => emit({ type: "final_transcript", turn: 1, text: "I are fine." }));
+    act(() =>
+      emit({
+        type: "correction",
+        turn: 1,
+        correction: {
+          original: "I are fine.",
+          corrected: "I am fine.",
+          issues: [
+            { type: "grammar", span: "I are", suggestion: "I am", explanation: "주어-동사 불일치" },
+          ],
+        },
+      }),
+    );
+    act(() => emit({ type: "final_transcript", turn: 2, text: "I am fine." }));
+    act(() =>
+      emit({
+        type: "correction",
+        turn: 2,
+        correction: { original: "I am fine.", corrected: "I am fine.", issues: [] },
+      }),
+    );
+    act(() => emit({ type: "final_transcript", turn: 3, text: "She go home." }));
+    act(() =>
+      emit({
+        type: "correction",
+        turn: 3,
+        correction: {
+          original: "She go home.",
+          corrected: "She goes home.",
+          issues: [
+            {
+              type: "grammar",
+              span: "go",
+              suggestion: "goes",
+              explanation: "3인칭 단수 현재형",
+            },
+          ],
+        },
+      }),
+    );
+
+    await openFeedbackPanel(user);
+    expect(await screen.findByText("지금까지 2개 메시지에 피드백이 있어요")).toBeInTheDocument();
+    expect(screen.getByText("주어-동사 불일치")).toBeInTheDocument();
+    expect(screen.getByText("3인칭 단수 현재형")).toBeInTheDocument();
+    expect(screen.queryByText("I am fine.", { selector: ".feedback-original" })).not.toBeInTheDocument();
+  });
+
+  it("shows hydrated feedback from a reopened room without a live event", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+      turns: [
+        {
+          turn: 1,
+          role: "user",
+          text: "I are fine.",
+          refined: false,
+          correction: {
+            original: "I are fine.",
+            corrected: "I am fine.",
+            issues: [
+              {
+                type: "grammar",
+                span: "I are",
+                suggestion: "I am",
+                explanation: "주어-동사 불일치",
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+    await screen.findByText("I are fine.");
+
+    await openFeedbackPanel(user);
+    expect(await screen.findByText("지금까지 1개 메시지에 피드백이 있어요")).toBeInTheDocument();
+    expect(screen.getByText("주어-동사 불일치")).toBeInTheDocument();
+  });
+});
+
 describe("per-message tts playback", () => {
   it("shows a play button for the native rate and each configured extra speed", async () => {
     const user = userEvent.setup();
