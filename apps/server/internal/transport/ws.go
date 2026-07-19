@@ -164,11 +164,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	emit(protocol.ServerEvent{Type: protocol.EvReady, Session: sessionID})
 
 	if isNewSession {
-		// Runs on the connection's own ctx, not a per-turn tctx (there's no
-		// turn yet to barge into): if the learner sends a real message before
-		// this lands, the two just run concurrently on different turn numbers
-		// (0 vs 1) rather than one cancelling the other.
-		go h.pipe.StartConversation(ctx, sess, emit)
+		// Deliberately NOT `go`: the read loop below is what appends the
+		// learner's own first turn to sess.history, so this must fully finish
+		// (or be cut short by ctx cancelling on disconnect) before that loop
+		// starts — otherwise a fast client could get its own first message
+		// appended before the greeting, racing sess's in-memory ordering. A
+		// client that sends something while this blocks doesn't lose it: WS
+		// frames queue until c.Read below actually consumes them.
+		h.pipe.StartConversation(ctx, sess, emit)
 	}
 
 	// turnCancel implements barge-in: a new input cancels the previous turn.

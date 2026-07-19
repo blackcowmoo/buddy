@@ -262,22 +262,22 @@ func TestStartConversationFallbackOnLLMError(t *testing.T) {
 	}
 }
 
-func TestStartConversationBargeInSkipsDoneAndAppend(t *testing.T) {
+func TestStartConversationSkipsDoneAndAppendOnDisconnect(t *testing.T) {
 	sess := session.New("sys")
 	p := &Pipeline{LLM: &fakeLLM{chatReply: "should not be used"}, ChatModel: "m"}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // already cancelled: the learner spoke before the greeting landed
+	cancel() // already cancelled: the connection closed before the greeting landed
 
 	var got []protocol.ServerEvent
 	p.StartConversation(ctx, sess, func(ev protocol.ServerEvent) { got = append(got, ev) })
 
 	if len(got) != 0 {
-		t.Fatalf("expected no events emitted on barge-in, got %+v", got)
+		t.Fatalf("expected no events emitted after disconnect, got %+v", got)
 	}
 	_, recent := sess.Export()
 	if len(recent) != 0 {
-		t.Fatalf("greeting must not be appended on barge-in, got %+v", recent)
+		t.Fatalf("greeting must not be appended after disconnect, got %+v", recent)
 	}
 }
 

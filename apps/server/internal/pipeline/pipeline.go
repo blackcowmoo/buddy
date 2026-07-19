@@ -261,11 +261,14 @@ func (p *Pipeline) HandleText(ctx context.Context, sess *session.Session, text s
 // StartConversation generates the assistant's opening line for a brand-new
 // chat room, so the learner isn't the one who always has to speak first —
 // called once, right after EvReady, only when the connection minted a new
-// session (see transport.ws). It deliberately does NOT call sess.NextTurn():
-// the emitted events carry the reserved sentinel turn 0, so the first real
-// utterance still gets turn 1, and transport.persistEvent skips turn 0
-// entirely — an abandoned "new chat" that's never replied to leaves no
-// durable trace, exactly like before this feature existed (see
+// session (see transport.ws, which calls this synchronously — NOT via `go` —
+// specifically so it finishes appending to sess.history before the read loop
+// can append the learner's own first turn; otherwise a fast client could
+// race the greeting and land first). It deliberately does NOT call
+// sess.NextTurn(): the emitted events carry the reserved sentinel turn 0, so
+// the first real utterance still gets turn 1, and transport.persistEvent
+// skips turn 0 entirely — an abandoned "new chat" that's never replied to
+// leaves no durable trace, exactly like before this feature existed (see
 // store.MySQLStore.SaveTurn/Save, which only ever create/touch a session row
 // once the learner's own turn 1 lands). The greeting still lives in the
 // in-memory session history, so the LLM sees it as context, and it rides
@@ -276,8 +279,8 @@ func (p *Pipeline) StartConversation(ctx context.Context, sess *session.Session,
 	full, err := p.LLM.ChatStream(ctx, p.ChatModel, msgs, func(tok string) {
 		emit(protocol.ServerEvent{Type: protocol.EvAssistantDelta, Turn: openingTurn, Text: tok})
 	})
-	// Barged in (learner already spoke before the greeting landed): drop it
-	// rather than talk over them.
+	// The connection closed while this was still streaming: drop it rather
+	// than append a greeting nobody will ever see.
 	if ctx.Err() != nil {
 		return
 	}
