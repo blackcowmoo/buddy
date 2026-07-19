@@ -13,17 +13,12 @@ import (
 	"io"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-)
 
-// region is never surfaced to callers: Ceph (unlike AWS S3) doesn't route on
-// it, so it's a fixed, arbitrary value purely to satisfy the SDK's request
-// signing, not a piece of deployment configuration.
-const region = "us-east-1"
+	"buddy/server/internal/s3util"
+)
 
 type Config struct {
 	Endpoint  string // Ceph RGW (or any S3-compatible) endpoint, e.g. https://ceph.example.com
@@ -47,18 +42,10 @@ type Store struct {
 }
 
 func New(cfg Config) (*Store, error) {
-	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
-		awsconfig.WithRegion(region),
-		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, "")),
-	)
+	client, err := s3util.NewClient(cfg.Endpoint, cfg.PathStyle, cfg.AccessKey, cfg.SecretKey)
 	if err != nil {
-		return nil, fmt.Errorf("audiostore: load aws config: %w", err)
+		return nil, fmt.Errorf("audiostore: %w", err)
 	}
-
-	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
-		o.BaseEndpoint = aws.String(cfg.Endpoint)
-		o.UsePathStyle = cfg.PathStyle
-	})
 
 	return &Store{
 		client:       client,
@@ -109,12 +96,8 @@ func (s *Store) Delete(ctx context.Context, userID, sessionID, id string) error 
 // userID/sessionID/<uuid>.pcm) — used to cascade a chat room deletion to its
 // temporary audio backups, the same way internal/recording.S3Store's
 // DeleteBySession cascades to the durable recordings archive. A no-op if
-// nothing matches the prefix.
-//
-// Objects are deleted one at a time (DeleteObject, not the batch
-// DeleteObjects API) for the same reason internal/recording.S3Store does:
-// several S3-compatible targets reject DeleteObjects' XML body outright
-// without a Content-MD5 the SDK doesn't always attach.
+// nothing matches the prefix. See s3util.DeleteAll for why objects are
+// deleted concurrently rather than via the batch DeleteObjects API.
 func (s *Store) DeleteBySession(ctx context.Context, userID, sessionID string) error {
 	prefix := userID + "/" + sessionID + "/"
 
@@ -138,13 +121,8 @@ func (s *Store) DeleteBySession(ctx context.Context, userID, sessionID string) e
 		token = out.NextContinuationToken
 	}
 
-	for _, key := range keys {
-		if _, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
-			Bucket: aws.String(s.bucket),
-			Key:    aws.String(key),
-		}); err != nil {
-			return fmt.Errorf("audiostore: delete by session: object %q: %w", key, err)
-		}
+	if err := s3util.DeleteAll(ctx, s.client, s.bucket, keys); err != nil {
+		return fmt.Errorf("audiostore: delete by session: %w", err)
 	}
 	return nil
 }

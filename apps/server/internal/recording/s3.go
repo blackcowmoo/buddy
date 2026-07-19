@@ -11,23 +11,16 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
 	"buddy/server/internal/mysqlerr"
+	"buddy/server/internal/s3util"
 )
 
 // table carries a buddy_ prefix for the same reason as internal/store's
 // buddy_profiles: the database is shared with other services.
 const table = "buddy_recordings"
-
-// region is never surfaced to callers: like internal/audiostore's identical
-// constant, Ceph/MinIO-style S3-compatible endpoints don't route on it, so
-// it's a fixed, arbitrary value purely to satisfy the SDK's request signing,
-// not a piece of deployment configuration.
-const region = "us-east-1"
 
 // S3Config mirrors internal/audiostore.Config deliberately: both packages
 // archive the same WS utterance audio to the same kind of S3-compatible
@@ -62,20 +55,11 @@ type S3Store struct {
 // split out from NewS3 so the endpoint/path-style/credential wiring can be
 // tested (internal/recording/s3_config_test.go) without a real database.
 func newS3Client(cfg S3Config) (*s3.Client, error) {
-	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
-		awsconfig.WithRegion(region),
-		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, "")),
-	)
+	client, err := s3util.NewClient(cfg.Endpoint, cfg.PathStyle, cfg.AccessKey, cfg.SecretKey)
 	if err != nil {
-		return nil, fmt.Errorf("recording: aws config: %w", err)
+		return nil, fmt.Errorf("recording: %w", err)
 	}
-
-	return s3.NewFromConfig(awsCfg, func(o *s3.Options) {
-		if cfg.Endpoint != "" {
-			o.BaseEndpoint = aws.String(cfg.Endpoint)
-		}
-		o.UsePathStyle = cfg.PathStyle
-	}), nil
+	return client, nil
 }
 
 // NewS3 builds an S3-backed Store and ensures the buddy_recordings table
@@ -261,12 +245,9 @@ func (s *S3Store) Delete(ctx context.Context, userID, id string) (Recording, err
 
 // DeleteBySession removes every recording archived under sessionID — used to
 // cascade a chat room deletion (see store.Store.DeleteSession) to its
-// recordings. A no-op if userID has none. Deletes objects one at a time
-// (DeleteObject, not the batch DeleteObjects API) since a single chat room's
-// utterance count never justifies the batch API's overhead, and several
-// S3-compatible targets (e.g. this package's own MinIO-backed tests) reject
-// DeleteObjects' XML body outright without a Content-MD5 the SDK doesn't
-// always attach.
+// recordings. A no-op if userID has none. See s3util.DeleteAll for why
+// objects are deleted concurrently rather than via the batch DeleteObjects
+// API.
 func (s *S3Store) DeleteBySession(ctx context.Context, userID, sessionID string) error {
 	rows, err := s.rw.QueryContext(ctx, `
 		SELECT s3_key FROM `+table+` WHERE user_id = ? AND session_id = ?
@@ -288,17 +269,8 @@ func (s *S3Store) DeleteBySession(ctx context.Context, userID, sessionID string)
 	if closeErr != nil {
 		return fmt.Errorf("recording: delete by session: rows: %w", closeErr)
 	}
-	if len(keys) == 0 {
-		return nil
-	}
-
-	for _, key := range keys {
-		if _, err := s.s3.DeleteObject(ctx, &s3.DeleteObjectInput{
-			Bucket: aws.String(s.bucket),
-			Key:    aws.String(key),
-		}); err != nil {
-			return fmt.Errorf("recording: delete by session: object %q: %w", key, err)
-		}
+	if err := s3util.DeleteAll(ctx, s.s3, s.bucket, keys); err != nil {
+		return fmt.Errorf("recording: delete by session: %w", err)
 	}
 	if _, err := s.rw.ExecContext(ctx, `
 		DELETE FROM `+table+` WHERE user_id = ? AND session_id = ?

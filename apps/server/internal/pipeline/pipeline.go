@@ -222,6 +222,16 @@ Rules:
   mistakes included — resolve disagreements between the candidates, do not
   correct grammar or rewrite the sentence into "proper" English.`
 
+// writeTranscript appends each message as a "role: content" line to b — the
+// shared rendering used everywhere an LLM prompt needs to show msgs as prior
+// conversation (transcript synthesis, compaction, translation/correction
+// context).
+func writeTranscript(b *strings.Builder, msgs []llm.Message) {
+	for _, m := range msgs {
+		fmt.Fprintf(b, "%s: %s\n", m.Role, m.Content)
+	}
+}
+
 func renderTranscriptSynthesisInput(summary string, recent []llm.Message, candidates []string) string {
 	var b strings.Builder
 	if summary != "" {
@@ -229,9 +239,7 @@ func renderTranscriptSynthesisInput(summary string, recent []llm.Message, candid
 	}
 	if len(recent) > 0 {
 		b.WriteString("Conversation so far:\n")
-		for _, m := range recent {
-			fmt.Fprintf(&b, "%s: %s\n", m.Role, m.Content)
-		}
+		writeTranscript(&b, recent)
 		b.WriteString("\n")
 	}
 	b.WriteString("Candidate transcriptions of the learner's next line:\n")
@@ -452,9 +460,7 @@ func renderCompactionInput(prevSummary string, old []llm.Message) string {
 		b.WriteString(prevSummary + "\n")
 	}
 	b.WriteString("\nOlder turns to fold in:\n")
-	for _, m := range old {
-		fmt.Fprintf(&b, "%s: %s\n", m.Role, m.Content)
-	}
+	writeTranscript(&b, old)
 	return b.String()
 }
 
@@ -572,9 +578,7 @@ func renderTranslationContext(priorTurns []llm.Message) string {
 	}
 	var b strings.Builder
 	b.WriteString("Conversation so far, for context only:\n")
-	for _, m := range priorTurns {
-		fmt.Fprintf(&b, "%s: %s\n", m.Role, m.Content)
-	}
+	writeTranscript(&b, priorTurns)
 	return b.String()
 }
 
@@ -604,9 +608,7 @@ func renderCorrectionContext(summary string, priorTurns []llm.Message) string {
 	if summary != "" {
 		b.WriteString("Long-term memory of this learner: " + summary + "\n")
 	}
-	for _, m := range priorTurns {
-		fmt.Fprintf(&b, "%s: %s\n", m.Role, m.Content)
-	}
+	writeTranscript(&b, priorTurns)
 	return b.String()
 }
 

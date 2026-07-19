@@ -69,6 +69,17 @@ export function App() {
   // opening line) until the first token of that reply arrives — drives the
   // typing indicator in the empty gap before assistant_delta/assistant_done.
   const [awaitingReply, setAwaitingReply] = useState(false);
+
+  // Clears per-turn UI state (corrections, translations) — shared by
+  // enterChat (about to load a room's own state, or none for a fresh one)
+  // and backToList (leaving the room entirely).
+  const resetTurnState = useCallback(() => {
+    setCorrections({});
+    setPendingCorrections({});
+    setUserTranslations({});
+    setAssistantTranslations({});
+  }, []);
+
   const [mic, setMic] = useState(false);
   const [text, setText] = useState("");
   const [tts, setTts] = useState<TtsState>("idle");
@@ -189,10 +200,7 @@ export function App() {
   // history first, since reconnecting the WS alone only seeds LLM context,
   // it doesn't replay old chat bubbles.
   const enterChat = useCallback(async (sessionId?: string) => {
-    setCorrections({});
-    setPendingCorrections({});
-    setUserTranslations({});
-    setAssistantTranslations({});
+    resetTurnState();
     setAwaitingReply(false);
     if (sessionId) {
       // Fire the WS handshake alongside the transcript fetch — they're
@@ -227,20 +235,17 @@ export function App() {
     }
     setMenuOpen(false);
     setView("chat");
-  }, []);
+  }, [resetTurnState]);
 
   const backToList = useCallback(() => {
     clientRef.current?.close();
     setMsgs([]);
-    setCorrections({});
-    setPendingCorrections({});
-    setUserTranslations({});
-    setAssistantTranslations({});
+    resetTurnState();
     setAwaitingReply(false);
     setMenuOpen(false);
     setView("list");
     refreshSessions();
-  }, [refreshSessions]);
+  }, [refreshSessions, resetTurnState]);
 
   useEffect(() => {
     applyTheme(theme);
