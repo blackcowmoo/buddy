@@ -396,6 +396,65 @@ func TestTranslateAssistantSkipsEmptyResult(t *testing.T) {
 	}
 }
 
+// ---- TranslateWithContext() -----------------------------------------------------
+
+func TestTranslateWithContextSendsBareTextWhenNoPriorTurns(t *testing.T) {
+	var gotInput string
+	p := &Pipeline{
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			gotInput = msgs[len(msgs)-1].Content
+			return "  안녕하세요  ", nil
+		}}}},
+	}
+	got, err := p.TranslateWithContext(context.Background(), nil, "hello")
+	if err != nil {
+		t.Fatalf("TranslateWithContext() error = %v", err)
+	}
+	if got != "안녕하세요" {
+		t.Fatalf("TranslateWithContext() = %q, want trimmed translation", got)
+	}
+	if gotInput != "hello" {
+		t.Fatalf("input with no prior turns should be the bare text, got %q", gotInput)
+	}
+}
+
+func TestTranslateWithContextFoldsPriorTurnsIntoInput(t *testing.T) {
+	var gotInput string
+	p := &Pipeline{
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			gotInput = msgs[len(msgs)-1].Content
+			return "그건 어디에 있나요?", nil
+		}}}},
+	}
+	prior := []llm.Message{
+		{Role: llm.RoleAssistant, Content: "I left my keys on the table."},
+	}
+	got, err := p.TranslateWithContext(context.Background(), prior, "Where is it?")
+	if err != nil {
+		t.Fatalf("TranslateWithContext() error = %v", err)
+	}
+	if got != "그건 어디에 있나요?" {
+		t.Fatalf("TranslateWithContext() = %q", got)
+	}
+	if !strings.Contains(gotInput, "I left my keys on the table.") {
+		t.Fatalf("input should fold in prior turns for context, got %q", gotInput)
+	}
+	if !strings.Contains(gotInput, "Text to translate:\nWhere is it?") {
+		t.Fatalf("input should label the text under translation, got %q", gotInput)
+	}
+}
+
+func TestTranslateWithContextPropagatesAnalyzeError(t *testing.T) {
+	p := &Pipeline{
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			return "", errors.New("down")
+		}}}},
+	}
+	if _, err := p.TranslateWithContext(context.Background(), nil, "whatever"); err == nil {
+		t.Fatal("expected an error when every candidate fails")
+	}
+}
+
 func TestCorrectSendsBareSentenceWhenNoContext(t *testing.T) {
 	var gotInput string
 	p := &Pipeline{

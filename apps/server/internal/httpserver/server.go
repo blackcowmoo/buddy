@@ -3,14 +3,17 @@
 package httpserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
+	"buddy/server/internal/backfill"
 	"buddy/server/internal/config"
 	"buddy/server/internal/identity"
 	"buddy/server/internal/pipeline"
@@ -26,8 +29,11 @@ import (
 // disabled (see config.Config's S3Bucket) — the /api/recordings routes still
 // exist but answer 503. audio and recordings are two independent features
 // that happen to share the same S3_* config — see internal/recording.S3Config's
-// doc comment for why.
-func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store) *http.Server {
+// doc comment for why. translateQueue is nil when Redis isn't configured (see
+// config.Config's RedisClusterHost) — sessionDetailHandler simply stops
+// queueing translation backfills, the same "optional feature, falls through
+// to doing nothing" convention as audio/recordings above.
+func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, translateQueue *backfill.Queue) *http.Server {
 	mux := http.NewServeMux()
 
 	// Realtime + API first (exact patterns win over the "/" catch-all).
@@ -46,7 +52,7 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	})
 	mux.HandleFunc("/api/me", meHandler(cfg.IdentityMode, ident))
 	mux.HandleFunc("GET /api/sessions", sessionsListHandler(ident, st))
-	mux.HandleFunc("GET /api/sessions/{id}", sessionDetailHandler(ident, st))
+	mux.HandleFunc("GET /api/sessions/{id}", sessionDetailHandler(ident, st, translateQueue))
 	mux.HandleFunc("DELETE /api/sessions/{id}", sessionDeleteHandler(ident, st, audio, recordings))
 	mux.HandleFunc("GET /api/recordings", recordingsListHandler(ident, recordings))
 	mux.HandleFunc("GET /api/recordings/{id}/audio", recordingAudioHandler(ident, recordings))
@@ -160,14 +166,26 @@ func sessionsListHandler(ident identity.Identifier, st store.Store) http.Handler
 // store.SessionDetail scopes the lookup by the caller's own userID, so a
 // session ID belonging to someone else 404s exactly like one that doesn't
 // exist at all — this handler can't tell the difference, on purpose.
-func sessionDetailHandler(ident identity.Identifier, st store.Store) http.HandlerFunc {
+//
+// Viewing a session is also what triggers translation backfill: if any turn
+// is missing its native-language translation (saved before the translation
+// feature existed, or a one-off async failure at the time — see
+// internal/backfill's doc comment), the session is queued for background
+// re-translation. This never delays the response: Enqueue is a couple of
+// fast Redis calls, but it's still fired via `go` so a slow/unavailable
+// Redis can never make opening a conversation wait on it, and the actual
+// translation work happens entirely out-of-band in internal/backfill.Worker
+// — the learner sees today's (possibly still-missing) translations
+// immediately and gets the filled-in ones on their next visit.
+func sessionDetailHandler(ident identity.Identifier, st store.Store, translateQueue *backfill.Queue) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := ident.Identify(w, r)
 		if !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		meta, turns, err := st.SessionDetail(r.Context(), userID, r.PathValue("id"))
+		sessionID := r.PathValue("id")
+		meta, turns, err := st.SessionDetail(r.Context(), userID, sessionID)
 		if errors.Is(err, store.ErrNotFound) {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
@@ -177,8 +195,22 @@ func sessionDetailHandler(ident identity.Identifier, st store.Store) http.Handle
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
+		if needsTranslationBackfill(turns) {
+			go translateQueue.Enqueue(context.Background(), userID, sessionID)
+		}
 		writeJSON(w, map[string]any{"session": meta, "turns": turns})
 	}
+}
+
+// needsTranslationBackfill reports whether any non-blank turn in the
+// transcript is missing its native-language translation.
+func needsTranslationBackfill(turns []store.Turn) bool {
+	for _, t := range turns {
+		if strings.TrimSpace(t.Text) != "" && strings.TrimSpace(t.Translation) == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // sessionDeleteHandler removes one chat room and its full transcript, and

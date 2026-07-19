@@ -485,6 +485,51 @@ func (p *Pipeline) translateAssistant(ctx context.Context, turn int, text string
 	emit(protocol.ServerEvent{Type: protocol.EvAssistantTranslation, Turn: turn, Text: raw})
 }
 
+// TranslateWithContext translates text into the learner's native language
+// (FeedbackLang), using priorTurns — verbatim, in order — as context, the
+// same "conversation so far" shape correct() feeds the grammar pass via
+// renderCorrectionContext, so a re-translation reads the same as if it had
+// been generated live rather than in isolation. Unlike translateAssistant
+// (which translates a just-produced reply with no ambiguity to resolve),
+// this exists for internal/backfill: filling in a translation for a turn
+// that never got one the first time, possibly long after the turns around
+// it were said.
+func (p *Pipeline) TranslateWithContext(ctx context.Context, priorTurns []llm.Message, text string) (string, error) {
+	raw, err := p.analyze(ctx, translationSystemPrompt(p.FeedbackLang), renderTranslationInput(renderTranslationContext(priorTurns), text), false)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(raw), nil
+}
+
+// renderTranslationContext formats prior turns as context for
+// TranslateWithContext, mirroring renderCorrectionContext's shape but
+// labeled for translation rather than correction so the prompt never
+// suggests grammar-fixing is in scope. Returns "" when there's nothing to
+// give (e.g. translating a session's very first turn).
+func renderTranslationContext(priorTurns []llm.Message) string {
+	if len(priorTurns) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Conversation so far, for context only:\n")
+	for _, m := range priorTurns {
+		fmt.Fprintf(&b, "%s: %s\n", m.Role, m.Content)
+	}
+	return b.String()
+}
+
+// renderTranslationInput combines the context block with the text under
+// translation, the same delimited-data pattern renderCorrectionInput uses so
+// a replayed turn in the context can't act as an instruction. With no
+// context it's just the bare text, matching translateAssistant's input shape.
+func renderTranslationInput(contextMsg, text string) string {
+	if contextMsg == "" {
+		return text
+	}
+	return contextMsg + "\nText to translate:\n" + text
+}
+
 // renderCorrectionContext formats the pre-turn long-term summary and recent
 // turns as a context block for the correction pass, or "" when there's
 // nothing to give (the learner's first turn). renderCorrectionInput folds it
@@ -540,12 +585,17 @@ Rules:
 - If the sentence is already correct, return the same text and an empty issues array — still fill in "translation".`, native)
 }
 
-// translationSystemPrompt builds a plain-text translation prompt for the
-// assistant's reply, reusing the same native-language config as
-// correctionSystemPrompt so both stay in sync if FeedbackLang changes.
+// translationSystemPrompt builds a plain-text translation prompt, reusing
+// the same native-language config as correctionSystemPrompt so both stay in
+// sync if FeedbackLang changes. Used both for translateAssistant's plain
+// reply text and TranslateWithContext's context-prefixed input.
 func translationSystemPrompt(lang string) string {
 	native := languageName(lang)
 	return fmt.Sprintf(`Translate the given English text into natural, colloquial %[1]s for a language learner.
+The input may be preceded by a "Conversation so far" block for context; if so,
+translate only the text after "Text to translate:", using the context solely
+to disambiguate meaning (pronouns, ellipsis, etc.) — never translate the
+context itself.
 Return ONLY the translation — no prose, no quotes, no labels, no explanation.`, native)
 }
 
