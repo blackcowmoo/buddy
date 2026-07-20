@@ -536,6 +536,11 @@ func (p *Pipeline) refine(ctx context.Context, sess *session.Session, turn int, 
 // (from renderCorrectionContext) is the conversation the sentence was said
 // in, folded into the analysis input the same way compaction folds its
 // prior-summary context; it is empty on the first turn.
+//
+// Callers pass context.WithoutCancel(ctx) (see HandleText/refine above), not
+// the caller's turn-scoped or connection ctx directly: a barge-in or
+// disconnect must not silently drop a grammar-check/translation result that
+// was already in flight.
 func (p *Pipeline) correct(ctx context.Context, turn int, text, contextMsg string, emit Emit) {
 	raw, err := p.analyze(ctx, correctionSystemPrompt(p.FeedbackLang), renderCorrectionInput(contextMsg, text), true)
 	if err != nil {
@@ -613,6 +618,17 @@ func (p *Pipeline) translationSemaphore() chan struct{} {
 // translation of the assistant's full reply, synthesized down to one result
 // by analyze() — the same ensemble/Judge machinery correct() uses, just with
 // a plain-text (not JSON) prompt since there's nothing else to parse out.
+//
+// Callers pass context.WithoutCancel(ctx) (see StartConversation/reply
+// above), not the turn-scoped or connection ctx directly: this only starts
+// once the full reply has already streamed, so in a live conversation it's
+// the enrichment most likely to still be running when the learner's next
+// utterance (barge-in) or a disconnect cancels ctx — tying this call to that
+// context meant it silently lost the race (and the translation) on almost
+// every fast back-and-forth exchange. ctx is still threaded through to
+// acquireTranslationSlot and analyze() (rather than dropping it) so a caller
+// that legitimately wants early cancellation — like internal/backfill's
+// long-lived worker ctx via TranslateWithContext below — still gets it.
 func (p *Pipeline) translateAssistant(ctx context.Context, turn int, text string, emit Emit) {
 	if err := p.acquireTranslationSlot(ctx); err != nil {
 		return
@@ -623,11 +639,11 @@ func (p *Pipeline) translateAssistant(ctx context.Context, turn int, text string
 		log.Printf("translateAssistant: %v", err)
 		return
 	}
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return
-	}
-	emit(protocol.ServerEvent{Type: protocol.EvAssistantTranslation, Turn: turn, Text: raw})
+	// analyze() never succeeds with a blank result (a candidate's own empty
+	// output is filtered out before it can win), so this event always carries
+	// real text — the client's pending/spinner state (see App.tsx) treats
+	// this event's arrival as the "translation finished" signal.
+	emit(protocol.ServerEvent{Type: protocol.EvAssistantTranslation, Turn: turn, Text: strings.TrimSpace(raw)})
 }
 
 // TranslateWithContext translates text into the learner's native language
