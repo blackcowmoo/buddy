@@ -10,6 +10,13 @@ import type { ServerEvent } from "./lib/protocol";
 
 let capturedOnEvent: ((e: ServerEvent) => void) | null = null;
 
+// Mirrors lib/roomHistory's RoomHistoryState — mocked below so these tests
+// assert on the calls App.tsx makes into that module instead of fighting
+// jsdom's location/history plumbing (see lib/roomHistory.test.ts for real
+// coverage of the module itself).
+type MockRoomState = { view: "list" } | { view: "chat"; id: string | null };
+let capturedPopStateHandler: ((s: MockRoomState) => void) | null = null;
+
 vi.mock("./lib/ws", () => ({
   BuddyClient: vi.fn().mockImplementation(function BuddyClient(
     this: object,
@@ -55,8 +62,27 @@ vi.mock("./lib/sessions", () => ({
   deleteSession: vi.fn(),
 }));
 
+vi.mock("./lib/roomHistory", () => ({
+  parseRoomHash: vi.fn(() => ({ view: "list" })),
+  currentRoomHistoryState: vi.fn(() => ({ view: "list" })),
+  pushRoomState: vi.fn(),
+  replaceRoomState: vi.fn(),
+  goBack: vi.fn(),
+  onRoomPopState: vi.fn((handler: (s: MockRoomState) => void) => {
+    capturedPopStateHandler = handler;
+    return vi.fn();
+  }),
+}));
+
 import { App } from "./App";
 import { fetchMe } from "./lib/me";
+import {
+  currentRoomHistoryState,
+  goBack,
+  parseRoomHash,
+  pushRoomState,
+  replaceRoomState,
+} from "./lib/roomHistory";
 import { deleteSession, fetchSessionDetail, fetchSessions } from "./lib/sessions";
 import { KokoroSpeaker } from "./tts/kokoro";
 import { BuddyClient } from "./lib/ws";
@@ -64,13 +90,18 @@ import { BuddyClient } from "./lib/ws";
 beforeEach(() => {
   localStorage.clear();
   capturedOnEvent = null;
+  capturedPopStateHandler = null;
   vi.mocked(fetchMe).mockResolvedValue(null);
   vi.mocked(fetchSessions).mockResolvedValue([]);
   vi.mocked(fetchSessionDetail).mockResolvedValue(null);
+  vi.mocked(parseRoomHash).mockReturnValue({ view: "list" });
+  vi.mocked(currentRoomHistoryState).mockReturnValue({ view: "list" });
   vi.stubGlobal("location", {
     protocol: "http:",
     host: "buddy.example",
     pathname: "/",
+    hash: "",
+    search: "",
     assign: vi.fn(),
   });
   localStorage.clear();
@@ -226,12 +257,16 @@ describe("room list", () => {
     expect(screen.getByText("hello there")).toBeInTheDocument();
   });
 
-  it('"back to list" closes the connection and re-shows the room list', async () => {
+  it('"back to list" reuses the room\'s history entry, which closes the connection and re-shows the room list', async () => {
     const user = userEvent.setup();
     render(<App />);
     await enterNewChat(user);
 
     await user.click(screen.getByRole("button", { name: "목록으로" }));
+    expect(goBack).toHaveBeenCalled();
+    // goBack() is history.back() — a real browser resolves that
+    // asynchronously via popstate, which App's mount effect listens for.
+    act(() => capturedPopStateHandler?.({ view: "list" }));
 
     expect(await screen.findByRole("button", { name: "+ 새 대화" })).toBeInTheDocument();
     expect(lastClientInstance().close).toHaveBeenCalled();
@@ -263,6 +298,99 @@ describe("room list", () => {
     expect(screen.getByRole("menu")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "+ 새 대화" }));
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+});
+
+describe("browser history", () => {
+  it("pushes a history entry for a brand-new room", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    expect(pushRoomState).toHaveBeenCalledWith({ view: "chat", id: null });
+  });
+
+  it("pushes a history entry carrying the id when opening an existing room", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+    ]);
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+    expect(pushRoomState).toHaveBeenCalledWith({ view: "chat", id: "s1" });
+  });
+
+  it("upgrades a new room's pending history entry once the server assigns its id", async () => {
+    vi.mocked(currentRoomHistoryState).mockReturnValue({ view: "chat", id: null });
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+
+    act(() => emit({ type: "ready", turn: 0, session: "s9" }));
+
+    expect(replaceRoomState).toHaveBeenCalledWith({ view: "chat", id: "s9" });
+  });
+
+  it("does not touch history on 'ready' once the room already has a known id", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+    ]);
+    vi.mocked(currentRoomHistoryState).mockReturnValue({ view: "chat", id: "s1" });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+    vi.mocked(replaceRoomState).mockClear();
+
+    act(() => emit({ type: "ready", turn: 0, session: "s1" }));
+
+    expect(replaceRoomState).not.toHaveBeenCalled();
+  });
+
+  it("restores an open room from the URL hash on mount, e.g. after a refresh", async () => {
+    vi.mocked(parseRoomHash).mockReturnValue({ view: "chat", id: "s1" });
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+      turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
+    });
+    render(<App />);
+
+    expect(await screen.findByText("hi")).toBeInTheDocument();
+    expect(fetchSessionDetail).toHaveBeenCalledWith("s1");
+    expect(lastClientInstance().connect).toHaveBeenCalledWith("s1");
+  });
+
+  it("falls back to the list and clears the hash when the restored room no longer exists", async () => {
+    vi.mocked(parseRoomHash).mockReturnValue({ view: "chat", id: "gone" });
+    vi.mocked(fetchSessionDetail).mockResolvedValue(null);
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "+ 새 대화" })).toBeInTheDocument();
+    expect(replaceRoomState).toHaveBeenCalledWith({ view: "list" });
+  });
+
+  it("a popstate back into the list resets the open room, same as the in-app back button", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "assistant_done", turn: 0, text: "Hey there!" }));
+
+    act(() => capturedPopStateHandler?.({ view: "list" }));
+
+    expect(await screen.findByRole("button", { name: "+ 새 대화" })).toBeInTheDocument();
+    expect(lastClientInstance().close).toHaveBeenCalled();
+  });
+
+  it("a popstate forward into a room hydrates and reconnects it", async () => {
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+      turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
+    });
+    render(<App />);
+    await screen.findByRole("button", { name: "+ 새 대화" });
+
+    act(() => capturedPopStateHandler?.({ view: "chat", id: "s1" }));
+
+    expect(await screen.findByText("hi")).toBeInTheDocument();
+    expect(lastClientInstance().connect).toHaveBeenCalledWith("s1");
   });
 });
 

@@ -4,6 +4,14 @@ import type { Correction, InputSource, ServerEvent } from "./lib/protocol";
 import { PCMRecorder } from "./audio/recorder";
 import { KokoroSpeaker } from "./tts/kokoro";
 import { prPath } from "./lib/rootPath";
+import {
+  currentRoomHistoryState,
+  goBack,
+  onRoomPopState,
+  parseRoomHash,
+  pushRoomState,
+  replaceRoomState,
+} from "./lib/roomHistory";
 import { fetchMe } from "./lib/me";
 import { deleteSession, fetchSessionDetail, fetchSessions, type SessionSummary } from "./lib/sessions";
 import { applyTheme, getStoredTheme, setStoredTheme, type Theme } from "./lib/theme";
@@ -49,9 +57,10 @@ function useDismiss(open: boolean, ref: React.RefObject<HTMLElement | null>, onC
 }
 
 export function App() {
-  // The home screen always lands on the room list, never a silently
-  // reconnected conversation — a WS connection only opens once the learner
-  // picks a room or starts a new one (see enterChat).
+  // The home screen lands on the room list by default; a refresh while a
+  // room is open restores that room instead, from the URL hash (see the
+  // mount effect below) — but a WS connection is still never silently
+  // reconnected without re-hydrating the transcript first (see enterChat).
   const [view, setView] = useState<View>("list");
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [status, setStatus] = useState<Status>("connecting");
@@ -125,10 +134,26 @@ export function App() {
   // already left the room, or opened a different one, doesn't apply its
   // (now stale) result to the wrong room's state.
   const pollTokenRef = useRef<object | null>(null);
+  // True once the open room's history entry sits on top of a "list" entry
+  // this app itself pushed — set on every list->chat transition (enterChat's
+  // push, or popping forward into a room) and cleared back on the list, so
+  // backToList's button can reuse that entry (goBack) and stay in sync with
+  // what browser back/swipe-back would do, instead of pushing a redundant one.
+  const hasPushedRoomEntryRef = useRef(false);
 
   const onEvent = useCallback((e: ServerEvent) => {
     switch (e.type) {
       case "ready":
+        // Upgrades a brand-new room's placeholder history entry to carry its
+        // real id, once the server has minted one — only when we're still on
+        // that pending entry, so reconnecting to an already-known room (which
+        // also emits "ready") never touches history.
+        if (e.session) {
+          const current = currentRoomHistoryState();
+          if (current.view === "chat" && current.id == null) {
+            replaceRoomState({ view: "chat", id: e.session });
+          }
+        }
         break;
       case "final_transcript":
         setMsgs((m) => [
@@ -280,11 +305,18 @@ export function App() {
   // history first, since reconnecting the WS alone only seeds LLM context,
   // it doesn't replay old chat bubbles.
   const enterChat = useCallback(
-    async (sessionId?: string) => {
+    async (sessionId?: string, opts?: { push?: boolean }) => {
       resetTurnState();
       setAwaitingReply(false);
       const token = {};
       pollTokenRef.current = token;
+      if (opts?.push ?? true) {
+        // Gives this room its own history entry on top of the list's, so
+        // browser back/swipe-back leaves the room instead of the whole app
+        // (see backToList and the popstate handler in the mount effect).
+        pushRoomState({ view: "chat", id: sessionId ?? null });
+        hasPushedRoomEntryRef.current = true;
+      }
       if (sessionId) {
         // Fire the WS handshake alongside the transcript fetch — they're
         // independent round trips — instead of waiting for the fetch first.
@@ -292,6 +324,8 @@ export function App() {
         const detail = await fetchSessionDetail(sessionId);
         if (!detail) {
           clientRef.current?.close(); // fetch failed (e.g. deleted elsewhere) — stay on the list
+          replaceRoomState({ view: "list" });
+          hasPushedRoomEntryRef.current = false;
           return;
         }
         setMsgs(
@@ -344,7 +378,10 @@ export function App() {
     [resetTurnState, pollMissingTranslations],
   );
 
-  const backToList = useCallback(() => {
+  // Shared by backToList and the popstate handler below — actually leaving
+  // the room, as opposed to deciding how the browser's history entry should
+  // reflect that.
+  const resetToListView = useCallback(() => {
     pollTokenRef.current = null;
     clientRef.current?.close();
     setMsgs([]);
@@ -352,8 +389,47 @@ export function App() {
     setAwaitingReply(false);
     setMenuOpen(false);
     setView("list");
+    hasPushedRoomEntryRef.current = false;
     refreshSessions();
   }, [refreshSessions, resetTurnState]);
+
+  const backToList = useCallback(() => {
+    if (hasPushedRoomEntryRef.current) {
+      // Reuse the list entry this room's own history entry was pushed on top
+      // of, so this button and an actual browser back/swipe do the same
+      // thing — the popstate handler in the mount effect does the reset.
+      goBack();
+      return;
+    }
+    // No list entry to pop back to (e.g. this room was restored on mount
+    // from a refreshed URL) — swap the current entry instead of leaving one
+    // more room hash for the next back/swipe to trip over.
+    replaceRoomState({ view: "list" });
+    resetToListView();
+  }, [resetToListView]);
+
+  // Restores an open room from the URL on a fresh load (e.g. a refresh), and
+  // keeps the view in sync with browser back/forward (incl. swipe) — neither
+  // enterChat nor backToList touch React state directly for that path, since
+  // the browser has already changed the URL by the time popstate fires.
+  useEffect(() => {
+    const initial = parseRoomHash(window.location.hash);
+    if (initial.view === "chat" && initial.id) {
+      replaceRoomState(initial);
+      void enterChat(initial.id, { push: false });
+    } else {
+      replaceRoomState({ view: "list" });
+    }
+
+    return onRoomPopState((state) => {
+      if (state.view === "chat" && state.id) {
+        hasPushedRoomEntryRef.current = true;
+        void enterChat(state.id, { push: false });
+      } else {
+        resetToListView();
+      }
+    });
+  }, [enterChat, resetToListView]);
 
   useEffect(() => {
     applyTheme(theme);
