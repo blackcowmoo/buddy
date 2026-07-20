@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BuddyClient, type Status } from "./ws";
 import type { ServerEvent } from "./protocol";
 
@@ -54,6 +54,14 @@ beforeEach(() => {
   vi.stubGlobal("location", { protocol: "https:", host: "buddy.example:8080", pathname: "/" });
 });
 
+afterEach(() => {
+  // A test that simulates an unexpected close leaves a reconnect timer
+  // scheduled; clear it so it can't fire during a later test and mutate
+  // `lastSocket` out from under it.
+  vi.useRealTimers();
+  vi.clearAllTimers();
+});
+
 describe("BuddyClient", () => {
   it("connects to a wss URL derived from location when https", () => {
     connectedClient();
@@ -90,6 +98,7 @@ describe("BuddyClient", () => {
     expect(statuses).toEqual(["connecting", "open"]);
     lastSocket.close();
     expect(statuses).toEqual(["connecting", "open", "closed"]);
+    client.close(); // cancel the reconnect this unexpected close scheduled
   });
 
   it("parses incoming JSON messages into ServerEvent", () => {
@@ -114,11 +123,17 @@ describe("BuddyClient", () => {
     expect(events).toEqual([]);
   });
 
-  it("sendText only writes to the socket once it is open", () => {
+  it("queues sendText while disconnected and flushes once the socket opens", () => {
     const client = connectedClient();
     client.sendText("hello");
     expect(lastSocket.sent).toEqual([]);
 
+    lastSocket.open();
+    expect(lastSocket.sent).toEqual([JSON.stringify({ type: "text", text: "hello" })]);
+  });
+
+  it("sends immediately once already open", () => {
+    const client = connectedClient();
     lastSocket.open();
     client.sendText("hello");
     expect(lastSocket.sent).toEqual([JSON.stringify({ type: "text", text: "hello" })]);
@@ -137,5 +152,73 @@ describe("BuddyClient", () => {
     lastSocket.open();
     client.close();
     expect(lastSocket.readyState).toBe(MockWebSocket.CLOSED);
+  });
+
+  it("automatically reconnects to the same session after an unexpected close", () => {
+    vi.useFakeTimers();
+    const client = connectedClient();
+    lastSocket.open();
+    lastSocket.onmessage?.({ data: JSON.stringify({ type: "ready", turn: 0, session: "room-42" }) });
+    const firstSocket = lastSocket;
+
+    firstSocket.close(); // e.g. the mobile OS backgrounded the tab and killed the TCP connection
+    expect(lastSocket).toBe(firstSocket); // no new socket yet — reconnect is scheduled, not immediate
+
+    vi.advanceTimersByTime(1000);
+    expect(lastSocket).not.toBe(firstSocket);
+    expect(lastSocket.url).toBe("wss://buddy.example:8080/ws?session=room-42");
+
+    client.close();
+    vi.useRealTimers();
+  });
+
+  it("retries a message sent while disconnected once the reconnect completes", () => {
+    vi.useFakeTimers();
+    const client = connectedClient();
+    lastSocket.open();
+    lastSocket.close(); // unexpected drop
+
+    client.sendText("are you still there?");
+    expect(lastSocket.sent).toEqual([]); // queued — the reconnect hasn't opened yet
+
+    vi.advanceTimersByTime(1000);
+    lastSocket.open();
+    expect(lastSocket.sent).toEqual([JSON.stringify({ type: "text", text: "are you still there?" })]);
+
+    client.close();
+    vi.useRealTimers();
+  });
+
+  it("does not reconnect after an explicit close()", () => {
+    vi.useFakeTimers();
+    const client = connectedClient();
+    lastSocket.open();
+    const firstSocket = lastSocket;
+
+    client.close(); // e.g. the learner navigated back to the room list
+    vi.advanceTimersByTime(20000);
+    expect(lastSocket).toBe(firstSocket); // still no new socket
+
+    vi.useRealTimers();
+  });
+
+  it("resets reconnect backoff after a successful reconnect", () => {
+    vi.useFakeTimers();
+    const client = connectedClient();
+    lastSocket.open();
+
+    lastSocket.close();
+    vi.advanceTimersByTime(1000); // first backoff: 1s
+    lastSocket.open();
+
+    lastSocket.close();
+    vi.advanceTimersByTime(999);
+    expect(lastSocket.readyState).toBe(MockWebSocket.CLOSED); // not yet — backoff restarted at 1s, not 2s
+
+    vi.advanceTimersByTime(1);
+    expect(lastSocket.readyState).toBe(MockWebSocket.CONNECTING);
+
+    client.close();
+    vi.useRealTimers();
   });
 });

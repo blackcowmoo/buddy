@@ -263,17 +263,26 @@ func truncateTitle(text string) string {
 }
 
 func (s *MySQLStore) SaveTurn(ctx context.Context, userID, sessionID string, turn int, role, text string, refined bool, source string) error {
-	// The session's row (and its title, derived from the opening message) is
-	// created lazily by whichever turn arrives first — always turn 1 from
-	// the user, since a session only starts once someone speaks or types.
-	// ON DUPLICATE KEY UPDATE only touches updated_at, so a session that
-	// already exists (e.g. after a "reset" that cleared buddy_turns but left
-	// buddy_sessions alone) keeps its original title.
-	if turn == 1 && role == "user" {
+	// The session row is created lazily by whichever turn lands first for a
+	// room — either the opening greeting (turn 0, assistant) or the
+	// learner's own turn 1 — so a room the learner opened shows up in
+	// ListSessions/SessionDetail (and can be deleted from there) even if
+	// they never answered the greeting, instead of leaving an invisible
+	// orphan sitting in buddy_turns with no row in buddy_sessions to find it
+	// by. Once turn 1 lands, its title (the learner's own first message)
+	// always supersedes the greeting-derived placeholder: title is only
+	// overwritten while title_generated is still 0, the same guard
+	// SaveGeneratedTitle relies on to pin a title for good, so a session
+	// that already has a real (possibly LLM-generated) title — e.g. after a
+	// "reset" that cleared buddy_turns but left buddy_sessions alone —
+	// keeps it.
+	if turn == 0 || (turn == 1 && role == "user") {
 		if _, err := s.rw.ExecContext(ctx, `
 			INSERT INTO `+sessionsTable+` (user_id, id, title, summary, recent, created_at, updated_at)
 			VALUES (?, ?, ?, '', '[]', UNIX_TIMESTAMP(), UNIX_TIMESTAMP())
-			ON DUPLICATE KEY UPDATE updated_at = VALUES(updated_at)
+			ON DUPLICATE KEY UPDATE
+				title = IF(title_generated = 0, VALUES(title), title),
+				updated_at = VALUES(updated_at)
 		`, userID, sessionID, truncateTitle(text)); err != nil {
 			return fmt.Errorf("store: ensure session: %w", err)
 		}
