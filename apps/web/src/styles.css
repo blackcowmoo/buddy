@@ -436,10 +436,12 @@ a.icon-btn.ghost {
   padding: 12px 16px;
   padding-bottom: calc(12px + var(--sab));
   border-top: 1px solid var(--border);
-  align-items: center;
+  /* Bottom-align rather than center now the textarea can grow taller than
+     the mic/send buttons. */
+  align-items: flex-end;
 }
-.composer form { display: flex; gap: 8px; flex: 1; min-width: 0; }
-.composer input {
+.composer form { display: flex; gap: 8px; flex: 1; min-width: 0; align-items: flex-end; }
+.composer textarea {
   flex: 1;
   min-width: 0;
   font: inherit;
@@ -452,6 +454,12 @@ a.icon-btn.ghost {
   border-radius: 10px;
   padding: 11px 12px;
   min-height: 44px;
+  /* Caps the auto-grow (see the JS that sets height from scrollHeight);
+     beyond this the textarea scrolls internally instead of squeezing the
+     message list. */
+  max-height: 40vh;
+  overflow-y: auto;
+  resize: none;
   -webkit-appearance: none;
   appearance: none;
 }
