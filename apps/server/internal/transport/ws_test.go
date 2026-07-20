@@ -317,6 +317,48 @@ func (f *fakeRecordingStore) all() []recordingSave {
 	return append([]recordingSave(nil), f.saved...)
 }
 
+// gateLLM blocks each Complete() call until release is closed, or fails with
+// ctx's error if ctx cancels first — mirroring how a real outbound LLM
+// request aborts when its context cancels mid-flight. Used to pin the
+// correction/translation pass in flight so a test can disconnect the client
+// and verify the pass still finishes and persists instead of dying with the
+// connection.
+type gateLLM struct {
+	once    sync.Once
+	started chan struct{}
+	release chan struct{}
+	reply   string
+}
+
+func (g *gateLLM) ChatStream(ctx context.Context, model string, msgs []llm.Message, onToken func(string)) (string, error) {
+	return "", errFakeLLMUnavailable // not used as the chat model in this test
+}
+
+func (g *gateLLM) Complete(ctx context.Context, model string, msgs []llm.Message, jsonMode bool) (string, error) {
+	g.once.Do(func() { close(g.started) })
+	select {
+	case <-g.release:
+		return g.reply, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+// fixedChatLLM is a minimal instant-reply chat model, used where a test's
+// focus (the Analysis ensemble, via gateLLM) is elsewhere.
+type fixedChatLLM struct{ reply string }
+
+func (f fixedChatLLM) ChatStream(ctx context.Context, model string, msgs []llm.Message, onToken func(string)) (string, error) {
+	if onToken != nil {
+		onToken(f.reply)
+	}
+	return f.reply, nil
+}
+
+func (f fixedChatLLM) Complete(ctx context.Context, model string, msgs []llm.Message, jsonMode bool) (string, error) {
+	return f.reply, nil
+}
+
 // ---- helpers -----------------------------------------------------------------
 
 func newTestServer(t *testing.T, st store.Store) *httptest.Server {
@@ -1003,6 +1045,58 @@ func TestPersistEventSavesTranslationsByRole(t *testing.T) {
 	if turns[1].Role != "assistant" || turns[1].Translation != "좋아요!" {
 		t.Fatalf("assistant turn = %+v", turns[1])
 	}
+}
+
+// TestWSCorrectionAndTranslationSurviveDisconnect guards the fix for
+// background grammar-correction/translation passes dying silently when the
+// learner navigates away or the socket drops mid-analysis: they must run to
+// completion and persist, not abort with the connection (see pipeline.go's
+// context.WithoutCancel calls in correct()/translateAssistant()'s callers).
+// gateLLM pins the analysis call in flight until well after the client
+// disconnects, so this only passes if that detachment actually holds.
+func TestWSCorrectionAndTranslationSurviveDisconnect(t *testing.T) {
+	st := newFakeStore()
+	gate := &gateLLM{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		reply:   `{"corrected":"Hello there.","issues":[]}`,
+	}
+	pipe := &pipeline.Pipeline{
+		STT:                []stt.Recognizer{fakeSTT{text: "hello there"}},
+		LLM:                fixedChatLLM{reply: "Hi!"},
+		ChatModel:          "chat",
+		Analysis:           []pipeline.Candidate{{Model: "a", LLM: gate}},
+		MaxHistoryMessages: 1000, // keep compact() from also racing the shared gate
+		FeedbackLang:       "ko",
+	}
+	h := NewHandler(pipe, identity.NewCookieIdentifier(), st, nil, nil)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	c, _ := dial(t, srv, "gate-user", "")
+	ready := readEvent(t, c) // ready
+	sendText(t, c, "hello there")
+	readUntilTurn(t, c, protocol.EvFinal, 1)
+	readUntilTurn(t, c, protocol.EvAssistantDone, 1) // correct()/translateAssistant() are now spawned
+
+	<-gate.started                             // the analysis call is in flight
+	c.Close(websocket.StatusNormalClosure, "") // simulate the page leaving / socket dropping
+	time.Sleep(150 * time.Millisecond)         // give the server time to notice and cancel the connection's context
+	close(gate.release)                        // let the still in-flight analysis call finish
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		_, turns, err := st.SessionDetail(context.Background(), "gate-user", ready.Session)
+		if err == nil {
+			for _, tn := range turns {
+				if tn.Turn == 1 && tn.Role == "user" && tn.Correction != nil && tn.Correction.Corrected == "Hello there." {
+					return // correction landed even though the client had already disconnected
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("correction was not persisted after the client disconnected")
 }
 
 // TestWSListSessionsOnlyShowsSessionsWithMessages ensures a connection that
