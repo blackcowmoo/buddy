@@ -462,17 +462,45 @@ export function App() {
     setExtraRates((rates) => rates.filter((r) => r !== rate));
   }, []);
 
-  const submitText = useCallback(
+  const submitText = useCallback(() => {
+    const t = text.trim();
+    if (!t) return;
+    clientRef.current?.sendText(t);
+    setAwaitingReply(true);
+    setText("");
+  }, [text]);
+
+  const onComposerSubmit = useCallback(
     (e: React.FormEvent) => {
       e.preventDefault();
-      const t = text.trim();
-      if (!t) return;
-      clientRef.current?.sendText(t);
-      setAwaitingReply(true);
-      setText("");
+      submitText();
     },
-    [text],
+    [submitText],
   );
+
+  // Enter sends the message; Shift+Enter inserts a newline, matching the
+  // usual chat-app convention now that this is a multiline textarea.
+  const onComposerKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        submitText();
+      }
+    },
+    [submitText],
+  );
+
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Grow the textarea to fit its content (up to the CSS max-height, which
+  // takes over with internal scrolling) so long messages stay fully visible
+  // while composing instead of scrolling inside a fixed-height box.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [text]);
 
   const goToRecordings = useCallback(() => {
     // Relative navigation (not "/recordings"): resolves against the current
@@ -685,14 +713,17 @@ export function App() {
         >
           {mic ? "◼" : "🎙"}
         </button>
-        <form onSubmit={submitText}>
-          <input
+        <form onSubmit={onComposerSubmit}>
+          <textarea
+            ref={textareaRef}
             value={text}
             onChange={(e) => setText(e.target.value)}
+            onKeyDown={onComposerKeyDown}
             placeholder="…or type in English"
             enterKeyHint="send"
             autoComplete="off"
             autoCorrect="on"
+            rows={1}
           />
           <button type="submit">Send</button>
         </form>
