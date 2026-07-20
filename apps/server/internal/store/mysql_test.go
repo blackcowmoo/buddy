@@ -297,6 +297,72 @@ func TestMySQLSaveTurnTitleSurvivesLaterTurns(t *testing.T) {
 	}
 }
 
+// TestMySQLSaveTurnGreetingAloneCreatesVisibleSession guards the fix for a
+// room the learner opened (got the opening greeting) but never replied to:
+// it must show up in ListSessions/SessionDetail — titled from the greeting
+// itself — instead of leaving an invisible orphan in buddy_turns with no row
+// in buddy_sessions to find it by.
+func TestMySQLSaveTurnGreetingAloneCreatesVisibleSession(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	// A dedicated user ID (not "alex", reused by many other tests sharing
+	// this store) so the ListSessions assertion below only sees this test's
+	// own room.
+	userID := "greeting-only-user"
+	sessionID := "sess-greeting-only"
+	if err := st.SaveTurn(ctx, userID, sessionID, 0, "assistant", "Hi! How was your day?", false, ""); err != nil {
+		t.Fatalf("SaveTurn(greeting) error = %v", err)
+	}
+	meta, turns, err := st.SessionDetail(ctx, userID, sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if meta.Title != "Hi! How was your day?" {
+		t.Fatalf("Title = %q, want the greeting text", meta.Title)
+	}
+	if len(turns) != 1 || turns[0].Text != "Hi! How was your day?" {
+		t.Fatalf("turns = %+v, want just the greeting", turns)
+	}
+
+	sessions, err := st.ListSessions(ctx, userID)
+	if err != nil {
+		t.Fatalf("ListSessions() error = %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != sessionID {
+		t.Fatalf("ListSessions() = %+v, want the greeting-only room listed", sessions)
+	}
+}
+
+// TestMySQLSaveTurnUserReplyReplacesGreetingTitle guards that once the
+// learner does reply, their own first message becomes the title instead of
+// staying pinned to the greeting placeholder SaveTurn set at turn 0.
+func TestMySQLSaveTurnUserReplyReplacesGreetingTitle(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	sessionID := "sess-greeting-then-reply"
+	if err := st.SaveTurn(ctx, "alex", sessionID, 0, "assistant", "Hi! How was your day?", false, ""); err != nil {
+		t.Fatalf("SaveTurn(greeting) error = %v", err)
+	}
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "It was great, thanks!", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(reply) error = %v", err)
+	}
+	meta, _, err := st.SessionDetail(ctx, "alex", sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if meta.Title != "It was great, thanks!" {
+		t.Fatalf("Title = %q, want the learner's own first message", meta.Title)
+	}
+
+	var n int
+	if err := st.rw.QueryRowContext(ctx, `SELECT count(*) FROM `+sessionsTable+` WHERE user_id = ? AND id = ?`, "alex", sessionID).Scan(&n); err != nil {
+		t.Fatalf("count query: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected exactly 1 row, got %d", n)
+	}
+}
+
 func TestMySQLSaveGeneratedTitleOverwritesPlaceholder(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()

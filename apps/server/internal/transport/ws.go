@@ -259,12 +259,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 //
 // Turn 0 (the opening greeting, see pipeline.StartConversation) is written
 // here like any other turn: store.MySQLStore.SaveTurn inserts into
-// buddy_turns unconditionally and only gates the *session row's* creation on
-// turn 1 from the user, so a greeting-only room still leaves no row in
-// buddy_sessions (still invisible to ListSessions/SessionDetail) — but once
-// the learner's turn 1 does land and creates that row, the turn-0 greeting
-// is already sitting in buddy_turns and reappears with the rest of the
-// transcript on reload, instead of vanishing.
+// buddy_turns unconditionally and also creates the *session row* right away
+// (title placeholder'd from the greeting text), so a greeting-only room is
+// already visible to ListSessions/SessionDetail — the learner can find it
+// and delete it even if they never reply. If the learner's turn 1 does land,
+// SaveTurn replaces that placeholder title with their own first message.
 func persistEvent(st store.Store, userID, sessionID string, ev protocol.ServerEvent) {
 	switch ev.Type {
 	case protocol.EvFinal:

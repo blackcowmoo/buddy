@@ -295,14 +295,15 @@ func (p *Pipeline) HandleText(ctx context.Context, sess *session.Session, text s
 // race the greeting and land first). It deliberately does NOT call
 // sess.NextTurn(): the emitted events carry the reserved sentinel turn 0, so
 // the first real utterance still gets turn 1. transport.persistEvent writes
-// turn 0 into the transcript like any other turn, but store.MySQLStore.SaveTurn
-// only ever creates the session row once the learner's own turn 1 lands — so
-// an abandoned "new chat" that's never replied to still leaves no visible
-// trace (no row in buddy_sessions, so ListSessions/SessionDetail act as if it
-// never happened), while a room the learner does reply to keeps the greeting
-// in its transcript instead of losing it on reload. The greeting also lives
-// in the in-memory session history, so the LLM sees it as context, and it
-// rides along in Profile.Recent once a real reply persists.
+// turn 0 into the transcript like any other turn, and store.MySQLStore.SaveTurn
+// creates the session row right then too (title placeholder'd from the
+// greeting) — so even a "new chat" the learner never replies to shows up in
+// ListSessions/SessionDetail and can be found and deleted, while a room the
+// learner does reply to gets its title replaced by their own first message
+// and keeps the greeting in its transcript instead of losing it on reload.
+// The greeting also lives in the in-memory session history, so the LLM sees
+// it as context, and it rides along in Profile.Recent once a real reply
+// persists.
 func (p *Pipeline) StartConversation(ctx context.Context, sess *session.Session, emit Emit) {
 	const openingTurn = 0
 	msgs := append(sess.Snapshot(), llm.Message{Role: llm.RoleSystem, Content: openingSystemPrompt})
