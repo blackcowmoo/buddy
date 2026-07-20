@@ -874,6 +874,71 @@ func TestTranscribeNoEnginesConfiguredReturnsError(t *testing.T) {
 	}
 }
 
+// gateAnalysisLLM blocks each Complete() call until release is closed, or
+// returns ctx's error if ctx is cancelled first — mirroring how a real HTTP
+// call aborts when its context cancels mid-flight. Used to pin an analysis
+// call in flight so a test can cancel the caller's context and verify
+// whether the call is actually tied to it.
+type gateAnalysisLLM struct {
+	once    sync.Once
+	started chan struct{}
+	release chan struct{}
+	reply   string
+}
+
+func (g *gateAnalysisLLM) ChatStream(ctx context.Context, model string, msgs []llm.Message, onToken func(string)) (string, error) {
+	return "", errors.New("gateAnalysisLLM: ChatStream not used")
+}
+
+func (g *gateAnalysisLLM) Complete(ctx context.Context, model string, msgs []llm.Message, jsonMode bool) (string, error) {
+	g.once.Do(func() { close(g.started) })
+	select {
+	case <-g.release:
+		return g.reply, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+// TestRefineCorrectionSurvivesCtxCancellation guards refine()'s tail call
+// into correct(): it must run on a context detached from ctx (see
+// pipeline.go's context.WithoutCancel there), so a barge-in or disconnect
+// that cancels the turn context doesn't silently drop the grammar-check
+// result for the previous utterance. Unlike the Judge reconciliation pass
+// earlier in refine() (which stays tied to ctx, since it mutates sess and
+// must respect turn ordering), correct() only emits/persists — nothing about
+// it depends on the turn still being "current".
+func TestRefineCorrectionSurvivesCtxCancellation(t *testing.T) {
+	gate := &gateAnalysisLLM{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		reply:   `{"corrected":"fixed.","issues":[]}`,
+	}
+	p := &Pipeline{Analysis: []Candidate{{Model: "m", LLM: gate}}}
+	sess := session.New("sys")
+	sess.AppendUser("broken")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	events := make(chan protocol.ServerEvent, 8)
+	go p.refine(ctx, sess, 1, "", nil, []string{"broken"}, "broken", func(ev protocol.ServerEvent) { events <- ev })
+
+	<-gate.started                     // correct()'s analyze() call is in flight
+	cancel()                           // simulate a barge-in/disconnect cancelling the turn context
+	time.Sleep(50 * time.Millisecond)  // give the cancellation a chance to (wrongly) abort the call
+	close(gate.release)                // let the call actually finish
+
+	got := collectUntilQuiet(t, events, 200*time.Millisecond, 2*time.Second)
+	var corrections []protocol.ServerEvent
+	for _, ev := range got {
+		if ev.Type == protocol.EvCorrection {
+			corrections = append(corrections, ev)
+		}
+	}
+	if len(corrections) != 1 || corrections[0].Correction.Corrected != "fixed." {
+		t.Fatalf("expected correct()'s result to survive cancellation of the turn context, got %+v (all events: %+v)", corrections, got)
+	}
+}
+
 // ---- refine() -----------------------------------------------------------------
 
 func TestRefineUpgradesSessionWhenJudgeDisagrees(t *testing.T) {

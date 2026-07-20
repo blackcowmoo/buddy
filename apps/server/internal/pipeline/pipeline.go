@@ -262,7 +262,12 @@ func (p *Pipeline) HandleText(ctx context.Context, sess *session.Session, text s
 	// contaminating its own context (mirrors HandleUtterance).
 	contextMsg := renderCorrectionContext(sess.Export())
 	sess.AppendUser(text)
-	go p.correct(ctx, turn, text, contextMsg, emit) // correction only; no slow STT needed
+	// context.WithoutCancel: correction must finish and persist even if the
+	// learner closes the tab or the socket drops right after sending — same
+	// reasoning as backupAudio/compact using a context independent of ctx,
+	// just without a fixed deadline since the LLM client already caps itself
+	// (see llm.NewOpenAI's http.Client timeout).
+	go p.correct(context.WithoutCancel(ctx), turn, text, contextMsg, emit) // correction only; no slow STT needed
 	p.reply(ctx, sess, turn, emit)
 }
 
@@ -302,7 +307,9 @@ func (p *Pipeline) StartConversation(ctx context.Context, sess *session.Session,
 	emit(protocol.ServerEvent{Type: protocol.EvAssistantDone, Turn: openingTurn, Text: full})
 	sess.AppendAssistant(full)
 	if strings.TrimSpace(full) != "" {
-		go p.translateAssistant(ctx, openingTurn, full, emit)
+		// context.WithoutCancel: see reply()'s matching translateAssistant call
+		// for why this must survive the connection closing.
+		go p.translateAssistant(context.WithoutCancel(ctx), openingTurn, full, emit)
 	}
 }
 
@@ -333,7 +340,11 @@ func (p *Pipeline) reply(ctx context.Context, sess *session.Session, turn int, e
 	emit(protocol.ServerEvent{Type: protocol.EvAssistantDone, Turn: turn, Text: full})
 	sess.AppendAssistant(full)
 	if strings.TrimSpace(full) != "" {
-		go p.translateAssistant(ctx, turn, full, emit) // background: native-language translation
+		// context.WithoutCancel: the reply already streamed to the learner, so
+		// its translation is a self-contained piece of work with nothing left
+		// to race — a barge-in or disconnect right as it starts must not lose
+		// it, same reasoning as backupAudio/persistEvent detaching from ctx.
+		go p.translateAssistant(context.WithoutCancel(ctx), turn, full, emit)
 	}
 	go p.compact(sess) // background: fold old turns into the long-term summary
 }
@@ -490,7 +501,13 @@ func (p *Pipeline) refine(ctx context.Context, sess *session.Session, turn int, 
 	// summary/recent are the pre-turn context captured in HandleUtterance
 	// before this utterance was appended — so it never includes the sentence
 	// under correction, regardless of how the concurrent reply() interleaves.
-	p.correct(ctx, turn, refined, renderCorrectionContext(summary, recent), emit)
+	//
+	// context.WithoutCancel here (unlike the Judge call above, which stays on
+	// ctx since sess.ReplaceLastUser must respect turn ordering/barge-in):
+	// correct() only emits+persists a result for this fixed turn number and
+	// never touches sess, so there's no ordering hazard in letting it outlive
+	// a barge-in or disconnect — same reasoning as HandleText's correct call.
+	p.correct(context.WithoutCancel(ctx), turn, refined, renderCorrectionContext(summary, recent), emit)
 }
 
 // correct asks the analysis ensemble for grammar/vocabulary/context feedback
