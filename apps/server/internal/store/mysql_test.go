@@ -173,7 +173,7 @@ func TestMySQLSaveThenLoadRoundTrips(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
 	sessionID := "sess-round-trip"
-	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "hi", false); err != nil {
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "hi", false, protocol.SourceText); err != nil {
 		t.Fatalf("SaveTurn() error = %v", err)
 	}
 	want := Profile{
@@ -199,7 +199,7 @@ func TestMySQLSaveTwiceUpdatesInPlace(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
 	sessionID := "sess-twice"
-	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "hi", false); err != nil {
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "hi", false, protocol.SourceText); err != nil {
 		t.Fatalf("SaveTurn() error = %v", err)
 	}
 	if err := st.Save(ctx, "alex", sessionID, Profile{Summary: "v1"}); err != nil {
@@ -233,10 +233,10 @@ func TestMySQLUsersAreIsolated(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
 	const sessionID = "s1"
-	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "hi", false); err != nil {
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "hi", false, protocol.SourceText); err != nil {
 		t.Fatalf("SaveTurn(alex) error = %v", err)
 	}
-	if err := st.SaveTurn(ctx, "sam", sessionID, 1, "user", "hi", false); err != nil {
+	if err := st.SaveTurn(ctx, "sam", sessionID, 1, "user", "hi", false, protocol.SourceText); err != nil {
 		t.Fatalf("SaveTurn(sam) error = %v", err)
 	}
 	if err := st.Save(ctx, "alex", sessionID, Profile{Summary: "alex's memory"}); err != nil {
@@ -263,7 +263,7 @@ func TestMySQLSaveTurnCreatesSessionWithTitleFromFirstMessage(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
 	sessionID := "sess-title"
-	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "My name is Alex and I like hiking.", false); err != nil {
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "My name is Alex and I like hiking.", false, protocol.SourceText); err != nil {
 		t.Fatalf("SaveTurn() error = %v", err)
 	}
 	meta, _, err := st.SessionDetail(ctx, "alex", sessionID)
@@ -279,13 +279,13 @@ func TestMySQLSaveTurnTitleSurvivesLaterTurns(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
 	sessionID := "sess-title-stable"
-	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "first message", false); err != nil {
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "first message", false, protocol.SourceText); err != nil {
 		t.Fatalf("SaveTurn(1) error = %v", err)
 	}
-	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "assistant", "reply", false); err != nil {
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "assistant", "reply", false, ""); err != nil {
 		t.Fatalf("SaveTurn(assistant) error = %v", err)
 	}
-	if err := st.SaveTurn(ctx, "alex", sessionID, 2, "user", "second message", false); err != nil {
+	if err := st.SaveTurn(ctx, "alex", sessionID, 2, "user", "second message", false, protocol.SourceText); err != nil {
 		t.Fatalf("SaveTurn(2) error = %v", err)
 	}
 	meta, _, err := st.SessionDetail(ctx, "alex", sessionID)
@@ -301,10 +301,10 @@ func TestMySQLSaveTurnUpsertsRefinedText(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
 	sessionID := "sess-refine"
-	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "fast stt guess", false); err != nil {
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "fast stt guess", false, protocol.SourceVoice); err != nil {
 		t.Fatalf("SaveTurn(fast) error = %v", err)
 	}
-	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "refined transcript", true); err != nil {
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "refined transcript", true, protocol.SourceVoice); err != nil {
 		t.Fatalf("SaveTurn(refined) error = %v", err)
 	}
 	_, turns, err := st.SessionDetail(ctx, "alex", sessionID)
@@ -319,11 +319,62 @@ func TestMySQLSaveTurnUpsertsRefinedText(t *testing.T) {
 	}
 }
 
+// TestMySQLSaveTurnPersistsSource guards the source column added to
+// distinguish spoken input from typed input: a user turn's source must
+// round-trip through SessionDetail, and an assistant turn (which has none)
+// must come back empty rather than inheriting whatever the user turn had.
+func TestMySQLSaveTurnPersistsSource(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	sessionID := "sess-source"
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "spoken sentence", false, protocol.SourceVoice); err != nil {
+		t.Fatalf("SaveTurn(user) error = %v", err)
+	}
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "assistant", "reply", false, ""); err != nil {
+		t.Fatalf("SaveTurn(assistant) error = %v", err)
+	}
+	_, turns, err := st.SessionDetail(ctx, "alex", sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if len(turns) != 2 || turns[0].Role != "user" || turns[1].Role != "assistant" {
+		t.Fatalf("turns = %+v, want [user, assistant]", turns)
+	}
+	if turns[0].Source != protocol.SourceVoice {
+		t.Fatalf("user turn Source = %q, want %q", turns[0].Source, protocol.SourceVoice)
+	}
+	if turns[1].Source != "" {
+		t.Fatalf("assistant turn Source = %q, want empty", turns[1].Source)
+	}
+}
+
+// TestMySQLSaveTurnUpsertsSource guards the ON DUPLICATE KEY UPDATE clause:
+// re-saving a turn under a different source (e.g. a refine pass, which is
+// always voice) must overwrite the row's source, not just its text/refined.
+func TestMySQLSaveTurnUpsertsSource(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	sessionID := "sess-source-upsert"
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "typed then corrected by voice", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(text) error = %v", err)
+	}
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "typed then corrected by voice", false, protocol.SourceVoice); err != nil {
+		t.Fatalf("SaveTurn(voice) error = %v", err)
+	}
+	_, turns, err := st.SessionDetail(ctx, "alex", sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if len(turns) != 1 || turns[0].Source != protocol.SourceVoice {
+		t.Fatalf("turns = %+v, want a single turn with Source=%q", turns, protocol.SourceVoice)
+	}
+}
+
 func TestMySQLSaveCorrectionAttachesToExistingTurn(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
 	sessionID := "sess-correction"
-	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "he go school", false); err != nil {
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "he go school", false, protocol.SourceText); err != nil {
 		t.Fatalf("SaveTurn() error = %v", err)
 	}
 	c := protocol.Correction{
@@ -374,10 +425,10 @@ func TestMySQLSaveTranslationAttachesToCorrectRole(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
 	sessionID := "sess-translation"
-	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "he go school", false); err != nil {
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "he go school", false, protocol.SourceText); err != nil {
 		t.Fatalf("SaveTurn(user) error = %v", err)
 	}
-	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "assistant", "Nice!", false); err != nil {
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "assistant", "Nice!", false, ""); err != nil {
 		t.Fatalf("SaveTurn(assistant) error = %v", err)
 	}
 	if err := st.SaveTranslation(ctx, "alex", sessionID, 1, "user", "그는 학교에 간다"); err != nil {
@@ -421,10 +472,10 @@ func TestMySQLSessionDetailOrdersUserBeforeAssistantWithinATurn(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
 	sessionID := "sess-order"
-	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "user text", false); err != nil {
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "user text", false, protocol.SourceText); err != nil {
 		t.Fatalf("SaveTurn(user) error = %v", err)
 	}
-	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "assistant", "assistant text", false); err != nil {
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "assistant", "assistant text", false, ""); err != nil {
 		t.Fatalf("SaveTurn(assistant) error = %v", err)
 	}
 	_, turns, err := st.SessionDetail(ctx, "alex", sessionID)
@@ -440,11 +491,11 @@ func TestMySQLListSessionsOrderedByRecency(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
 	userID := "list-order-user"
-	if err := st.SaveTurn(ctx, userID, "s-old", 1, "user", "older room", false); err != nil {
+	if err := st.SaveTurn(ctx, userID, "s-old", 1, "user", "older room", false, protocol.SourceText); err != nil {
 		t.Fatalf("SaveTurn(old) error = %v", err)
 	}
 	time.Sleep(1100 * time.Millisecond) // updated_at has 1-second resolution (UNIX_TIMESTAMP())
-	if err := st.SaveTurn(ctx, userID, "s-new", 1, "user", "newer room", false); err != nil {
+	if err := st.SaveTurn(ctx, userID, "s-new", 1, "user", "newer room", false, protocol.SourceText); err != nil {
 		t.Fatalf("SaveTurn(new) error = %v", err)
 	}
 
@@ -461,7 +512,7 @@ func TestMySQLDeleteSessionRemovesSessionAndTurns(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
 	sessionID := "sess-delete"
-	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "hi", false); err != nil {
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "hi", false, protocol.SourceText); err != nil {
 		t.Fatalf("SaveTurn() error = %v", err)
 	}
 	if err := st.DeleteSession(ctx, "alex", sessionID); err != nil {
@@ -494,10 +545,10 @@ func TestMySQLDeleteSessionDoesNotAffectOtherUsers(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
 	const sessionID = "s-shared-delete"
-	if err := st.SaveTurn(ctx, "victim", sessionID, 1, "user", "victim's message", false); err != nil {
+	if err := st.SaveTurn(ctx, "victim", sessionID, 1, "user", "victim's message", false, protocol.SourceText); err != nil {
 		t.Fatalf("SaveTurn(victim) error = %v", err)
 	}
-	if err := st.SaveTurn(ctx, "attacker", sessionID, 1, "user", "attacker's message", false); err != nil {
+	if err := st.SaveTurn(ctx, "attacker", sessionID, 1, "user", "attacker's message", false, protocol.SourceText); err != nil {
 		t.Fatalf("SaveTurn(attacker) error = %v", err)
 	}
 	if err := st.DeleteSession(ctx, "attacker", sessionID); err != nil {
@@ -515,7 +566,7 @@ func TestMySQLSessionDetailNotFoundForWrongUser(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
 	sessionID := "shared-id-guess"
-	if err := st.SaveTurn(ctx, "victim", sessionID, 1, "user", "victim's secret message", false); err != nil {
+	if err := st.SaveTurn(ctx, "victim", sessionID, 1, "user", "victim's secret message", false, protocol.SourceText); err != nil {
 		t.Fatalf("SaveTurn() error = %v", err)
 	}
 	_, _, err := st.SessionDetail(ctx, "attacker", sessionID)

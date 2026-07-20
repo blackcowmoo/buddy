@@ -1,5 +1,5 @@
 import { fetchJSON, requestOK } from "./fetchJSON";
-import type { Correction } from "./protocol";
+import type { Correction, InputSource } from "./protocol";
 
 // Mirrors store.SessionMeta / store.Turn (apps/server/internal/store/store.go).
 export interface SessionSummary {
@@ -14,6 +14,8 @@ export interface TurnRecord {
   role: "user" | "assistant";
   text: string;
   refined: boolean;
+  // How the learner produced this turn — absent for assistant turns.
+  source?: InputSource;
   correction?: Correction;
   translation?: string;
 }

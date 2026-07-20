@@ -43,10 +43,14 @@ type SessionMeta struct {
 // Profile.Recent, this is never compacted or dropped as the conversation
 // grows.
 type Turn struct {
-	Turn       int                  `json:"turn"`
-	Role       string               `json:"role"` // "user" | "assistant"
-	Text       string               `json:"text"`
-	Refined    bool                 `json:"refined"`
+	Turn    int    `json:"turn"`
+	Role    string `json:"role"` // "user" | "assistant"
+	Text    string `json:"text"`
+	Refined bool   `json:"refined"`
+	// Source is how the learner produced this turn — protocol.SourceVoice or
+	// protocol.SourceText. Empty for assistant turns, which are always
+	// generated rather than input by the learner.
+	Source     string               `json:"source,omitempty"`
 	Correction *protocol.Correction `json:"correction,omitempty"`
 	// Translation is a native-language translation of Text, set for both
 	// user and assistant turns (see SaveTranslation). Kept separate from
@@ -74,8 +78,9 @@ type Store interface {
 
 	// SaveTurn upserts one message into a session's transcript, creating the
 	// session's row (and its title, derived from turn 1's text) on first
-	// write.
-	SaveTurn(ctx context.Context, userID, sessionID string, turn int, role, text string, refined bool) error
+	// write. source is protocol.SourceVoice/SourceText for a user turn, or ""
+	// for an assistant turn.
+	SaveTurn(ctx context.Context, userID, sessionID string, turn int, role, text string, refined bool, source string) error
 	// SaveCorrection attaches grammar/vocabulary feedback to an existing
 	// user turn. A no-op if that turn hasn't been saved yet.
 	SaveCorrection(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction) error

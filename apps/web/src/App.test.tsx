@@ -415,6 +415,49 @@ describe("correction cards", () => {
   });
 });
 
+describe("input source indicator", () => {
+  it("shows a mic icon on a message transcribed from voice", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "final_transcript", turn: 1, text: "I are fine.", source: "voice" }));
+    expect(await screen.findByTitle("음성으로 입력함")).toBeInTheDocument();
+  });
+
+  it("shows a keyboard icon on a typed message", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "final_transcript", turn: 1, text: "I am fine.", source: "text" }));
+    expect(await screen.findByTitle("채팅으로 입력함")).toBeInTheDocument();
+  });
+
+  it("carries the source over when a voice turn is later upgraded by refine", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "final_transcript", turn: 1, text: "i are hungry", source: "voice" }));
+    act(() => emit({ type: "refined_transcript", turn: 1, text: "I am hungry" }));
+    await screen.findByText("I am hungry");
+    expect(screen.getByTitle("음성으로 입력함")).toBeInTheDocument();
+  });
+
+  it("restores the source of a hydrated turn from history", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+      turns: [{ turn: 1, role: "user", text: "hi", refined: false, source: "voice" }],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+
+    expect(await screen.findByTitle("음성으로 입력함")).toBeInTheDocument();
+  });
+});
+
 describe("grammar feedback button", () => {
   it("shows a spinner while the grammar check is running", async () => {
     const user = userEvent.setup();

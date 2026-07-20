@@ -27,6 +27,13 @@ const (
 	EvError                EventType = "error"
 )
 
+// Input source values for ServerEvent.Source / store.Turn.Source — how the
+// learner produced a turn, spoken (transcribed by STT) or typed.
+const (
+	SourceVoice = "voice"
+	SourceText  = "text"
+)
+
 type ServerEvent struct {
 	Type EventType `json:"type"`
 	// Turn correlates fast-track and refine-track messages for one utterance.
@@ -38,6 +45,11 @@ type ServerEvent struct {
 	// transcript/assistant events, or the translated sentence for
 	// EvUserTranslation/EvAssistantTranslation.
 	Text string `json:"text,omitempty"`
+
+	// Source says how the learner produced this turn: "voice" (spoken,
+	// transcribed by STT) or "text" (typed). Only set on EvFinal/EvRefined —
+	// there's no ambiguity to record on any other event type.
+	Source string `json:"source,omitempty"`
 
 	// Session carries the resolved session (chat room) ID. Only set on
 	// EvReady — the client uses it to fetch/replay this room later via

@@ -105,7 +105,7 @@ func (f *fakeStore) Save(ctx context.Context, userID, sessionID string, p store.
 	return nil
 }
 
-func (f *fakeStore) SaveTurn(ctx context.Context, userID, sessionID string, turn int, role, text string, refined bool) error {
+func (f *fakeStore) SaveTurn(ctx context.Context, userID, sessionID string, turn int, role, text string, refined bool, source string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	key := fakeStoreKey(userID, sessionID)
@@ -119,7 +119,7 @@ func (f *fakeStore) SaveTurn(ctx context.Context, userID, sessionID string, turn
 	}
 	tk := fmt.Sprintf("%d|%s", turn, role)
 	t := d.turns[tk]
-	t.Turn, t.Role, t.Text, t.Refined = turn, role, text, refined
+	t.Turn, t.Role, t.Text, t.Refined, t.Source = turn, role, text, refined, source
 	d.turns[tk] = t
 	return nil
 }
@@ -854,11 +854,44 @@ func TestWSFinalAndAssistantTurnsArePersisted(t *testing.T) {
 	if len(turns) != 2 {
 		t.Fatalf("expected 2 persisted turns (user+assistant), got %+v", turns)
 	}
-	if turns[0].Role != "user" || turns[0].Text != "Hello Buddy" {
-		t.Fatalf("turn[0] = %+v, want user/\"Hello Buddy\"", turns[0])
+	if turns[0].Role != "user" || turns[0].Text != "Hello Buddy" || turns[0].Source != protocol.SourceText {
+		t.Fatalf("turn[0] = %+v, want user/\"Hello Buddy\"/source=text", turns[0])
 	}
-	if turns[1].Role != "assistant" || turns[1].Text == "" {
-		t.Fatalf("turn[1] = %+v, want a non-empty assistant reply", turns[1])
+	if turns[1].Role != "assistant" || turns[1].Text == "" || turns[1].Source != "" {
+		t.Fatalf("turn[1] = %+v, want a non-empty assistant reply with no source", turns[1])
+	}
+}
+
+// TestWSBinaryFramePersistsVoiceSource verifies a spoken (binary-frame)
+// utterance is persisted with Source == protocol.SourceVoice, distinguishing
+// it from TestWSFinalAndAssistantTurnsArePersisted's typed path — this is
+// what lets the frontend show which input method produced each message.
+func TestWSBinaryFramePersistsVoiceSource(t *testing.T) {
+	st := newTestStore(t)
+	srv := newTestServer(t, st)
+	c, _ := dial(t, srv, "voice-user", "")
+	ready := readEvent(t, c)
+
+	if err := c.Write(context.Background(), websocket.MessageBinary, []byte("fake pcm bytes")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	readUntil(t, c, protocol.EvFinal)
+
+	var turns []store.Turn
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		_, ts, err := st.SessionDetail(context.Background(), "voice-user", ready.Session)
+		if err == nil && len(ts) >= 1 {
+			turns = ts
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(turns) == 0 {
+		t.Fatalf("no turns persisted in time")
+	}
+	if turns[0].Role != "user" || turns[0].Source != protocol.SourceVoice {
+		t.Fatalf("turn[0] = %+v, want user/source=voice", turns[0])
 	}
 }
 
@@ -870,10 +903,10 @@ func TestWSFinalAndAssistantTurnsArePersisted(t *testing.T) {
 func TestPersistEventSavesTranslationsByRole(t *testing.T) {
 	st := newFakeStore()
 	ctx := context.Background()
-	if err := st.SaveTurn(ctx, "alex", "sess-1", 1, "user", "he go school", false); err != nil {
+	if err := st.SaveTurn(ctx, "alex", "sess-1", 1, "user", "he go school", false, protocol.SourceText); err != nil {
 		t.Fatalf("SaveTurn(user) error = %v", err)
 	}
-	if err := st.SaveTurn(ctx, "alex", "sess-1", 1, "assistant", "Nice!", false); err != nil {
+	if err := st.SaveTurn(ctx, "alex", "sess-1", 1, "assistant", "Nice!", false, ""); err != nil {
 		t.Fatalf("SaveTurn(assistant) error = %v", err)
 	}
 
