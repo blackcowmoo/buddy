@@ -24,6 +24,8 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"buddy/server/internal/llm"
 	"buddy/server/internal/protocol"
@@ -79,6 +81,19 @@ type Pipeline struct {
 	// before the oldest half is folded into its long-term summary. See
 	// compact() and session.PeekOldestForCompaction.
 	MaxHistoryMessages int
+
+	// chatActive counts in-flight chat replies (reply/StartConversation's
+	// ChatStream calls). Read by acquireTranslationSlot so a new translation
+	// call can wait for a gap in chat activity instead of contending with it.
+	chatActive int32 // atomic
+
+	// translationSem caps translateAssistant/TranslateWithContext to one
+	// call in flight at a time, process-wide (shared by live per-turn
+	// translation and internal/backfill's worker, since both hold the same
+	// *Pipeline). Lazily created so Pipeline stays usable as a zero-value
+	// struct literal (see cmd/server/main.go).
+	translationSemOnce sync.Once
+	translationSem     chan struct{}
 }
 
 // STTNames returns the configured STT engines' Name()s, in registration
@@ -284,9 +299,11 @@ func (p *Pipeline) HandleText(ctx context.Context, sess *session.Session, text s
 func (p *Pipeline) StartConversation(ctx context.Context, sess *session.Session, emit Emit) {
 	const openingTurn = 0
 	msgs := append(sess.Snapshot(), llm.Message{Role: llm.RoleSystem, Content: openingSystemPrompt})
+	atomic.AddInt32(&p.chatActive, 1)
 	full, err := p.LLM.ChatStream(ctx, p.ChatModel, msgs, func(tok string) {
 		emit(protocol.ServerEvent{Type: protocol.EvAssistantDelta, Turn: openingTurn, Text: tok})
 	})
+	atomic.AddInt32(&p.chatActive, -1)
 	// The connection closed while this was still streaming: drop it rather
 	// than append a greeting nobody will ever see.
 	if ctx.Err() != nil {
@@ -316,9 +333,11 @@ const openingFallback = "Hey there! Glad you're here — what would you like to 
 // reply streams the assistant response and records it in the session.
 func (p *Pipeline) reply(ctx context.Context, sess *session.Session, turn int, emit Emit) {
 	msgs := sess.Snapshot()
+	atomic.AddInt32(&p.chatActive, 1)
 	full, err := p.LLM.ChatStream(ctx, p.ChatModel, msgs, func(tok string) {
 		emit(protocol.ServerEvent{Type: protocol.EvAssistantDelta, Turn: turn, Text: tok})
 	})
+	atomic.AddInt32(&p.chatActive, -1)
 	// Barged in (user spoke again): drop this turn's tail, keep history clean.
 	if ctx.Err() != nil {
 		return
@@ -533,11 +552,53 @@ func (p *Pipeline) correct(ctx context.Context, turn int, text, contextMsg strin
 	}
 }
 
+// chatYieldPoll is how often acquireTranslationSlot rechecks chatActive
+// while waiting for a gap in chat activity. Translation isn't
+// latency-sensitive, so this only needs to be short enough that a
+// translation call starts promptly once a chat reply finishes — not tight
+// enough to matter for CPU usage.
+const chatYieldPoll = 100 * time.Millisecond
+
+// acquireTranslationSlot blocks until at most one translation call is in
+// flight (translationSem, capacity 1 — shared by live per-turn translation
+// and internal/backfill's worker, since both hold the same *Pipeline) and,
+// best-effort, until no chat reply is currently streaming (chatActive):
+// translation doesn't need to be real-time, so a NEW translation call yields
+// to an in-flight chat reply rather than contending with it for the LLM
+// backend. A translation that has already acquired the slot is never
+// preempted — only new acquisitions wait on chatActive.
+func (p *Pipeline) acquireTranslationSlot(ctx context.Context) error {
+	for atomic.LoadInt32(&p.chatActive) > 0 {
+		select {
+		case <-time.After(chatYieldPoll):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	select {
+	case p.translationSemaphore() <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (p *Pipeline) releaseTranslationSlot() { <-p.translationSem }
+
+func (p *Pipeline) translationSemaphore() chan struct{} {
+	p.translationSemOnce.Do(func() { p.translationSem = make(chan struct{}, 1) })
+	return p.translationSem
+}
+
 // translateAssistant asks the analysis ensemble for a plain native-language
 // translation of the assistant's full reply, synthesized down to one result
 // by analyze() — the same ensemble/Judge machinery correct() uses, just with
 // a plain-text (not JSON) prompt since there's nothing else to parse out.
 func (p *Pipeline) translateAssistant(ctx context.Context, turn int, text string, emit Emit) {
+	if err := p.acquireTranslationSlot(ctx); err != nil {
+		return
+	}
+	defer p.releaseTranslationSlot()
 	raw, err := p.analyze(ctx, translationSystemPrompt(p.FeedbackLang), text, false)
 	if err != nil {
 		log.Printf("translateAssistant: %v", err)
@@ -560,6 +621,10 @@ func (p *Pipeline) translateAssistant(ctx context.Context, turn int, text string
 // that never got one the first time, possibly long after the turns around
 // it were said.
 func (p *Pipeline) TranslateWithContext(ctx context.Context, priorTurns []llm.Message, text string) (string, error) {
+	if err := p.acquireTranslationSlot(ctx); err != nil {
+		return "", err
+	}
+	defer p.releaseTranslationSlot()
 	raw, err := p.analyze(ctx, translationSystemPrompt(p.FeedbackLang), renderTranslationInput(renderTranslationContext(priorTurns), text), false)
 	if err != nil {
 		return "", err
