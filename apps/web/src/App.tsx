@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BuddyClient, type Status } from "./lib/ws";
-import type { Correction, ServerEvent } from "./lib/protocol";
+import type { Correction, InputSource, ServerEvent } from "./lib/protocol";
 import { PCMRecorder } from "./audio/recorder";
 import { KokoroSpeaker } from "./tts/kokoro";
 import { prPath } from "./lib/rootPath";
@@ -20,6 +20,8 @@ interface Msg {
   role: "user" | "assistant";
   text: string;
   refined?: boolean;
+  // How the learner produced this turn — absent for assistant turns.
+  source?: InputSource;
 }
 
 type TtsState = "idle" | "loading" | "ready" | "error";
@@ -108,14 +110,17 @@ export function App() {
       case "ready":
         break;
       case "final_transcript":
-        setMsgs((m) => [...m, { turn: e.turn, role: "user", text: e.text ?? "" }]);
+        setMsgs((m) => [
+          ...m,
+          { turn: e.turn, role: "user", text: e.text ?? "", source: e.source },
+        ]);
         setPendingCorrections((p) => ({ ...p, [e.turn]: true }));
         break;
       case "refined_transcript":
         setMsgs((m) =>
           m.map((x) =>
             x.turn === e.turn && x.role === "user"
-              ? { ...x, text: e.text ?? x.text, refined: true }
+              ? { ...x, text: e.text ?? x.text, refined: true, source: e.source ?? x.source }
               : x,
           ),
         );
@@ -211,7 +216,15 @@ export function App() {
         clientRef.current?.close(); // fetch failed (e.g. deleted elsewhere) — stay on the list
         return;
       }
-      setMsgs(detail.turns.map((t) => ({ turn: t.turn, role: t.role, text: t.text, refined: t.refined })));
+      setMsgs(
+        detail.turns.map((t) => ({
+          turn: t.turn,
+          role: t.role,
+          text: t.text,
+          refined: t.refined,
+          source: t.source,
+        })),
+      );
       const corr: Record<number, Correction> = {};
       const ut: Record<number, string> = {};
       const at: Record<number, string> = {};
@@ -501,6 +514,14 @@ export function App() {
             <div key={i} className={`row ${m.role}`}>
               <div className="bubble">
                 {m.text || <span className="cursor">▋</span>}
+                {m.role === "user" && m.source && (
+                  <span
+                    className="source-icon"
+                    title={m.source === "voice" ? "음성으로 입력함" : "채팅으로 입력함"}
+                  >
+                    {m.source === "voice" ? "🎙" : "⌨️"}
+                  </span>
+                )}
                 {m.role === "user" && m.refined && <span className="tag">refined</span>}
               </div>
               {translation && <div className="translation">{translation}</div>}

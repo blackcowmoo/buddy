@@ -24,12 +24,18 @@ export interface Correction {
   issues: Issue[];
 }
 
+// How the learner produced a turn — spoken (transcribed by STT) or typed.
+export type InputSource = "voice" | "text";
+
 export interface ServerEvent {
   type: EventType;
   // 0 is reserved for the connection-opening greeting (see
   // pipeline.StartConversation server-side) — real turns start at 1.
   turn: number;
   text?: string;
+  // Only set on "final_transcript"/"refined_transcript" — there's no
+  // ambiguity to record on any other event type.
+  source?: InputSource;
   // Resolved session (chat room) ID. Only set on "ready".
   session?: string;
   correction?: Correction;

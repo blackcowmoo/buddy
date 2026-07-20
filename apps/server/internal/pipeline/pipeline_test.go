@@ -1201,6 +1201,9 @@ func TestHandleTextEndToEnd(t *testing.T) {
 	if len(byType[protocol.EvFinal]) != 1 || byType[protocol.EvFinal][0].Text != "Hello name Alex" {
 		t.Fatalf("final_transcript wrong: %+v", byType[protocol.EvFinal])
 	}
+	if byType[protocol.EvFinal][0].Source != protocol.SourceText {
+		t.Fatalf("final_transcript Source = %q, want %q (typed input)", byType[protocol.EvFinal][0].Source, protocol.SourceText)
+	}
 	if len(byType[protocol.EvAssistantDone]) != 1 || byType[protocol.EvAssistantDone][0].Text != "Nice to meet you!" {
 		t.Fatalf("assistant_done wrong: %+v", byType[protocol.EvAssistantDone])
 	}
@@ -1286,8 +1289,14 @@ func TestHandleUtteranceFullFlowUpgradesContextViaRefine(t *testing.T) {
 	if len(byType[protocol.EvFinal]) != 1 || byType[protocol.EvFinal][0].Text != "i are hungry" {
 		t.Fatalf("final_transcript (FAST track) wrong: %+v", byType[protocol.EvFinal])
 	}
+	if byType[protocol.EvFinal][0].Source != protocol.SourceVoice {
+		t.Fatalf("final_transcript Source = %q, want %q (spoken input)", byType[protocol.EvFinal][0].Source, protocol.SourceVoice)
+	}
 	if len(byType[protocol.EvRefined]) != 1 || byType[protocol.EvRefined][0].Text != "I am hungry" {
 		t.Fatalf("refined_transcript (Judge reconciliation) wrong: %+v", byType[protocol.EvRefined])
+	}
+	if byType[protocol.EvRefined][0].Source != protocol.SourceVoice {
+		t.Fatalf("refined_transcript Source = %q, want %q", byType[protocol.EvRefined][0].Source, protocol.SourceVoice)
 	}
 	if len(byType[protocol.EvAssistantDone]) != 1 || byType[protocol.EvAssistantDone][0].Text != "Let's get you some food!" {
 		t.Fatalf("assistant_done wrong: %+v", byType[protocol.EvAssistantDone])

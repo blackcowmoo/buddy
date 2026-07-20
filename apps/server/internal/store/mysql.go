@@ -125,6 +125,7 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 			role        VARCHAR(16)  NOT NULL,
 			text        TEXT         NOT NULL,
 			refined     TINYINT(1)   NOT NULL DEFAULT 0,
+			source      VARCHAR(8)   NOT NULL DEFAULT '',
 			correction  TEXT         NULL,
 			translation TEXT         NULL,
 			meta        TEXT         NULL,
@@ -146,6 +147,12 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 	if _, err := rw.Exec(`ALTER TABLE ` + turnsTable + ` ADD COLUMN translation TEXT NULL`); err != nil && !mysqlerr.Is(err, mysqlerr.DupFieldName) {
 		closeAll()
 		return nil, fmt.Errorf("store: schema: add translation column: %w", err)
+	}
+	// Additive, same reasoning as the translation column above: buddy_turns
+	// predates input-source tracking.
+	if _, err := rw.Exec(`ALTER TABLE ` + turnsTable + ` ADD COLUMN source VARCHAR(8) NOT NULL DEFAULT ''`); err != nil && !mysqlerr.Is(err, mysqlerr.DupFieldName) {
+		closeAll()
+		return nil, fmt.Errorf("store: schema: add source column: %w", err)
 	}
 	return &MySQLStore{rw: rw, ro: ro}, nil
 }
@@ -247,7 +254,7 @@ func truncateTitle(text string) string {
 	return string(r[:maxTitleLen]) + "…"
 }
 
-func (s *MySQLStore) SaveTurn(ctx context.Context, userID, sessionID string, turn int, role, text string, refined bool) error {
+func (s *MySQLStore) SaveTurn(ctx context.Context, userID, sessionID string, turn int, role, text string, refined bool, source string) error {
 	// The session's row (and its title, derived from the opening message) is
 	// created lazily by whichever turn arrives first — always turn 1 from
 	// the user, since a session only starts once someone speaks or types.
@@ -264,10 +271,10 @@ func (s *MySQLStore) SaveTurn(ctx context.Context, userID, sessionID string, tur
 		}
 	}
 	if _, err := s.rw.ExecContext(ctx, `
-		INSERT INTO `+turnsTable+` (user_id, session_id, turn, role, text, refined, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, UNIX_TIMESTAMP())
-		ON DUPLICATE KEY UPDATE text = VALUES(text), refined = VALUES(refined)
-	`, userID, sessionID, turn, role, text, refined); err != nil {
+		INSERT INTO `+turnsTable+` (user_id, session_id, turn, role, text, refined, source, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, UNIX_TIMESTAMP())
+		ON DUPLICATE KEY UPDATE text = VALUES(text), refined = VALUES(refined), source = VALUES(source)
+	`, userID, sessionID, turn, role, text, refined, source); err != nil {
 		return fmt.Errorf("store: save turn: %w", err)
 	}
 	return nil
@@ -358,7 +365,7 @@ func (s *MySQLStore) SessionDetail(ctx context.Context, userID, sessionID string
 // role = 'assistant' sorts after 'user' within a turn (false < true).
 func (s *MySQLStore) sessionTurns(ctx context.Context, userID, sessionID string) ([]Turn, error) {
 	rows, err := s.ro.QueryContext(ctx, `
-		SELECT turn, role, text, refined, correction, translation, meta FROM `+turnsTable+`
+		SELECT turn, role, text, refined, source, correction, translation, meta FROM `+turnsTable+`
 		WHERE user_id = ? AND session_id = ? ORDER BY turn ASC, role = 'assistant' ASC
 	`, userID, sessionID)
 	if err != nil {
@@ -371,7 +378,7 @@ func (s *MySQLStore) sessionTurns(ctx context.Context, userID, sessionID string)
 		var t Turn
 		var refined int
 		var correctionJSON, translation, metaJSON sql.NullString
-		if err := rows.Scan(&t.Turn, &t.Role, &t.Text, &refined, &correctionJSON, &translation, &metaJSON); err != nil {
+		if err := rows.Scan(&t.Turn, &t.Role, &t.Text, &refined, &t.Source, &correctionJSON, &translation, &metaJSON); err != nil {
 			return nil, fmt.Errorf("store: session detail: %w", err)
 		}
 		t.Refined = refined != 0
