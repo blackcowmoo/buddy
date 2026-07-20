@@ -611,7 +611,11 @@ describe("grammar feedback button", () => {
     expect(await screen.findByText("문법 문제가 없어요 👍")).toBeInTheDocument();
   });
 
-  it("does not show a spinner for a hydrated turn with no saved correction", async () => {
+  // A session with no recent activity (updatedAt long in the past) is
+  // treated as permanently uncorrected rather than still in flight — a
+  // missing correction here is most likely a room predating the feature, or
+  // one whose correct() call failed with nothing left to retry it.
+  it("does not show a spinner for a hydrated turn with no saved correction in a stale session", async () => {
     vi.mocked(fetchSessions).mockResolvedValue([
       { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
     ]);
@@ -625,6 +629,30 @@ describe("grammar feedback button", () => {
 
     await screen.findByText("hi");
     expect(screen.queryByRole("button", { name: /^문법/ })).not.toBeInTheDocument();
+  });
+
+  // Guards a real reported bug: leaving a room while correct() was still
+  // running for the last turn, then reopening it, used to silently drop the
+  // hourglass (a hydrated turn with no saved correction rendered nothing at
+  // all, permanently, unlike the translation spinner which already survived
+  // reopening). correct() runs detached from the connection (see
+  // pipeline.HandleText) so it keeps going and persists after the learner
+  // leaves — a missing correction on a turn from a recently-active session
+  // now shows the same spinner instead, and the app polls until it lands.
+  it("shows a grammar spinner for a hydrated turn whose correction is still in flight", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: Math.floor(Date.now() / 1000) },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: Math.floor(Date.now() / 1000) },
+      turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+
+    await screen.findByText("hi");
+    expect(await screen.findByRole("button", { name: "문법 확인 중" })).toBeDisabled();
   });
 });
 

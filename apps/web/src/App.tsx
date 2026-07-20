@@ -66,10 +66,12 @@ export function App() {
   const [status, setStatus] = useState<Status>("connecting");
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [corrections, setCorrections] = useState<Record<number, Correction>>({});
-  // Turns whose grammar check is still running, tracked only for turns sent
-  // during THIS live connection — never set for hydrated history, so an old
-  // turn with no saved correction shows as "no data" rather than spinning
-  // forever (see enterChat/backToList resets below).
+  // Turns whose grammar check hasn't produced a result yet — set the moment
+  // one is expected (final_transcript for a live turn) and, for a hydrated
+  // history turn still missing its correction, on load too (see enterChat/
+  // pollMissingFeedback), the same "don't just silently drop the spinner on
+  // reopen" treatment pendingUserTranslations gets, since both are populated
+  // by the same background correct() call.
   const [pendingCorrections, setPendingCorrections] = useState<Record<number, boolean>>({});
   // Keyed separately (not one map keyed by turn) because a user turn and its
   // paired assistant reply share the same turn number.
@@ -79,7 +81,7 @@ export function App() {
   // moment a translation is expected (final_transcript for the user's own
   // turn, assistant_done for the reply) and, for a hydrated history turn
   // whose translation is still missing, on load too (see enterChat/
-  // pollMissingTranslations) so leaving and reopening a room doesn't just
+  // pollMissingFeedback) so leaving and reopening a room doesn't just
   // silently drop the spinner. Rendering always prefers actual translation
   // text over this flag (see the message list below), so there's no need to
   // explicitly clear an entry once its translation lands.
@@ -129,8 +131,8 @@ export function App() {
   const speakerRef = useRef<KokoroSpeaker | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const studyRef = useRef<HTMLDivElement>(null);
-  // Identifies the most recent backfill-translation poll (see
-  // pollMissingTranslations) so a slow fetch that resolves after the learner
+  // Identifies the most recent translation/correction poll (see
+  // pollMissingFeedback) so a slow fetch that resolves after the learner
   // already left the room, or opened a different one, doesn't apply its
   // (now stale) result to the wrong room's state.
   const pollTokenRef = useRef<object | null>(null);
@@ -263,16 +265,21 @@ export function App() {
     }
   }, []);
 
-  // Polls a room's transcript for translations the server is still
-  // backfilling in the background (see internal/backfill) — opening a room
-  // only fetches its transcript once, and backfill has no push channel to
-  // tell an already-open client "it's ready now", so without this a turn
-  // still missing its translation would just show a spinner that never
-  // resolves until the learner leaves and reopens the room. Stops once
+  // Polls a room's transcript for translations and grammar corrections the
+  // server is still working on in the background — either backfilling a
+  // translation (see internal/backfill) or still running correct() for a
+  // turn that was in flight when the learner left the room. Opening a room
+  // only fetches its transcript once, and neither background path has a push
+  // channel to tell an already-open client "it's ready now", so without this
+  // a turn still missing its translation/correction would just show a
+  // spinner that never resolves until the learner leaves and reopens the
+  // room — which was exactly the bug: the grammar hourglass would vanish on
+  // reopen instead of resuming, since nothing repopulated pendingCorrections
+  // for a hydrated turn whose correction hadn't landed yet. Stops once
   // nothing is missing anymore or maxAttempts is reached; a fresh call to
   // enterChat/backToList invalidates `token` so a slow, late-arriving
   // response never overwrites a different room's state.
-  const pollMissingTranslations = useCallback((sessionId: string, token: object) => {
+  const pollMissingFeedback = useCallback((sessionId: string, token: object) => {
     const maxAttempts = 20;
     const intervalMs = 4000;
     let attempt = 0;
@@ -284,6 +291,7 @@ export function App() {
       let stillMissing = false;
       const ut: Record<number, string> = {};
       const at: Record<number, string> = {};
+      const corr: Record<number, Correction> = {};
       for (const t of detail.turns) {
         if (t.translation) {
           if (t.role === "user") ut[t.turn] = t.translation;
@@ -291,9 +299,21 @@ export function App() {
         } else if (t.text) {
           stillMissing = true;
         }
+        if (t.role === "user" && t.text) {
+          if (t.correction) corr[t.turn] = t.correction;
+          else stillMissing = true;
+        }
       }
       setUserTranslations((prev) => ({ ...prev, ...ut }));
       setAssistantTranslations((prev) => ({ ...prev, ...at }));
+      if (Object.keys(corr).length > 0) {
+        setCorrections((prev) => ({ ...prev, ...corr }));
+        setPendingCorrections((prev) => {
+          const next = { ...prev };
+          for (const turn of Object.keys(corr)) delete next[Number(turn)];
+          return next;
+        });
+      }
       if (stillMissing && attempt < maxAttempts) setTimeout(tick, intervalMs);
     };
     setTimeout(tick, intervalMs);
@@ -337,13 +357,32 @@ export function App() {
             source: t.source,
           })),
         );
+        // Whether this room saw activity recently enough that a user turn
+        // still missing its correction is plausibly still in flight (rather
+        // than a session from before this feature existed, or one whose
+        // correct() call failed with nothing left to ever retry it) — bounds
+        // the hourglass-on-reopen fix below so a genuinely old, permanently
+        // uncorrected turn goes back to showing "no data" instead of
+        // spinning forever.
+        const recentlyActive = Date.now() / 1000 - detail.session.updatedAt < 120;
         const corr: Record<number, Correction> = {};
         const ut: Record<number, string> = {};
         const at: Record<number, string> = {};
         const pendingUt: Record<number, boolean> = {};
         const pendingAt: Record<number, boolean> = {};
+        const pendingCorr: Record<number, boolean> = {};
         for (const t of detail.turns) {
-          if (t.correction) corr[t.turn] = t.correction;
+          if (t.correction) {
+            corr[t.turn] = t.correction;
+          } else if (t.role === "user" && t.text && recentlyActive) {
+            // Missing correction on a hydrated user turn: correct() runs
+            // detached from the connection (see pipeline.HandleText) so it
+            // keeps going and persists even after the learner leaves the
+            // room — show the hourglass as still in-progress instead of
+            // dropping it, and poll until the result lands (see
+            // pollMissingFeedback).
+            pendingCorr[t.turn] = true;
+          }
           if (t.translation) {
             if (t.role === "user") ut[t.turn] = t.translation;
             else at[t.turn] = t.translation;
@@ -361,8 +400,13 @@ export function App() {
         setAssistantTranslations(at);
         setPendingUserTranslations(pendingUt);
         setPendingAssistantTranslations(pendingAt);
-        if (Object.keys(pendingUt).length > 0 || Object.keys(pendingAt).length > 0) {
-          pollMissingTranslations(sessionId, token);
+        setPendingCorrections(pendingCorr);
+        if (
+          Object.keys(pendingUt).length > 0 ||
+          Object.keys(pendingAt).length > 0 ||
+          Object.keys(pendingCorr).length > 0
+        ) {
+          pollMissingFeedback(sessionId, token);
         }
       } else {
         setMsgs([]);
@@ -375,7 +419,7 @@ export function App() {
       setMenuOpen(false);
       setView("chat");
     },
-    [resetTurnState, pollMissingTranslations],
+    [resetTurnState, pollMissingFeedback],
   );
 
   // Shared by backToList and the popstate handler below — actually leaving
@@ -713,18 +757,7 @@ export function App() {
             m.role === "user" ? pendingUserTranslations[m.turn] : pendingAssistantTranslations[m.turn];
           return (
             <div key={i} className={`row ${m.role}`}>
-              <div className="bubble">
-                {m.text || <span className="cursor">▋</span>}
-                {m.role === "user" && m.source && (
-                  <span
-                    className="source-icon"
-                    title={m.source === "voice" ? "음성으로 입력함" : "채팅으로 입력함"}
-                  >
-                    {m.source === "voice" ? "🎙" : "⌨️"}
-                  </span>
-                )}
-                {m.role === "user" && m.refined && <span className="tag">refined</span>}
-              </div>
+              <div className="bubble">{m.text || <span className="cursor">▋</span>}</div>
               {translation ? (
                 <div className="translation">{translation}</div>
               ) : (
@@ -736,6 +769,15 @@ export function App() {
               )}
               {m.text && (
                 <div className="msg-tools">
+                  {m.role === "user" && m.source && (
+                    <span
+                      className="source-icon"
+                      title={m.source === "voice" ? "음성으로 입력함" : "채팅으로 입력함"}
+                    >
+                      {m.source === "voice" ? "🎙" : "⌨️"}
+                    </span>
+                  )}
+                  {m.role === "user" && m.refined && <span className="tag">refined</span>}
                   {m.role === "user" && (
                     <GrammarControl
                       index={i}
