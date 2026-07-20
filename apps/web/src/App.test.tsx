@@ -860,6 +860,42 @@ describe("typing indicator", () => {
   });
 });
 
+describe("composer", () => {
+  function lastSendText() {
+    const mocked = vi.mocked(BuddyClient);
+    const instance = mocked.mock.results[mocked.mock.results.length - 1].value as {
+      sendText: ReturnType<typeof vi.fn>;
+    };
+    return instance.sendText;
+  }
+
+  it("sends the message and clears the input on Enter", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "assistant_done", turn: 0, text: "Hey there!" }));
+
+    const textarea = screen.getByPlaceholderText("…or type in English");
+    await user.type(textarea, "Hello Buddy{Enter}");
+
+    expect(lastSendText()).toHaveBeenCalledWith("Hello Buddy");
+    expect(textarea).toHaveValue("");
+  });
+
+  it("inserts a newline on Shift+Enter instead of sending", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "assistant_done", turn: 0, text: "Hey there!" }));
+
+    const textarea = screen.getByPlaceholderText("…or type in English");
+    await user.type(textarea, "Hello{Shift>}{Enter}{/Shift}Buddy");
+
+    expect(lastSendText()).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue("Hello\nBuddy");
+  });
+});
+
 describe("per-message translations", () => {
   it("shows a small translation line under both the user and assistant bubbles", async () => {
     const user = userEvent.setup();
