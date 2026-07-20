@@ -64,8 +64,11 @@ func (fakeLLM) Complete(ctx context.Context, model string, msgs []llm.Message, j
 // session, persist turns off the right events?), not SQL correctness — that
 // lives in internal/store's own MySQL-backed tests. It mirrors MySQLStore's
 // key behaviors that other tests here depend on: Save is a no-op until a
-// turn has created the session row, and everything is scoped by
-// (userID, sessionID) together.
+// turn has created the session row, everything is scoped by
+// (userID, sessionID) together, and — like buddy_turns having no foreign key
+// on buddy_sessions — a turn write (e.g. the turn-0 opening greeting) can
+// land before the session row exists (hasRow) and still be readable later
+// once that row is created by turn 1.
 type fakeStore struct {
 	mu       sync.Mutex
 	sessions map[string]*fakeSession // key: userID + "\x00" + sessionID
@@ -74,6 +77,7 @@ type fakeStore struct {
 type fakeSession struct {
 	userID  string
 	meta    store.SessionMeta
+	hasRow  bool // mirrors whether a buddy_sessions row exists yet (see SaveTurn)
 	profile store.Profile
 	turns   map[string]store.Turn // key: "<turn>|<role>"
 }
@@ -98,7 +102,7 @@ func (f *fakeStore) Save(ctx context.Context, userID, sessionID string, p store.
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	d := f.sessions[fakeStoreKey(userID, sessionID)]
-	if d == nil {
+	if d == nil || !d.hasRow {
 		return nil // matches MySQLStore.Save: only updates an already-created session row
 	}
 	d.profile = store.Profile{Summary: p.Summary, Recent: append([]llm.Message(nil), p.Recent...)}
@@ -111,11 +115,15 @@ func (f *fakeStore) SaveTurn(ctx context.Context, userID, sessionID string, turn
 	key := fakeStoreKey(userID, sessionID)
 	d := f.sessions[key]
 	if d == nil {
-		if turn != 1 || role != "user" {
-			return nil // no session row yet and this isn't the turn that creates one
-		}
-		d = &fakeSession{userID: userID, meta: store.SessionMeta{ID: sessionID, Title: text}, turns: map[string]store.Turn{}}
+		// Matches MySQLStore.SaveTurn: the buddy_turns INSERT itself has no
+		// dependency on a buddy_sessions row existing, so this write (e.g.
+		// the turn-0 opening greeting) is kept even before hasRow is set.
+		d = &fakeSession{userID: userID, turns: map[string]store.Turn{}}
 		f.sessions[key] = d
+	}
+	if turn == 1 && role == "user" && !d.hasRow {
+		d.hasRow = true
+		d.meta = store.SessionMeta{ID: sessionID, Title: text}
 	}
 	tk := fmt.Sprintf("%d|%s", turn, role)
 	t := d.turns[tk]
@@ -164,7 +172,7 @@ func (f *fakeStore) ListSessions(ctx context.Context, userID string) ([]store.Se
 	defer f.mu.Unlock()
 	out := []store.SessionMeta{}
 	for _, d := range f.sessions {
-		if d.userID == userID {
+		if d.userID == userID && d.hasRow {
 			out = append(out, d.meta)
 		}
 	}
@@ -175,7 +183,7 @@ func (f *fakeStore) SessionDetail(ctx context.Context, userID, sessionID string)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	d := f.sessions[fakeStoreKey(userID, sessionID)]
-	if d == nil {
+	if d == nil || !d.hasRow {
 		return store.SessionMeta{}, nil, store.ErrNotFound
 	}
 	turns := make([]store.Turn, 0, len(d.turns))
@@ -694,10 +702,13 @@ func TestWSMemoryPersistsAcrossReconnects(t *testing.T) {
 // TestWSNewSessionGetsOpeningGreeting checks the opening-greeting feature
 // (pipeline.StartConversation) end to end: a brand-new session gets an
 // assistant message on the reserved turn-0 sentinel before the learner ever
-// says anything, and — since it's never persisted per-turn (see
-// persistEvent's turn==0 skip) — an abandoned room still leaves no session
-// row behind, exactly like TestWSListSessionsOnlyShowsSessionsWithMessages
-// expects for a silent connection.
+// says anything. The turn-0 text itself is now written to the transcript
+// (see persistEvent), but the *session row* is still only created once the
+// learner's own turn 1 lands (see store.MySQLStore.SaveTurn), so an abandoned
+// room still leaves no visible session behind — matches
+// TestWSListSessionsOnlyShowsSessionsWithMessages for a silent connection,
+// and TestWSSessionDetailIncludesOpeningGreetingAfterFirstReply for the case
+// where the learner does reply.
 func TestWSNewSessionGetsOpeningGreeting(t *testing.T) {
 	st := newTestStore(t)
 	srv := newTestServer(t, st)
@@ -712,7 +723,51 @@ func TestWSNewSessionGetsOpeningGreeting(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond) // let the deferred save (a no-op here) run
 	if _, _, err := st.SessionDetail(context.Background(), "greet-user", ready.Session); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("greeting-only session should leave no session row, err = %v", err)
+		t.Fatalf("greeting-only session should still leave no visible session, err = %v", err)
+	}
+}
+
+// TestWSSessionDetailIncludesOpeningGreetingAfterFirstReply is the regression
+// test for the reported bug: a learner opens a new room, gets the opening
+// greeting (turn 0), replies at least once (turn 1) — which is what actually
+// creates the session row — closes the tab, and reopens the room later. The
+// greeting must still be there, not just the learner's own turn 1 exchange.
+func TestWSSessionDetailIncludesOpeningGreetingAfterFirstReply(t *testing.T) {
+	st := newTestStore(t)
+	srv := newTestServer(t, st)
+	c, _ := dial(t, srv, "greet-reply-user", "")
+	ready := readEvent(t, c)
+
+	greeting := readUntilTurn(t, c, protocol.EvAssistantDone, 0)
+	if greeting.Text == "" {
+		t.Fatalf("expected a non-empty opening greeting, got %+v", greeting)
+	}
+
+	sendText(t, c, "Hello!")
+	readUntilTurn(t, c, protocol.EvAssistantDone, 1)
+	c.Close(websocket.StatusNormalClosure, "")
+
+	var turns []store.Turn
+	deadline := time.Now().Add(10 * time.Second) // CI runners can be much slower than local
+	for time.Now().Before(deadline) {
+		_, ts, err := st.SessionDetail(context.Background(), "greet-reply-user", ready.Session)
+		if err == nil && len(ts) == 3 {
+			turns = ts
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(turns) != 3 {
+		t.Fatalf("expected 3 persisted turns (greeting+user+assistant), got %+v", turns)
+	}
+	if turns[0].Turn != 0 || turns[0].Role != "assistant" || turns[0].Text != greeting.Text {
+		t.Fatalf("turn[0] = %+v, want the opening greeting %q", turns[0], greeting.Text)
+	}
+	if turns[1].Turn != 1 || turns[1].Role != "user" || turns[1].Text != "Hello!" {
+		t.Fatalf("turn[1] = %+v, want user turn 1 \"Hello!\"", turns[1])
+	}
+	if turns[2].Turn != 1 || turns[2].Role != "assistant" || turns[2].Text == "" {
+		t.Fatalf("turn[2] = %+v, want a non-empty assistant turn 1 reply", turns[2])
 	}
 }
 
@@ -831,7 +886,9 @@ func TestWSDifferentCookiesAreIsolated(t *testing.T) {
 // TestWSFinalAndAssistantTurnsArePersisted checks the transport-layer hook
 // (persistEvent in ws.go) that saves the visible parts of a turn — final
 // transcript and assistant reply — into the session's durable transcript, not
-// just its LLM-context Profile.
+// just its LLM-context Profile. 3, not 2: every connection here is brand-new,
+// so its opening greeting (turn 0, see pipeline.StartConversation) is
+// persisted too, ahead of the real user/assistant turn-1 pair.
 func TestWSFinalAndAssistantTurnsArePersisted(t *testing.T) {
 	st := newTestStore(t)
 	srv := newTestServer(t, st)
@@ -839,26 +896,29 @@ func TestWSFinalAndAssistantTurnsArePersisted(t *testing.T) {
 	ready := readEvent(t, c)
 
 	sendText(t, c, "Hello Buddy")
-	readUntil(t, c, protocol.EvAssistantDone)
+	readUntilTurn(t, c, protocol.EvAssistantDone, 1)
 
 	var turns []store.Turn
 	deadline := time.Now().Add(10 * time.Second) // CI runners can be much slower than local
 	for time.Now().Before(deadline) {
 		_, ts, err := st.SessionDetail(context.Background(), "turn-user", ready.Session)
-		if err == nil && len(ts) == 2 {
+		if err == nil && len(ts) == 3 {
 			turns = ts
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if len(turns) != 2 {
-		t.Fatalf("expected 2 persisted turns (user+assistant), got %+v", turns)
+	if len(turns) != 3 {
+		t.Fatalf("expected 3 persisted turns (greeting+user+assistant), got %+v", turns)
 	}
-	if turns[0].Role != "user" || turns[0].Text != "Hello Buddy" || turns[0].Source != protocol.SourceText {
-		t.Fatalf("turn[0] = %+v, want user/\"Hello Buddy\"/source=text", turns[0])
+	if turns[0].Turn != 0 || turns[0].Role != "assistant" || turns[0].Text == "" || turns[0].Source != "" {
+		t.Fatalf("turn[0] = %+v, want a non-empty opening greeting with no source", turns[0])
 	}
-	if turns[1].Role != "assistant" || turns[1].Text == "" || turns[1].Source != "" {
-		t.Fatalf("turn[1] = %+v, want a non-empty assistant reply with no source", turns[1])
+	if turns[1].Role != "user" || turns[1].Text != "Hello Buddy" || turns[1].Source != protocol.SourceText {
+		t.Fatalf("turn[1] = %+v, want user/\"Hello Buddy\"/source=text", turns[1])
+	}
+	if turns[2].Role != "assistant" || turns[2].Text == "" || turns[2].Source != "" {
+		t.Fatalf("turn[2] = %+v, want a non-empty assistant reply with no source", turns[2])
 	}
 }
 
@@ -866,6 +926,10 @@ func TestWSFinalAndAssistantTurnsArePersisted(t *testing.T) {
 // utterance is persisted with Source == protocol.SourceVoice, distinguishing
 // it from TestWSFinalAndAssistantTurnsArePersisted's typed path — this is
 // what lets the frontend show which input method produced each message.
+// Looks up the user turn by role rather than assuming index 0, since this is
+// also a brand-new session: turn 0 is the opening greeting (see
+// TestWSFinalAndAssistantTurnsArePersisted), and the voice turn lands at
+// turn 1 alongside it.
 func TestWSBinaryFramePersistsVoiceSource(t *testing.T) {
 	st := newTestStore(t)
 	srv := newTestServer(t, st)
@@ -877,21 +941,28 @@ func TestWSBinaryFramePersistsVoiceSource(t *testing.T) {
 	}
 	readUntil(t, c, protocol.EvFinal)
 
-	var turns []store.Turn
+	var userTurn store.Turn
+	found := false
 	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	for time.Now().Before(deadline) && !found {
 		_, ts, err := st.SessionDetail(context.Background(), "voice-user", ready.Session)
-		if err == nil && len(ts) >= 1 {
-			turns = ts
-			break
+		if err == nil {
+			for _, turn := range ts {
+				if turn.Role == "user" {
+					userTurn, found = turn, true
+					break
+				}
+			}
 		}
-		time.Sleep(20 * time.Millisecond)
+		if !found {
+			time.Sleep(20 * time.Millisecond)
+		}
 	}
-	if len(turns) == 0 {
-		t.Fatalf("no turns persisted in time")
+	if !found {
+		t.Fatalf("no user turn persisted in time")
 	}
-	if turns[0].Role != "user" || turns[0].Source != protocol.SourceVoice {
-		t.Fatalf("turn[0] = %+v, want user/source=voice", turns[0])
+	if userTurn.Source != protocol.SourceVoice {
+		t.Fatalf("user turn = %+v, want source=voice", userTurn)
 	}
 }
 
