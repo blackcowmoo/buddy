@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -548,6 +549,111 @@ func TestTranslateWithContextPropagatesAnalyzeError(t *testing.T) {
 	}
 	if _, err := p.TranslateWithContext(context.Background(), nil, "whatever"); err == nil {
 		t.Fatal("expected an error when every candidate fails")
+	}
+}
+
+// ---- translation concurrency/priority (acquireTranslationSlot) -----------
+
+// TestTranslationCallsAreSerializedAcrossLiveAndBackfill fires several
+// translateAssistant calls (live, per-turn) and a TranslateWithContext call
+// (backfill) concurrently against a slow candidate, and asserts the observed
+// concurrency never exceeds 1 — both entry points must share the same
+// process-wide translation slot.
+func TestTranslationCallsAreSerializedAcrossLiveAndBackfill(t *testing.T) {
+	var mu sync.Mutex
+	inFlight, maxInFlight := 0, 0
+	slow := &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		mu.Lock()
+		inFlight++
+		if inFlight > maxInFlight {
+			maxInFlight = inFlight
+		}
+		mu.Unlock()
+
+		time.Sleep(50 * time.Millisecond)
+
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		return "translated", nil
+	}}
+	p := &Pipeline{Analysis: []Candidate{{Model: "m", LLM: slow}}}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func(turn int) {
+			defer wg.Done()
+			p.translateAssistant(context.Background(), turn, "hello", func(protocol.ServerEvent) {})
+		}(i)
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if _, err := p.TranslateWithContext(context.Background(), nil, "hi"); err != nil {
+			t.Errorf("TranslateWithContext() error = %v", err)
+		}
+	}()
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if maxInFlight != 1 {
+		t.Fatalf("max concurrent translation calls = %d, want 1", maxInFlight)
+	}
+}
+
+// TestAcquireTranslationSlotWaitsForChatActivity asserts that a translation
+// slot acquisition blocks while chatActive is nonzero and unblocks as soon
+// as chat activity ends — translation defers to an in-flight chat reply
+// rather than contending with it, but is never itself cancelled once
+// acquired (that half is exercised by
+// TestTranslationCallsAreSerializedAcrossLiveAndBackfill's non-preemption).
+func TestAcquireTranslationSlotWaitsForChatActivity(t *testing.T) {
+	p := &Pipeline{}
+	atomic.AddInt32(&p.chatActive, 1)
+
+	done := make(chan error, 1)
+	go func() { done <- p.acquireTranslationSlot(context.Background()) }()
+
+	select {
+	case <-done:
+		t.Fatal("acquireTranslationSlot returned while chat was still active")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	atomic.AddInt32(&p.chatActive, -1)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("acquireTranslationSlot() error = %v", err)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("acquireTranslationSlot did not return after chat activity ended")
+	}
+}
+
+// TestAcquireTranslationSlotRespectsContextCancellation asserts that waiting
+// for the (already-held) translation slot gives up promptly when ctx is
+// cancelled, instead of blocking until the slot frees.
+func TestAcquireTranslationSlotRespectsContextCancellation(t *testing.T) {
+	p := &Pipeline{}
+	if err := p.acquireTranslationSlot(context.Background()); err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+	defer p.releaseTranslationSlot()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err := p.acquireTranslationSlot(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("acquireTranslationSlot() error = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("acquireTranslationSlot took too long to respect cancellation: %v", elapsed)
 	}
 }
 
