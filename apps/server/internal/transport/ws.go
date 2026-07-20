@@ -240,18 +240,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // context.Background(), not the connection's context, so a turn's result
 // still lands even if the client disconnects or barges in right as it
 // completes (same reasoning as pipeline.compact's use of Background).
+//
+// Turn 0 (the opening greeting, see pipeline.StartConversation) is written
+// here like any other turn: store.MySQLStore.SaveTurn inserts into
+// buddy_turns unconditionally and only gates the *session row's* creation on
+// turn 1 from the user, so a greeting-only room still leaves no row in
+// buddy_sessions (still invisible to ListSessions/SessionDetail) — but once
+// the learner's turn 1 does land and creates that row, the turn-0 greeting
+// is already sitting in buddy_turns and reappears with the rest of the
+// transcript on reload, instead of vanishing.
 func persistEvent(st store.Store, userID, sessionID string, ev protocol.ServerEvent) {
-	if ev.Turn == 0 {
-		// Turn 0 is the reserved sentinel for the opening greeting (see
-		// pipeline.StartConversation) — deliberately never written to the
-		// per-turn transcript, so a room the learner opens and never replies
-		// to leaves no durable row behind, same as if it had never been
-		// visited (matches SaveTurn's own turn==1-from-user gate on the
-		// session row). It still reaches the LLM via the in-memory session
-		// history, and rides along in Profile.Recent once a real turn
-		// persists.
-		return
-	}
 	switch ev.Type {
 	case protocol.EvFinal:
 		go saveTurn(st, userID, sessionID, ev.Turn, "user", ev.Text, false, ev.Source)
