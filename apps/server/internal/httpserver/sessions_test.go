@@ -49,6 +49,10 @@ func (f *fakeSessionStore) SaveTranslation(ctx context.Context, userID, sessionI
 	return errors.New("not used by these tests")
 }
 
+func (f *fakeSessionStore) SaveGeneratedTitle(ctx context.Context, userID, sessionID, title string) error {
+	return errors.New("not used by these tests")
+}
+
 func (f *fakeSessionStore) ListSessions(ctx context.Context, userID string) ([]store.SessionMeta, error) {
 	return nil, errors.New("not used by these tests")
 }
