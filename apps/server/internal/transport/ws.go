@@ -254,11 +254,11 @@ func persistEvent(st store.Store, userID, sessionID string, ev protocol.ServerEv
 	}
 	switch ev.Type {
 	case protocol.EvFinal:
-		go saveTurn(st, userID, sessionID, ev.Turn, "user", ev.Text, false)
+		go saveTurn(st, userID, sessionID, ev.Turn, "user", ev.Text, false, ev.Source)
 	case protocol.EvRefined:
-		go saveTurn(st, userID, sessionID, ev.Turn, "user", ev.Text, true)
+		go saveTurn(st, userID, sessionID, ev.Turn, "user", ev.Text, true, ev.Source)
 	case protocol.EvAssistantDone:
-		go saveTurn(st, userID, sessionID, ev.Turn, "assistant", ev.Text, false)
+		go saveTurn(st, userID, sessionID, ev.Turn, "assistant", ev.Text, false, "")
 	case protocol.EvCorrection:
 		if ev.Correction == nil {
 			return
@@ -271,8 +271,8 @@ func persistEvent(st store.Store, userID, sessionID string, ev protocol.ServerEv
 	}
 }
 
-func saveTurn(st store.Store, userID, sessionID string, turn int, role, text string, refined bool) {
-	if err := st.SaveTurn(context.Background(), userID, sessionID, turn, role, text, refined); err != nil {
+func saveTurn(st store.Store, userID, sessionID string, turn int, role, text string, refined bool, source string) {
+	if err := st.SaveTurn(context.Background(), userID, sessionID, turn, role, text, refined, source); err != nil {
 		log.Printf("store: save turn %s/%s#%d: %v", userID, sessionID, turn, err)
 	}
 }

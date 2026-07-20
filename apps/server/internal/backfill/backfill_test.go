@@ -124,7 +124,7 @@ func (f *fakeStore) Load(ctx context.Context, userID, sessionID string) (store.P
 func (f *fakeStore) Save(ctx context.Context, userID, sessionID string, p store.Profile) error {
 	return errors.New("not used by these tests")
 }
-func (f *fakeStore) SaveTurn(ctx context.Context, userID, sessionID string, turn int, role, text string, refined bool) error {
+func (f *fakeStore) SaveTurn(ctx context.Context, userID, sessionID string, turn int, role, text string, refined bool, source string) error {
 	return errors.New("not used by these tests")
 }
 func (f *fakeStore) SaveCorrection(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction) error {

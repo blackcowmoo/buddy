@@ -127,7 +127,7 @@ func (p *Pipeline) HandleUtterance(ctx context.Context, sess *session.Session, p
 	if userText == "" {
 		return
 	}
-	emit(protocol.ServerEvent{Type: protocol.EvFinal, Turn: turn, Text: userText})
+	emit(protocol.ServerEvent{Type: protocol.EvFinal, Turn: turn, Text: userText, Source: protocol.SourceVoice})
 	sess.AppendUser(userText)
 
 	// --- REFINE track (background) --------------------------------------
@@ -271,7 +271,7 @@ func (p *Pipeline) HandleText(ctx context.Context, sess *session.Session, text s
 		return
 	}
 	turn := sess.NextTurn()
-	emit(protocol.ServerEvent{Type: protocol.EvFinal, Turn: turn, Text: text})
+	emit(protocol.ServerEvent{Type: protocol.EvFinal, Turn: turn, Text: text, Source: protocol.SourceText})
 	// Capture the conversation as of BEFORE this turn, so the correction
 	// pass can judge whether the sentence fits without the sentence itself
 	// contaminating its own context (mirrors HandleUtterance).
@@ -503,7 +503,7 @@ func (p *Pipeline) refine(ctx context.Context, sess *session.Session, turn int, 
 		}
 	}
 	if refined != fastText {
-		emit(protocol.ServerEvent{Type: protocol.EvRefined, Turn: turn, Text: refined})
+		emit(protocol.ServerEvent{Type: protocol.EvRefined, Turn: turn, Text: refined, Source: protocol.SourceVoice})
 		sess.ReplaceLastUser(refined) // keep future context accurate
 	}
 	// summary/recent are the pre-turn context captured in HandleUtterance
