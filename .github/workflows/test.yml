@@ -2,8 +2,7 @@ name: github-actions/test
 
 on:
   pull_request:
-    branches:
-      - develop
+  merge_group:
   push:
     branches:
       - develop
