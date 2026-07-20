@@ -7,9 +7,11 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"buddy/server/internal/identity"
+	"buddy/server/internal/llm"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/protocol"
 	"buddy/server/internal/recording"
@@ -28,6 +30,12 @@ const (
 	// pcmSampleRate matches the wire format documented in internal/protocol:
 	// mono, 16 kHz, signed 16-bit little-endian PCM.
 	pcmSampleRate = 16000
+
+	// titleTimeout bounds Handler.generateTitle's LLM call — its own budget,
+	// not the connection's ctx, since a barge-in or disconnect right after
+	// the first reply must not cut short the one-shot title generation for
+	// that room (mirrors audioSaveTimeout below).
+	titleTimeout = 15 * time.Second
 )
 
 // AudioSaver persists one utterance's raw audio bytes to a temporary backing
@@ -138,6 +146,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	events := make(chan protocol.ServerEvent, 128)
 	emit := func(ev protocol.ServerEvent) {
 		persistEvent(h.store, userID, sessionID, ev)
+		// Turn 1's assistant reply is the first full exchange this room has
+		// — enough context to title it. Fired here (not off persistEvent,
+		// which has no pipeline access) so it never delays the reply the
+		// learner is watching; see Handler.generateTitle for why a
+		// reconnect firing this again is still safe.
+		if ev.Type == protocol.EvAssistantDone && ev.Turn == 1 {
+			go h.generateTitle(userID, sessionID, sess, ev.Text)
+		}
 		select {
 		case events <- ev:
 		case <-ctx.Done():
@@ -284,6 +300,48 @@ func saveCorrection(st store.Store, userID, sessionID string, turn int, c protoc
 func saveTranslation(st store.Store, userID, sessionID string, turn int, role, translation string) {
 	if err := st.SaveTranslation(context.Background(), userID, sessionID, turn, role, translation); err != nil {
 		log.Printf("store: save translation %s/%s#%d: %v", userID, sessionID, turn, err)
+	}
+}
+
+// generateTitle asks the pipeline's LLM for a proper chat-room title from
+// the room's first exchange, replacing the raw-text-truncation placeholder
+// store.MySQLStore.SaveTurn sets on turn 1. Runs entirely off the live
+// turn: emit fires this via `go` so the learner's reply is never delayed,
+// and it uses context.Background() (bounded by titleTimeout, not the
+// connection's ctx) so a disconnect right after the first reply doesn't cut
+// it short — same reasoning as backupAudio below.
+//
+// ev.Turn == 1 happens once per WS *connection*, not once per session's
+// lifetime (session.Session's turn counter always restarts at 0 on
+// connect/reconnect — see session.New/Seed), so a learner reconnecting
+// before this lands, or resuming an old room under a fresh connection,
+// fires this again. That's fine: store.SaveGeneratedTitle only ever applies
+// the first successful write for a given session, so a repeat call is a
+// harmless no-op rather than a flapping title.
+func (h *Handler) generateTitle(userID, sessionID string, sess *session.Session, assistantText string) {
+	_, recent := sess.Export()
+	var userText string
+	for _, m := range recent {
+		if m.Role == llm.RoleUser {
+			userText = m.Content
+			break
+		}
+	}
+	if userText == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), titleTimeout)
+	defer cancel()
+	title, err := h.pipe.GenerateTitle(ctx, userText, assistantText)
+	if err != nil {
+		log.Printf("title: generate %s/%s: %v", userID, sessionID, err)
+		return
+	}
+	if title = strings.TrimSpace(title); title == "" {
+		return
+	}
+	if err := h.store.SaveGeneratedTitle(context.Background(), userID, sessionID, title); err != nil {
+		log.Printf("title: save %s/%s: %v", userID, sessionID, err)
 	}
 }
 

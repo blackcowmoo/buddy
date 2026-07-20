@@ -49,13 +49,21 @@ var errFakeLLMUnavailable = errors.New("fake llm: unavailable")
 
 // fakeLLM always fails, which drives the pipeline's fallback-reply path
 // deterministically without a real model — these tests are about WS wiring
-// and persistence, not chat content.
-type fakeLLM struct{}
+// and persistence, not chat content. completeFn, when set, overrides
+// Complete's default failure — used by the title-generation tests, which
+// need a non-error single-call response without touching ChatStream's
+// (unrelated) fallback-reply behavior.
+type fakeLLM struct {
+	completeFn func(msgs []llm.Message) (string, error)
+}
 
 func (fakeLLM) ChatStream(ctx context.Context, model string, msgs []llm.Message, onToken func(string)) (string, error) {
 	return "", errFakeLLMUnavailable
 }
-func (fakeLLM) Complete(ctx context.Context, model string, msgs []llm.Message, jsonMode bool) (string, error) {
+func (f fakeLLM) Complete(ctx context.Context, model string, msgs []llm.Message, jsonMode bool) (string, error) {
+	if f.completeFn != nil {
+		return f.completeFn(msgs)
+	}
 	return "", errFakeLLMUnavailable
 }
 
@@ -75,11 +83,12 @@ type fakeStore struct {
 }
 
 type fakeSession struct {
-	userID  string
-	meta    store.SessionMeta
-	hasRow  bool // mirrors whether a buddy_sessions row exists yet (see SaveTurn)
-	profile store.Profile
-	turns   map[string]store.Turn // key: "<turn>|<role>"
+	userID         string
+	meta           store.SessionMeta
+	hasRow         bool // mirrors whether a buddy_sessions row exists yet (see SaveTurn)
+	profile        store.Profile
+	turns          map[string]store.Turn // key: "<turn>|<role>"
+	titleGenerated bool
 }
 
 func newFakeStore() *fakeStore {
@@ -164,6 +173,24 @@ func (f *fakeStore) SaveTranslation(ctx context.Context, userID, sessionID strin
 	}
 	t.Translation = translation
 	d.turns[tk] = t
+	return nil
+}
+
+// SaveGeneratedTitle mirrors MySQLStore's write-once-then-pinned semantics:
+// only the first call for a session actually changes its title. Also a
+// no-op if the session row doesn't exist yet (hasRow false — e.g. only a
+// turn-0 greeting has landed so far), matching how the real UPDATE's
+// `WHERE ... AND title_generated = 0` silently affects zero rows when
+// there's no buddy_sessions row to match.
+func (f *fakeStore) SaveGeneratedTitle(ctx context.Context, userID, sessionID, title string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.sessions[fakeStoreKey(userID, sessionID)]
+	if d == nil || !d.hasRow || d.titleGenerated {
+		return nil
+	}
+	d.meta.Title = title
+	d.titleGenerated = true
 	return nil
 }
 
@@ -1005,6 +1032,103 @@ func TestWSBinaryFramePersistsVoiceSource(t *testing.T) {
 	}
 	if userTurn.Source != protocol.SourceVoice {
 		t.Fatalf("user turn = %+v, want source=voice", userTurn)
+	}
+}
+
+// newTestServerWithTitleLLM is newTestServerFull, but with a completeFn so
+// title-generation tests can control GenerateTitle's result — the other
+// helpers all wire a bare fakeLLM{}, which always fails Complete too.
+func newTestServerWithTitleLLM(t *testing.T, st store.Store, completeFn func(msgs []llm.Message) (string, error)) *httptest.Server {
+	t.Helper()
+	pipe := &pipeline.Pipeline{
+		STT:                []stt.Recognizer{fakeSTT{text: "hello there"}},
+		LLM:                fakeLLM{completeFn: completeFn},
+		MaxHistoryMessages: 20,
+	}
+	h := NewHandler(pipe, identity.NewCookieIdentifier(), st, nil, nil)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// waitForTitle polls st for sessionID's title until it stops matching want,
+// or times out — title generation is fired off `go` from emit (see
+// Handler.generateTitle), so tests can't observe it synchronously.
+func waitForTitle(t *testing.T, st store.Store, userID, sessionID, notWant string) string {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second) // CI runners can be much slower than local
+	for time.Now().Before(deadline) {
+		meta, _, err := st.SessionDetail(context.Background(), userID, sessionID)
+		if err == nil && meta.Title != notWant {
+			return meta.Title
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for title to change from %q", notWant)
+	return ""
+}
+
+// TestWSFirstReplyGeneratesTitle checks the trigger wired into emit: once
+// the room's first exchange (turn 1) finishes, the pipeline's LLM is asked
+// for a title and it's saved over the raw-text placeholder SaveTurn set on
+// turn 1 (see store.MySQLStore.SaveTurn).
+func TestWSFirstReplyGeneratesTitle(t *testing.T) {
+	st := newTestStore(t)
+	srv := newTestServerWithTitleLLM(t, st, func(msgs []llm.Message) (string, error) {
+		return "Hiking Trip Plans", nil
+	})
+	c, _ := dial(t, srv, "title-user", "")
+	ready := readEvent(t, c)
+
+	sendText(t, c, "I went hiking last weekend.")
+	readUntilTurn(t, c, protocol.EvAssistantDone, 1)
+
+	got := waitForTitle(t, st, "title-user", ready.Session, "I went hiking last weekend.")
+	if got != "Hiking Trip Plans" {
+		t.Fatalf("title = %q, want the LLM-generated title", got)
+	}
+}
+
+// TestWSReconnectDoesNotRegenerateTitle guards the reason
+// store.SaveGeneratedTitle gates on title_generated rather than the trigger
+// relying on turn==1 being session-unique: session.Session's turn counter
+// restarts at 0 on every connection (see TestWSResumedSessionSkipsOpeningGreeting),
+// so resuming an already-titled room and sending a first message on the new
+// connection fires the same turn==1 trigger again. That second firing must
+// not overwrite the title already set by the first.
+func TestWSReconnectDoesNotRegenerateTitle(t *testing.T) {
+	st := newTestStore(t)
+	titleN := 0
+	srv := newTestServerWithTitleLLM(t, st, func(msgs []llm.Message) (string, error) {
+		titleN++
+		return fmt.Sprintf("Title %d", titleN), nil
+	})
+	cookie := "reconnect-title-user"
+
+	c1, _ := dial(t, srv, cookie, "")
+	ready1 := readEvent(t, c1)
+	sendText(t, c1, "first message")
+	readUntilTurn(t, c1, protocol.EvAssistantDone, 1)
+	c1.Close(websocket.StatusNormalClosure, "")
+
+	first := waitForTitle(t, st, cookie, ready1.Session, "first message")
+	if first != "Title 1" {
+		t.Fatalf("title after first connection = %q, want %q", first, "Title 1")
+	}
+
+	c2, _ := dial(t, srv, cookie, ready1.Session)
+	readEvent(t, c2) // ready
+	sendText(t, c2, "second message, different connection")
+	readUntilTurn(t, c2, protocol.EvAssistantDone, 1) // turn resets to 1 again on the new connection
+	c2.Close(websocket.StatusNormalClosure, "")
+
+	time.Sleep(200 * time.Millisecond) // give a wrongly-firing regeneration time to land
+	meta, _, err := st.SessionDetail(context.Background(), cookie, ready1.Session)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if meta.Title != "Title 1" {
+		t.Fatalf("title = %q after reconnect, want it to stay pinned to %q", meta.Title, "Title 1")
 	}
 }
 

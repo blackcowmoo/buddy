@@ -90,6 +90,15 @@ type Store interface {
 	// been saved yet.
 	SaveTranslation(ctx context.Context, userID, sessionID string, turn int, role, translation string) error
 
+	// SaveGeneratedTitle sets a session's title to an LLM-generated one,
+	// exactly once — a no-op if this session's title was already
+	// auto-generated (see internal/transport, which triggers this once per
+	// WS connection's first turn; a reconnect resets its own turn counter,
+	// so this guard is what actually keeps the title from being
+	// regenerated and flapping on every reconnect). Also a no-op if the
+	// session row doesn't exist yet.
+	SaveGeneratedTitle(ctx context.Context, userID, sessionID, title string) error
+
 	// ListSessions returns userID's chat rooms, most recently active first.
 	// Only sessions with at least one saved turn appear (see SaveTurn).
 	ListSessions(ctx context.Context, userID string) ([]SessionMeta, error)

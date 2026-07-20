@@ -154,6 +154,14 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 		closeAll()
 		return nil, fmt.Errorf("store: schema: add source column: %w", err)
 	}
+	// Additive, same reasoning as the translation column above: predates the
+	// auto-title feature. Tracks whether a session's title has already been
+	// LLM-generated (see SaveGeneratedTitle) so a reconnect can never
+	// re-trigger and flap it.
+	if _, err := rw.Exec(`ALTER TABLE ` + sessionsTable + ` ADD COLUMN title_generated TINYINT(1) NOT NULL DEFAULT 0`); err != nil && !mysqlerr.Is(err, mysqlerr.DupFieldName) {
+		closeAll()
+		return nil, fmt.Errorf("store: schema: add title_generated column: %w", err)
+	}
 	return &MySQLStore{rw: rw, ro: ro}, nil
 }
 
@@ -300,6 +308,25 @@ func (s *MySQLStore) SaveTranslation(ctx context.Context, userID, sessionID stri
 		WHERE user_id = ? AND session_id = ? AND turn = ? AND role = ?
 	`, translation, userID, sessionID, turn, role); err != nil {
 		return fmt.Errorf("store: save translation: %w", err)
+	}
+	return nil
+}
+
+// SaveGeneratedTitle overwrites a session's title with an LLM-generated one,
+// but only the first time it's called for that session: the
+// `title_generated = 0` guard in the WHERE clause makes this a no-op on
+// every subsequent call (0 rows affected, no error), the same
+// write-once-then-pinned semantics SaveTurn already gives the
+// truncated-first-message title. See internal/transport for why that
+// matters — the trigger condition alone (WS turn 1) fires once per
+// *connection*, not once per session, so this DB-level guard is what
+// actually prevents a reconnect from re-rolling the title.
+func (s *MySQLStore) SaveGeneratedTitle(ctx context.Context, userID, sessionID, title string) error {
+	if _, err := s.rw.ExecContext(ctx, `
+		UPDATE `+sessionsTable+` SET title = ?, title_generated = 1
+		WHERE user_id = ? AND id = ? AND title_generated = 0
+	`, truncateTitle(title), userID, sessionID); err != nil {
+		return fmt.Errorf("store: save generated title: %w", err)
 	}
 	return nil
 }
