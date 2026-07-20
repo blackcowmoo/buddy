@@ -32,9 +32,12 @@ func (f fakeSTT) Transcribe(ctx context.Context, pcm []byte) (stt.Result, error)
 	return stt.Result{Text: f.text, Confidence: 1}, nil
 }
 
-// fakeLLM is a deterministic llm.Client double. ChatStream checks ctx.Err()
-// first, mirroring a real HTTP client failing immediately on an
-// already-cancelled context — this is what makes the barge-in test exact.
+// fakeLLM is a deterministic llm.Client double. ChatStream and Complete both
+// check ctx.Err() first, mirroring a real HTTP client failing immediately on
+// an already-cancelled context — this is what makes the barge-in tests exact,
+// including that correct()/translateAssistant() now run on
+// context.Background() and so must stay unaffected even when the caller's
+// own ctx is cancelled out from under them (see TestReply*SurvivesBargeIn*).
 type fakeLLM struct {
 	mu sync.Mutex
 
@@ -59,6 +62,9 @@ func (f *fakeLLM) ChatStream(ctx context.Context, model string, msgs []llm.Messa
 }
 
 func (f *fakeLLM) Complete(ctx context.Context, model string, msgs []llm.Message, jsonMode bool) (string, error) {
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.complete != nil {
@@ -138,6 +144,47 @@ func TestReplyEmitsAssistantTranslation(t *testing.T) {
 	}
 	if len(translations) != 1 || translations[0].Text != "안녕하세요" || translations[0].Turn != 1 {
 		t.Fatalf("expected one assistant_translation event, got %+v (all events: %+v)", translations, got)
+	}
+}
+
+// TestReplyAssistantTranslationSurvivesBargeInAfterReplyLands guards the fix
+// for a real bug: assistant-reply translation almost never showed up in live
+// conversations. reply() only kicks off translateAssistant AFTER the full
+// reply has streamed, so by the time that background goroutine actually runs
+// its LLM call, the learner has often already sent their next message —
+// which ws.go's read loop answers by cancelling the very context reply() was
+// called with (barge-in). translateAssistant now runs on
+// context.Background() instead of that ctx (mirroring compact()), so it must
+// still emit its result even when the caller's ctx is cancelled the instant
+// the reply finishes, exactly as it would be in production.
+func TestReplyAssistantTranslationSurvivesBargeInAfterReplyLands(t *testing.T) {
+	sess := session.New("sys")
+	sess.AppendUser("hello")
+	ctx, cancel := context.WithCancel(context.Background())
+	p := &Pipeline{
+		LLM:       &fakeLLM{chatReply: "hi there"},
+		ChatModel: "m",
+		Analysis: []Candidate{{Model: "t", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			return "안녕하세요", nil
+		}}}},
+	}
+
+	events := make(chan protocol.ServerEvent, 8)
+	p.reply(ctx, sess, 1, func(ev protocol.ServerEvent) { events <- ev })
+	// Simulate the barge-in landing the instant the visible reply finishes
+	// streaming, before the background translation goroutine has run — the
+	// exact race ws.go's turnCancel() wins against translateAssistant today.
+	cancel()
+
+	got := collectUntilQuiet(t, events, 200*time.Millisecond, 2*time.Second)
+	var translations []protocol.ServerEvent
+	for _, ev := range got {
+		if ev.Type == protocol.EvAssistantTranslation {
+			translations = append(translations, ev)
+		}
+	}
+	if len(translations) != 1 || translations[0].Text != "안녕하세요" {
+		t.Fatalf("assistant translation should survive a barge-in landing right after the reply streamed, got %+v (all events: %+v)", translations, got)
 	}
 }
 
@@ -480,6 +527,12 @@ func TestTranslateAssistantIgnoresLLMError(t *testing.T) {
 	}
 }
 
+// TestTranslateAssistantSkipsEmptyResult: analyze() itself never succeeds
+// with an all-whitespace result (a candidate's blank output is filtered out
+// before it can win — see analyze()), so a single candidate returning only
+// whitespace makes analyze() fail outright ("every candidate failed"), which
+// translateAssistant swallows without emitting, same as any other analyze()
+// error.
 func TestTranslateAssistantSkipsEmptyResult(t *testing.T) {
 	p := &Pipeline{
 		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
@@ -489,7 +542,24 @@ func TestTranslateAssistantSkipsEmptyResult(t *testing.T) {
 	var got []protocol.ServerEvent
 	p.translateAssistant(context.Background(), 1, "whatever", func(ev protocol.ServerEvent) { got = append(got, ev) })
 	if len(got) != 0 {
-		t.Fatalf("expected no event for a blank translation, got %+v", got)
+		t.Fatalf("expected no event when analyze() has nothing but blank output, got %+v", got)
+	}
+}
+
+// TestTranslateAssistantTrimsWhitespace guards the trim itself: analyze() can
+// still return a non-empty candidate with leading/trailing whitespace (e.g.
+// a model wrapping its answer in a newline), and the emitted event's Text
+// must be trimmed before it reaches the client.
+func TestTranslateAssistantTrimsWhitespace(t *testing.T) {
+	p := &Pipeline{
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			return "  안녕하세요  \n", nil
+		}}}},
+	}
+	var got []protocol.ServerEvent
+	p.translateAssistant(context.Background(), 1, "whatever", func(ev protocol.ServerEvent) { got = append(got, ev) })
+	if len(got) != 1 || got[0].Text != "안녕하세요" {
+		t.Fatalf("expected trimmed translation text, got %+v", got)
 	}
 }
 
@@ -1070,10 +1140,10 @@ func TestRefineCorrectionSurvivesCtxCancellation(t *testing.T) {
 	events := make(chan protocol.ServerEvent, 8)
 	go p.refine(ctx, sess, 1, "", nil, []string{"broken"}, "broken", func(ev protocol.ServerEvent) { events <- ev })
 
-	<-gate.started                     // correct()'s analyze() call is in flight
-	cancel()                           // simulate a barge-in/disconnect cancelling the turn context
-	time.Sleep(50 * time.Millisecond)  // give the cancellation a chance to (wrongly) abort the call
-	close(gate.release)                // let the call actually finish
+	<-gate.started                    // correct()'s analyze() call is in flight
+	cancel()                          // simulate a barge-in/disconnect cancelling the turn context
+	time.Sleep(50 * time.Millisecond) // give the cancellation a chance to (wrongly) abort the call
+	close(gate.release)               // let the call actually finish
 
 	got := collectUntilQuiet(t, events, 200*time.Millisecond, 2*time.Second)
 	var corrections []protocol.ServerEvent

@@ -2,6 +2,7 @@ package backfill
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -66,7 +67,7 @@ func requireRedis(t *testing.T) *redis.Client {
 		t.Skipf("redis testcontainer unavailable (no/unreachable Docker?): %v", sharedRedisErr)
 	}
 	// Each test gets a clean slate for the fixed keys this package uses.
-	if err := sharedRedis.Del(context.Background(), queueKey, queuedSet, lockKey).Err(); err != nil {
+	if err := sharedRedis.Del(context.Background(), queueKey, queuedSet, processingKey, lockKey).Err(); err != nil {
 		t.Fatalf("clean redis state: %v", err)
 	}
 	return sharedRedis
@@ -393,6 +394,115 @@ func TestWorkerDrainOnceReleasesLockAfterDraining(t *testing.T) {
 	}
 	if exists != 0 {
 		t.Fatalf("lock should be released once the drain pass finishes, so the LLM is immediately free for other work")
+	}
+}
+
+func TestWorkerDrainOnceClearsProcessingClaimAfterSuccess(t *testing.T) {
+	rdb := requireRedis(t)
+	ctx := context.Background()
+
+	pipe := newTestPipeline(func(msgs []llm.Message) (string, error) { return "번역", nil })
+	st := newFakeStore()
+	st.seed("alex", "sess-1", []store.Turn{{Turn: 1, Role: "user", Text: "hi"}})
+
+	q := NewQueue(rdb)
+	q.Enqueue(ctx, "alex", "sess-1")
+
+	w := NewWorker(rdb, st, pipe)
+	w.drainOnce(ctx)
+
+	if n, _ := rdb.ZCard(ctx, processingKey).Result(); n != 0 {
+		t.Fatalf("processing set should be cleared once the job finishes normally, size = %d", n)
+	}
+}
+
+// TestReapStaleJobsRecoversFromCrashedWorker guards the fix for a real bug: a
+// worker that dies between claiming a job (LPop out of queueKey, ZAdd into
+// processingKey) and finishing it (SRem out of queuedSet) used to leave that
+// session's dedupeKey stuck in queuedSet forever — every future Enqueue for
+// it would see SAdd return 0 ("already queued") and silently no-op, so a
+// session whose backfill worker happened to crash mid-translation could never
+// be retried again, no matter how many times the learner reopened it. This
+// reproduces exactly that crashed state (queued but neither in queueKey nor
+// recently claimed) and asserts drainOnce's reapStaleJobs step recovers it.
+func TestReapStaleJobsRecoversFromCrashedWorker(t *testing.T) {
+	rdb := requireRedis(t)
+	ctx := context.Background()
+
+	var calls int
+	pipe := newTestPipeline(func(msgs []llm.Message) (string, error) {
+		calls++
+		return "번역", nil
+	})
+	st := newFakeStore()
+	st.seed("alex", "sess-1", []store.Turn{{Turn: 1, Role: "user", Text: "hi"}})
+
+	j := job{UserID: "alex", SessionID: "sess-1"}
+	raw, err := json.Marshal(j)
+	if err != nil {
+		t.Fatalf("marshal job: %v", err)
+	}
+	if err := rdb.SAdd(ctx, queuedSet, j.dedupeKey()).Err(); err != nil {
+		t.Fatalf("seed queuedSet: %v", err)
+	}
+	staleClaim := time.Now().Add(-processingStaleThreshold - time.Minute).Unix()
+	if err := rdb.ZAdd(ctx, processingKey, redis.Z{Score: float64(staleClaim), Member: raw}).Err(); err != nil {
+		t.Fatalf("seed processingKey: %v", err)
+	}
+
+	// Confirm the stuck state actually behaves as described: a fresh Enqueue
+	// silently no-ops because the dedupe key is still held.
+	q := NewQueue(rdb)
+	q.Enqueue(ctx, "alex", "sess-1")
+	if n, _ := rdb.LLen(ctx, queueKey).Result(); n != 0 {
+		t.Fatalf("Enqueue should still no-op while the dedupe key is held, queue length = %d", n)
+	}
+
+	w := NewWorker(rdb, st, pipe)
+	w.drainOnce(ctx) // reapStaleJobs should recover the stuck job and process it
+
+	if calls != 1 {
+		t.Fatalf("LLM called %d times, want 1 (the reaped job should have been translated)", calls)
+	}
+	if len(st.saved) != 1 || st.saved[0].turn != 1 {
+		t.Fatalf("saved translations = %+v, want turn 1 translated", st.saved)
+	}
+	if n, _ := rdb.LLen(ctx, queueKey).Result(); n != 0 {
+		t.Fatalf("queue should be drained after reap+process, length = %d", n)
+	}
+	if n, _ := rdb.SCard(ctx, queuedSet).Result(); n != 0 {
+		t.Fatalf("dedupe set should be cleared after reap+process, size = %d", n)
+	}
+	if n, _ := rdb.ZCard(ctx, processingKey).Result(); n != 0 {
+		t.Fatalf("processing set should be cleared after reap+process, size = %d", n)
+	}
+}
+
+// TestReapStaleJobsLeavesFreshClaimsAlone guards against reaping a job that's
+// merely being translated slowly right now (well within
+// processingStaleThreshold) — only claims older than the threshold should be
+// touched.
+func TestReapStaleJobsLeavesFreshClaimsAlone(t *testing.T) {
+	rdb := requireRedis(t)
+	ctx := context.Background()
+
+	j := job{UserID: "alex", SessionID: "sess-1"}
+	raw, err := json.Marshal(j)
+	if err != nil {
+		t.Fatalf("marshal job: %v", err)
+	}
+	if err := rdb.ZAdd(ctx, processingKey, redis.Z{Score: float64(time.Now().Unix()), Member: raw}).Err(); err != nil {
+		t.Fatalf("seed processingKey: %v", err)
+	}
+
+	w := NewWorker(rdb, newFakeStore(), newTestPipeline(nil))
+	w.reapStaleJobs(ctx)
+
+	if n, _ := rdb.ZCard(ctx, processingKey).Result(); n != 1 {
+		t.Fatalf("fresh claim should be left alone, processing set size = %d", n)
+	}
+	if n, _ := rdb.LLen(ctx, queueKey).Result(); n != 0 {
+		t.Fatalf("fresh claim must not be requeued, queue length = %d", n)
 	}
 }
 
