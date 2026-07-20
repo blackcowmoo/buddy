@@ -667,6 +667,46 @@ func (p *Pipeline) TranslateWithContext(ctx context.Context, priorTurns []llm.Me
 	return strings.TrimSpace(raw), nil
 }
 
+// GenerateTitle asks the LLM for a short, descriptive chat-room title from
+// its opening exchange, for internal/transport to save once the first reply
+// completes (see Handler.generateTitle there) — replacing the raw
+// truncated-first-message placeholder store.MySQLStore.SaveTurn sets on
+// turn 1. A single fast call (p.LLM/p.ChatModel), not the Analysis
+// ensemble+Judge like analyze() uses: a room label is decorative, not
+// something a learner's grammar feedback depends on, so it isn't worth
+// doubling the LLM cost of every new conversation.
+func (p *Pipeline) GenerateTitle(ctx context.Context, userText, assistantText string) (string, error) {
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: titleSystemPrompt},
+		{Role: llm.RoleUser, Content: renderTitleInput(userText, assistantText)},
+	}
+	title, err := p.LLM.Complete(ctx, p.ChatModel, msgs, false)
+	if err != nil {
+		return "", err
+	}
+	// Small models like to wrap a short title in quotes despite being told
+	// not to; strip them so the stored title doesn't carry literal "" marks.
+	return strings.Trim(strings.TrimSpace(title), `"“”`), nil
+}
+
+const titleSystemPrompt = `Give a short, descriptive title for a chat conversation, based on its
+opening exchange. The title summarizes the TOPIC being discussed, not the
+learner's exact words.
+Rules:
+- 2-6 words.
+- Plain text: no quotes, no trailing punctuation, no labels like "Title:".
+- Write it in the same language the learner used.
+- Return ONLY the title, nothing else.`
+
+func renderTitleInput(userText, assistantText string) string {
+	var b strings.Builder
+	b.WriteString("Learner: " + userText + "\n")
+	if assistantText != "" {
+		b.WriteString("Assistant: " + assistantText + "\n")
+	}
+	return b.String()
+}
+
 // renderTranslationContext formats prior turns as context for
 // TranslateWithContext, mirroring renderCorrectionContext's shape but
 // labeled for translation rather than correction so the prompt never

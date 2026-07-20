@@ -727,6 +727,48 @@ func TestAcquireTranslationSlotRespectsContextCancellation(t *testing.T) {
 	}
 }
 
+// ---- GenerateTitle() -----------------------------------------------------------
+
+func TestGenerateTitleSendsUserAndAssistantText(t *testing.T) {
+	var gotInput string
+	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		gotInput = msgs[len(msgs)-1].Content
+		return "Hiking Trip Plans", nil
+	}}, ChatModel: "m"}
+	got, err := p.GenerateTitle(context.Background(), "I went hiking last weekend.", "That sounds fun! Where did you go?")
+	if err != nil {
+		t.Fatalf("GenerateTitle() error = %v", err)
+	}
+	if got != "Hiking Trip Plans" {
+		t.Fatalf("GenerateTitle() = %q, want the model's title verbatim", got)
+	}
+	if !strings.Contains(gotInput, "I went hiking last weekend.") || !strings.Contains(gotInput, "Where did you go?") {
+		t.Fatalf("input should include both the learner's and assistant's text, got %q", gotInput)
+	}
+}
+
+func TestGenerateTitleTrimsQuotesAndWhitespace(t *testing.T) {
+	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		return `  "Weekend Hiking Trip"  `, nil
+	}}, ChatModel: "m"}
+	got, err := p.GenerateTitle(context.Background(), "hi", "hello")
+	if err != nil {
+		t.Fatalf("GenerateTitle() error = %v", err)
+	}
+	if got != "Weekend Hiking Trip" {
+		t.Fatalf("GenerateTitle() = %q, want surrounding quotes/whitespace stripped", got)
+	}
+}
+
+func TestGenerateTitlePropagatesLLMError(t *testing.T) {
+	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		return "", errors.New("down")
+	}}, ChatModel: "m"}
+	if _, err := p.GenerateTitle(context.Background(), "hi", "hello"); err == nil {
+		t.Fatal("expected an error when the LLM call fails")
+	}
+}
+
 func TestCorrectSendsBareSentenceWhenNoContext(t *testing.T) {
 	var gotInput string
 	p := &Pipeline{

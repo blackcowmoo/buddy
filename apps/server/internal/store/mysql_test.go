@@ -297,6 +297,63 @@ func TestMySQLSaveTurnTitleSurvivesLaterTurns(t *testing.T) {
 	}
 }
 
+func TestMySQLSaveGeneratedTitleOverwritesPlaceholder(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	sessionID := "sess-generated-title"
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "first message", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn() error = %v", err)
+	}
+	if err := st.SaveGeneratedTitle(ctx, "alex", sessionID, "Hiking Trip Plans"); err != nil {
+		t.Fatalf("SaveGeneratedTitle() error = %v", err)
+	}
+	meta, _, err := st.SessionDetail(ctx, "alex", sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if meta.Title != "Hiking Trip Plans" {
+		t.Fatalf("Title = %q, want the generated title", meta.Title)
+	}
+}
+
+// TestMySQLSaveGeneratedTitleIsWriteOnce guards the reason
+// SaveGeneratedTitle gates on title_generated instead of unconditionally
+// overwriting: internal/transport's trigger fires once per WS *connection*
+// (turn 1), not once per session, so a reconnect calling this a second time
+// must not flap an already-set title back and forth.
+func TestMySQLSaveGeneratedTitleIsWriteOnce(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	sessionID := "sess-generated-title-once"
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "first message", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn() error = %v", err)
+	}
+	if err := st.SaveGeneratedTitle(ctx, "alex", sessionID, "First Title"); err != nil {
+		t.Fatalf("SaveGeneratedTitle(1) error = %v", err)
+	}
+	if err := st.SaveGeneratedTitle(ctx, "alex", sessionID, "Second Title"); err != nil {
+		t.Fatalf("SaveGeneratedTitle(2) error = %v", err)
+	}
+	meta, _, err := st.SessionDetail(ctx, "alex", sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if meta.Title != "First Title" {
+		t.Fatalf("Title = %q, want it pinned to the first generated title", meta.Title)
+	}
+}
+
+func TestMySQLSaveGeneratedTitleNoopWhenSessionMissing(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	if err := st.SaveGeneratedTitle(ctx, "alex", "sess-missing-for-title", "Some Title"); err != nil {
+		t.Fatalf("SaveGeneratedTitle() error = %v, want nil (no-op)", err)
+	}
+	if _, _, err := st.SessionDetail(ctx, "alex", "sess-missing-for-title"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SessionDetail() error = %v, want ErrNotFound (no row should have been created)", err)
+	}
+}
+
 func TestMySQLSaveTurnUpsertsRefinedText(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
