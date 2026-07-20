@@ -66,6 +66,20 @@ export function App() {
   // paired assistant reply share the same turn number.
   const [userTranslations, setUserTranslations] = useState<Record<number, string>>({});
   const [assistantTranslations, setAssistantTranslations] = useState<Record<number, string>>({});
+  // Turns whose native-language translation hasn't arrived yet — set the
+  // moment a translation is expected (final_transcript for the user's own
+  // turn, assistant_done for the reply) and, for a hydrated history turn
+  // whose translation is still missing, on load too (see enterChat/
+  // pollMissingTranslations) so leaving and reopening a room doesn't just
+  // silently drop the spinner. Rendering always prefers actual translation
+  // text over this flag (see the message list below), so there's no need to
+  // explicitly clear an entry once its translation lands.
+  const [pendingUserTranslations, setPendingUserTranslations] = useState<Record<number, boolean>>(
+    {},
+  );
+  const [pendingAssistantTranslations, setPendingAssistantTranslations] = useState<
+    Record<number, boolean>
+  >({});
   // True from the moment a reply is expected (a message was just sent, or a
   // brand-new room was just opened and the server is about to volunteer its
   // opening line) until the first token of that reply arrives — drives the
@@ -80,6 +94,8 @@ export function App() {
     setPendingCorrections({});
     setUserTranslations({});
     setAssistantTranslations({});
+    setPendingUserTranslations({});
+    setPendingAssistantTranslations({});
   }, []);
 
   const [mic, setMic] = useState(false);
@@ -104,6 +120,11 @@ export function App() {
   const speakerRef = useRef<KokoroSpeaker | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const studyRef = useRef<HTMLDivElement>(null);
+  // Identifies the most recent backfill-translation poll (see
+  // pollMissingTranslations) so a slow fetch that resolves after the learner
+  // already left the room, or opened a different one, doesn't apply its
+  // (now stale) result to the wrong room's state.
+  const pollTokenRef = useRef<object | null>(null);
 
   const onEvent = useCallback((e: ServerEvent) => {
     switch (e.type) {
@@ -115,6 +136,7 @@ export function App() {
           { turn: e.turn, role: "user", text: e.text ?? "", source: e.source },
         ]);
         setPendingCorrections((p) => ({ ...p, [e.turn]: true }));
+        setPendingUserTranslations((p) => ({ ...p, [e.turn]: true }));
         break;
       case "refined_transcript":
         setMsgs((m) =>
@@ -132,6 +154,7 @@ export function App() {
       case "assistant_done":
         setAwaitingReply(false);
         setMsgs((m) => upsertAssistant(m, e.turn, () => e.text ?? ""));
+        setPendingAssistantTranslations((p) => ({ ...p, [e.turn]: true }));
         if (e.text && speakerRef.current?.loaded) void speakerRef.current.speak(e.text);
         break;
       case "correction":
@@ -143,12 +166,28 @@ export function App() {
           delete next[e.turn];
           return next;
         });
+        // correct() always emits this once its analyze() pass finishes, even
+        // when the sentence needed no teaching — same definitive "done"
+        // signal pendingCorrections clears on above, reused here since a
+        // clean sentence can still come back with no translation attached.
+        setPendingUserTranslations((p) => {
+          if (!(e.turn in p)) return p;
+          const next = { ...p };
+          delete next[e.turn];
+          return next;
+        });
         break;
       case "user_translation":
         setUserTranslations((t) => ({ ...t, [e.turn]: e.text ?? "" }));
         break;
       case "assistant_translation":
         setAssistantTranslations((t) => ({ ...t, [e.turn]: e.text ?? "" }));
+        setPendingAssistantTranslations((p) => {
+          if (!(e.turn in p)) return p;
+          const next = { ...p };
+          delete next[e.turn];
+          return next;
+        });
         break;
       case "error":
         setAwaitingReply(false);
@@ -199,58 +238,114 @@ export function App() {
     }
   }, []);
 
+  // Polls a room's transcript for translations the server is still
+  // backfilling in the background (see internal/backfill) — opening a room
+  // only fetches its transcript once, and backfill has no push channel to
+  // tell an already-open client "it's ready now", so without this a turn
+  // still missing its translation would just show a spinner that never
+  // resolves until the learner leaves and reopens the room. Stops once
+  // nothing is missing anymore or maxAttempts is reached; a fresh call to
+  // enterChat/backToList invalidates `token` so a slow, late-arriving
+  // response never overwrites a different room's state.
+  const pollMissingTranslations = useCallback((sessionId: string, token: object) => {
+    const maxAttempts = 20;
+    const intervalMs = 4000;
+    let attempt = 0;
+    const tick = async () => {
+      if (pollTokenRef.current !== token) return; // left this room, or opened another
+      attempt++;
+      const detail = await fetchSessionDetail(sessionId);
+      if (pollTokenRef.current !== token || !detail) return;
+      let stillMissing = false;
+      const ut: Record<number, string> = {};
+      const at: Record<number, string> = {};
+      for (const t of detail.turns) {
+        if (t.translation) {
+          if (t.role === "user") ut[t.turn] = t.translation;
+          else at[t.turn] = t.translation;
+        } else if (t.text) {
+          stillMissing = true;
+        }
+      }
+      setUserTranslations((prev) => ({ ...prev, ...ut }));
+      setAssistantTranslations((prev) => ({ ...prev, ...at }));
+      if (stillMissing && attempt < maxAttempts) setTimeout(tick, intervalMs);
+    };
+    setTimeout(tick, intervalMs);
+  }, []);
+
   // Opens a room and enters chat view. sessionId omitted starts a brand-new
   // room (server mints the ID, delivered on the "ready" event); given an
   // existing ID, this hydrates the visible transcript from its persisted
   // history first, since reconnecting the WS alone only seeds LLM context,
   // it doesn't replay old chat bubbles.
-  const enterChat = useCallback(async (sessionId?: string) => {
-    resetTurnState();
-    setAwaitingReply(false);
-    if (sessionId) {
-      // Fire the WS handshake alongside the transcript fetch — they're
-      // independent round trips — instead of waiting for the fetch first.
-      clientRef.current?.connect(sessionId);
-      const detail = await fetchSessionDetail(sessionId);
-      if (!detail) {
-        clientRef.current?.close(); // fetch failed (e.g. deleted elsewhere) — stay on the list
-        return;
-      }
-      setMsgs(
-        detail.turns.map((t) => ({
-          turn: t.turn,
-          role: t.role,
-          text: t.text,
-          refined: t.refined,
-          source: t.source,
-        })),
-      );
-      const corr: Record<number, Correction> = {};
-      const ut: Record<number, string> = {};
-      const at: Record<number, string> = {};
-      for (const t of detail.turns) {
-        if (t.correction) corr[t.turn] = t.correction;
-        if (t.translation) {
-          if (t.role === "user") ut[t.turn] = t.translation;
-          else at[t.turn] = t.translation;
+  const enterChat = useCallback(
+    async (sessionId?: string) => {
+      resetTurnState();
+      setAwaitingReply(false);
+      const token = {};
+      pollTokenRef.current = token;
+      if (sessionId) {
+        // Fire the WS handshake alongside the transcript fetch — they're
+        // independent round trips — instead of waiting for the fetch first.
+        clientRef.current?.connect(sessionId);
+        const detail = await fetchSessionDetail(sessionId);
+        if (!detail) {
+          clientRef.current?.close(); // fetch failed (e.g. deleted elsewhere) — stay on the list
+          return;
         }
+        setMsgs(
+          detail.turns.map((t) => ({
+            turn: t.turn,
+            role: t.role,
+            text: t.text,
+            refined: t.refined,
+            source: t.source,
+          })),
+        );
+        const corr: Record<number, Correction> = {};
+        const ut: Record<number, string> = {};
+        const at: Record<number, string> = {};
+        const pendingUt: Record<number, boolean> = {};
+        const pendingAt: Record<number, boolean> = {};
+        for (const t of detail.turns) {
+          if (t.correction) corr[t.turn] = t.correction;
+          if (t.translation) {
+            if (t.role === "user") ut[t.turn] = t.translation;
+            else at[t.turn] = t.translation;
+          } else if (t.text) {
+            // Missing translation on a hydrated turn: the server queues
+            // backfill for it the moment this fetch lands (see
+            // httpserver.sessionDetailHandler), so show it as in-progress
+            // rather than silently absent, and poll until it lands.
+            if (t.role === "user") pendingUt[t.turn] = true;
+            else pendingAt[t.turn] = true;
+          }
+        }
+        setCorrections(corr);
+        setUserTranslations(ut);
+        setAssistantTranslations(at);
+        setPendingUserTranslations(pendingUt);
+        setPendingAssistantTranslations(pendingAt);
+        if (Object.keys(pendingUt).length > 0 || Object.keys(pendingAt).length > 0) {
+          pollMissingTranslations(sessionId, token);
+        }
+      } else {
+        setMsgs([]);
+        clientRef.current?.connect(undefined);
+        // A brand-new room gets an opening line from the server before the
+        // learner says anything (see pipeline.StartConversation) — show the
+        // typing indicator right away instead of a bare empty screen.
+        setAwaitingReply(true);
       }
-      setCorrections(corr);
-      setUserTranslations(ut);
-      setAssistantTranslations(at);
-    } else {
-      setMsgs([]);
-      clientRef.current?.connect(undefined);
-      // A brand-new room gets an opening line from the server before the
-      // learner says anything (see pipeline.StartConversation) — show the
-      // typing indicator right away instead of a bare empty screen.
-      setAwaitingReply(true);
-    }
-    setMenuOpen(false);
-    setView("chat");
-  }, [resetTurnState]);
+      setMenuOpen(false);
+      setView("chat");
+    },
+    [resetTurnState, pollMissingTranslations],
+  );
 
   const backToList = useCallback(() => {
+    pollTokenRef.current = null;
     clientRef.current?.close();
     setMsgs([]);
     resetTurnState();
@@ -510,6 +605,8 @@ export function App() {
         {msgs.map((m, i) => {
           const translation =
             m.role === "user" ? userTranslations[m.turn] : assistantTranslations[m.turn];
+          const translationPending =
+            m.role === "user" ? pendingUserTranslations[m.turn] : pendingAssistantTranslations[m.turn];
           return (
             <div key={i} className={`row ${m.role}`}>
               <div className="bubble">
@@ -524,7 +621,15 @@ export function App() {
                 )}
                 {m.role === "user" && m.refined && <span className="tag">refined</span>}
               </div>
-              {translation && <div className="translation">{translation}</div>}
+              {translation ? (
+                <div className="translation">{translation}</div>
+              ) : (
+                translationPending && (
+                  <div className="translation translation-pending" role="status" aria-label="번역 중">
+                    <span className="spinning">⏳</span>
+                  </div>
+                )
+              )}
               {m.text && (
                 <div className="msg-tools">
                   {m.role === "user" && (

@@ -764,6 +764,65 @@ describe("per-message translations", () => {
     expect(await screen.findByText("안녕")).toBeInTheDocument();
     expect(await screen.findByText("안녕하세요!")).toBeInTheDocument();
   });
+
+  it("shows a spinner while a turn's translation is still in flight, live", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "final_transcript", turn: 1, text: "I am fine." }));
+    expect(await screen.findAllByRole("status", { name: "번역 중" })).toHaveLength(1);
+
+    act(() => emit({ type: "user_translation", turn: 1, text: "저는 괜찮아요." }));
+    expect(await screen.findByText("저는 괜찮아요.")).toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: "번역 중" })).not.toBeInTheDocument();
+
+    act(() => emit({ type: "assistant_done", turn: 1, text: "Glad to hear it!" }));
+    expect(await screen.findAllByRole("status", { name: "번역 중" })).toHaveLength(1);
+
+    act(() => emit({ type: "assistant_translation", turn: 1, text: "다행이네요!" }));
+    expect(await screen.findByText("다행이네요!")).toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: "번역 중" })).not.toBeInTheDocument();
+  });
+
+  // Guards a real reported bug: leaving a room mid-translation and reopening
+  // it used to silently drop the spinner (translation just never showed up),
+  // because a hydrated turn with no saved translation rendered nothing. A
+  // missing translation on a freshly hydrated turn now shows the same
+  // spinner instead, since the server queues it for backfill the moment this
+  // fetch lands (see httpserver.sessionDetailHandler).
+  it("shows a spinner for a hydrated turn whose translation is still missing", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+      turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+
+    await screen.findByText("hi");
+    expect(await screen.findByRole("status", { name: "번역 중" })).toBeInTheDocument();
+  });
+
+  it("does not show a translation spinner for a hydrated turn that never had one saved and has already stopped polling", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+    ]);
+    // An empty-text turn (e.g. a stray refined_transcript artifact) never
+    // counts as "missing a translation" — there's nothing to translate.
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+      turns: [{ turn: 1, role: "user", text: "", refined: false }],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+
+    await screen.findByRole("button", { name: "Menu" });
+    expect(screen.queryByRole("status", { name: "번역 중" })).not.toBeInTheDocument();
+  });
 });
 
 describe("tts speed settings", () => {

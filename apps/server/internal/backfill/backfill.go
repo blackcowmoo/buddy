@@ -24,9 +24,10 @@ import (
 )
 
 const (
-	queueKey  = "buddy:translate:queue"  // Redis list: pending job JSON, FIFO
-	queuedSet = "buddy:translate:queued" // Redis set: dedupe key of jobs queued or in flight
-	lockKey   = "buddy:translate:lock"   // Redis mutex: at most one drain running cluster-wide
+	queueKey      = "buddy:translate:queue"      // Redis list: pending job JSON, FIFO
+	queuedSet     = "buddy:translate:queued"     // Redis set: dedupe key of jobs queued or in flight
+	processingKey = "buddy:translate:processing" // Redis sorted set: job JSON -> claimed-at unix time
+	lockKey       = "buddy:translate:lock"       // Redis mutex: at most one drain running cluster-wide
 
 	// lockTTL is a safety ceiling, not the normal release path: Worker
 	// explicitly deletes the lock as soon as a drain pass ends (queue
@@ -36,6 +37,16 @@ const (
 	// mid-drain without releasing it, this bounds how long the stuck
 	// lock can wedge every other replica out of the queue.
 	lockTTL = time.Hour
+
+	// processingStaleThreshold bounds how long a job may sit claimed in
+	// processingKey before reapStaleJobs treats its worker as dead and
+	// puts it back on queueKey. Translating one session is normally a
+	// handful of LLM calls (seconds), so this is generous headroom for a
+	// slow pass, not a tight budget — it only exists to recover from a
+	// replica that died mid-drainOnce (killed, OOM, deploy) between
+	// claiming the job and finishing it, which otherwise left the job's
+	// dedupeKey stuck in queuedSet forever (see reapStaleJobs).
+	processingStaleThreshold = 10 * time.Minute
 
 	// pollInterval is how often an idle Worker checks whether it should
 	// try to acquire the lock and drain — background work, so this
@@ -134,6 +145,11 @@ func (w *Worker) Run(ctx context.Context) {
 // queue empties (or a Redis error ends the pass early), not held for the
 // full lockTTL, so the next poll — here or on another replica — can pick up
 // newly-queued work immediately; lockTTL only bounds a crashed drain.
+//
+// Each job is moved into processingKey the instant it's dequeued, and out
+// again only once fully handled (translateSession finished + queuedSet
+// cleared) — see reapStaleJobs for why: it's what lets a job survive this
+// process dying mid-job instead of leaving its session stuck forever.
 func (w *Worker) drainOnce(ctx context.Context) {
 	token := strconv.FormatInt(time.Now().UnixNano(), 10)
 	acquired, err := w.rdb.SetNX(ctx, lockKey, token, lockTTL).Result()
@@ -141,6 +157,8 @@ func (w *Worker) drainOnce(ctx context.Context) {
 		return
 	}
 	defer w.rdb.Del(context.Background(), lockKey)
+
+	w.reapStaleJobs(ctx)
 
 	for {
 		raw, err := w.rdb.LPop(ctx, queueKey).Result()
@@ -156,9 +174,43 @@ func (w *Worker) drainOnce(ctx context.Context) {
 			log.Printf("backfill: bad queue entry %q: %v", raw, err)
 			continue
 		}
+		if err := w.rdb.ZAdd(ctx, processingKey, redis.Z{Score: float64(time.Now().Unix()), Member: raw}).Err(); err != nil {
+			log.Printf("backfill: claim %s: %v", j.dedupeKey(), err)
+		}
 		w.translateSession(ctx, j.UserID, j.SessionID)
 		if err := w.rdb.SRem(context.Background(), queuedSet, j.dedupeKey()).Err(); err != nil {
 			log.Printf("backfill: dequeue mark %s: %v", j.dedupeKey(), err)
+		}
+		if err := w.rdb.ZRem(context.Background(), processingKey, raw).Err(); err != nil {
+			log.Printf("backfill: release claim %s: %v", j.dedupeKey(), err)
+		}
+	}
+}
+
+// reapStaleJobs re-queues any job that's been sitting in processingKey
+// longer than processingStaleThreshold — the signature of a replica that
+// claimed it (LPop + ZAdd in drainOnce) and then died before finishing
+// (SRem + ZRem), which previously left the job's dedupeKey stuck in
+// queuedSet forever: every future Enqueue for that session would see SAdd
+// return 0 ("already queued") and silently no-op, so the session's missing
+// translations could never be retried again. Runs under the same
+// cluster-wide lock drainOnce already holds, so only one replica ever reaps
+// at a time. Pushed back onto queueKey (not re-claimed here) so the normal
+// dequeue loop below picks it up like any other pending job.
+func (w *Worker) reapStaleJobs(ctx context.Context) {
+	cutoff := float64(time.Now().Add(-processingStaleThreshold).Unix())
+	stale, err := w.rdb.ZRangeByScore(ctx, processingKey, &redis.ZRangeBy{Min: "-inf", Max: strconv.FormatFloat(cutoff, 'f', 0, 64)}).Result()
+	if err != nil {
+		log.Printf("backfill: reap: scan: %v", err)
+		return
+	}
+	for _, raw := range stale {
+		if err := w.rdb.RPush(ctx, queueKey, raw).Err(); err != nil {
+			log.Printf("backfill: reap: requeue: %v", err)
+			continue
+		}
+		if err := w.rdb.ZRem(ctx, processingKey, raw).Err(); err != nil {
+			log.Printf("backfill: reap: clear claim: %v", err)
 		}
 	}
 }
