@@ -90,6 +90,13 @@ type Store interface {
 	// been saved yet.
 	SaveTranslation(ctx context.Context, userID, sessionID string, turn int, role, translation string) error
 
+	// LastTurn returns the highest turn number already persisted for a
+	// session (0 if none), so a resumed session can continue numbering
+	// turns from where the transcript left off instead of restarting at 0
+	// and colliding with — silently overwriting — turns already saved
+	// under those same numbers. See internal/session.Session.Seed.
+	LastTurn(ctx context.Context, userID, sessionID string) (int, error)
+
 	// SaveGeneratedTitle sets a session's title to an LLM-generated one,
 	// exactly once — a no-op if this session's title was already
 	// auto-generated (see internal/transport, which triggers this once per

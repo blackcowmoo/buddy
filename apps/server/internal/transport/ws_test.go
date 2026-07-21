@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -139,6 +140,22 @@ func (f *fakeStore) SaveTurn(ctx context.Context, userID, sessionID string, turn
 	t.Turn, t.Role, t.Text, t.Refined, t.Source = turn, role, text, refined, source
 	d.turns[tk] = t
 	return nil
+}
+
+func (f *fakeStore) LastTurn(ctx context.Context, userID, sessionID string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.sessions[fakeStoreKey(userID, sessionID)]
+	if d == nil {
+		return 0, nil
+	}
+	last := 0
+	for _, t := range d.turns {
+		if t.Turn > last {
+			last = t.Turn
+		}
+	}
+	return last, nil
 }
 
 func (f *fakeStore) SaveCorrection(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction) error {
@@ -715,13 +732,20 @@ func TestWSAudioBackupDeleteBySessionRemovesOnlyThatSessionsBackups(t *testing.T
 // store), seeded back into the session on each reconnect. Uses fakeStore —
 // real store semantics are covered by internal/store's own MySQL-backed
 // tests.
+//
+// wantTurn is asserted explicitly (rather than hardcoded to 1) because a
+// reconnecting session must resume turn numbering from store.Store.LastTurn,
+// not restart at 0 — session.Session.Seed's job. Before that fix, every
+// reconnect's first send would land back on turn 1, silently overwriting the
+// previous connection's turn 1 in the transcript instead of adding turn 2 —
+// exactly the "history disappears on reopen" bug this test guards against.
 func TestWSMemoryPersistsAcrossReconnects(t *testing.T) {
 	st := newTestStore(t)
 	srv := newTestServer(t, st)
 	cookie := "test-user-abc123"
 	var sessionID string
 
-	send := func(text string) {
+	send := func(text string, wantTurn int) {
 		c, _ := dial(t, srv, cookie, sessionID)
 		ready := readEvent(t, c)
 		if ready.Type != protocol.EvReady {
@@ -729,7 +753,7 @@ func TestWSMemoryPersistsAcrossReconnects(t *testing.T) {
 		}
 		sessionID = ready.Session // resume this same room on the next send
 		sendText(t, c, text)
-		readUntilTurn(t, c, protocol.EvAssistantDone, 1) // turn 1: this send's own reply, not the opening greeting's turn 0
+		readUntilTurn(t, c, protocol.EvAssistantDone, wantTurn)
 		c.Close(websocket.StatusNormalClosure, "")
 	}
 
@@ -750,7 +774,7 @@ func TestWSMemoryPersistsAcrossReconnects(t *testing.T) {
 		return store.Profile{}
 	}
 
-	send("My name is Alex.")
+	send("My name is Alex.", 1) // turn 1: this send's own reply, not the opening greeting's turn 0
 	// The connection's save runs in ServeHTTP's deferred cleanup, which is
 	// async relative to the client-side close above — wait for it to land
 	// before opening the next connection with the same session, so it seeds
@@ -760,11 +784,30 @@ func TestWSMemoryPersistsAcrossReconnects(t *testing.T) {
 	// pipeline.StartConversation) lands in history as well, ahead of this turn.
 	waitForRecentCount(3)
 
-	send("What is my name?")
+	send("What is my name?", 2) // turn 2: the reconnect must resume from turn 1, not restart at 1
 	profile := waitForRecentCount(5)
 
 	if profile.Recent[1].Content != "My name is Alex." || profile.Recent[3].Content != "What is my name?" {
 		t.Fatalf("accumulated turns out of order or wrong: %+v", profile.Recent)
+	}
+
+	// The regression this test exists for: confirm the full transcript in
+	// buddy_turns (not just the LLM-context Profile.Recent above) still has
+	// both exchanges intact under distinct turn numbers, rather than the
+	// second connection's turn 1 having overwritten the first's.
+	_, turns, err := st.SessionDetail(context.Background(), cookie, sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	var userTexts []string
+	for _, tn := range turns {
+		if tn.Role == "user" {
+			userTexts = append(userTexts, tn.Text)
+		}
+	}
+	want := []string{"My name is Alex.", "What is my name?"}
+	if !reflect.DeepEqual(userTexts, want) {
+		t.Fatalf("transcript user turns = %+v, want %+v (reconnect must not overwrite earlier turns)", userTexts, want)
 	}
 }
 
@@ -1091,11 +1134,15 @@ func TestWSFirstReplyGeneratesTitle(t *testing.T) {
 
 // TestWSReconnectDoesNotRegenerateTitle guards the reason
 // store.SaveGeneratedTitle gates on title_generated rather than the trigger
-// relying on turn==1 being session-unique: session.Session's turn counter
-// restarts at 0 on every connection (see TestWSResumedSessionSkipsOpeningGreeting),
-// so resuming an already-titled room and sending a first message on the new
-// connection fires the same turn==1 trigger again. That second firing must
-// not overwrite the title already set by the first.
+// relying on turn==1 being session-unique: session.Session's turn counter now
+// resumes from store.Store.LastTurn on every connection (see
+// session.Session.Seed), so a reconnect's own first send lands on turn 2, not
+// turn 1 again, and the turn==1 title trigger normally doesn't refire at all.
+// It can still recur in principle (e.g. two connections racing to seed from
+// the same LastTurn before either saves turn 1 — see the comment on
+// Handler.generateTitle), so the title_generated guard remains the real
+// safety net; this test only confirms the title stays pinned across an
+// ordinary reconnect.
 func TestWSReconnectDoesNotRegenerateTitle(t *testing.T) {
 	st := newTestStore(t)
 	titleN := 0
@@ -1119,7 +1166,7 @@ func TestWSReconnectDoesNotRegenerateTitle(t *testing.T) {
 	c2, _ := dial(t, srv, cookie, ready1.Session)
 	readEvent(t, c2) // ready
 	sendText(t, c2, "second message, different connection")
-	readUntilTurn(t, c2, protocol.EvAssistantDone, 1) // turn resets to 1 again on the new connection
+	readUntilTurn(t, c2, protocol.EvAssistantDone, 2) // resumes numbering: turn 2, not turn 1 again
 	c2.Close(websocket.StatusNormalClosure, "")
 
 	time.Sleep(200 * time.Millisecond) // give a wrongly-firing regeneration time to land

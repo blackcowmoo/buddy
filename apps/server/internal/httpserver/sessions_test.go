@@ -53,6 +53,10 @@ func (f *fakeSessionStore) SaveGeneratedTitle(ctx context.Context, userID, sessi
 	return errors.New("not used by these tests")
 }
 
+func (f *fakeSessionStore) LastTurn(ctx context.Context, userID, sessionID string) (int, error) {
+	return 0, errors.New("not used by these tests")
+}
+
 func (f *fakeSessionStore) ListSessions(ctx context.Context, userID string) ([]store.SessionMeta, error) {
 	return nil, errors.New("not used by these tests")
 }

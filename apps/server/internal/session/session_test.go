@@ -37,7 +37,7 @@ func TestSnapshotIncludesSummaryOnlyWhenSet(t *testing.T) {
 		t.Fatalf("expected just the system message before Seed, got %+v", got)
 	}
 
-	s.Seed("learner likes hiking", nil)
+	s.Seed("learner likes hiking", nil, 0)
 	got := s.Snapshot()
 	if len(got) != 2 {
 		t.Fatalf("expected system+summary messages, got %d: %+v", len(got), got)
@@ -53,7 +53,7 @@ func TestSeedAndExportRoundTrip(t *testing.T) {
 		{Role: llm.RoleUser, Content: "hi"},
 		{Role: llm.RoleAssistant, Content: "hello"},
 	}
-	s.Seed("summary text", recent)
+	s.Seed("summary text", recent, 0)
 
 	gotSummary, gotRecent := s.Export()
 	if gotSummary != "summary text" {
@@ -109,6 +109,17 @@ func TestNextTurnIncrements(t *testing.T) {
 	}
 	if got := s.NextTurn(); got != 2 {
 		t.Fatalf("second NextTurn() = %d, want 2", got)
+	}
+}
+
+func TestNextTurnContinuesFromSeededLastTurn(t *testing.T) {
+	s := New("sys")
+	s.Seed("summary", nil, 5)
+	if got := s.NextTurn(); got != 6 {
+		t.Fatalf("NextTurn() after Seed(lastTurn=5) = %d, want 6", got)
+	}
+	if got := s.NextTurn(); got != 7 {
+		t.Fatalf("NextTurn() = %d, want 7", got)
 	}
 }
 
