@@ -27,10 +27,21 @@ type fakeSessionStore struct {
 	detailMeta  store.SessionMeta
 	detailTurns []store.Turn
 	detailErr   error
+
+	// profile/profileErr/lastTurnVal/lastTurnErr back Load/LastTurn for
+	// sessionCompactionHandler tests (see sessions_compaction_test.go); left
+	// zero for tests in this file, which don't call either.
+	profile     store.Profile
+	profileErr  error
+	lastTurnVal int
+	lastTurnErr error
 }
 
 func (f *fakeSessionStore) Load(ctx context.Context, userID, sessionID string) (store.Profile, error) {
-	return store.Profile{}, errors.New("not used by these tests")
+	if f.profileErr != nil {
+		return store.Profile{}, f.profileErr
+	}
+	return f.profile, nil
 }
 
 func (f *fakeSessionStore) Save(ctx context.Context, userID, sessionID string, p store.Profile) error {
@@ -54,7 +65,10 @@ func (f *fakeSessionStore) SaveGeneratedTitle(ctx context.Context, userID, sessi
 }
 
 func (f *fakeSessionStore) LastTurn(ctx context.Context, userID, sessionID string) (int, error) {
-	return 0, errors.New("not used by these tests")
+	if f.lastTurnErr != nil {
+		return 0, f.lastTurnErr
+	}
+	return f.lastTurnVal, nil
 }
 
 func (f *fakeSessionStore) ListSessions(ctx context.Context, userID string) ([]store.SessionMeta, error) {

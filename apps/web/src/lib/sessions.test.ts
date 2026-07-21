@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { deleteSession, fetchSessionDetail, fetchSessions } from "./sessions";
+import {
+  deleteSession,
+  fetchSessionCompaction,
+  fetchSessionDetail,
+  fetchSessions,
+} from "./sessions";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -47,6 +52,27 @@ describe("fetchSessionDetail", () => {
   it("returns null when fetch rejects", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
     await expect(fetchSessionDetail("s1")).resolves.toBeNull();
+  });
+});
+
+describe("fetchSessionCompaction", () => {
+  it("returns the compaction state on a successful response and URL-encodes the id", async () => {
+    const compaction = { summary: "likes travel topics", recentMessages: 4, totalTurns: 12 };
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(compaction) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchSessionCompaction("weird id/1")).resolves.toEqual(compaction);
+    expect(fetchMock).toHaveBeenCalledWith("api/sessions/weird%20id%2F1/compaction");
+  });
+
+  it("returns null on a non-ok response", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
+    await expect(fetchSessionCompaction("s1")).resolves.toBeNull();
+  });
+
+  it("returns null when fetch rejects", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
+    await expect(fetchSessionCompaction("s1")).resolves.toBeNull();
   });
 });
 

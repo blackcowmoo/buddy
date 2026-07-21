@@ -13,7 +13,14 @@ import {
   replaceRoomState,
 } from "./lib/roomHistory";
 import { fetchMe } from "./lib/me";
-import { deleteSession, fetchSessionDetail, fetchSessions, type SessionSummary } from "./lib/sessions";
+import {
+  deleteSession,
+  fetchSessionCompaction,
+  fetchSessionDetail,
+  fetchSessions,
+  type SessionCompaction,
+  type SessionSummary,
+} from "./lib/sessions";
 import { applyTheme, getStoredTheme, setStoredTheme, type Theme } from "./lib/theme";
 import {
   MAX_EXTRA_RATES,
@@ -82,6 +89,11 @@ export function App() {
   // reconnected without re-hydrating the transcript first (see enterChat).
   const [view, setView] = useState<View>("list");
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  // The open room's id, once known — null for a brand-new room until the
+  // server mints one (see the "ready" case in onEvent below). Only needed so
+  // CompactionInfo has something to fetch against; the WS client and history
+  // entry each track their own copy of this for their own purposes.
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [status, setStatus] = useState<Status>("connecting");
   const [msgs, setMsgs] = useState<Msg[]>([]);
   // Grammar/translation state per turn — pending flags are set the moment a
@@ -167,6 +179,7 @@ export function App() {
         // that pending entry, so reconnecting to an already-known room (which
         // also emits "ready") never touches history.
         if (e.session) {
+          setActiveSessionId(e.session);
           const current = currentRoomHistoryState();
           if (current.view === "chat" && current.id == null) {
             replaceRoomState({ view: "chat", id: e.session });
@@ -340,6 +353,7 @@ export function App() {
         pushRoomState({ view: "chat", id: sessionId ?? null });
         hasPushedRoomEntryRef.current = true;
       }
+      setActiveSessionId(sessionId ?? null);
       if (sessionId) {
         // Fire the WS handshake alongside the transcript fetch — they're
         // independent round trips — instead of waiting for the fetch first.
@@ -428,6 +442,7 @@ export function App() {
     setAwaitingReply(false);
     setMenuOpen(false);
     setView("list");
+    setActiveSessionId(null);
     hasPushedRoomEntryRef.current = false;
     refreshSessions();
   }, [refreshSessions, resetTurnState]);
@@ -713,7 +728,12 @@ export function App() {
             <h1>Buddy</h1>
           </>
         }
-        actions={<FeedbackSummary turns={feedbackTurns} />}
+        actions={
+          <>
+            <CompactionInfo sessionId={activeSessionId} />
+            <FeedbackSummary turns={feedbackTurns} />
+          </>
+        }
         menuOpen={menuOpen}
         onToggleMenu={() => setMenuOpen((o) => !o)}
         menuRef={menuRef}
@@ -1273,6 +1293,73 @@ interface FeedbackTurn {
   turn: number;
   text: string;
   correction: Correction;
+}
+
+// Debug view onto internal/session's compaction: shows the room's rolling
+// summary and how many recent messages are still sent to the LLM verbatim,
+// so a learner can confirm a long conversation is actually being compacted
+// instead of just trusting it. Purely informational — nothing shown here is
+// ever dropped from the room's own transcript (see FeedbackSummary/the
+// message list above, which always replay the full history), only from the
+// copy of the conversation sent to the model (see
+// httpserver.sessionCompactionHandler). Fetches on open rather than
+// eagerly, since this is a debug affordance, not something shown by default.
+function CompactionInfo({ sessionId }: { sessionId: string | null }) {
+  const [open, setOpen] = useState(false);
+  const [info, setInfo] = useState<SessionCompaction | null>(null);
+  const [loading, setLoading] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  useDismiss(open, panelRef, () => setOpen(false));
+
+  const toggle = useCallback(() => {
+    if (!sessionId) return;
+    setOpen((o) => {
+      const next = !o;
+      if (next) {
+        setLoading(true);
+        void fetchSessionCompaction(sessionId).then((result) => {
+          setInfo(result);
+          setLoading(false);
+        });
+      }
+      return next;
+    });
+  }, [sessionId]);
+
+  if (!sessionId) return null;
+
+  return (
+    <div className="compaction-info" ref={panelRef}>
+      <button
+        type="button"
+        className="ghost icon-btn"
+        aria-haspopup="true"
+        aria-expanded={open}
+        aria-label="대화 압축 상태 보기"
+        title="대화 압축 상태 보기"
+        onClick={toggle}
+      >
+        🗜️
+      </button>
+      {open && (
+        <div className="study-panel compaction-panel" role="menu">
+          {loading && <div className="compaction-loading">불러오는 중…</div>}
+          {!loading && info && (
+            <>
+              <div className="compaction-summary-header">
+                전체 {info.totalTurns}턴 중 최근 {info.recentMessages}개 메시지는 그대로 전달되고,
+                이전 대화는 아래처럼 요약되어 있어요. (기록 자체는 그대로 남아있어요.)
+              </div>
+              <div className="compaction-summary-text">
+                {info.summary || "아직 압축된 내용이 없어요."}
+              </div>
+            </>
+          )}
+          {!loading && !info && <div className="compaction-empty">불러오지 못했어요.</div>}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // Session-wide counterpart to GrammarControl: instead of one popover per

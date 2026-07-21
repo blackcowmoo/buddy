@@ -53,6 +53,7 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux.HandleFunc("/api/me", meHandler(cfg.IdentityMode, ident))
 	mux.HandleFunc("GET /api/sessions", sessionsListHandler(ident, st))
 	mux.HandleFunc("GET /api/sessions/{id}", sessionDetailHandler(ident, st, translateQueue))
+	mux.HandleFunc("GET /api/sessions/{id}/compaction", sessionCompactionHandler(ident, st))
 	mux.HandleFunc("DELETE /api/sessions/{id}", sessionDeleteHandler(ident, st, audio, recordings))
 	mux.HandleFunc("GET /api/recordings", recordingsListHandler(ident, recordings))
 	mux.HandleFunc("GET /api/recordings/{id}/audio", recordingAudioHandler(ident, recordings))
@@ -206,6 +207,40 @@ func needsTranslationBackfill(turns []store.Turn) bool {
 		}
 	}
 	return false
+}
+
+// sessionCompactionHandler exposes a session's current LLM-context state —
+// the rolling summary plus how many verbatim turns still sit in the
+// uncompacted window — for the learner to inspect, and how many turns exist
+// in the session overall (store.LastTurn — see internal/session's doc for how
+// the two relate: the summary is what got folded away, the window is what's
+// still sent to the model verbatim). This is purely informational: nothing
+// here is ever dropped from store.Turn's own full transcript (see
+// sessionDetailHandler), only from the copy of the conversation sent to the
+// LLM.
+func sessionCompactionHandler(ident identity.Identifier, st store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := requireUser(w, r, ident)
+		if !ok {
+			return
+		}
+		sessionID := r.PathValue("id")
+		profile, err := st.Load(r.Context(), userID, sessionID)
+		if err != nil {
+			serverError(w, "load profile", err)
+			return
+		}
+		lastTurn, err := st.LastTurn(r.Context(), userID, sessionID)
+		if err != nil {
+			serverError(w, "last turn", err)
+			return
+		}
+		writeJSON(w, map[string]any{
+			"summary":        profile.Summary,
+			"recentMessages": len(profile.Recent),
+			"totalTurns":     lastTurn,
+		})
+	}
 }
 
 // sessionDeleteHandler removes one chat room and its full transcript, and

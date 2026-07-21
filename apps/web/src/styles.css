@@ -205,6 +205,23 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 .feedback-entry { display: flex; flex-direction: column; gap: 4px; }
 .feedback-original { font-size: 13px; color: var(--muted); padding: 0 2px; }
 
+/* Compaction debug view, opened from the chat header — see App.tsx
+   CompactionInfo. Same shape as .feedback-panel next to it. */
+.compaction-info { position: relative; display: inline-flex; }
+.compaction-panel {
+  right: 0;
+  left: auto;
+  width: min(85vw, 340px);
+  max-height: min(70vh, 480px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.compaction-loading, .compaction-empty { font-size: 13px; color: var(--muted); padding: 2px 4px; }
+.compaction-summary-header { font-size: 13px; color: var(--muted); }
+.compaction-summary-text { font-size: 13px; white-space: pre-wrap; padding: 2px 4px; }
+
 .spinning { display: inline-block; animation: spin 1s linear infinite; }
 @keyframes spin {
   from { transform: rotate(0deg); }
