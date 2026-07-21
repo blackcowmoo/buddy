@@ -59,6 +59,7 @@ vi.mock("./lib/me", () => ({
 vi.mock("./lib/sessions", () => ({
   fetchSessions: vi.fn(),
   fetchSessionDetail: vi.fn(),
+  fetchSessionCompaction: vi.fn(),
   deleteSession: vi.fn(),
 }));
 
@@ -83,7 +84,12 @@ import {
   pushRoomState,
   replaceRoomState,
 } from "./lib/roomHistory";
-import { deleteSession, fetchSessionDetail, fetchSessions } from "./lib/sessions";
+import {
+  deleteSession,
+  fetchSessionCompaction,
+  fetchSessionDetail,
+  fetchSessions,
+} from "./lib/sessions";
 import { KokoroSpeaker } from "./tts/kokoro";
 import { BuddyClient } from "./lib/ws";
 
@@ -94,6 +100,7 @@ beforeEach(() => {
   vi.mocked(fetchMe).mockResolvedValue(null);
   vi.mocked(fetchSessions).mockResolvedValue([]);
   vi.mocked(fetchSessionDetail).mockResolvedValue(null);
+  vi.mocked(fetchSessionCompaction).mockResolvedValue(null);
   vi.mocked(parseRoomHash).mockReturnValue({ view: "list" });
   vi.mocked(currentRoomHistoryState).mockReturnValue({ view: "list" });
   vi.stubGlobal("location", {
@@ -766,6 +773,66 @@ describe("feedback summary", () => {
     await openFeedbackPanel(user);
     expect(await screen.findByText("지금까지 1개 메시지에 피드백이 있어요")).toBeInTheDocument();
     expect(screen.getByText("주어-동사 불일치")).toBeInTheDocument();
+  });
+});
+
+describe("compaction info", () => {
+  function openRoomS1() {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+      turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
+    });
+  }
+
+  it("does not appear on the room list, nor before a room's id is known", async () => {
+    render(<App />);
+    await screen.findByRole("button", { name: "Menu" });
+    expect(
+      screen.queryByRole("button", { name: "대화 압축 상태 보기" }),
+    ).not.toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await enterNewChat(user); // brand-new room: no id until "ready" arrives
+    expect(
+      screen.queryByRole("button", { name: "대화 압축 상태 보기" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("fetches and shows the summary and turn counts on click", async () => {
+    openRoomS1();
+    vi.mocked(fetchSessionCompaction).mockResolvedValue({
+      summary: "Learner enjoys travel topics; struggles with past perfect tense.",
+      recentMessages: 3,
+      totalTurns: 20,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+    await screen.findByText("hi");
+
+    await user.click(screen.getByRole("button", { name: "대화 압축 상태 보기" }));
+
+    expect(fetchSessionCompaction).toHaveBeenCalledWith("s1");
+    expect(
+      await screen.findByText(/Learner enjoys travel topics/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/전체 20턴 중 최근 3개 메시지/)).toBeInTheDocument();
+  });
+
+  it("shows a fallback message when the fetch fails", async () => {
+    openRoomS1();
+    vi.mocked(fetchSessionCompaction).mockResolvedValue(null);
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+    await screen.findByText("hi");
+
+    await user.click(screen.getByRole("button", { name: "대화 압축 상태 보기" }));
+
+    expect(await screen.findByText("불러오지 못했어요.")).toBeInTheDocument();
   });
 });
 
