@@ -409,7 +409,7 @@ func TestCompactLeavesHistoryOnLLMError(t *testing.T) {
 func TestCorrectEmitsEventWhenChanged(t *testing.T) {
 	p := &Pipeline{
 		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
-			return `{"corrected":"I like pizza.","translation":"저는 피자를 좋아해요.","issues":[{"type":"grammar","span":"I likes","suggestion":"I like","explanation":"수 일치 오류"}]}`, nil
+			return `{"corrected":"I like pizza.","translation":"저는 피자를 좋아해요.","issues":[{"type":"grammar","span":"I likes","suggestion":"I like","explanation":"subject-verb agreement error","explanationTranslation":"수 일치 오류"}]}`, nil
 		}}}},
 	}
 	var got []protocol.ServerEvent
@@ -421,8 +421,11 @@ func TestCorrectEmitsEventWhenChanged(t *testing.T) {
 	if got[0].Correction.Corrected != "I like pizza." {
 		t.Fatalf("Correction.Corrected = %q", got[0].Correction.Corrected)
 	}
-	if got[0].Correction.Issues[0].Explanation != "수 일치 오류" {
+	if got[0].Correction.Issues[0].Explanation != "subject-verb agreement error" {
 		t.Fatalf("explanation not passed through: %+v", got[0].Correction.Issues[0])
+	}
+	if got[0].Correction.Issues[0].ExplanationTranslation != "수 일치 오류" {
+		t.Fatalf("explanationTranslation not passed through: %+v", got[0].Correction.Issues[0])
 	}
 	if got[1].Text != "저는 피자를 좋아해요." || got[1].Turn != 1 {
 		t.Fatalf("translation event wrong: %+v", got[1])
@@ -1291,7 +1294,7 @@ func TestHandleTextEndToEnd(t *testing.T) {
 	shared := &fakeLLM{
 		chatReply: "Nice to meet you!",
 		complete: func(msgs []llm.Message) (string, error) {
-			return `{"corrected":"Hello, my name is Alex.","issues":[{"type":"grammar","span":"name Alex","suggestion":"my name is Alex","explanation":"주어 누락"}]}`, nil
+			return `{"corrected":"Hello, my name is Alex.","issues":[{"type":"grammar","span":"name Alex","suggestion":"my name is Alex","explanation":"missing subject","explanationTranslation":"주어 누락"}]}`, nil
 		},
 	}
 	p := &Pipeline{
@@ -1326,8 +1329,11 @@ func TestHandleTextEndToEnd(t *testing.T) {
 	if corr == nil || corr.Corrected != "Hello, my name is Alex." || len(corr.Issues) != 1 {
 		t.Fatalf("correction payload wrong: %+v", corr)
 	}
-	if corr.Issues[0].Explanation != "주어 누락" {
-		t.Fatalf("correction explanation not in Korean: %+v", corr.Issues[0])
+	if corr.Issues[0].Explanation != "missing subject" {
+		t.Fatalf("correction explanation not in English: %+v", corr.Issues[0])
+	}
+	if corr.Issues[0].ExplanationTranslation != "주어 누락" {
+		t.Fatalf("correction explanationTranslation not in Korean: %+v", corr.Issues[0])
 	}
 
 	_, recent := sess.Export()
@@ -1373,7 +1379,7 @@ func TestHandleUtteranceFullFlowUpgradesContextViaRefine(t *testing.T) {
 	shared := &fakeLLM{
 		chatReply: "Let's get you some food!",
 		complete: func(msgs []llm.Message) (string, error) {
-			return `{"corrected":"I am hungry.","issues":[{"type":"grammar","span":"I are","suggestion":"I am","explanation":"be동사 인칭 오류"}]}`, nil
+			return `{"corrected":"I am hungry.","issues":[{"type":"grammar","span":"I are","suggestion":"I am","explanation":"be-verb agreement error","explanationTranslation":"be동사 인칭 오류"}]}`, nil
 		},
 	}
 	judge := &fakeLLM{complete: func(msgs []llm.Message) (string, error) {

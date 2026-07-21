@@ -68,10 +68,11 @@ type Correction struct {
 }
 
 type Issue struct {
-	Type        string `json:"type"`        // "grammar" | "vocabulary" | "phrasing" | "context"
-	Span        string `json:"span"`        // the problematic text
-	Suggestion  string `json:"suggestion"`  // the fix
-	Explanation string `json:"explanation"` // short, learner-friendly
+	Type                   string `json:"type"`                   // "grammar" | "vocabulary" | "phrasing" | "context"
+	Span                   string `json:"span"`                   // the problematic text
+	Suggestion             string `json:"suggestion"`             // the fix
+	Explanation            string `json:"explanation"`            // why it's wrong, in English, short and kind
+	ExplanationTranslation string `json:"explanationTranslation"` // native-language translation of Explanation
 }
 
 // ---- client -> server (TEXT control frames) ---------------------------------

@@ -453,6 +453,7 @@ a.icon-btn.ghost {
 .issue:first-child { border-top: none; }
 .issue .span { text-decoration: line-through; color: var(--err); }
 .issue .why { color: var(--muted); font-size: 13px; margin-top: 2px; }
+.issue .why-translation { color: var(--muted); font-size: 13px; font-style: italic; margin-top: 2px; }
 .badge {
   font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em;
   padding: 1px 6px; border-radius: 6px; margin-right: 6px; background: var(--panel-2); color: var(--muted);
