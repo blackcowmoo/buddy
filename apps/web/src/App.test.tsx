@@ -1017,6 +1017,58 @@ describe("per-message translations", () => {
   });
 });
 
+describe("date dividers and message times", () => {
+  // shouldAdvanceTime keeps real timers ticking (userEvent's internal
+  // delays rely on them) while still letting us pin what "now" is for
+  // formatDateDivider's 오늘/어제 logic.
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("shows one divider per calendar day and a time under every message when hydrating a session", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date(2024, 5, 15, 10, 0, 0));
+
+    const yesterdayUser = new Date(2024, 5, 14, 9, 5, 0).getTime() / 1000;
+    const yesterdayAssistant = new Date(2024, 5, 14, 9, 6, 0).getTime() / 1000;
+    const todayUser = new Date(2024, 5, 15, 9, 7, 0).getTime() / 1000;
+
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+      turns: [
+        { turn: 1, role: "user", text: "hi", refined: false, createdAt: yesterdayUser },
+        { turn: 1, role: "assistant", text: "hello!", refined: false, createdAt: yesterdayAssistant },
+        { turn: 2, role: "user", text: "bye", refined: false, createdAt: todayUser },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+
+    expect(await screen.findByText("어제")).toBeInTheDocument();
+    expect(await screen.findByText("오늘")).toBeInTheDocument();
+    expect(screen.getByText("오전 9:05")).toBeInTheDocument();
+    expect(screen.getByText("오전 9:06")).toBeInTheDocument();
+    expect(screen.getByText("오전 9:07")).toBeInTheDocument();
+  });
+
+  it("stamps a live message with today's divider and the current clock time", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date(2024, 5, 15, 14, 30, 0));
+
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "final_transcript", turn: 1, text: "Hello" }));
+
+    expect(await screen.findByText("오늘")).toBeInTheDocument();
+    expect(await screen.findByText("오후 2:30")).toBeInTheDocument();
+  });
+});
+
 describe("tts speed settings", () => {
   it("lists the native speed as fixed and the default extra speeds as removable", async () => {
     const user = userEvent.setup();

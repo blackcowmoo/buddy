@@ -47,6 +47,11 @@ type Turn struct {
 	Role    string `json:"role"` // "user" | "assistant"
 	Text    string `json:"text"`
 	Refined bool   `json:"refined"`
+	// CreatedAt is when this turn was first saved (unix seconds) — set once,
+	// at insert, and never touched by a later upsert (e.g. refined_transcript
+	// overwriting text). Lets the frontend group a replayed transcript into
+	// date-divided days and show a per-message time.
+	CreatedAt int64 `json:"createdAt"`
 	// Source is how the learner produced this turn — protocol.SourceVoice or
 	// protocol.SourceText. Empty for assistant turns, which are always
 	// generated rather than input by the learner.

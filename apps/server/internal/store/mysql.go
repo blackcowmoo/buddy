@@ -401,7 +401,7 @@ func (s *MySQLStore) SessionDetail(ctx context.Context, userID, sessionID string
 // role = 'assistant' sorts after 'user' within a turn (false < true).
 func (s *MySQLStore) sessionTurns(ctx context.Context, userID, sessionID string) ([]Turn, error) {
 	rows, err := s.ro.QueryContext(ctx, `
-		SELECT turn, role, text, refined, source, correction, translation, meta FROM `+turnsTable+`
+		SELECT turn, role, text, refined, source, correction, translation, meta, created_at FROM `+turnsTable+`
 		WHERE user_id = ? AND session_id = ? ORDER BY turn ASC, role = 'assistant' ASC
 	`, userID, sessionID)
 	if err != nil {
@@ -414,7 +414,7 @@ func (s *MySQLStore) sessionTurns(ctx context.Context, userID, sessionID string)
 		var t Turn
 		var refined int
 		var correctionJSON, translation, metaJSON sql.NullString
-		if err := rows.Scan(&t.Turn, &t.Role, &t.Text, &refined, &t.Source, &correctionJSON, &translation, &metaJSON); err != nil {
+		if err := rows.Scan(&t.Turn, &t.Role, &t.Text, &refined, &t.Source, &correctionJSON, &translation, &metaJSON, &t.CreatedAt); err != nil {
 			return nil, fmt.Errorf("store: session detail: %w", err)
 		}
 		t.Refined = refined != 0

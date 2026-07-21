@@ -610,6 +610,57 @@ func TestMySQLSessionDetailOrdersUserBeforeAssistantWithinATurn(t *testing.T) {
 	}
 }
 
+func TestMySQLSessionDetailIncludesTurnCreatedAt(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	sessionID := "sess-created-at"
+	before := time.Now().Unix()
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "hi", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn() error = %v", err)
+	}
+	after := time.Now().Unix()
+
+	_, turns, err := st.SessionDetail(ctx, "alex", sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if len(turns) != 1 {
+		t.Fatalf("turns = %+v, want 1 turn", turns)
+	}
+	if turns[0].CreatedAt < before || turns[0].CreatedAt > after {
+		t.Fatalf("turns[0].CreatedAt = %d, want between %d and %d", turns[0].CreatedAt, before, after)
+	}
+}
+
+func TestMySQLSessionDetailCreatedAtSurvivesRefinedUpsert(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	sessionID := "sess-created-at-refined"
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "i are hungry", false, protocol.SourceVoice); err != nil {
+		t.Fatalf("SaveTurn(fast) error = %v", err)
+	}
+	_, before, err := st.SessionDetail(ctx, "alex", sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+
+	time.Sleep(1100 * time.Millisecond) // created_at has 1-second resolution (UNIX_TIMESTAMP())
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "I am hungry", true, protocol.SourceVoice); err != nil {
+		t.Fatalf("SaveTurn(refined) error = %v", err)
+	}
+	_, after, err := st.SessionDetail(ctx, "alex", sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+
+	if len(before) != 1 || len(after) != 1 {
+		t.Fatalf("before = %+v, after = %+v, want 1 turn each", before, after)
+	}
+	if after[0].CreatedAt != before[0].CreatedAt {
+		t.Fatalf("CreatedAt changed on refine upsert: before = %d, after = %d", before[0].CreatedAt, after[0].CreatedAt)
+	}
+}
+
 func TestMySQLListSessionsOrderedByRecency(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
