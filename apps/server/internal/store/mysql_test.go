@@ -314,6 +314,28 @@ func TestMySQLLastTurnReturnsHighestPersistedTurn(t *testing.T) {
 	}
 }
 
+// TestMySQLLastTurnScopedPerUserAndSession guards LastTurn's WHERE clause:
+// without both user_id and session_id in scope, one user's turn numbers
+// could leak into another's LastTurn result and desync their session's turn
+// counter on reconnect (see internal/transport, which seeds from this).
+func TestMySQLLastTurnScopedPerUserAndSession(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	if err := st.SaveTurn(ctx, "alex", "sess-a", 5, "user", "msg", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn() error = %v", err)
+	}
+	if err := st.SaveTurn(ctx, "sam", "sess-b", 9, "user", "msg", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn() error = %v", err)
+	}
+	last, err := st.LastTurn(ctx, "alex", "sess-a")
+	if err != nil {
+		t.Fatalf("LastTurn() error = %v", err)
+	}
+	if last != 5 {
+		t.Fatalf("LastTurn(alex/sess-a) = %d, want 5, unaffected by sam/sess-b", last)
+	}
+}
+
 func TestMySQLSaveTurnTitleSurvivesLaterTurns(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
