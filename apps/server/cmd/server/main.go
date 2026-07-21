@@ -227,25 +227,17 @@ func buildSTT(cfg config.Config) []stt.Recognizer {
 		return recs
 	}
 	return []stt.Recognizer{
-		buildLegacySTT(cfg.FastSTT, "fast", cfg),
-		buildLegacySTT(cfg.SlowSTT, "slow", cfg),
+		buildLegacySTT(cfg.FastSTT, "fast", cfg.WhisperFastModel, 150*time.Millisecond, cfg),
+		buildLegacySTT(cfg.SlowSTT, "slow", cfg.WhisperSlowModel, 600*time.Millisecond, cfg), // pretend the quality model is slower
 	}
 }
 
-func buildLegacySTT(kind, label string, cfg config.Config) stt.Recognizer {
+func buildLegacySTT(kind, label, whisperModel string, mockDelay time.Duration, cfg config.Config) stt.Recognizer {
 	switch kind {
 	case "whisper":
-		model := cfg.WhisperFastModel
-		if label == "slow" {
-			model = cfg.WhisperSlowModel
-		}
-		return stt.NewWhisper(label, cfg.WhisperBin, model)
+		return stt.NewWhisper(label, cfg.WhisperBin, whisperModel)
 	default:
-		delay := 150 * time.Millisecond
-		if label == "slow" {
-			delay = 600 * time.Millisecond // pretend the quality model is slower
-		}
-		return stt.NewMock(label, delay)
+		return stt.NewMock(label, mockDelay)
 	}
 }
 

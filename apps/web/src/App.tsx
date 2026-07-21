@@ -41,6 +41,19 @@ interface Msg {
 type TtsState = "idle" | "loading" | "ready" | "error";
 type View = "list" | "chat";
 
+// Everything the UI tracks per turn beyond the transcript text itself
+// (msgs), keyed by turn number the same way msgs is. A user turn and its
+// paired assistant reply share one turn number, hence the role-prefixed
+// translation fields instead of one generic pair.
+interface TurnMeta {
+  correction?: Correction;
+  correctionPending?: boolean;
+  userTranslation?: string;
+  userTranslationPending?: boolean;
+  assistantTranslation?: string;
+  assistantTranslationPending?: boolean;
+}
+
 // Closes an open dropdown/popover on an outside click or Escape, same
 // behavior any of them need — the panel's ref and its own close callback are
 // the only per-instance bits.
@@ -71,32 +84,34 @@ export function App() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [status, setStatus] = useState<Status>("connecting");
   const [msgs, setMsgs] = useState<Msg[]>([]);
-  const [corrections, setCorrections] = useState<Record<number, Correction>>({});
-  // Turns whose grammar check hasn't produced a result yet — set the moment
-  // one is expected (final_transcript for a live turn) and, for a hydrated
-  // history turn still missing its correction, on load too (see enterChat/
-  // pollMissingFeedback), the same "don't just silently drop the spinner on
-  // reopen" treatment pendingUserTranslations gets, since both are populated
-  // by the same background correct() call.
-  const [pendingCorrections, setPendingCorrections] = useState<Record<number, boolean>>({});
-  // Keyed separately (not one map keyed by turn) because a user turn and its
-  // paired assistant reply share the same turn number.
-  const [userTranslations, setUserTranslations] = useState<Record<number, string>>({});
-  const [assistantTranslations, setAssistantTranslations] = useState<Record<number, string>>({});
-  // Turns whose native-language translation hasn't arrived yet — set the
-  // moment a translation is expected (final_transcript for the user's own
-  // turn, assistant_done for the reply) and, for a hydrated history turn
-  // whose translation is still missing, on load too (see enterChat/
+  // Grammar/translation state per turn — pending flags are set the moment a
+  // result is expected (final_transcript/assistant_done for a live turn, or
+  // on hydration for a history turn still missing one, see enterChat/
   // pollMissingFeedback) so leaving and reopening a room doesn't just
   // silently drop the spinner. Rendering always prefers actual translation
-  // text over this flag (see the message list below), so there's no need to
-  // explicitly clear an entry once its translation lands.
-  const [pendingUserTranslations, setPendingUserTranslations] = useState<Record<number, boolean>>(
-    {},
-  );
-  const [pendingAssistantTranslations, setPendingAssistantTranslations] = useState<
-    Record<number, boolean>
-  >({});
+  // text over its pending flag (see the message list below), so a landed
+  // translation doesn't need to explicitly clear it; a landed correction
+  // does (see GrammarControl, which shows the pending spinner regardless of
+  // whether a correction is already present).
+  const [turns, setTurns] = useState<Record<number, TurnMeta>>({});
+
+  const patchTurn = useCallback((turn: number, patch: Partial<TurnMeta>) => {
+    setTurns((prev) => ({ ...prev, [turn]: { ...prev[turn], ...patch } }));
+  }, []);
+
+  // Merges a batch of per-turn patches (e.g. from polling several turns at
+  // once) into one state update instead of one setTurns call per turn.
+  const patchTurns = useCallback((patches: Record<number, Partial<TurnMeta>>) => {
+    setTurns((prev) => {
+      const next = { ...prev };
+      for (const [turnStr, patch] of Object.entries(patches)) {
+        const turn = Number(turnStr);
+        next[turn] = { ...next[turn], ...patch };
+      }
+      return next;
+    });
+  }, []);
+
   // True from the moment a reply is expected (a message was just sent, or a
   // brand-new room was just opened and the server is about to volunteer its
   // opening line) until the first token of that reply arrives — drives the
@@ -107,12 +122,7 @@ export function App() {
   // enterChat (about to load a room's own state, or none for a fresh one)
   // and backToList (leaving the room entirely).
   const resetTurnState = useCallback(() => {
-    setCorrections({});
-    setPendingCorrections({});
-    setUserTranslations({});
-    setAssistantTranslations({});
-    setPendingUserTranslations({});
-    setPendingAssistantTranslations({});
+    setTurns({});
   }, []);
 
   const [mic, setMic] = useState(false);
@@ -174,8 +184,7 @@ export function App() {
             timestamp: Math.floor(Date.now() / 1000),
           },
         ]);
-        setPendingCorrections((p) => ({ ...p, [e.turn]: true }));
-        setPendingUserTranslations((p) => ({ ...p, [e.turn]: true }));
+        patchTurn(e.turn, { correctionPending: true, userTranslationPending: true });
         break;
       case "refined_transcript":
         setMsgs((m) =>
@@ -193,47 +202,33 @@ export function App() {
       case "assistant_done":
         setAwaitingReply(false);
         setMsgs((m) => upsertAssistant(m, e.turn, () => e.text ?? ""));
-        setPendingAssistantTranslations((p) => ({ ...p, [e.turn]: true }));
+        patchTurn(e.turn, { assistantTranslationPending: true });
         if (e.text && speakerRef.current?.loaded) void speakerRef.current.speak(e.text);
         break;
       case "correction":
-        if (e.correction)
-          setCorrections((c) => ({ ...c, [e.turn]: e.correction as Correction }));
-        setPendingCorrections((p) => {
-          if (!(e.turn in p)) return p;
-          const next = { ...p };
-          delete next[e.turn];
-          return next;
-        });
         // correct() always emits this once its analyze() pass finishes, even
-        // when the sentence needed no teaching — same definitive "done"
-        // signal pendingCorrections clears on above, reused here since a
-        // clean sentence can still come back with no translation attached.
-        setPendingUserTranslations((p) => {
-          if (!(e.turn in p)) return p;
-          const next = { ...p };
-          delete next[e.turn];
-          return next;
+        // when the sentence needed no teaching — the definitive "done"
+        // signal both correctionPending and userTranslationPending clear on,
+        // since a clean sentence can still come back with no translation
+        // attached.
+        patchTurn(e.turn, {
+          ...(e.correction ? { correction: e.correction } : {}),
+          correctionPending: false,
+          userTranslationPending: false,
         });
         break;
       case "user_translation":
-        setUserTranslations((t) => ({ ...t, [e.turn]: e.text ?? "" }));
+        patchTurn(e.turn, { userTranslation: e.text ?? "" });
         break;
       case "assistant_translation":
-        setAssistantTranslations((t) => ({ ...t, [e.turn]: e.text ?? "" }));
-        setPendingAssistantTranslations((p) => {
-          if (!(e.turn in p)) return p;
-          const next = { ...p };
-          delete next[e.turn];
-          return next;
-        });
+        patchTurn(e.turn, { assistantTranslation: e.text ?? "", assistantTranslationPending: false });
         break;
       case "error":
         setAwaitingReply(false);
         console.error("server error:", e.text);
         break;
     }
-  }, []);
+  }, [patchTurn]);
 
   useEffect(() => {
     if (clientRef.current) return; // guard StrictMode double-invoke
@@ -301,35 +296,31 @@ export function App() {
       const detail = await fetchSessionDetail(sessionId);
       if (pollTokenRef.current !== token || !detail) return;
       let stillMissing = false;
-      const ut: Record<number, string> = {};
-      const at: Record<number, string> = {};
-      const corr: Record<number, Correction> = {};
+      const patches: Record<number, Partial<TurnMeta>> = {};
       for (const t of detail.turns) {
         if (t.translation) {
-          if (t.role === "user") ut[t.turn] = t.translation;
-          else at[t.turn] = t.translation;
+          patches[t.turn] = {
+            ...patches[t.turn],
+            ...(t.role === "user"
+              ? { userTranslation: t.translation }
+              : { assistantTranslation: t.translation }),
+          };
         } else if (t.text) {
           stillMissing = true;
         }
         if (t.role === "user" && t.text) {
-          if (t.correction) corr[t.turn] = t.correction;
-          else stillMissing = true;
+          if (t.correction) {
+            patches[t.turn] = { ...patches[t.turn], correction: t.correction, correctionPending: false };
+          } else {
+            stillMissing = true;
+          }
         }
       }
-      setUserTranslations((prev) => ({ ...prev, ...ut }));
-      setAssistantTranslations((prev) => ({ ...prev, ...at }));
-      if (Object.keys(corr).length > 0) {
-        setCorrections((prev) => ({ ...prev, ...corr }));
-        setPendingCorrections((prev) => {
-          const next = { ...prev };
-          for (const turn of Object.keys(corr)) delete next[Number(turn)];
-          return next;
-        });
-      }
+      if (Object.keys(patches).length > 0) patchTurns(patches);
       if (stillMissing && attempt < maxAttempts) setTimeout(tick, intervalMs);
     };
     setTimeout(tick, intervalMs);
-  }, []);
+  }, [patchTurns]);
 
   // Opens a room and enters chat view. sessionId omitted starts a brand-new
   // room (server mints the ID, delivered on the "ready" event); given an
@@ -378,15 +369,12 @@ export function App() {
         // uncorrected turn goes back to showing "no data" instead of
         // spinning forever.
         const recentlyActive = Date.now() / 1000 - detail.session.updatedAt < 120;
-        const corr: Record<number, Correction> = {};
-        const ut: Record<number, string> = {};
-        const at: Record<number, string> = {};
-        const pendingUt: Record<number, boolean> = {};
-        const pendingAt: Record<number, boolean> = {};
-        const pendingCorr: Record<number, boolean> = {};
+        const hydrated: Record<number, TurnMeta> = {};
+        let anyPending = false;
         for (const t of detail.turns) {
+          const meta: TurnMeta = {};
           if (t.correction) {
-            corr[t.turn] = t.correction;
+            meta.correction = t.correction;
           } else if (t.role === "user" && t.text && recentlyActive) {
             // Missing correction on a hydrated user turn: correct() runs
             // detached from the connection (see pipeline.HandleText) so it
@@ -394,33 +382,27 @@ export function App() {
             // room — show the hourglass as still in-progress instead of
             // dropping it, and poll until the result lands (see
             // pollMissingFeedback).
-            pendingCorr[t.turn] = true;
+            meta.correctionPending = true;
+            anyPending = true;
           }
           if (t.translation) {
-            if (t.role === "user") ut[t.turn] = t.translation;
-            else at[t.turn] = t.translation;
+            if (t.role === "user") meta.userTranslation = t.translation;
+            else meta.assistantTranslation = t.translation;
           } else if (t.text) {
             // Missing translation on a hydrated turn: the server queues
             // backfill for it the moment this fetch lands (see
             // httpserver.sessionDetailHandler), so show it as in-progress
             // rather than silently absent, and poll until it lands.
-            if (t.role === "user") pendingUt[t.turn] = true;
-            else pendingAt[t.turn] = true;
+            if (t.role === "user") meta.userTranslationPending = true;
+            else meta.assistantTranslationPending = true;
+            anyPending = true;
           }
+          // A user turn and its paired assistant reply share the same turn
+          // number, so merge rather than overwrite.
+          hydrated[t.turn] = { ...hydrated[t.turn], ...meta };
         }
-        setCorrections(corr);
-        setUserTranslations(ut);
-        setAssistantTranslations(at);
-        setPendingUserTranslations(pendingUt);
-        setPendingAssistantTranslations(pendingAt);
-        setPendingCorrections(pendingCorr);
-        if (
-          Object.keys(pendingUt).length > 0 ||
-          Object.keys(pendingAt).length > 0 ||
-          Object.keys(pendingCorr).length > 0
-        ) {
-          pollMissingFeedback(sessionId, token);
-        }
+        setTurns(hydrated);
+        if (anyPending) pollMissingFeedback(sessionId, token);
       } else {
         setMsgs([]);
         clientRef.current?.connect(undefined);
@@ -555,16 +537,16 @@ export function App() {
   );
 
   // All user turns with feedback worth reviewing, in transcript order — feeds
-  // FeedbackSummary. Covers both live turns (corrections populated via the WS
+  // FeedbackSummary. Covers both live turns (correction populated via the WS
   // "correction" event) and hydrated history (populated in enterChat), since
-  // both write into the same `corrections` map.
+  // both write into the same `turns` map.
   const feedbackTurns = useMemo(
     () =>
       msgs
-        .filter((m) => m.role === "user" && !!corrections[m.turn])
-        .map((m) => ({ turn: m.turn, text: m.text, correction: corrections[m.turn] }))
+        .filter((m) => m.role === "user" && !!turns[m.turn]?.correction)
+        .map((m) => ({ turn: m.turn, text: m.text, correction: turns[m.turn].correction as Correction }))
         .filter((t) => correctionHasIssues(t.correction)),
-    [msgs, corrections],
+    [msgs, turns],
   );
 
   const playMessage = useCallback(
@@ -764,10 +746,10 @@ export function App() {
           </p>
         )}
         {msgs.map((m, i) => {
-          const translation =
-            m.role === "user" ? userTranslations[m.turn] : assistantTranslations[m.turn];
+          const meta = turns[m.turn];
+          const translation = m.role === "user" ? meta?.userTranslation : meta?.assistantTranslation;
           const translationPending =
-            m.role === "user" ? pendingUserTranslations[m.turn] : pendingAssistantTranslations[m.turn];
+            m.role === "user" ? meta?.userTranslationPending : meta?.assistantTranslationPending;
           const prev = msgs[i - 1];
           const showDivider =
             m.timestamp != null && (!prev || prev.timestamp == null || !isSameDay(prev.timestamp, m.timestamp));
@@ -806,8 +788,8 @@ export function App() {
                     {m.role === "user" && (
                       <GrammarControl
                         index={i}
-                        pending={!!pendingCorrections[m.turn]}
-                        correction={corrections[m.turn]}
+                        pending={!!meta?.correctionPending}
+                        correction={meta?.correction}
                         open={openPanel?.index === i && openPanel.kind === "grammar"}
                         onToggle={(idx) =>
                           setOpenPanel(idx === null ? null : { index: idx, kind: "grammar" })
