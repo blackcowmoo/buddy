@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"buddy/server/internal/backfill"
@@ -226,16 +227,26 @@ func sessionDeleteHandler(ident identity.Identifier, st store.Store, audio trans
 			return
 		}
 		sessionID := r.PathValue("id")
+		var wg sync.WaitGroup
 		if audio != nil {
-			if err := audio.DeleteBySession(r.Context(), userID, sessionID); err != nil {
-				log.Printf("delete session: cascade audio backups %s/%s: %v", userID, sessionID, err)
-			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := audio.DeleteBySession(r.Context(), userID, sessionID); err != nil {
+					log.Printf("delete session: cascade audio backups %s/%s: %v", userID, sessionID, err)
+				}
+			}()
 		}
 		if recordings != nil {
-			if err := recordings.DeleteBySession(r.Context(), userID, sessionID); err != nil {
-				log.Printf("delete session: cascade recordings %s/%s: %v", userID, sessionID, err)
-			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := recordings.DeleteBySession(r.Context(), userID, sessionID); err != nil {
+					log.Printf("delete session: cascade recordings %s/%s: %v", userID, sessionID, err)
+				}
+			}()
 		}
+		wg.Wait()
 		if err := st.DeleteSession(r.Context(), userID, sessionID); err != nil {
 			serverError(w, "delete session", err)
 			return
