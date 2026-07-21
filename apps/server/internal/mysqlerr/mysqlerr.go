@@ -24,3 +24,13 @@ func Is(err error, number uint16) bool {
 	var mysqlErr *mysql.MySQLError
 	return errors.As(err, &mysqlErr) && mysqlErr.Number == number
 }
+
+// ApplyAdditive runs one additive migration statement (ADD COLUMN/ADD INDEX)
+// via run, treating alreadyApplied as success instead of an error — see the
+// package doc for why MySQL's lack of IF NOT EXISTS makes that necessary.
+func ApplyAdditive(run func() error, alreadyApplied uint16) error {
+	if err := run(); err != nil && !Is(err, alreadyApplied) {
+		return err
+	}
+	return nil
+}

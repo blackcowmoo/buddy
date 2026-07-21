@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
 	"github.com/testcontainers/testcontainers-go"
@@ -19,6 +17,7 @@ import (
 	tcmysql "github.com/testcontainers/testcontainers-go/modules/mysql"
 	"github.com/testcontainers/testcontainers-go/wait"
 
+	"buddy/server/internal/s3util"
 	"buddy/server/internal/store"
 )
 
@@ -121,17 +120,10 @@ func runContainerTests(m *testing.M) int {
 }
 
 func createTestBucket(ctx context.Context, endpoint, user, pass string) error {
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
-		awsconfig.WithRegion("us-east-1"),
-		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(user, pass, "")),
-	)
+	client, err := s3util.NewClient(endpoint, true, user, pass)
 	if err != nil {
 		return err
 	}
-	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
-		o.BaseEndpoint = aws.String(endpoint)
-		o.UsePathStyle = true
-	})
 	_, err = client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(testBucket)})
 	return err
 }

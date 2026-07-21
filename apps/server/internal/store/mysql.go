@@ -144,13 +144,19 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 	// table — the CREATE TABLE IF NOT EXISTS above only helps fresh ones.
 	// See internal/mysqlerr's doc for why ER_DUP_FIELDNAME is swallowed here
 	// as the "already applied" case.
-	if _, err := rw.Exec(`ALTER TABLE ` + turnsTable + ` ADD COLUMN translation TEXT NULL`); err != nil && !mysqlerr.Is(err, mysqlerr.DupFieldName) {
+	if err := mysqlerr.ApplyAdditive(func() error {
+		_, err := rw.Exec(`ALTER TABLE ` + turnsTable + ` ADD COLUMN translation TEXT NULL`)
+		return err
+	}, mysqlerr.DupFieldName); err != nil {
 		closeAll()
 		return nil, fmt.Errorf("store: schema: add translation column: %w", err)
 	}
 	// Additive, same reasoning as the translation column above: buddy_turns
 	// predates input-source tracking.
-	if _, err := rw.Exec(`ALTER TABLE ` + turnsTable + ` ADD COLUMN source VARCHAR(8) NOT NULL DEFAULT ''`); err != nil && !mysqlerr.Is(err, mysqlerr.DupFieldName) {
+	if err := mysqlerr.ApplyAdditive(func() error {
+		_, err := rw.Exec(`ALTER TABLE ` + turnsTable + ` ADD COLUMN source VARCHAR(8) NOT NULL DEFAULT ''`)
+		return err
+	}, mysqlerr.DupFieldName); err != nil {
 		closeAll()
 		return nil, fmt.Errorf("store: schema: add source column: %w", err)
 	}
@@ -158,7 +164,10 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 	// auto-title feature. Tracks whether a session's title has already been
 	// LLM-generated (see SaveGeneratedTitle) so a reconnect can never
 	// re-trigger and flap it.
-	if _, err := rw.Exec(`ALTER TABLE ` + sessionsTable + ` ADD COLUMN title_generated TINYINT(1) NOT NULL DEFAULT 0`); err != nil && !mysqlerr.Is(err, mysqlerr.DupFieldName) {
+	if err := mysqlerr.ApplyAdditive(func() error {
+		_, err := rw.Exec(`ALTER TABLE ` + sessionsTable + ` ADD COLUMN title_generated TINYINT(1) NOT NULL DEFAULT 0`)
+		return err
+	}, mysqlerr.DupFieldName); err != nil {
 		closeAll()
 		return nil, fmt.Errorf("store: schema: add title_generated column: %w", err)
 	}

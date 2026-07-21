@@ -16,13 +16,9 @@ func spaHandlerFS(fsys fs.FS) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		name := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
 		if name != "" && name != "." {
-			if f, err := fsys.Open(name); err == nil {
-				info, statErr := f.Stat()
-				f.Close()
-				if statErr == nil && !info.IsDir() {
-					fileServer.ServeHTTP(w, r) // real asset
-					return
-				}
+			if info, err := fs.Stat(fsys, name); err == nil && !info.IsDir() {
+				fileServer.ServeHTTP(w, r) // real asset
+				return
 			}
 		}
 		if index == nil {
