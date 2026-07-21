@@ -47,6 +47,15 @@ interface Msg {
 
 type TtsState = "idle" | "loading" | "ready" | "error";
 type View = "list" | "chat";
+type PanelKind = "rate" | "grammar";
+
+function isPanelOpen(
+  openPanel: { index: number; kind: PanelKind } | null,
+  index: number,
+  kind: PanelKind,
+): boolean {
+  return openPanel?.index === index && openPanel.kind === kind;
+}
 
 // Everything the UI tracks per turn beyond the transcript text itself
 // (msgs), keyed by turn number the same way msgs is. A user turn and its
@@ -144,9 +153,7 @@ export function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   // Which per-row popover (rate study panel or grammar feedback) is open, or
   // null — only one open at a time across the whole row.
-  const [openPanel, setOpenPanel] = useState<{ index: number; kind: "rate" | "grammar" } | null>(
-    null,
-  );
+  const [openPanel, setOpenPanel] = useState<{ index: number; kind: PanelKind } | null>(null);
   const [prInput, setPrInput] = useState("");
   const [prError, setPrError] = useState(false);
   const [email, setEmail] = useState<string | null>(null);
@@ -810,27 +817,23 @@ export function App() {
                         index={i}
                         pending={!!meta?.correctionPending}
                         correction={meta?.correction}
-                        open={openPanel?.index === i && openPanel.kind === "grammar"}
+                        open={isPanelOpen(openPanel, i, "grammar")}
                         onToggle={(idx) =>
                           setOpenPanel(idx === null ? null : { index: idx, kind: "grammar" })
                         }
-                        panelRef={
-                          openPanel?.index === i && openPanel.kind === "grammar" ? studyRef : undefined
-                        }
+                        panelRef={isPanelOpen(openPanel, i, "grammar") ? studyRef : undefined}
                       />
                     )}
                     <StudyControl
                       index={i}
                       text={m.text}
                       rates={playRates}
-                      open={openPanel?.index === i && openPanel.kind === "rate"}
+                      open={isPanelOpen(openPanel, i, "rate")}
                       onToggle={(idx) =>
                         setOpenPanel(idx === null ? null : { index: idx, kind: "rate" })
                       }
                       onPlay={playMessage}
-                      panelRef={
-                        openPanel?.index === i && openPanel.kind === "rate" ? studyRef : undefined
-                      }
+                      panelRef={isPanelOpen(openPanel, i, "rate") ? studyRef : undefined}
                     />
                   </div>
                 )}

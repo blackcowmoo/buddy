@@ -91,10 +91,16 @@ func NewS3(ctx context.Context, cfg S3Config, rw, ro *sql.DB) (*S3Store, error) 
 	// supported by every MySQL 8.0 point release this app has run against, so
 	// the idempotency comes from ignoring the specific "already there" errors
 	// instead of relying on that clause.
-	if _, err := rw.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN session_id VARCHAR(64) NOT NULL DEFAULT '' AFTER user_id`); err != nil && !mysqlerr.Is(err, mysqlerr.DupFieldName) {
+	if err := mysqlerr.ApplyAdditive(func() error {
+		_, err := rw.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN session_id VARCHAR(64) NOT NULL DEFAULT '' AFTER user_id`)
+		return err
+	}, mysqlerr.DupFieldName); err != nil {
 		return nil, fmt.Errorf("recording: migrate session_id: %w", err)
 	}
-	if _, err := rw.ExecContext(ctx, `ALTER TABLE `+table+` ADD INDEX idx_user_session (user_id, session_id)`); err != nil && !mysqlerr.Is(err, mysqlerr.DupKeyName) {
+	if err := mysqlerr.ApplyAdditive(func() error {
+		_, err := rw.ExecContext(ctx, `ALTER TABLE `+table+` ADD INDEX idx_user_session (user_id, session_id)`)
+		return err
+	}, mysqlerr.DupKeyName); err != nil {
 		return nil, fmt.Errorf("recording: migrate session_id index: %w", err)
 	}
 
