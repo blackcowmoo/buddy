@@ -37,6 +37,10 @@ func (f *fakeSessionStore) Save(ctx context.Context, userID, sessionID string, p
 	return errors.New("not used by these tests")
 }
 
+func (f *fakeSessionStore) MaxTurn(ctx context.Context, userID, sessionID string) (int, error) {
+	return 0, errors.New("not used by these tests")
+}
+
 func (f *fakeSessionStore) SaveTurn(ctx context.Context, userID, sessionID string, turn int, role, text string, refined bool, source string) error {
 	return errors.New("not used by these tests")
 }

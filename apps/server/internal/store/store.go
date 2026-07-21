@@ -76,6 +76,16 @@ type Store interface {
 	Load(ctx context.Context, userID, sessionID string) (Profile, error)
 	Save(ctx context.Context, userID, sessionID string, p Profile) error
 
+	// MaxTurn returns the highest turn number already persisted for this
+	// session (0 if it has none yet, including a brand-new session ID). The
+	// caller seeds a fresh session.Session's turn counter from this on every
+	// connect/reconnect (see internal/transport), since the counter otherwise
+	// restarts at 0 in memory — reusing turn numbers an idle room's earlier
+	// turns already own and clobbering them (buddy_turns' primary key is
+	// (user_id, session_id, turn, role), so a reused number overwrites the
+	// old row instead of adding a new one).
+	MaxTurn(ctx context.Context, userID, sessionID string) (int, error)
+
 	// SaveTurn upserts one message into a session's transcript, creating the
 	// session's row (and its title, derived from turn 1's text) on first
 	// write. source is protocol.SourceVoice/SourceText for a user turn, or ""
@@ -92,11 +102,10 @@ type Store interface {
 
 	// SaveGeneratedTitle sets a session's title to an LLM-generated one,
 	// exactly once — a no-op if this session's title was already
-	// auto-generated (see internal/transport, which triggers this once per
-	// WS connection's first turn; a reconnect resets its own turn counter,
-	// so this guard is what actually keeps the title from being
-	// regenerated and flapping on every reconnect). Also a no-op if the
-	// session row doesn't exist yet.
+	// auto-generated (see internal/transport, which triggers this off turn
+	// 1's assistant reply; this guard is the backstop that keeps a title from
+	// regenerating if that ever fires more than once for the same session).
+	// Also a no-op if the session row doesn't exist yet.
 	SaveGeneratedTitle(ctx context.Context, userID, sessionID, title string) error
 
 	// ListSessions returns userID's chat rooms, most recently active first.

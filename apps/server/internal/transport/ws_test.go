@@ -107,6 +107,25 @@ func (f *fakeStore) Load(ctx context.Context, userID, sessionID string) (store.P
 	return store.Profile{Summary: d.profile.Summary, Recent: append([]llm.Message(nil), d.profile.Recent...)}, nil
 }
 
+// MaxTurn mirrors MySQLStore.MaxTurn: the highest turn number among rows
+// already written to this session's transcript, 0 if none (including a
+// brand-new session ID that has no fakeSession yet).
+func (f *fakeStore) MaxTurn(ctx context.Context, userID, sessionID string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.sessions[fakeStoreKey(userID, sessionID)]
+	if d == nil {
+		return 0, nil
+	}
+	max := 0
+	for _, t := range d.turns {
+		if t.Turn > max {
+			max = t.Turn
+		}
+	}
+	return max, nil
+}
+
 func (f *fakeStore) Save(ctx context.Context, userID, sessionID string, p store.Profile) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -721,7 +740,12 @@ func TestWSMemoryPersistsAcrossReconnects(t *testing.T) {
 	cookie := "test-user-abc123"
 	var sessionID string
 
-	send := func(text string) {
+	// turn is 1 on the first (brand-new-room) send and 2 on the second: the
+	// session's turn counter is seeded from store.Store.MaxTurn on every
+	// connect (see ws.go's ServeHTTP), so resuming this same room on a fresh
+	// connection continues numbering from where the last one left off
+	// instead of restarting at 1 and clobbering that earlier turn's row.
+	send := func(text string, turn int) {
 		c, _ := dial(t, srv, cookie, sessionID)
 		ready := readEvent(t, c)
 		if ready.Type != protocol.EvReady {
@@ -729,7 +753,7 @@ func TestWSMemoryPersistsAcrossReconnects(t *testing.T) {
 		}
 		sessionID = ready.Session // resume this same room on the next send
 		sendText(t, c, text)
-		readUntilTurn(t, c, protocol.EvAssistantDone, 1) // turn 1: this send's own reply, not the opening greeting's turn 0
+		readUntilTurn(t, c, protocol.EvAssistantDone, turn)
 		c.Close(websocket.StatusNormalClosure, "")
 	}
 
@@ -750,7 +774,7 @@ func TestWSMemoryPersistsAcrossReconnects(t *testing.T) {
 		return store.Profile{}
 	}
 
-	send("My name is Alex.")
+	send("My name is Alex.", 1)
 	// The connection's save runs in ServeHTTP's deferred cleanup, which is
 	// async relative to the client-side close above — wait for it to land
 	// before opening the next connection with the same session, so it seeds
@@ -760,7 +784,7 @@ func TestWSMemoryPersistsAcrossReconnects(t *testing.T) {
 	// pipeline.StartConversation) lands in history as well, ahead of this turn.
 	waitForRecentCount(3)
 
-	send("What is my name?")
+	send("What is my name?", 2)
 	profile := waitForRecentCount(5)
 
 	if profile.Recent[1].Content != "My name is Alex." || profile.Recent[3].Content != "What is my name?" {
@@ -1089,13 +1113,14 @@ func TestWSFirstReplyGeneratesTitle(t *testing.T) {
 	}
 }
 
-// TestWSReconnectDoesNotRegenerateTitle guards the reason
-// store.SaveGeneratedTitle gates on title_generated rather than the trigger
-// relying on turn==1 being session-unique: session.Session's turn counter
-// restarts at 0 on every connection (see TestWSResumedSessionSkipsOpeningGreeting),
-// so resuming an already-titled room and sending a first message on the new
-// connection fires the same turn==1 trigger again. That second firing must
-// not overwrite the title already set by the first.
+// TestWSReconnectDoesNotRegenerateTitle guards store.SaveGeneratedTitle's
+// title_generated gate, which is still the thing actually preventing a
+// flapping title: session.Session's turn counter is now seeded from
+// store.Store.MaxTurn on every connect (see ws.go's ServeHTTP), so a message
+// sent on a resumed connection no longer fires the ev.Turn==1 title trigger
+// at all — but the DB-level guard is kept as a backstop (e.g. a race between
+// two concurrent connections before either has saved a turn) and this test
+// still exercises it end to end.
 func TestWSReconnectDoesNotRegenerateTitle(t *testing.T) {
 	st := newTestStore(t)
 	titleN := 0
@@ -1119,7 +1144,7 @@ func TestWSReconnectDoesNotRegenerateTitle(t *testing.T) {
 	c2, _ := dial(t, srv, cookie, ready1.Session)
 	readEvent(t, c2) // ready
 	sendText(t, c2, "second message, different connection")
-	readUntilTurn(t, c2, protocol.EvAssistantDone, 1) // turn resets to 1 again on the new connection
+	readUntilTurn(t, c2, protocol.EvAssistantDone, 2) // turn continues from 1, not reset
 	c2.Close(websocket.StatusNormalClosure, "")
 
 	time.Sleep(200 * time.Millisecond) // give a wrongly-firing regeneration time to land

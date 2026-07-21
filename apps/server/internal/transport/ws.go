@@ -117,8 +117,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("store: load %s/%s: %v", userID, sessionID, err)
 	}
+	// A resumed room's turn counter must pick up where the last connection
+	// left off, not restart at 0 — otherwise this connection's first message
+	// reuses turn 1 (etc.), silently overwriting that room's real turn 1 row
+	// (buddy_turns is keyed on (user_id, session_id, turn, role)) instead of
+	// adding a new one, and re-arms every "pending" UI flag the frontend keys
+	// by turn number for a message that already finished processing.
+	maxTurn, err := h.store.MaxTurn(ctx, userID, sessionID)
+	if err != nil {
+		log.Printf("store: max turn %s/%s: %v", userID, sessionID, err)
+	}
 	sess := session.New(pipeline.DefaultSystemPrompt)
-	sess.Seed(profile.Summary, profile.Recent)
+	sess.Seed(profile.Summary, profile.Recent, maxTurn)
 
 	save := func() {
 		summary, recent := sess.Export()
@@ -310,13 +320,12 @@ func saveTranslation(st store.Store, userID, sessionID string, turn int, role, t
 // connection's ctx) so a disconnect right after the first reply doesn't cut
 // it short — same reasoning as backupAudio below.
 //
-// ev.Turn == 1 happens once per WS *connection*, not once per session's
-// lifetime (session.Session's turn counter always restarts at 0 on
-// connect/reconnect — see session.New/Seed), so a learner reconnecting
-// before this lands, or resuming an old room under a fresh connection,
-// fires this again. That's fine: store.SaveGeneratedTitle only ever applies
-// the first successful write for a given session, so a repeat call is a
-// harmless no-op rather than a flapping title.
+// ev.Turn == 1 should only ever happen once per session's lifetime now that
+// sess is seeded from store.Store.MaxTurn on every connect (see ServeHTTP),
+// but store.SaveGeneratedTitle's write-once guard is kept as a backstop for
+// any remaining race (e.g. two connections opening concurrently before
+// either has saved a turn) — a repeat call is a harmless no-op rather than a
+// flapping title.
 func (h *Handler) generateTitle(userID, sessionID string, sess *session.Session, assistantText string) {
 	_, recent := sess.Export()
 	var userText string

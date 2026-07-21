@@ -363,6 +363,57 @@ func TestMySQLSaveTurnUserReplyReplacesGreetingTitle(t *testing.T) {
 	}
 }
 
+func TestMySQLMaxTurnZeroForUnknownSession(t *testing.T) {
+	st := requireStore(t)
+	max, err := st.MaxTurn(context.Background(), "alex", "sess-never-seen")
+	if err != nil {
+		t.Fatalf("MaxTurn() error = %v", err)
+	}
+	if max != 0 {
+		t.Fatalf("MaxTurn() = %d, want 0 for a session with no turns", max)
+	}
+}
+
+// TestMySQLMaxTurnReturnsHighestSavedTurn guards the reconnect fix in
+// internal/transport (ws.go seeds session.Session from this): a room whose
+// highest saved turn is N must report N so the next connection's counter
+// resumes at N+1 instead of restarting at 1 and overwriting turn 1's row.
+func TestMySQLMaxTurnReturnsHighestSavedTurn(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	sessionID := "sess-max-turn"
+	for _, turn := range []int{1, 2, 3} {
+		if err := st.SaveTurn(ctx, "alex", sessionID, turn, "user", "msg", false, protocol.SourceText); err != nil {
+			t.Fatalf("SaveTurn(%d) error = %v", turn, err)
+		}
+	}
+	max, err := st.MaxTurn(ctx, "alex", sessionID)
+	if err != nil {
+		t.Fatalf("MaxTurn() error = %v", err)
+	}
+	if max != 3 {
+		t.Fatalf("MaxTurn() = %d, want 3", max)
+	}
+}
+
+func TestMySQLMaxTurnScopedPerUserAndSession(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	if err := st.SaveTurn(ctx, "alex", "sess-a", 5, "user", "msg", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn() error = %v", err)
+	}
+	if err := st.SaveTurn(ctx, "sam", "sess-b", 9, "user", "msg", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn() error = %v", err)
+	}
+	max, err := st.MaxTurn(ctx, "alex", "sess-a")
+	if err != nil {
+		t.Fatalf("MaxTurn() error = %v", err)
+	}
+	if max != 5 {
+		t.Fatalf("MaxTurn(alex/sess-a) = %d, want 5, unaffected by sam/sess-b", max)
+	}
+}
+
 func TestMySQLSaveGeneratedTitleOverwritesPlaceholder(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()

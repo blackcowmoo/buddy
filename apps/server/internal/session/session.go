@@ -27,12 +27,17 @@ func New(systemPrompt string) *Session {
 }
 
 // Seed restores long-term memory (loaded from internal/store) into a fresh
-// session, e.g. right after a client connects.
-func (s *Session) Seed(summary string, recent []llm.Message) {
+// session, e.g. right after a client connects. startTurn is the highest turn
+// number this session already has persisted (0 for a brand-new session, see
+// store.Store.MaxTurn) so NextTurn continues from where a prior connection
+// left off instead of restarting at 1 and colliding with — and overwriting —
+// turns an earlier connection already saved.
+func (s *Session) Seed(summary string, recent []llm.Message, startTurn int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.summary = summary
 	s.history = append([]llm.Message(nil), recent...)
+	s.turn = startTurn
 }
 
 // Export returns the current summary and verbatim window for persistence.

@@ -231,6 +231,23 @@ func (s *MySQLStore) Load(ctx context.Context, userID, sessionID string) (Profil
 	return Profile{Summary: summary, Recent: recent}, nil
 }
 
+// MaxTurn returns the highest turn number saved in buddy_turns for this
+// session, or 0 if none have landed yet (a brand-new session ID, or a room
+// that only ever got the turn-0 greeting is impossible since that never
+// creates a session row — but MaxTurn only reads buddy_turns, not
+// buddy_sessions, so it still reports turn 0 correctly in that edge case).
+func (s *MySQLStore) MaxTurn(ctx context.Context, userID, sessionID string) (int, error) {
+	var max int
+	err := s.ro.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(turn), 0) FROM `+turnsTable+` WHERE user_id = ? AND session_id = ?`,
+		userID, sessionID,
+	).Scan(&max)
+	if err != nil {
+		return 0, fmt.Errorf("store: max turn: %w", err)
+	}
+	return max, nil
+}
+
 func (s *MySQLStore) Save(ctx context.Context, userID, sessionID string, p Profile) error {
 	recentJSON, err := json.Marshal(p.Recent)
 	if err != nil {
