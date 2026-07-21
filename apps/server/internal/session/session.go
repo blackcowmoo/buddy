@@ -27,12 +27,17 @@ func New(systemPrompt string) *Session {
 }
 
 // Seed restores long-term memory (loaded from internal/store) into a fresh
-// session, e.g. right after a client connects.
-func (s *Session) Seed(summary string, recent []llm.Message) {
+// session, e.g. right after a client connects. lastTurn is the highest turn
+// number already persisted for this session (0 for a brand-new one, see
+// store.Store.LastTurn) — without it, NextTurn would restart numbering at 1
+// on every reconnect and collide with, silently overwriting, turns already
+// saved under those same numbers.
+func (s *Session) Seed(summary string, recent []llm.Message, lastTurn int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.summary = summary
 	s.history = append([]llm.Message(nil), recent...)
+	s.turn = lastTurn
 }
 
 // Export returns the current summary and verbatim window for persistence.

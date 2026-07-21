@@ -117,8 +117,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("store: load %s/%s: %v", userID, sessionID, err)
 	}
+	// A reconnect to an existing session must not restart turn numbering at
+	// 0 — that would collide with, and silently overwrite, turns the earlier
+	// connection already saved (see store.MySQLStore.SaveTurn's ON DUPLICATE
+	// KEY UPDATE). LastTurn resumes numbering from the persisted transcript.
+	lastTurn, err := h.store.LastTurn(ctx, userID, sessionID)
+	if err != nil {
+		log.Printf("store: last turn %s/%s: %v", userID, sessionID, err)
+	}
 	sess := session.New(pipeline.DefaultSystemPrompt)
-	sess.Seed(profile.Summary, profile.Recent)
+	sess.Seed(profile.Summary, profile.Recent, lastTurn)
 
 	save := func() {
 		summary, recent := sess.Export()
@@ -310,12 +318,13 @@ func saveTranslation(st store.Store, userID, sessionID string, turn int, role, t
 // connection's ctx) so a disconnect right after the first reply doesn't cut
 // it short — same reasoning as backupAudio below.
 //
-// ev.Turn == 1 happens once per WS *connection*, not once per session's
-// lifetime (session.Session's turn counter always restarts at 0 on
-// connect/reconnect — see session.New/Seed), so a learner reconnecting
-// before this lands, or resuming an old room under a fresh connection,
-// fires this again. That's fine: store.SaveGeneratedTitle only ever applies
-// the first successful write for a given session, so a repeat call is a
+// ev.Turn == 1 normally happens once per session's lifetime — session.New's
+// turn counter is seeded from store.Store.LastTurn on every connect (see
+// session.Session.Seed), so a reconnect resumes numbering rather than
+// restarting at 0. It can still recur (e.g. a race between two connections
+// both seeing the same LastTurn before either has saved turn 1), so this
+// isn't relied on for correctness: store.SaveGeneratedTitle only ever applies
+// the first successful write for a given session, making a repeat call a
 // harmless no-op rather than a flapping title.
 func (h *Handler) generateTitle(userID, sessionID string, sess *session.Session, assistantText string) {
 	_, recent := sess.Export()

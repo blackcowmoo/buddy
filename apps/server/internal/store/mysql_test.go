@@ -275,6 +275,45 @@ func TestMySQLSaveTurnCreatesSessionWithTitleFromFirstMessage(t *testing.T) {
 	}
 }
 
+// TestMySQLLastTurnReturnsZeroForUnknownSession and
+// TestMySQLLastTurnReturnsHighestPersistedTurn guard the fix for reopening a
+// chat room after a while wiping out earlier messages: session.Session.Seed
+// uses LastTurn to resume turn numbering instead of restarting at 0, which is
+// what let a reconnect's own turn 1 silently overwrite the original turn 1
+// via SaveTurn's ON DUPLICATE KEY UPDATE.
+func TestMySQLLastTurnReturnsZeroForUnknownSession(t *testing.T) {
+	st := requireStore(t)
+	last, err := st.LastTurn(context.Background(), "alex", "no-such-session")
+	if err != nil {
+		t.Fatalf("LastTurn() error = %v", err)
+	}
+	if last != 0 {
+		t.Fatalf("LastTurn() = %d, want 0 for an unknown session", last)
+	}
+}
+
+func TestMySQLLastTurnReturnsHighestPersistedTurn(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	sessionID := "sess-last-turn"
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "first", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(1) error = %v", err)
+	}
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "assistant", "reply", false, ""); err != nil {
+		t.Fatalf("SaveTurn(1, assistant) error = %v", err)
+	}
+	if err := st.SaveTurn(ctx, "alex", sessionID, 2, "user", "second", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(2) error = %v", err)
+	}
+	last, err := st.LastTurn(ctx, "alex", sessionID)
+	if err != nil {
+		t.Fatalf("LastTurn() error = %v", err)
+	}
+	if last != 2 {
+		t.Fatalf("LastTurn() = %d, want 2", last)
+	}
+}
+
 func TestMySQLSaveTurnTitleSurvivesLaterTurns(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()

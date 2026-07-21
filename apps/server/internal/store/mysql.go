@@ -297,6 +297,22 @@ func (s *MySQLStore) SaveTurn(ctx context.Context, userID, sessionID string, tur
 	return nil
 }
 
+// LastTurn reads from s.rw (the primary), not s.ro: this value directly
+// guards against corrupting the transcript in SaveTurn's caller (see
+// internal/session.Session.Seed), so a stale, too-low read from a lagging
+// replica would reopen the exact bug it exists to prevent — unlike Load/Save,
+// which already tolerate replica lag by design (see MySQLConfig's comment).
+func (s *MySQLStore) LastTurn(ctx context.Context, userID, sessionID string) (int, error) {
+	var last int
+	err := s.rw.QueryRowContext(ctx, `
+		SELECT COALESCE(MAX(turn), 0) FROM `+turnsTable+` WHERE user_id = ? AND session_id = ?
+	`, userID, sessionID).Scan(&last)
+	if err != nil {
+		return 0, fmt.Errorf("store: last turn: %w", err)
+	}
+	return last, nil
+}
+
 func (s *MySQLStore) SaveCorrection(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction) error {
 	corrJSON, err := json.Marshal(c)
 	if err != nil {
