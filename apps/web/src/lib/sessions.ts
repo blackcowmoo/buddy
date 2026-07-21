@@ -18,6 +18,10 @@ export interface TurnRecord {
   source?: InputSource;
   correction?: Correction;
   translation?: string;
+  // Unix seconds this turn was first saved. Optional only so older test
+  // fixtures / hand-built records don't need updating — real API responses
+  // always set it (see store.Turn.CreatedAt).
+  createdAt?: number;
 }
 
 export interface SessionDetail {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BuddyClient, type Status } from "./lib/ws";
 import type { Correction, InputSource, ServerEvent } from "./lib/protocol";
 import { PCMRecorder } from "./audio/recorder";
@@ -30,6 +30,12 @@ interface Msg {
   refined?: boolean;
   // How the learner produced this turn — absent for assistant turns.
   source?: InputSource;
+  // Unix seconds this turn first appeared — captured client-side the moment
+  // a live event creates the row (final_transcript / the first
+  // assistant_delta), or hydrated from store.Turn.CreatedAt on reload.
+  // Optional so a turn hydrated from an older record (no createdAt in that
+  // fixture/row) just skips its divider/time instead of showing junk.
+  timestamp?: number;
 }
 
 type TtsState = "idle" | "loading" | "ready" | "error";
@@ -160,7 +166,13 @@ export function App() {
       case "final_transcript":
         setMsgs((m) => [
           ...m,
-          { turn: e.turn, role: "user", text: e.text ?? "", source: e.source },
+          {
+            turn: e.turn,
+            role: "user",
+            text: e.text ?? "",
+            source: e.source,
+            timestamp: Math.floor(Date.now() / 1000),
+          },
         ]);
         setPendingCorrections((p) => ({ ...p, [e.turn]: true }));
         setPendingUserTranslations((p) => ({ ...p, [e.turn]: true }));
@@ -355,6 +367,7 @@ export function App() {
             text: t.text,
             refined: t.refined,
             source: t.source,
+            timestamp: t.createdAt,
           })),
         );
         // Whether this room saw activity recently enough that a user turn
@@ -755,59 +768,72 @@ export function App() {
             m.role === "user" ? userTranslations[m.turn] : assistantTranslations[m.turn];
           const translationPending =
             m.role === "user" ? pendingUserTranslations[m.turn] : pendingAssistantTranslations[m.turn];
+          const prev = msgs[i - 1];
+          const showDivider =
+            m.timestamp != null && (!prev || prev.timestamp == null || !isSameDay(prev.timestamp, m.timestamp));
           return (
-            <div key={i} className={`row ${m.role}`}>
-              <div className="bubble">{m.text || <span className="cursor">▋</span>}</div>
-              {translation ? (
-                <div className="translation">{translation}</div>
-              ) : (
-                translationPending && (
-                  <div className="translation translation-pending" role="status" aria-label="번역 중">
-                    <span className="spinning">⏳</span>
-                  </div>
-                )
-              )}
-              {m.text && (
-                <div className="msg-tools">
-                  {m.role === "user" && m.source && (
-                    <span
-                      className="source-icon"
-                      title={m.source === "voice" ? "음성으로 입력함" : "채팅으로 입력함"}
-                    >
-                      {m.source === "voice" ? "🎙" : "⌨️"}
-                    </span>
-                  )}
-                  {m.role === "user" && m.refined && <span className="tag">refined</span>}
-                  {m.role === "user" && (
-                    <GrammarControl
-                      index={i}
-                      pending={!!pendingCorrections[m.turn]}
-                      correction={corrections[m.turn]}
-                      open={openPanel?.index === i && openPanel.kind === "grammar"}
-                      onToggle={(idx) =>
-                        setOpenPanel(idx === null ? null : { index: idx, kind: "grammar" })
-                      }
-                      panelRef={
-                        openPanel?.index === i && openPanel.kind === "grammar" ? studyRef : undefined
-                      }
-                    />
-                  )}
-                  <StudyControl
-                    index={i}
-                    text={m.text}
-                    rates={playRates}
-                    open={openPanel?.index === i && openPanel.kind === "rate"}
-                    onToggle={(idx) =>
-                      setOpenPanel(idx === null ? null : { index: idx, kind: "rate" })
-                    }
-                    onPlay={playMessage}
-                    panelRef={
-                      openPanel?.index === i && openPanel.kind === "rate" ? studyRef : undefined
-                    }
-                  />
+            <Fragment key={i}>
+              {showDivider && (
+                <div className="date-divider">
+                  <span>{formatDateDivider(m.timestamp as number)}</span>
                 </div>
               )}
-            </div>
+              <div className={`row ${m.role}`}>
+                <div className="bubble">{m.text || <span className="cursor">▋</span>}</div>
+                {m.timestamp != null && (
+                  <span className="msg-time">{formatMessageTime(m.timestamp)}</span>
+                )}
+                {translation ? (
+                  <div className="translation">{translation}</div>
+                ) : (
+                  translationPending && (
+                    <div className="translation translation-pending" role="status" aria-label="번역 중">
+                      <span className="spinning">⏳</span>
+                    </div>
+                  )
+                )}
+                {m.text && (
+                  <div className="msg-tools">
+                    {m.role === "user" && m.source && (
+                      <span
+                        className="source-icon"
+                        title={m.source === "voice" ? "음성으로 입력함" : "채팅으로 입력함"}
+                      >
+                        {m.source === "voice" ? "🎙" : "⌨️"}
+                      </span>
+                    )}
+                    {m.role === "user" && m.refined && <span className="tag">refined</span>}
+                    {m.role === "user" && (
+                      <GrammarControl
+                        index={i}
+                        pending={!!pendingCorrections[m.turn]}
+                        correction={corrections[m.turn]}
+                        open={openPanel?.index === i && openPanel.kind === "grammar"}
+                        onToggle={(idx) =>
+                          setOpenPanel(idx === null ? null : { index: idx, kind: "grammar" })
+                        }
+                        panelRef={
+                          openPanel?.index === i && openPanel.kind === "grammar" ? studyRef : undefined
+                        }
+                      />
+                    )}
+                    <StudyControl
+                      index={i}
+                      text={m.text}
+                      rates={playRates}
+                      open={openPanel?.index === i && openPanel.kind === "rate"}
+                      onToggle={(idx) =>
+                        setOpenPanel(idx === null ? null : { index: idx, kind: "rate" })
+                      }
+                      onPlay={playMessage}
+                      panelRef={
+                        openPanel?.index === i && openPanel.kind === "rate" ? studyRef : undefined
+                      }
+                    />
+                  </div>
+                )}
+              </div>
+            </Fragment>
           );
         })}
         {awaitingReply && (
@@ -861,6 +887,48 @@ function formatRelativeTime(unixSeconds: number): string {
   return new Date(unixSeconds * 1000).toLocaleDateString();
 }
 
+const WEEKDAYS_KO = ["일", "월", "화", "수", "목", "금", "토"];
+
+// Local calendar day the two timestamps fall on — not a 24h-window diff, so
+// 11:59pm and 12:01am on consecutive days count as different days even
+// though they're 2 minutes apart.
+function isSameDay(aUnixSeconds: number, bUnixSeconds: number): boolean {
+  const a = new Date(aUnixSeconds * 1000);
+  const b = new Date(bUnixSeconds * 1000);
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
+// Divider label shown between messages sent on different days: "오늘"/"어제"
+// for the last two days, "7월 20일 (월)" within the current year, and a full
+// "2024. 05. 20. (화)" once the year rolls over — each step drops precision
+// that's no longer useful (nobody needs the year for something said today).
+function formatDateDivider(unixSeconds: number): string {
+  const d = new Date(unixSeconds * 1000);
+  const now = new Date();
+  const startOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diffDays = Math.round((startOfDay(now) - startOfDay(d)) / 86_400_000);
+  if (diffDays === 0) return "오늘";
+  if (diffDays === 1) return "어제";
+  const weekday = WEEKDAYS_KO[d.getDay()];
+  if (d.getFullYear() === now.getFullYear()) return `${d.getMonth() + 1}월 ${d.getDate()}일 (${weekday})`;
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}. ${mm}. ${dd}. (${weekday})`;
+}
+
+// Per-message clock time, Korean AM/PM convention ("오전/오후 h:mm").
+function formatMessageTime(unixSeconds: number): string {
+  const d = new Date(unixSeconds * 1000);
+  const period = d.getHours() < 12 ? "오전" : "오후";
+  const h12 = d.getHours() % 12 || 12;
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${period} ${h12}:${mm}`;
+}
+
 function upsertAssistant(m: Msg[], turn: number, patch: (prev: string) => string): Msg[] {
   const i = m.findIndex((x) => x.turn === turn && x.role === "assistant");
   if (i >= 0) {
@@ -868,7 +936,10 @@ function upsertAssistant(m: Msg[], turn: number, patch: (prev: string) => string
     copy[i] = { ...copy[i], text: patch(copy[i].text) };
     return copy;
   }
-  return [...m, { turn, role: "assistant", text: patch("") }];
+  return [
+    ...m,
+    { turn, role: "assistant", text: patch(""), timestamp: Math.floor(Date.now() / 1000) },
+  ];
 }
 
 // Whether a Correction actually flags something worth showing, vs. the
