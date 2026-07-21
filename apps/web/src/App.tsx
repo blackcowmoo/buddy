@@ -1263,6 +1263,7 @@ function CorrectionCard({ c }: { c: Correction }) {
           <span className={`badge ${iss.type}`}>{issueLabel(iss.type)}</span>
           <span className="span">{iss.span}</span> → <b>{iss.suggestion}</b>
           <div className="why">{iss.explanation}</div>
+          <div className="why-translation">{iss.explanationTranslation}</div>
         </div>
       ))}
     </div>

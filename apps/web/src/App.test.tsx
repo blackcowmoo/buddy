@@ -531,7 +531,8 @@ describe("correction cards", () => {
               type: "context",
               span: "I are",
               suggestion: "I am",
-              explanation: "앞 문맥과 맞지 않아요",
+              explanation: "Doesn't match the earlier context.",
+              explanationTranslation: "앞 문맥과 맞지 않아요",
             },
           ],
         },
@@ -539,6 +540,7 @@ describe("correction cards", () => {
     );
     await openGrammarPopover(user);
     expect(await screen.findByText("문맥")).toBeInTheDocument();
+    expect(screen.getByText("Doesn't match the earlier context.")).toBeInTheDocument();
     expect(screen.getByText("앞 문맥과 맞지 않아요")).toBeInTheDocument();
   });
 });
@@ -691,7 +693,13 @@ describe("feedback summary", () => {
           original: "I are fine.",
           corrected: "I am fine.",
           issues: [
-            { type: "grammar", span: "I are", suggestion: "I am", explanation: "주어-동사 불일치" },
+            {
+              type: "grammar",
+              span: "I are",
+              suggestion: "I am",
+              explanation: "Subject-verb disagreement.",
+              explanationTranslation: "주어-동사 불일치",
+            },
           ],
         },
       }),
@@ -717,7 +725,8 @@ describe("feedback summary", () => {
               type: "grammar",
               span: "go",
               suggestion: "goes",
-              explanation: "3인칭 단수 현재형",
+              explanation: "Third-person singular present tense.",
+              explanationTranslation: "3인칭 단수 현재형",
             },
           ],
         },
@@ -726,7 +735,9 @@ describe("feedback summary", () => {
 
     await openFeedbackPanel(user);
     expect(await screen.findByText("지금까지 2개 메시지에 피드백이 있어요")).toBeInTheDocument();
+    expect(screen.getByText("Subject-verb disagreement.")).toBeInTheDocument();
     expect(screen.getByText("주어-동사 불일치")).toBeInTheDocument();
+    expect(screen.getByText("Third-person singular present tense.")).toBeInTheDocument();
     expect(screen.getByText("3인칭 단수 현재형")).toBeInTheDocument();
     expect(screen.queryByText("I am fine.", { selector: ".feedback-original" })).not.toBeInTheDocument();
   });
@@ -751,7 +762,8 @@ describe("feedback summary", () => {
                 type: "grammar",
                 span: "I are",
                 suggestion: "I am",
-                explanation: "주어-동사 불일치",
+                explanation: "Subject-verb disagreement.",
+                explanationTranslation: "주어-동사 불일치",
               },
             ],
           },
@@ -765,6 +777,7 @@ describe("feedback summary", () => {
 
     await openFeedbackPanel(user);
     expect(await screen.findByText("지금까지 1개 메시지에 피드백이 있어요")).toBeInTheDocument();
+    expect(screen.getByText("Subject-verb disagreement.")).toBeInTheDocument();
     expect(screen.getByText("주어-동사 불일치")).toBeInTheDocument();
   });
 });

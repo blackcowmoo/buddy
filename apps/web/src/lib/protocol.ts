@@ -15,7 +15,8 @@ export interface Issue {
   type: string; // "grammar" | "vocabulary" | "phrasing" | "context"
   span: string;
   suggestion: string;
-  explanation: string;
+  explanation: string; // why it's wrong, in English
+  explanationTranslation: string; // native-language translation of explanation
 }
 
 export interface Correction {

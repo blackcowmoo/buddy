@@ -764,9 +764,11 @@ func renderCorrectionInput(contextMsg, text string) string {
 }
 
 // correctionSystemPrompt builds the grammar-coach prompt. The corrected
-// sentence, span, and suggestion stay in English (the language being learned);
-// only the explanation and translation are written in the learner's native
-// language so the feedback is easy to understand.
+// sentence, span, suggestion, and explanation stay in English (the language
+// being learned); "translation" and "explanationTranslation" are the only
+// fields written in the learner's native language, so the reasoning behind
+// each fix is taught in English first and then made easy to understand via
+// its translation, rather than being authored directly in the native language.
 func correctionSystemPrompt(lang string) string {
 	native := languageName(lang)
 	return fmt.Sprintf(`You are an English writing coach for a %[1]s-speaking learner.
@@ -778,11 +780,12 @@ turns, actually answering what was asked) — never correct the context itself.
 Return STRICT JSON only, no prose, in exactly this shape:
 {"corrected":"<the sentence rewritten in correct, natural English>",
  "translation":"<natural, colloquial %[1]s translation of the ORIGINAL sentence under correction, so the learner can check it against what they meant to say>",
- "issues":[{"type":"grammar|vocabulary|phrasing|context","span":"<original English text>","suggestion":"<the English fix>","explanation":"<why it is wrong, written in %[1]s, short and kind>"}]}
+ "issues":[{"type":"grammar|vocabulary|phrasing|context","span":"<original English text>","suggestion":"<the English fix>","explanation":"<why it is wrong, written in English, short and kind>","explanationTranslation":"<natural %[1]s translation of explanation, so the reasoning is easy to understand>"}]}
 Rules:
-- "corrected", "span", and "suggestion" MUST stay in English.
-- "translation" and "explanation" MUST be written in %[1]s.
+- "corrected", "span", "suggestion", and "explanation" MUST stay in English.
+- "translation" and "explanationTranslation" MUST be written in %[1]s.
 - "translation" MUST translate the ORIGINAL sentence, not the corrected one.
+- "explanationTranslation" MUST be a translation of "explanation", not a new or different explanation.
 - Use "context" as the issue type only when the sentence is fine in isolation but doesn't fit the conversation (wrong pronoun/tense given earlier turns, doesn't answer what was actually asked, etc.).
 - If the sentence is already correct, return the same text and an empty issues array — still fill in "translation".`, native)
 }
