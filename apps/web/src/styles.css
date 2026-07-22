@@ -64,6 +64,24 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
   background: var(--bg);
 }
 
+/* Base size for every round icon-only button (topbar actions, per-message
+   grammar/study buttons, list-row delete buttons, …). Declared here, ahead
+   of every class that overrides its width/height/font-size (.grammar-btn,
+   .study-btn, .feedback-btn, .session-delete, .recording-delete, …), so
+   those single-class overrides — tied with this one on specificity — win by
+   coming later in the file instead of silently losing to this rule. */
+.icon-btn {
+  width: 34px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  font-size: 16px;
+  border-radius: 999px;
+  transition: background-color 0.15s ease;
+}
+
 .topbar {
   display: flex;
   align-items: center;
@@ -75,7 +93,17 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 .brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .topbar h1 { font-size: 17px; margin: 0; font-weight: 700; }
 
-.menu { position: relative; flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
+.menu {
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px;
+}
 .menu-panel {
   position: absolute;
   top: calc(100% + 8px);
@@ -159,7 +187,14 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
    buttons — see App.tsx GrammarControl/StudyControl. Kept out of the bubble
    itself (message text only) so they read as metadata, not stray content
    tacked onto what the learner typed. */
-.msg-tools { display: flex; align-items: center; gap: 6px; }
+.msg-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: var(--panel-2);
+}
 
 /* Collapses per-rate playback into one small button + popover so a message
    row isn't dominated by a wall of rate buttons — see App.tsx StudyControl.
@@ -167,8 +202,8 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
    regardless of font-size, so at a matching 32px it visually dwarfed the
    plain-glyph grammar button next to it. */
 .study-control, .grammar-control { position: relative; display: inline-flex; }
-.grammar-btn { width: 32px; height: 32px; min-height: 32px; font-size: 14px; }
-.study-btn { width: 26px; height: 26px; min-height: 26px; font-size: 12px; }
+.grammar-btn { width: 28px; height: 28px; min-height: 28px; font-size: 13px; }
+.study-btn { width: 22px; height: 22px; min-height: 22px; font-size: 11px; }
 .grammar-btn:disabled { opacity: 0.7; }
 .study-panel {
   position: absolute;
@@ -188,7 +223,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 /* Session-wide feedback list, opened from the chat header — see App.tsx
    FeedbackSummary. Wider and scrollable, unlike the per-row study panels. */
 .feedback-summary { position: relative; display: inline-flex; }
-.feedback-btn { width: 32px; height: 32px; min-height: 32px; font-size: 14px; }
+.feedback-btn { width: 28px; height: 28px; min-height: 28px; font-size: 13px; }
 .feedback-panel {
   right: 0;
   left: auto;
@@ -268,16 +303,6 @@ button {
 button.ghost { background: var(--panel-2); color: var(--text); }
 button:active { filter: brightness(0.92); }
 
-.icon-btn {
-  width: 40px;
-  height: 40px;
-  min-height: 40px;
-  padding: 0;
-  display: grid;
-  place-items: center;
-  font-size: 18px;
-  border-radius: 999px;
-}
 /* The back-to-chat link on the recordings page is an <a>, not a <button> —
    the base button/.ghost rules above only target the button element, so
    repeat the bits an anchor needs to look/act the same. */
@@ -288,6 +313,16 @@ a.icon-btn.ghost {
   text-decoration: none;
   touch-action: manipulation;
 }
+
+/* Inside a grouped toolbar pill (.menu, .msg-tools) the container itself
+   carries the --panel-2 fill, so individual buttons sit flat and only show
+   color on hover — otherwise each button's own fill would double up with
+   the pill behind it. Declared before the :hover rule below so, at equal
+   specificity, the hover state still wins on hover. */
+.menu .icon-btn, .msg-tools .icon-btn {
+  background: transparent;
+}
+.icon-btn:hover { background: var(--border-2); }
 
 .pill {
   font-size: 12px;
@@ -413,8 +448,6 @@ a.icon-btn.ghost {
   font-size: 11px;
   color: var(--muted);
   padding: 1px 6px;
-  border: 1px solid var(--border-3);
-  border-radius: 6px;
 }
 .source-icon {
   font-size: 13px;
