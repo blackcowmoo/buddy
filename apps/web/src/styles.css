@@ -64,6 +64,24 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
   background: var(--bg);
 }
 
+/* Base size for every round icon-only button (topbar actions, per-message
+   grammar/study buttons, list-row delete buttons, …). Declared here, ahead
+   of every class that overrides its width/height/font-size (.grammar-btn,
+   .study-btn, .feedback-btn, .session-delete, .recording-delete, …), so
+   those single-class overrides — tied with this one on specificity — win by
+   coming later in the file instead of silently losing to this rule. */
+.icon-btn {
+  width: 34px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  font-size: 16px;
+  border-radius: 999px;
+  transition: background-color 0.15s ease;
+}
+
 .topbar {
   display: flex;
   align-items: center;
@@ -184,8 +202,8 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
    regardless of font-size, so at a matching 32px it visually dwarfed the
    plain-glyph grammar button next to it. */
 .study-control, .grammar-control { position: relative; display: inline-flex; }
-.grammar-btn { width: 32px; height: 32px; min-height: 32px; font-size: 14px; }
-.study-btn { width: 26px; height: 26px; min-height: 26px; font-size: 12px; }
+.grammar-btn { width: 28px; height: 28px; min-height: 28px; font-size: 13px; }
+.study-btn { width: 22px; height: 22px; min-height: 22px; font-size: 11px; }
 .grammar-btn:disabled { opacity: 0.7; }
 .study-panel {
   position: absolute;
@@ -205,7 +223,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 /* Session-wide feedback list, opened from the chat header — see App.tsx
    FeedbackSummary. Wider and scrollable, unlike the per-row study panels. */
 .feedback-summary { position: relative; display: inline-flex; }
-.feedback-btn { width: 32px; height: 32px; min-height: 32px; font-size: 14px; }
+.feedback-btn { width: 28px; height: 28px; min-height: 28px; font-size: 13px; }
 .feedback-panel {
   right: 0;
   left: auto;
@@ -285,17 +303,6 @@ button {
 button.ghost { background: var(--panel-2); color: var(--text); }
 button:active { filter: brightness(0.92); }
 
-.icon-btn {
-  width: 40px;
-  height: 40px;
-  min-height: 40px;
-  padding: 0;
-  display: grid;
-  place-items: center;
-  font-size: 18px;
-  border-radius: 999px;
-  transition: background-color 0.15s ease;
-}
 /* The back-to-chat link on the recordings page is an <a>, not a <button> —
    the base button/.ghost rules above only target the button element, so
    repeat the bits an anchor needs to look/act the same. */
