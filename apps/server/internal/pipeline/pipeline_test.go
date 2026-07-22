@@ -1268,6 +1268,13 @@ func TestCorrectionSystemPromptNamesTargetLanguage(t *testing.T) {
 	}
 }
 
+func TestCorrectionSystemPromptFlagsUnnaturalPhrasingNotJustGrammar(t *testing.T) {
+	p := correctionSystemPrompt("ko")
+	if !strings.Contains(p, "natural, idiomatic English, not merely grammatically parseable") {
+		t.Fatalf("prompt should require flagging unnatural-but-grammatical phrasing, got: %s", p)
+	}
+}
+
 func TestTranslationSystemPromptNamesTargetLanguage(t *testing.T) {
 	p := translationSystemPrompt("ko")
 	if !strings.Contains(p, "Korean") {
