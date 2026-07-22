@@ -75,7 +75,17 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 .brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .topbar h1 { font-size: 17px; margin: 0; font-weight: 700; }
 
-.menu { position: relative; flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
+.menu {
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px;
+}
 .menu-panel {
   position: absolute;
   top: calc(100% + 8px);
@@ -159,7 +169,14 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
    buttons — see App.tsx GrammarControl/StudyControl. Kept out of the bubble
    itself (message text only) so they read as metadata, not stray content
    tacked onto what the learner typed. */
-.msg-tools { display: flex; align-items: center; gap: 6px; }
+.msg-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: var(--panel-2);
+}
 
 /* Collapses per-rate playback into one small button + popover so a message
    row isn't dominated by a wall of rate buttons — see App.tsx StudyControl.
@@ -277,6 +294,7 @@ button:active { filter: brightness(0.92); }
   place-items: center;
   font-size: 18px;
   border-radius: 999px;
+  transition: background-color 0.15s ease;
 }
 /* The back-to-chat link on the recordings page is an <a>, not a <button> —
    the base button/.ghost rules above only target the button element, so
@@ -288,6 +306,16 @@ a.icon-btn.ghost {
   text-decoration: none;
   touch-action: manipulation;
 }
+
+/* Inside a grouped toolbar pill (.menu, .msg-tools) the container itself
+   carries the --panel-2 fill, so individual buttons sit flat and only show
+   color on hover — otherwise each button's own fill would double up with
+   the pill behind it. Declared before the :hover rule below so, at equal
+   specificity, the hover state still wins on hover. */
+.menu .icon-btn, .msg-tools .icon-btn {
+  background: transparent;
+}
+.icon-btn:hover { background: var(--border-2); }
 
 .pill {
   font-size: 12px;
@@ -413,8 +441,6 @@ a.icon-btn.ghost {
   font-size: 11px;
   color: var(--muted);
   padding: 1px 6px;
-  border: 1px solid var(--border-3);
-  border-radius: 6px;
 }
 .source-icon {
   font-size: 13px;
