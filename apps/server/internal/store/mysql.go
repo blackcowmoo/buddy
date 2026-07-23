@@ -25,6 +25,7 @@ import (
 const (
 	sessionsTable = "buddy_sessions"
 	turnsTable    = "buddy_turns"
+	settingsTable = "buddy_user_settings"
 )
 
 // MySQLConfig describes how to reach MySQL. RWHost is the primary: all writes
@@ -131,6 +132,12 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 			meta        TEXT         NULL,
 			created_at  BIGINT       NOT NULL,
 			PRIMARY KEY (user_id, session_id, turn, role)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS ` + settingsTable + ` (
+			user_id            VARCHAR(255) NOT NULL,
+			interlocutor_style TEXT         NOT NULL,
+			updated_at         BIGINT       NOT NULL,
+			PRIMARY KEY (user_id)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 	}
 	for _, stmt := range schema {
@@ -483,6 +490,31 @@ func (s *MySQLStore) DeleteSession(ctx context.Context, userID, sessionID string
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: delete session: commit: %w", err)
+	}
+	return nil
+}
+
+func (s *MySQLStore) GetInterlocutorStyle(ctx context.Context, userID string) (string, error) {
+	var style string
+	err := s.ro.QueryRowContext(ctx,
+		`SELECT interlocutor_style FROM `+settingsTable+` WHERE user_id = ?`, userID,
+	).Scan(&style)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: get interlocutor style: %w", err)
+	}
+	return style, nil
+}
+
+func (s *MySQLStore) SaveInterlocutorStyle(ctx context.Context, userID, style string) error {
+	if _, err := s.rw.ExecContext(ctx, `
+		INSERT INTO `+settingsTable+` (user_id, interlocutor_style, updated_at)
+		VALUES (?, ?, UNIX_TIMESTAMP())
+		ON DUPLICATE KEY UPDATE interlocutor_style = VALUES(interlocutor_style), updated_at = VALUES(updated_at)
+	`, userID, style); err != nil {
+		return fmt.Errorf("store: save interlocutor style: %w", err)
 	}
 	return nil
 }

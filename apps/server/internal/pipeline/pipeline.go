@@ -37,10 +37,25 @@ import (
 // transport layer serializes writes.
 type Emit func(protocol.ServerEvent)
 
-const DefaultSystemPrompt = `You are Buddy, a warm, encouraging English conversation partner.
+const basePersonaPrompt = `You are Buddy, a warm, encouraging English conversation partner.
 Keep the conversation flowing naturally: reply in 1-3 short spoken-style sentences,
 ask a follow-up question, and match the learner's level. Do NOT correct grammar
 inline — corrections are handled separately. Never mention that you are an AI.`
+
+// BuildSystemPrompt returns the chat persona's system prompt, layering the
+// learner's own free-text conversation-style preference (saved via
+// GET/PUT /api/settings, e.g. "ask interview-style questions", "respond like
+// a professional") on top of the base persona. An empty/blank style leaves
+// the persona unchanged. Called once per session, at creation
+// (transport.Handler.ServeHTTP) — a session's system prompt doesn't change
+// mid-conversation even if the learner edits the setting elsewhere.
+func BuildSystemPrompt(style string) string {
+	style = strings.TrimSpace(style)
+	if style == "" {
+		return basePersonaPrompt
+	}
+	return basePersonaPrompt + "\n\nThe learner has also asked you to follow this conversation style: " + style
+}
 
 // Candidate is one ensemble member consulted during REFINE-track analysis
 // (grammar correction, context compaction): a model and the endpoint that

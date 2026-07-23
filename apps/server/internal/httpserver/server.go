@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"buddy/server/internal/backfill"
 	"buddy/server/internal/config"
@@ -55,6 +57,8 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux.HandleFunc("GET /api/sessions/{id}", sessionDetailHandler(ident, st, translateQueue))
 	mux.HandleFunc("GET /api/sessions/{id}/compaction", sessionCompactionHandler(ident, st))
 	mux.HandleFunc("DELETE /api/sessions/{id}", sessionDeleteHandler(ident, st, audio, recordings))
+	mux.HandleFunc("GET /api/settings", settingsGetHandler(ident, st))
+	mux.HandleFunc("PUT /api/settings", settingsSaveHandler(ident, st))
 	mux.HandleFunc("GET /api/recordings", recordingsListHandler(ident, recordings))
 	mux.HandleFunc("GET /api/recordings/{id}/audio", recordingAudioHandler(ident, recordings))
 	mux.HandleFunc("DELETE /api/recordings/{id}", recordingDeleteHandler(ident, audio, recordings))
@@ -303,6 +307,60 @@ func sessionDeleteHandler(ident identity.Identifier, st store.Store, audio trans
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// maxInterlocutorStyleLen bounds the free-text conversation-style preference
+// so a learner can't balloon every chat session's system prompt (and LLM
+// cost) with an arbitrarily long paste.
+const maxInterlocutorStyleLen = 500
+
+// settingsGetHandler returns the caller's own saved conversation-style
+// preference — personal, not admin, like sessionsListHandler: scoped to
+// whatever ident.Identify resolves to.
+func settingsGetHandler(ident identity.Identifier, st store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := requireUser(w, r, ident)
+		if !ok {
+			return
+		}
+		style, err := st.GetInterlocutorStyle(r.Context(), userID)
+		if err != nil {
+			serverError(w, "get interlocutor style", err)
+			return
+		}
+		writeJSON(w, map[string]any{"interlocutorStyle": style})
+	}
+}
+
+// settingsSaveHandler saves the caller's conversation-style preference. It
+// takes effect on the chat persona of sessions created from now on (see
+// pipeline.BuildSystemPrompt) — an already-open WS connection keeps the
+// system prompt it started with, since transport.Handler.ServeHTTP only
+// reads this once, at session creation.
+func settingsSaveHandler(ident identity.Identifier, st store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := requireUser(w, r, ident)
+		if !ok {
+			return
+		}
+		var body struct {
+			InterlocutorStyle string `json:"interlocutorStyle"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		style := strings.TrimSpace(body.InterlocutorStyle)
+		if utf8.RuneCountInString(style) > maxInterlocutorStyleLen {
+			http.Error(w, fmt.Sprintf("interlocutorStyle exceeds %d characters", maxInterlocutorStyleLen), http.StatusBadRequest)
+			return
+		}
+		if err := st.SaveInterlocutorStyle(r.Context(), userID, style); err != nil {
+			serverError(w, "save interlocutor style", err)
+			return
+		}
+		writeJSON(w, map[string]any{"interlocutorStyle": style})
 	}
 }
 
