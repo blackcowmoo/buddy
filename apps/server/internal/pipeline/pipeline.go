@@ -787,6 +787,7 @@ Rules:
 - "translation" MUST translate the ORIGINAL sentence, not the corrected one.
 - "explanationTranslation" MUST be a translation of "explanation", not a new or different explanation.
 - Use "context" as the issue type only when the sentence is fine in isolation but doesn't fit the conversation (wrong pronoun/tense given earlier turns, doesn't answer what was actually asked, etc.).
+- "Already correct" means natural, idiomatic English, not merely grammatically parseable. A sentence with no outright grammar error can still need a "phrasing" or "vocabulary" issue if a native speaker would not say it that way — e.g. an unnatural collocation ("using AI in working" instead of "using AI in our work"), a redundant or missing article ("the AI" for a general concept instead of "AI"), or a stiff/awkward word choice. Flag these too.
 - If the sentence is already correct, return the same text and an empty issues array — still fill in "translation".`, native)
 }
 
