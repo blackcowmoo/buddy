@@ -221,13 +221,18 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 .grammar-clean { font-size: 13px; color: var(--muted); padding: 2px 4px; }
 
 /* Session-wide feedback list, opened from the chat header — see App.tsx
-   FeedbackSummary. Wider and scrollable, unlike the per-row study panels. */
-.feedback-summary { position: relative; display: inline-flex; }
+   FeedbackSummary. Wider and scrollable, unlike the per-row study panels.
+   Deliberately not position:relative itself: it anchors off .menu (the
+   nearest positioned ancestor) instead of its own small button, same as
+   .menu-panel, so its right:0 lines up with the true right edge of the
+   header regardless of how many icon buttons sit to its right. */
+.feedback-summary { display: inline-flex; }
 .feedback-btn { width: 28px; height: 28px; min-height: 28px; font-size: 13px; }
 .feedback-panel {
   right: 0;
   left: auto;
   width: min(85vw, 340px);
+  max-width: calc(100vw - 32px);
   max-height: min(70vh, 480px);
   overflow-y: auto;
   display: flex;
@@ -241,12 +246,17 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 .feedback-original { font-size: 13px; color: var(--muted); padding: 0 2px; }
 
 /* Compaction debug view, opened from the chat header — see App.tsx
-   CompactionInfo. Same shape as .feedback-panel next to it. */
-.compaction-info { position: relative; display: inline-flex; }
+   CompactionInfo. Same shape as .feedback-panel next to it, and same
+   not-position:relative reasoning: it sits further left in .menu (with
+   the feedback and hamburger buttons to its right), so anchoring off its
+   own button instead of .menu pushed the panel off the left edge of
+   narrow viewports. */
+.compaction-info { display: inline-flex; }
 .compaction-panel {
   right: 0;
   left: auto;
   width: min(85vw, 340px);
+  max-width: calc(100vw - 32px);
   max-height: min(70vh, 480px);
   overflow-y: auto;
   display: flex;
