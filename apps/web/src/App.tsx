@@ -325,20 +325,23 @@ export function App() {
     }
   }, []);
 
-  // Polls a room's transcript for translations and grammar corrections the
-  // server is still working on in the background — either backfilling a
-  // translation (see internal/backfill) or still running correct() for a
-  // turn that was in flight when the learner left the room. Opening a room
-  // only fetches its transcript once, and neither background path has a push
-  // channel to tell an already-open client "it's ready now", so without this
-  // a turn still missing its translation/correction would just show a
-  // spinner that never resolves until the learner leaves and reopens the
-  // room — which was exactly the bug: the grammar hourglass would vanish on
-  // reopen instead of resuming, since nothing repopulated pendingCorrections
-  // for a hydrated turn whose correction hadn't landed yet. Stops once
-  // nothing is missing anymore or maxAttempts is reached; a fresh call to
-  // enterChat/backToList invalidates `token` so a slow, late-arriving
-  // response never overwrites a different room's state.
+  // Polls a room's transcript for translations, grammar corrections, and
+  // assistant replies the server is still working on in the background —
+  // backfilling a translation (see internal/backfill), still running
+  // correct() for a turn that was in flight when the learner left the room,
+  // or (see internal/asyncjob) a reply job that outlived the connection
+  // that started it — either because this replica died before finishing it,
+  // or another replica ended up running it instead. Opening a room only
+  // fetches its transcript once, and none of these background paths has a
+  // push channel to tell an already-open client "it's ready now", so
+  // without this a turn still missing its translation/correction/reply
+  // would just show a spinner that never resolves until the learner leaves
+  // and reopens the room — which was exactly the bug: the grammar hourglass
+  // would vanish on reopen instead of resuming, since nothing repopulated
+  // pendingCorrections for a hydrated turn whose correction hadn't landed
+  // yet. Stops once nothing is missing anymore or maxAttempts is reached; a
+  // fresh call to enterChat/backToList invalidates `token` so a slow,
+  // late-arriving response never overwrites a different room's state.
   const pollMissingFeedback = useCallback((sessionId: string, token: object) => {
     const maxAttempts = 20;
     const intervalMs = 4000;
@@ -351,6 +354,25 @@ export function App() {
       let stillMissing = false;
       const patches: Record<number, Partial<TurnMeta>> = {};
       for (const t of detail.turns) {
+        if (t.role === "assistant" && !t.text) {
+          // A reply job still pending/processing (see
+          // store.Turn.ReplyStatus) has no text yet — nothing to hydrate
+          // into msgs this tick, just keep polling. A turn with no
+          // replyStatus at all and no text is a pre-existing, permanently
+          // empty row (shouldn't normally happen) — not worth polling
+          // forever for.
+          if (t.replyStatus === "pending" || t.replyStatus === "processing") stillMissing = true;
+          continue;
+        }
+        if (t.role === "assistant" && t.replyStatus === "done") {
+          // The reply finished after this connection either lost the
+          // fast-path race or never got to run it at all (see
+          // transport.NewReplyHook) — materialize it as a whole bubble
+          // (no token-by-token typing, unlike the live WS path) and clear
+          // the typing indicator a pending-reply hydration turned on.
+          setMsgs((m) => upsertAssistant(m, t.turn, () => t.text));
+          setAwaitingReply(false);
+        }
         if (t.translation) {
           patches[t.turn] = {
             ...patches[t.turn],
@@ -406,14 +428,21 @@ export function App() {
           return;
         }
         setMsgs(
-          detail.turns.map((t) => ({
-            turn: t.turn,
-            role: t.role,
-            text: t.text,
-            refined: t.refined,
-            source: t.source,
-            timestamp: t.createdAt,
-          })),
+          detail.turns
+            // A reply still being generated (see store.Turn.ReplyStatus) is
+            // an empty placeholder row — rendering it now would show a
+            // blank bubble; the typing indicator (awaitingReply, set below)
+            // covers this gap instead, until pollMissingFeedback hydrates
+            // the real text once it lands.
+            .filter((t) => !(t.role === "assistant" && !t.text))
+            .map((t) => ({
+              turn: t.turn,
+              role: t.role,
+              text: t.text,
+              refined: t.refined,
+              source: t.source,
+              timestamp: t.createdAt,
+            })),
         );
         // Whether this room saw activity recently enough that a user turn
         // still missing its correction is plausibly still in flight (rather
@@ -426,6 +455,16 @@ export function App() {
         const hydrated: Record<number, TurnMeta> = {};
         let anyPending = false;
         for (const t of detail.turns) {
+          if (t.role === "assistant" && !t.text) {
+            // Reply still in flight (see the filter above) — show the same
+            // typing indicator a brand-new room's opening line gets, and
+            // poll until pollMissingFeedback sees it complete.
+            if (t.replyStatus === "pending" || t.replyStatus === "processing") {
+              setAwaitingReply(true);
+              anyPending = true;
+            }
+            continue;
+          }
           const meta: TurnMeta = {};
           if (t.correction) {
             meta.correction = t.correction;

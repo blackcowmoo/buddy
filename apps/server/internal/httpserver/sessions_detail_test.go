@@ -72,7 +72,7 @@ func awaitQueueLength(t *testing.T, rdb *redis.Client, want int64) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		n, err := rdb.LLen(context.Background(), "buddy:translate:queue").Result()
+		n, err := rdb.LLen(context.Background(), "buddy:job:{translation}:queue").Result()
 		if err != nil {
 			t.Fatalf("LLen: %v", err)
 		}
@@ -134,7 +134,7 @@ func TestSessionDetailDoesNotEnqueueWhenEveryTurnIsTranslated(t *testing.T) {
 	// Nothing should show up even after waiting past the async goroutine's
 	// normal completion time.
 	time.Sleep(200 * time.Millisecond)
-	n, err := rdb.LLen(context.Background(), "buddy:translate:queue").Result()
+	n, err := rdb.LLen(context.Background(), "buddy:job:{translation}:queue").Result()
 	if err != nil {
 		t.Fatalf("LLen: %v", err)
 	}

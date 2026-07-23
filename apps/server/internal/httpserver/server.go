@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/backfill"
 	"buddy/server/internal/config"
 	"buddy/server/internal/identity"
@@ -35,12 +36,16 @@ import (
 // doc comment for why. translateQueue is nil when Redis isn't configured (see
 // config.Config's RedisClusterHost) — sessionDetailHandler simply stops
 // queueing translation backfills, the same "optional feature, falls through
-// to doing nothing" convention as audio/recordings above.
-func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, translateQueue *backfill.Queue) *http.Server {
+// to doing nothing" convention as audio/recordings above. titleQueue is the
+// same kind of optional wiring for durable title generation — see
+// transport.Handler.SetTitleQueue.
+func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, translateQueue *backfill.Queue, titleQueue *asyncjob.Queue) *http.Server {
 	mux := http.NewServeMux()
 
 	// Realtime + API first (exact patterns win over the "/" catch-all).
-	mux.Handle("/ws", transport.NewHandler(pipe, ident, st, audio, recordings))
+	wsHandler := transport.NewHandler(pipe, ident, st, audio, recordings)
+	wsHandler.SetTitleQueue(titleQueue)
+	mux.Handle("/ws", wsHandler)
 	// The STT ensemble is fixed once pipe is constructed, so its name list is
 	// computed once here rather than per health-check request.
 	sttNames := pipe.STTNames()

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/audiostore"
 	"buddy/server/internal/backfill"
 	"buddy/server/internal/config"
@@ -93,6 +94,42 @@ func main() {
 		go backfill.NewWorker(rdb, st, pipe).Run(backfillCtx)
 	}
 
+	// Durable background work: makes chat replies, grammar correction, live
+	// translation, and title generation all survive both the learner's
+	// connection disconnecting and this replica dying mid-task (see
+	// internal/asyncjob's package doc and transport.New*Hook). Disabled
+	// (every *Hook stays nil, so the pipeline calls its LLM directly
+	// in-process exactly as before this existed) unless Redis is
+	// configured — same convention as the translation backfill queue
+	// above. Compaction is deliberately NOT included: it only mutates
+	// connection-local in-memory session state that doesn't survive a
+	// crash anyway (see transport.NewReplyHook's sibling doc comments and
+	// the plan this was built from), so a crash just re-triggers it on the
+	// next turn once history grows past the window again.
+	jobsCtx, jobsCancel := context.WithCancel(context.Background())
+	defer jobsCancel()
+	var titleQueue *asyncjob.Queue
+	if rdb != nil {
+		replyQueue := asyncjob.NewQueue(rdb)
+		pipe.ReplyHook = transport.NewReplyHook(pipe, st, replyQueue)
+		go asyncjob.NewWorker(rdb, asyncjob.KindReply, transport.ReplyWorkerConcurrency, transport.ReplyClaimTTL,
+			transport.ReplyJobHandler(pipe, st, nil, nil)).Run(jobsCtx)
+
+		correctionQueue := asyncjob.NewQueue(rdb)
+		pipe.CorrectHook = transport.NewCorrectHook(pipe, st, correctionQueue)
+		go asyncjob.NewWorker(rdb, asyncjob.KindCorrection, transport.CorrectionWorkerConcurrency, transport.CorrectionClaimTTL,
+			transport.CorrectionJobHandler(pipe, st, nil)).Run(jobsCtx)
+
+		liveTranslationQueue := asyncjob.NewQueue(rdb)
+		pipe.TranslateHook = transport.NewTranslateHook(pipe, st, liveTranslationQueue)
+		go asyncjob.NewWorker(rdb, asyncjob.KindLiveTranslation, transport.LiveTranslationWorkerConcurrency, transport.LiveTranslationClaimTTL,
+			transport.TranslationJobHandler(pipe, st, nil)).Run(jobsCtx)
+
+		titleQueue = asyncjob.NewQueue(rdb)
+		go asyncjob.NewWorker(rdb, asyncjob.KindTitle, transport.TitleWorkerConcurrency, transport.TitleClaimTTL,
+			transport.TitleJobHandler(pipe, st)).Run(jobsCtx)
+	}
+
 	// Temporary audio backup: only enabled once an endpoint is configured, so
 	// the server still boots with zero setup by default (see internal/audiostore).
 	// A second, independent feature (the recording archive below) archives
@@ -123,7 +160,7 @@ func main() {
 		defer recordings.Close()
 	}
 
-	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, translateQueue)
+	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, translateQueue, titleQueue)
 
 	go func() {
 		log.Printf("buddy up on %s  env=%s  stt=%v  feedback=%s",

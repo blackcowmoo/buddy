@@ -26,6 +26,7 @@ const (
 	sessionsTable = "buddy_sessions"
 	turnsTable    = "buddy_turns"
 	settingsTable = "buddy_user_settings"
+	jobsTable     = "buddy_jobs"
 )
 
 // MySQLConfig describes how to reach MySQL. RWHost is the primary: all writes
@@ -138,6 +139,24 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 			interlocutor_style TEXT         NOT NULL,
 			updated_at         BIGINT       NOT NULL,
 			PRIMARY KEY (user_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		// buddy_jobs tracks the status of durable background jobs
+		// (internal/asyncjob) per (turn, kind) — separate from buddy_turns
+		// because several kinds are session-scoped rather than turn-scoped
+		// (title, compaction), and a single turn can have more than one kind
+		// of job in flight at once (reply, correction, translation). turn=0
+		// is the reserved sentinel already used for session-scoped/opening
+		// work (see pipeline.StartConversation).
+		`CREATE TABLE IF NOT EXISTS ` + jobsTable + ` (
+			user_id    VARCHAR(255) NOT NULL,
+			session_id VARCHAR(64)  NOT NULL,
+			turn       INT          NOT NULL,
+			kind       VARCHAR(24)  NOT NULL,
+			status     VARCHAR(16)  NOT NULL DEFAULT 'pending',
+			error      TEXT         NULL,
+			created_at BIGINT       NOT NULL,
+			updated_at BIGINT       NOT NULL,
+			PRIMARY KEY (user_id, session_id, turn, kind)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 	}
 	for _, stmt := range schema {
@@ -430,11 +449,20 @@ func (s *MySQLStore) SessionDetail(ctx context.Context, userID, sessionID string
 }
 
 // sessionTurns loads every turn in (userID, sessionID), ordered so that
-// role = 'assistant' sorts after 'user' within a turn (false < true).
+// role = 'assistant' sorts after 'user' within a turn (false < true). A
+// LEFT JOIN against buddy_jobs (kind='reply') surfaces each assistant
+// turn's reply-job status, so the frontend can tell "still generating"
+// (ReplyStatus == JobStatusPending, empty Text) apart from "no reply job
+// was ever tracked for this turn" (older turns saved via plain SaveTurn) —
+// both look identical in buddy_turns alone.
 func (s *MySQLStore) sessionTurns(ctx context.Context, userID, sessionID string) ([]Turn, error) {
 	rows, err := s.ro.QueryContext(ctx, `
-		SELECT turn, role, text, refined, source, correction, translation, meta, created_at FROM `+turnsTable+`
-		WHERE user_id = ? AND session_id = ? ORDER BY turn ASC, role = 'assistant' ASC
+		SELECT t.turn, t.role, t.text, t.refined, t.source, t.correction, t.translation, t.meta, t.created_at, j.status
+		FROM `+turnsTable+` t
+		LEFT JOIN `+jobsTable+` j
+			ON j.user_id = t.user_id AND j.session_id = t.session_id AND j.turn = t.turn
+			AND j.kind = 'reply' AND t.role = 'assistant'
+		WHERE t.user_id = ? AND t.session_id = ? ORDER BY t.turn ASC, t.role = 'assistant' ASC
 	`, userID, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("store: session detail: %w", err)
@@ -445,8 +473,8 @@ func (s *MySQLStore) sessionTurns(ctx context.Context, userID, sessionID string)
 	for rows.Next() {
 		var t Turn
 		var refined int
-		var correctionJSON, translation, metaJSON sql.NullString
-		if err := rows.Scan(&t.Turn, &t.Role, &t.Text, &refined, &t.Source, &correctionJSON, &translation, &metaJSON, &t.CreatedAt); err != nil {
+		var correctionJSON, translation, metaJSON, replyStatus sql.NullString
+		if err := rows.Scan(&t.Turn, &t.Role, &t.Text, &refined, &t.Source, &correctionJSON, &translation, &metaJSON, &t.CreatedAt, &replyStatus); err != nil {
 			return nil, fmt.Errorf("store: session detail: %w", err)
 		}
 		t.Refined = refined != 0
@@ -460,12 +488,119 @@ func (s *MySQLStore) sessionTurns(ctx context.Context, userID, sessionID string)
 		if metaJSON.Valid {
 			t.Meta = json.RawMessage(metaJSON.String)
 		}
+		t.ReplyStatus = replyStatus.String
 		turns = append(turns, t)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: session detail: %w", err)
 	}
 	return turns, nil
+}
+
+// ReserveAssistantTurn writes a placeholder assistant-turn row plus a
+// pending reply-job row, in one transaction, before the reply job is even
+// enqueued. Both inserts are no-ops on a second call for the same
+// (userID, sessionID, turn) — `ON DUPLICATE KEY UPDATE user_id = user_id`
+// touches nothing — so a race between two callers (e.g. a reconnect racing
+// the original connection's inline claim) can never clobber an
+// already-completed row's text or job status.
+func (s *MySQLStore) ReserveAssistantTurn(ctx context.Context, userID, sessionID string, turn int) error {
+	tx, err := s.rw.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: reserve assistant turn: begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op once Commit succeeds
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO `+turnsTable+` (user_id, session_id, turn, role, text, refined, source, created_at)
+		VALUES (?, ?, ?, 'assistant', '', 0, '', UNIX_TIMESTAMP())
+		ON DUPLICATE KEY UPDATE user_id = user_id
+	`, userID, sessionID, turn); err != nil {
+		return fmt.Errorf("store: reserve assistant turn: placeholder: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO `+jobsTable+` (user_id, session_id, turn, kind, status, created_at, updated_at)
+		VALUES (?, ?, ?, 'reply', ?, UNIX_TIMESTAMP(), UNIX_TIMESTAMP())
+		ON DUPLICATE KEY UPDATE user_id = user_id
+	`, userID, sessionID, turn, JobStatusPending); err != nil {
+		return fmt.Errorf("store: reserve assistant turn: job: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: reserve assistant turn: commit: %w", err)
+	}
+	return nil
+}
+
+// CompleteAssistantTurn writes the finished reply text and marks its job
+// done, atomically — so a poller (or another replica reloading Profile
+// after this job ran elsewhere) never observes a "done" status with the
+// old empty placeholder text, or vice versa.
+func (s *MySQLStore) CompleteAssistantTurn(ctx context.Context, userID, sessionID string, turn int, text string) error {
+	tx, err := s.rw.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: complete assistant turn: begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op once Commit succeeds
+
+	// Turn 0 is the opening greeting (see pipeline.StartConversation): its
+	// text is only known now, at completion, not at ReserveAssistantTurn
+	// time — so the session-row-creation side effect SaveTurn's turn==0
+	// branch normally provides (a greeting-only room already visible to
+	// ListSessions/SessionDetail) happens here instead.
+	if turn == 0 {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO `+sessionsTable+` (user_id, id, title, summary, recent, created_at, updated_at)
+			VALUES (?, ?, ?, '', '[]', UNIX_TIMESTAMP(), UNIX_TIMESTAMP())
+			ON DUPLICATE KEY UPDATE
+				title = IF(title_generated = 0, VALUES(title), title),
+				updated_at = VALUES(updated_at)
+		`, userID, sessionID, truncateTitle(text)); err != nil {
+			return fmt.Errorf("store: complete assistant turn: ensure session: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE `+turnsTable+` SET text = ? WHERE user_id = ? AND session_id = ? AND turn = ? AND role = 'assistant'
+	`, text, userID, sessionID, turn); err != nil {
+		return fmt.Errorf("store: complete assistant turn: text: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE `+jobsTable+` SET status = ?, updated_at = UNIX_TIMESTAMP()
+		WHERE user_id = ? AND session_id = ? AND turn = ? AND kind = 'reply'
+	`, JobStatusDone, userID, sessionID, turn); err != nil {
+		return fmt.Errorf("store: complete assistant turn: job: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: complete assistant turn: commit: %w", err)
+	}
+	return nil
+}
+
+func (s *MySQLStore) FailJob(ctx context.Context, userID, sessionID string, turn int, kind, errMsg string) error {
+	if _, err := s.rw.ExecContext(ctx, `
+		UPDATE `+jobsTable+` SET status = ?, error = ?, updated_at = UNIX_TIMESTAMP()
+		WHERE user_id = ? AND session_id = ? AND turn = ? AND kind = ?
+	`, JobStatusFailed, errMsg, userID, sessionID, turn, kind); err != nil {
+		return fmt.Errorf("store: fail job: %w", err)
+	}
+	return nil
+}
+
+// JobStatus reads from s.rw (the primary), not s.ro: callers use this to
+// decide whether to redo expensive work (see pipeline.ReplyJobHandler's
+// idempotency guard), so a stale "not done yet" read from a lagging replica
+// would cause a duplicate LLM call — the same reasoning as LastTurn.
+func (s *MySQLStore) JobStatus(ctx context.Context, userID, sessionID string, turn int, kind string) (string, error) {
+	var status string
+	err := s.rw.QueryRowContext(ctx, `
+		SELECT status FROM `+jobsTable+` WHERE user_id = ? AND session_id = ? AND turn = ? AND kind = ?
+	`, userID, sessionID, turn, kind).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: job status: %w", err)
+	}
+	return status, nil
 }
 
 // DeleteSession removes a session and its transcript in one transaction, so

@@ -2,7 +2,6 @@ package backfill
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -19,10 +18,17 @@ import (
 	"buddy/server/internal/store"
 )
 
-// sharedRedis backs every test in this file, started once in TestMain rather
-// than per-test — see internal/identity/cached_oidc_test.go for the same
-// reasoning (container startup dominates test time; each test uses its own
-// keys so isolation doesn't need a fresh container).
+// Generic queue-mechanics behavior (concurrent claiming across replicas,
+// crash-mid-job recovery via the stale-claim reaper, idempotent
+// completion) is exercised once, at the shared-infrastructure level, in
+// internal/asyncjob's own tests — it applies identically to every job kind,
+// translation included, so it isn't re-tested per kind here. This file only
+// covers what's specific to this package: the Queue/Enqueue dedupe wrapper,
+// and translateSession's translation logic.
+
+// sharedRedis backs every test in this file, started once in TestMain
+// rather than per-test (container startup dominates test time; each test
+// uses its own dedupe keys so isolation doesn't need a fresh container).
 var (
 	sharedRedis    *redis.Client
 	sharedRedisErr error
@@ -66,9 +72,8 @@ func requireRedis(t *testing.T) *redis.Client {
 	if sharedRedisErr != nil {
 		t.Skipf("redis testcontainer unavailable (no/unreachable Docker?): %v", sharedRedisErr)
 	}
-	// Each test gets a clean slate for the fixed keys this package uses.
-	if err := sharedRedis.Del(context.Background(), queueKey, queuedSet, processingKey, lockKey).Err(); err != nil {
-		t.Fatalf("clean redis state: %v", err)
+	if err := sharedRedis.FlushAll(context.Background()).Err(); err != nil {
+		t.Fatalf("flush redis state: %v", err)
 	}
 	return sharedRedis
 }
@@ -94,7 +99,7 @@ func (f *fakeLLM) Complete(ctx context.Context, model string, msgs []llm.Message
 
 // fakeStore is an in-memory store.Store — real SQL correctness is covered by
 // internal/store's own container-backed tests; this only needs SessionDetail
-// and SaveTranslation for the Worker to exercise.
+// and SaveTranslation for translateSession to exercise.
 type fakeStore struct {
 	mu    sync.Mutex
 	turns map[string][]store.Turn // "userID/sessionID" -> turns, in SessionDetail order
@@ -149,6 +154,22 @@ func (f *fakeStore) SaveGeneratedTitle(ctx context.Context, userID, sessionID, t
 	return errors.New("not used by these tests")
 }
 
+func (f *fakeStore) ReserveAssistantTurn(ctx context.Context, userID, sessionID string, turn int) error {
+	return errors.New("not used by these tests")
+}
+
+func (f *fakeStore) CompleteAssistantTurn(ctx context.Context, userID, sessionID string, turn int, text string) error {
+	return errors.New("not used by these tests")
+}
+
+func (f *fakeStore) FailJob(ctx context.Context, userID, sessionID string, turn int, kind, errMsg string) error {
+	return errors.New("not used by these tests")
+}
+
+func (f *fakeStore) JobStatus(ctx context.Context, userID, sessionID string, turn int, kind string) (string, error) {
+	return "", errors.New("not used by these tests")
+}
+
 func (f *fakeStore) LastTurn(ctx context.Context, userID, sessionID string) (int, error) {
 	return 0, errors.New("not used by these tests")
 }
@@ -183,7 +204,14 @@ func (f *fakeStore) SaveInterlocutorStyle(ctx context.Context, userID, style str
 
 func (f *fakeStore) Close() error { return nil }
 
-// ---- Queue -----------------------------------------------------------------
+func newTestPipeline(complete func(msgs []llm.Message) (string, error)) *pipeline.Pipeline {
+	return &pipeline.Pipeline{
+		Analysis:     []pipeline.Candidate{{Model: "m", LLM: &fakeLLM{complete: complete}}},
+		FeedbackLang: "ko",
+	}
+}
+
+// ---- Queue ------------------------------------------------------------
 
 func TestQueueEnqueueDedupesAlreadyQueuedSession(t *testing.T) {
 	rdb := requireRedis(t)
@@ -193,7 +221,7 @@ func TestQueueEnqueueDedupesAlreadyQueuedSession(t *testing.T) {
 	q.Enqueue(ctx, "alex", "sess-1")
 	q.Enqueue(ctx, "alex", "sess-1")
 
-	n, err := rdb.LLen(ctx, queueKey).Result()
+	n, err := rdb.LLen(ctx, "buddy:job:{translation}:queue").Result()
 	if err != nil {
 		t.Fatalf("LLen: %v", err)
 	}
@@ -211,7 +239,7 @@ func TestQueueEnqueueAllowsDistinctSessions(t *testing.T) {
 	q.Enqueue(ctx, "alex", "sess-2")
 	q.Enqueue(ctx, "casey", "sess-1") // same session ID, different user — must not dedupe against alex's
 
-	n, err := rdb.LLen(ctx, queueKey).Result()
+	n, err := rdb.LLen(ctx, "buddy:job:{translation}:queue").Result()
 	if err != nil {
 		t.Fatalf("LLen: %v", err)
 	}
@@ -225,17 +253,9 @@ func TestQueueEnqueueNilQueueIsNoop(t *testing.T) {
 	q.Enqueue(context.Background(), "alex", "sess-1") // must not panic
 }
 
-// ---- Worker ------------------------------------------------------------------
+// ---- translateSession --------------------------------------------------
 
-func newTestPipeline(complete func(msgs []llm.Message) (string, error)) *pipeline.Pipeline {
-	return &pipeline.Pipeline{
-		Analysis:     []pipeline.Candidate{{Model: "m", LLM: &fakeLLM{complete: complete}}},
-		FeedbackLang: "ko",
-	}
-}
-
-func TestWorkerTranslatesMissingTurnsWithAccumulatingContext(t *testing.T) {
-	rdb := requireRedis(t)
+func TestTranslateSessionTranslatesMissingTurnsWithAccumulatingContext(t *testing.T) {
 	ctx := context.Background()
 
 	var seenInputs []string
@@ -260,11 +280,7 @@ func TestWorkerTranslatesMissingTurnsWithAccumulatingContext(t *testing.T) {
 		{Turn: 2, Role: "user", Text: "It sleeps a lot."},
 	})
 
-	q := NewQueue(rdb)
-	q.Enqueue(ctx, "alex", "sess-1")
-
-	w := NewWorker(rdb, st, pipe)
-	w.drainOnce(ctx)
+	translateSession(ctx, st, pipe, "alex", "sess-1")
 
 	if len(st.saved) != 3 {
 		t.Fatalf("saved %d translations, want 3: %+v", len(st.saved), st.saved)
@@ -282,18 +298,9 @@ func TestWorkerTranslatesMissingTurnsWithAccumulatingContext(t *testing.T) {
 	if !strings.Contains(seenInputs[2], "I have a cat.") {
 		t.Fatalf("turn 2's translation input should include turn 1 as context, got %q", seenInputs[2])
 	}
-
-	// Queue and dedupe set should both be empty after a full drain.
-	if n, _ := rdb.LLen(ctx, queueKey).Result(); n != 0 {
-		t.Fatalf("queue should be drained, length = %d", n)
-	}
-	if n, _ := rdb.SCard(ctx, queuedSet).Result(); n != 0 {
-		t.Fatalf("dedupe set should be cleared, size = %d", n)
-	}
 }
 
-func TestWorkerSkipsTurnsThatAlreadyHaveATranslationButStillUsesThemAsContext(t *testing.T) {
-	rdb := requireRedis(t)
+func TestTranslateSessionSkipsTurnsThatAlreadyHaveATranslationButStillUsesThemAsContext(t *testing.T) {
 	ctx := context.Background()
 
 	var calls int
@@ -310,11 +317,7 @@ func TestWorkerSkipsTurnsThatAlreadyHaveATranslationButStillUsesThemAsContext(t 
 		{Turn: 2, Role: "user", Text: "It sleeps a lot."}, // missing
 	})
 
-	q := NewQueue(rdb)
-	q.Enqueue(ctx, "alex", "sess-1")
-
-	w := NewWorker(rdb, st, pipe)
-	w.drainOnce(ctx)
+	translateSession(ctx, st, pipe, "alex", "sess-1")
 
 	if calls != 1 {
 		t.Fatalf("LLM called %d times, want 1 (turn 1 already has a translation)", calls)
@@ -327,8 +330,7 @@ func TestWorkerSkipsTurnsThatAlreadyHaveATranslationButStillUsesThemAsContext(t 
 	}
 }
 
-func TestWorkerContinuesAfterAPerTurnTranslateError(t *testing.T) {
-	rdb := requireRedis(t)
+func TestTranslateSessionContinuesAfterAPerTurnTranslateError(t *testing.T) {
 	ctx := context.Background()
 
 	var calls int
@@ -346,181 +348,14 @@ func TestWorkerContinuesAfterAPerTurnTranslateError(t *testing.T) {
 		{Turn: 2, Role: "user", Text: "second"},
 	})
 
-	q := NewQueue(rdb)
-	q.Enqueue(ctx, "alex", "sess-1")
-
-	w := NewWorker(rdb, st, pipe)
-	w.drainOnce(ctx)
+	translateSession(ctx, st, pipe, "alex", "sess-1")
 
 	if len(st.saved) != 1 || st.saved[0].turn != 2 {
 		t.Fatalf("saved translations = %+v, want only turn 2 (turn 1 failed)", st.saved)
 	}
 }
 
-func TestWorkerDrainOnceIsNoopWhenLockAlreadyHeld(t *testing.T) {
-	rdb := requireRedis(t)
-	ctx := context.Background()
-
-	if err := rdb.SetNX(ctx, lockKey, "someone-else", time.Minute).Err(); err != nil {
-		t.Fatalf("seed lock: %v", err)
-	}
-
-	var calls int
-	pipe := newTestPipeline(func(msgs []llm.Message) (string, error) {
-		calls++
-		return "번역", nil
-	})
-	st := newFakeStore()
-	st.seed("alex", "sess-1", []store.Turn{{Turn: 1, Role: "user", Text: "hi"}})
-
-	q := NewQueue(rdb)
-	q.Enqueue(ctx, "alex", "sess-1")
-
-	w := NewWorker(rdb, st, pipe)
-	w.drainOnce(ctx)
-
-	if calls != 0 {
-		t.Fatalf("LLM called %d times, want 0 — the lock is held by someone else", calls)
-	}
-	if n, _ := rdb.LLen(ctx, queueKey).Result(); n != 1 {
-		t.Fatalf("queued job should be untouched while locked out, length = %d", n)
-	}
-}
-
-func TestWorkerDrainOnceReleasesLockAfterDraining(t *testing.T) {
-	rdb := requireRedis(t)
-	ctx := context.Background()
-
-	pipe := newTestPipeline(func(msgs []llm.Message) (string, error) { return "번역", nil })
-	st := newFakeStore()
-	st.seed("alex", "sess-1", []store.Turn{{Turn: 1, Role: "user", Text: "hi"}})
-
-	q := NewQueue(rdb)
-	q.Enqueue(ctx, "alex", "sess-1")
-
-	w := NewWorker(rdb, st, pipe)
-	w.drainOnce(ctx)
-
-	exists, err := rdb.Exists(ctx, lockKey).Result()
-	if err != nil {
-		t.Fatalf("Exists: %v", err)
-	}
-	if exists != 0 {
-		t.Fatalf("lock should be released once the drain pass finishes, so the LLM is immediately free for other work")
-	}
-}
-
-func TestWorkerDrainOnceClearsProcessingClaimAfterSuccess(t *testing.T) {
-	rdb := requireRedis(t)
-	ctx := context.Background()
-
-	pipe := newTestPipeline(func(msgs []llm.Message) (string, error) { return "번역", nil })
-	st := newFakeStore()
-	st.seed("alex", "sess-1", []store.Turn{{Turn: 1, Role: "user", Text: "hi"}})
-
-	q := NewQueue(rdb)
-	q.Enqueue(ctx, "alex", "sess-1")
-
-	w := NewWorker(rdb, st, pipe)
-	w.drainOnce(ctx)
-
-	if n, _ := rdb.ZCard(ctx, processingKey).Result(); n != 0 {
-		t.Fatalf("processing set should be cleared once the job finishes normally, size = %d", n)
-	}
-}
-
-// TestReapStaleJobsRecoversFromCrashedWorker guards the fix for a real bug: a
-// worker that dies between claiming a job (LPop out of queueKey, ZAdd into
-// processingKey) and finishing it (SRem out of queuedSet) used to leave that
-// session's dedupeKey stuck in queuedSet forever — every future Enqueue for
-// it would see SAdd return 0 ("already queued") and silently no-op, so a
-// session whose backfill worker happened to crash mid-translation could never
-// be retried again, no matter how many times the learner reopened it. This
-// reproduces exactly that crashed state (queued but neither in queueKey nor
-// recently claimed) and asserts drainOnce's reapStaleJobs step recovers it.
-func TestReapStaleJobsRecoversFromCrashedWorker(t *testing.T) {
-	rdb := requireRedis(t)
-	ctx := context.Background()
-
-	var calls int
-	pipe := newTestPipeline(func(msgs []llm.Message) (string, error) {
-		calls++
-		return "번역", nil
-	})
-	st := newFakeStore()
-	st.seed("alex", "sess-1", []store.Turn{{Turn: 1, Role: "user", Text: "hi"}})
-
-	j := job{UserID: "alex", SessionID: "sess-1"}
-	raw, err := json.Marshal(j)
-	if err != nil {
-		t.Fatalf("marshal job: %v", err)
-	}
-	if err := rdb.SAdd(ctx, queuedSet, j.dedupeKey()).Err(); err != nil {
-		t.Fatalf("seed queuedSet: %v", err)
-	}
-	staleClaim := time.Now().Add(-processingStaleThreshold - time.Minute).Unix()
-	if err := rdb.ZAdd(ctx, processingKey, redis.Z{Score: float64(staleClaim), Member: raw}).Err(); err != nil {
-		t.Fatalf("seed processingKey: %v", err)
-	}
-
-	// Confirm the stuck state actually behaves as described: a fresh Enqueue
-	// silently no-ops because the dedupe key is still held.
-	q := NewQueue(rdb)
-	q.Enqueue(ctx, "alex", "sess-1")
-	if n, _ := rdb.LLen(ctx, queueKey).Result(); n != 0 {
-		t.Fatalf("Enqueue should still no-op while the dedupe key is held, queue length = %d", n)
-	}
-
-	w := NewWorker(rdb, st, pipe)
-	w.drainOnce(ctx) // reapStaleJobs should recover the stuck job and process it
-
-	if calls != 1 {
-		t.Fatalf("LLM called %d times, want 1 (the reaped job should have been translated)", calls)
-	}
-	if len(st.saved) != 1 || st.saved[0].turn != 1 {
-		t.Fatalf("saved translations = %+v, want turn 1 translated", st.saved)
-	}
-	if n, _ := rdb.LLen(ctx, queueKey).Result(); n != 0 {
-		t.Fatalf("queue should be drained after reap+process, length = %d", n)
-	}
-	if n, _ := rdb.SCard(ctx, queuedSet).Result(); n != 0 {
-		t.Fatalf("dedupe set should be cleared after reap+process, size = %d", n)
-	}
-	if n, _ := rdb.ZCard(ctx, processingKey).Result(); n != 0 {
-		t.Fatalf("processing set should be cleared after reap+process, size = %d", n)
-	}
-}
-
-// TestReapStaleJobsLeavesFreshClaimsAlone guards against reaping a job that's
-// merely being translated slowly right now (well within
-// processingStaleThreshold) — only claims older than the threshold should be
-// touched.
-func TestReapStaleJobsLeavesFreshClaimsAlone(t *testing.T) {
-	rdb := requireRedis(t)
-	ctx := context.Background()
-
-	j := job{UserID: "alex", SessionID: "sess-1"}
-	raw, err := json.Marshal(j)
-	if err != nil {
-		t.Fatalf("marshal job: %v", err)
-	}
-	if err := rdb.ZAdd(ctx, processingKey, redis.Z{Score: float64(time.Now().Unix()), Member: raw}).Err(); err != nil {
-		t.Fatalf("seed processingKey: %v", err)
-	}
-
-	w := NewWorker(rdb, newFakeStore(), newTestPipeline(nil))
-	w.reapStaleJobs(ctx)
-
-	if n, _ := rdb.ZCard(ctx, processingKey).Result(); n != 1 {
-		t.Fatalf("fresh claim should be left alone, processing set size = %d", n)
-	}
-	if n, _ := rdb.LLen(ctx, queueKey).Result(); n != 0 {
-		t.Fatalf("fresh claim must not be requeued, queue length = %d", n)
-	}
-}
-
-func TestWorkerDrainOnceSkipsSessionMissingFromStore(t *testing.T) {
-	rdb := requireRedis(t)
+func TestTranslateSessionSkipsSessionMissingFromStore(t *testing.T) {
 	ctx := context.Background()
 
 	var calls int
@@ -530,13 +365,56 @@ func TestWorkerDrainOnceSkipsSessionMissingFromStore(t *testing.T) {
 	})
 	st := newFakeStore() // nothing seeded — SessionDetail returns ErrNotFound
 
-	q := NewQueue(rdb)
-	q.Enqueue(ctx, "alex", "sess-gone")
-
-	w := NewWorker(rdb, st, pipe)
-	w.drainOnce(ctx) // must not panic or hang
+	translateSession(ctx, st, pipe, "alex", "sess-gone") // must not panic
 
 	if calls != 0 {
 		t.Fatalf("LLM called %d times, want 0", calls)
+	}
+}
+
+// ---- end-to-end: Queue -> Worker wiring --------------------------------
+
+// TestQueueAndWorkerEndToEnd is a smoke test of the full path — Enqueue
+// through a real Redis, a Worker draining it, translateSession running,
+// and the result landing in the store — to confirm this package's
+// asyncjob.KindTranslation wiring is correct. Queue-mechanics edge cases
+// (concurrent claims, crash recovery, idempotent completion) are the
+// asyncjob package's responsibility and are covered there, not repeated
+// here.
+func TestQueueAndWorkerEndToEnd(t *testing.T) {
+	rdb := requireRedis(t)
+	ctx := context.Background()
+
+	pipe := newTestPipeline(func(msgs []llm.Message) (string, error) { return "번역", nil })
+	st := newFakeStore()
+	st.seed("alex", "sess-1", []store.Turn{{Turn: 1, Role: "user", Text: "hi"}})
+
+	q := NewQueue(rdb)
+	q.Enqueue(ctx, "alex", "sess-1")
+
+	w := NewWorker(rdb, st, pipe)
+	runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() { w.Run(runCtx); close(done) }()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		st.mu.Lock()
+		n := len(st.saved)
+		st.mu.Unlock()
+		if n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("translation not saved within deadline")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	if st.saved[0].turn != 1 || st.saved[0].translation != "번역" {
+		t.Fatalf("saved translation wrong: %+v", st.saved[0])
 	}
 }

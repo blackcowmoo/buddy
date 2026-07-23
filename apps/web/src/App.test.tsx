@@ -1097,6 +1097,71 @@ describe("per-message translations", () => {
   });
 });
 
+// Covers the durable-reply-generation feature (internal/asyncjob): a reply
+// still queued/processing when the learner reopens a room (store.Turn.
+// ReplyStatus "pending"/"processing") must show the same typing indicator
+// as a live in-flight reply, not a blank bubble — and once polling sees it
+// finish, the real text must appear and the indicator must clear, the same
+// way pollMissingFeedback already recovers a missing translation/correction.
+describe("hydrated reply status", () => {
+  it("shows the typing indicator, not a blank bubble, for a reply still pending on reopen", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: Date.now() / 1000 },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: Date.now() / 1000 },
+      turns: [
+        { turn: 1, role: "user", text: "hi", refined: false },
+        { turn: 1, role: "assistant", text: "", refined: false, replyStatus: "pending" },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+
+    await screen.findByText("hi");
+    expect(screen.getByRole("status", { name: "답변 생성 중" })).toBeInTheDocument();
+    // The pending placeholder itself must not render as an empty bubble —
+    // only the "hi" user turn and the typing indicator should be present.
+    expect(screen.getAllByText("hi")).toHaveLength(1);
+  });
+
+  it("materializes the reply and clears the typing indicator once polling sees it finish", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      vi.mocked(fetchSessions).mockResolvedValue([
+        { id: "s1", title: "hello there", createdAt: 1, updatedAt: Date.now() / 1000 },
+      ]);
+      vi.mocked(fetchSessionDetail).mockResolvedValueOnce({
+        session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: Date.now() / 1000 },
+        turns: [
+          { turn: 1, role: "user", text: "hi", refined: false },
+          { turn: 1, role: "assistant", text: "", refined: false, replyStatus: "pending" },
+        ],
+      });
+      const user = userEvent.setup();
+      render(<App />);
+      await user.click(await screen.findByText("hello there"));
+      await screen.findByText("hi");
+      expect(screen.getByRole("status", { name: "답변 생성 중" })).toBeInTheDocument();
+
+      vi.mocked(fetchSessionDetail).mockResolvedValue({
+        session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: Date.now() / 1000 },
+        turns: [
+          { turn: 1, role: "user", text: "hi", refined: false },
+          { turn: 1, role: "assistant", text: "recovered on another replica", refined: false, replyStatus: "done" },
+        ],
+      });
+      await vi.advanceTimersByTimeAsync(4000);
+
+      expect(await screen.findByText("recovered on another replica")).toBeInTheDocument();
+      expect(screen.queryByRole("status", { name: "답변 생성 중" })).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("date dividers and message times", () => {
   // shouldAdvanceTime keeps real timers ticking (userEvent's internal
   // delays rely on them) while still letting us pin what "now" is for

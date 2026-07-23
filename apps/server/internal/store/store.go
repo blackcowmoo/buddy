@@ -67,7 +67,24 @@ type Turn struct {
 	// migration. Opaque on purpose: store doesn't know or care what keys it
 	// contains.
 	Meta json.RawMessage `json:"meta,omitempty"`
+	// ReplyStatus is this turn's reply-job status ("pending"/"processing"/
+	// "done"/"failed"), populated only for an assistant turn reserved via
+	// ReserveAssistantTurn. Empty for a user turn, and for an assistant turn
+	// saved before this feature existed (SaveTurn, not ReserveAssistantTurn
+	// + CompleteAssistantTurn) — both cases mean "nothing to poll for", so
+	// the frontend doesn't need to tell them apart.
+	ReplyStatus string `json:"replyStatus,omitempty"`
 }
+
+// Job status values for the (user_id, session_id, turn, kind) rows tracked
+// alongside a turn's content — see ReserveAssistantTurn/CompleteAssistantTurn/
+// FailJob/JobStatus, and internal/asyncjob for the queue that drives a job
+// through these states.
+const (
+	JobStatusPending = "pending"
+	JobStatusDone    = "done"
+	JobStatusFailed  = "failed"
+)
 
 // Store persists everything keyed by an opaque user ID (see
 // internal/identity) and, within a user, an opaque session ID (one per chat
@@ -106,6 +123,34 @@ type Store interface {
 	// since both share the same turn number. A no-op if that turn hasn't
 	// been saved yet.
 	SaveTranslation(ctx context.Context, userID, sessionID string, turn int, role, translation string) error
+
+	// ReserveAssistantTurn writes a placeholder assistant-turn row (empty
+	// text) plus a "pending" reply-job row for (userID, sessionID, turn),
+	// before that turn's reply job is even enqueued — so a poller (see
+	// JobStatus, and Turn.ReplyStatus in SessionDetail) has something to
+	// observe immediately, and durably records that this turn's reply is
+	// in flight even if the enqueuing process dies before the job runs. A
+	// no-op if this exact reply job was already reserved (e.g. a race
+	// between two connections, or a retry) — it never clobbers an
+	// already-completed row's text.
+	ReserveAssistantTurn(ctx context.Context, userID, sessionID string, turn int) error
+	// CompleteAssistantTurn writes the finished assistant reply text and
+	// marks (userID, sessionID, turn)'s reply job "done", atomically. Called
+	// by whichever replica's worker actually ran the reply job — see
+	// internal/pipeline.ReplyJobHandler — regardless of whether that's the
+	// same replica the learner's WebSocket connection is still on.
+	CompleteAssistantTurn(ctx context.Context, userID, sessionID string, turn int, text string) error
+	// FailJob marks (userID, sessionID, turn, kind)'s job "failed" with
+	// errMsg, for observability. This does not itself stop retries —
+	// internal/asyncjob's stale-claim reaper retries a job regardless of
+	// this status — it only records the most recent attempt's outcome.
+	FailJob(ctx context.Context, userID, sessionID string, turn int, kind, errMsg string) error
+	// JobStatus returns (userID, sessionID, turn, kind)'s current status
+	// (JobStatusPending/"processing"/JobStatusDone/JobStatusFailed), or ""
+	// if no such job was ever reserved (e.g. a turn from before this
+	// feature existed, or a kind other than "reply" that isn't tracked this
+	// way).
+	JobStatus(ctx context.Context, userID, sessionID string, turn int, kind string) (string, error)
 
 	// LastTurn returns the highest turn number already persisted for a
 	// session (0 if none), so a resumed session can continue numbering

@@ -125,6 +125,12 @@ type fakeSession struct {
 	profile        store.Profile
 	turns          map[string]store.Turn // key: "<turn>|<role>"
 	titleGenerated bool
+	jobs           map[string]fakeJob // key: "<turn>|<kind>"
+}
+
+type fakeJob struct {
+	status string
+	err    string
 }
 
 func newFakeStore() *fakeStore {
@@ -257,6 +263,91 @@ func (f *fakeStore) SaveGeneratedTitle(ctx context.Context, userID, sessionID, t
 	d.meta.Title = title
 	d.titleGenerated = true
 	return nil
+}
+
+// ReserveAssistantTurn mirrors MySQLStore's placeholder-row + pending-job
+// semantics: a no-op on a second call for the same (turn), so a race never
+// clobbers an already-completed turn's text or job status.
+func (f *fakeStore) ReserveAssistantTurn(ctx context.Context, userID, sessionID string, turn int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := fakeStoreKey(userID, sessionID)
+	d := f.sessions[key]
+	if d == nil {
+		d = &fakeSession{userID: userID, turns: map[string]store.Turn{}}
+		f.sessions[key] = d
+	}
+	tk := fmt.Sprintf("%d|assistant", turn)
+	if _, exists := d.turns[tk]; !exists {
+		d.turns[tk] = store.Turn{Turn: turn, Role: "assistant"}
+	}
+	if d.jobs == nil {
+		d.jobs = map[string]fakeJob{}
+	}
+	jk := fmt.Sprintf("%d|reply", turn)
+	if _, exists := d.jobs[jk]; !exists {
+		d.jobs[jk] = fakeJob{status: store.JobStatusPending}
+	}
+	return nil
+}
+
+// CompleteAssistantTurn mirrors MySQLStore's text-write + job-done update,
+// including turn 0's session-row-creation side effect (see mysql.go's doc
+// comment on the same case).
+func (f *fakeStore) CompleteAssistantTurn(ctx context.Context, userID, sessionID string, turn int, text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := fakeStoreKey(userID, sessionID)
+	d := f.sessions[key]
+	if d == nil {
+		d = &fakeSession{userID: userID, turns: map[string]store.Turn{}}
+		f.sessions[key] = d
+	}
+	if turn == 0 && !d.hasRow {
+		d.hasRow = true
+		d.meta = store.SessionMeta{ID: sessionID, Title: text}
+	}
+	tk := fmt.Sprintf("%d|assistant", turn)
+	t := d.turns[tk]
+	t.Turn, t.Role, t.Text = turn, "assistant", text
+	d.turns[tk] = t
+	if d.jobs == nil {
+		d.jobs = map[string]fakeJob{}
+	}
+	jk := fmt.Sprintf("%d|reply", turn)
+	j := d.jobs[jk]
+	j.status = store.JobStatusDone
+	d.jobs[jk] = j
+	return nil
+}
+
+func (f *fakeStore) FailJob(ctx context.Context, userID, sessionID string, turn int, kind, errMsg string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.sessions[fakeStoreKey(userID, sessionID)]
+	if d == nil {
+		return nil
+	}
+	if d.jobs == nil {
+		d.jobs = map[string]fakeJob{}
+	}
+	jk := fmt.Sprintf("%d|%s", turn, kind)
+	d.jobs[jk] = fakeJob{status: store.JobStatusFailed, err: errMsg}
+	return nil
+}
+
+func (f *fakeStore) JobStatus(ctx context.Context, userID, sessionID string, turn int, kind string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.sessions[fakeStoreKey(userID, sessionID)]
+	if d == nil {
+		return "", nil
+	}
+	j, ok := d.jobs[fmt.Sprintf("%d|%s", turn, kind)]
+	if !ok {
+		return "", nil
+	}
+	return j.status, nil
 }
 
 func (f *fakeStore) ListSessions(ctx context.Context, userID string) ([]store.SessionMeta, error) {
