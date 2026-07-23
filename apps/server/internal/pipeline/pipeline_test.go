@@ -1282,6 +1282,25 @@ func TestTranslationSystemPromptNamesTargetLanguage(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPromptWithoutStyleReturnsBasePersonaUnchanged(t *testing.T) {
+	if got := BuildSystemPrompt(""); got != basePersonaPrompt {
+		t.Fatalf("BuildSystemPrompt(\"\") = %q, want the base persona verbatim", got)
+	}
+	if got := BuildSystemPrompt("   "); got != basePersonaPrompt {
+		t.Fatalf("BuildSystemPrompt(whitespace) = %q, want the base persona verbatim", got)
+	}
+}
+
+func TestBuildSystemPromptLayersLearnersStyleOntoBasePersona(t *testing.T) {
+	got := BuildSystemPrompt("  ask interview-style questions  ")
+	if !strings.Contains(got, basePersonaPrompt) {
+		t.Fatalf("prompt should still contain the base persona: %s", got)
+	}
+	if !strings.Contains(got, "ask interview-style questions") {
+		t.Fatalf("prompt should contain the (trimmed) learner style: %s", got)
+	}
+}
+
 func TestFallbackReplyEchoesLastUserMessage(t *testing.T) {
 	msgs := []llm.Message{
 		{Role: llm.RoleSystem, Content: "sys"},

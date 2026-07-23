@@ -35,6 +35,12 @@ type fakeSessionStore struct {
 	profileErr  error
 	lastTurnVal int
 	lastTurnErr error
+
+	// styles/styleErr back GetInterlocutorStyle/SaveInterlocutorStyle for
+	// settings_test.go; left zero for tests in this file, which don't call
+	// either.
+	styles   map[string]string // userID -> interlocutorStyle
+	styleErr error
 }
 
 func (f *fakeSessionStore) Load(ctx context.Context, userID, sessionID string) (store.Profile, error) {
@@ -90,6 +96,24 @@ func (f *fakeSessionStore) DeleteSession(ctx context.Context, userID, sessionID 
 		return f.err
 	}
 	f.deleted = append(f.deleted, struct{ userID, sessionID string }{userID, sessionID})
+	return nil
+}
+
+func (f *fakeSessionStore) GetInterlocutorStyle(ctx context.Context, userID string) (string, error) {
+	if f.styleErr != nil {
+		return "", f.styleErr
+	}
+	return f.styles[userID], nil
+}
+
+func (f *fakeSessionStore) SaveInterlocutorStyle(ctx context.Context, userID, style string) error {
+	if f.styleErr != nil {
+		return f.styleErr
+	}
+	if f.styles == nil {
+		f.styles = make(map[string]string)
+	}
+	f.styles[userID] = style
 	return nil
 }
 

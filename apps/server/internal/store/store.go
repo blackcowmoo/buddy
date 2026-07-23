@@ -81,6 +81,18 @@ type Store interface {
 	Load(ctx context.Context, userID, sessionID string) (Profile, error)
 	Save(ctx context.Context, userID, sessionID string, p Profile) error
 
+	// GetInterlocutorStyle returns userID's saved free-text preference for
+	// how the AI conversation partner should talk to them (e.g. "ask
+	// interview-style questions", "sound like a professional") — "" if never
+	// set. It's global to the user, not scoped to one session: see
+	// pipeline.BuildSystemPrompt, which layers it onto the chat persona when
+	// a session is created (transport.Handler.ServeHTTP).
+	GetInterlocutorStyle(ctx context.Context, userID string) (string, error)
+	// SaveInterlocutorStyle persists userID's conversation-style preference,
+	// replacing any previous value. An empty style clears it back to the
+	// default persona.
+	SaveInterlocutorStyle(ctx context.Context, userID, style string) error
+
 	// SaveTurn upserts one message into a session's transcript, creating the
 	// session's row (and its title, derived from turn 1's text) on first
 	// write. source is protocol.SourceVoice/SourceText for a user turn, or ""

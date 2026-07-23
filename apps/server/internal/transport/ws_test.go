@@ -68,6 +68,40 @@ func (f fakeLLM) Complete(ctx context.Context, model string, msgs []llm.Message,
 	return "", errFakeLLMUnavailable
 }
 
+// capturingLLM records the messages it was last called with — used to verify
+// what system prompt a session was actually built with (see
+// TestWSSessionSystemPromptIncludesSavedInterlocutorStyle), which fakeLLM
+// can't do since it never succeeds.
+type capturingLLM struct {
+	mu       sync.Mutex
+	lastMsgs []llm.Message
+}
+
+func (f *capturingLLM) ChatStream(ctx context.Context, model string, msgs []llm.Message, onToken func(string)) (string, error) {
+	f.mu.Lock()
+	f.lastMsgs = append([]llm.Message(nil), msgs...)
+	f.mu.Unlock()
+	if onToken != nil {
+		onToken("ok")
+	}
+	return "ok", nil
+}
+
+func (f *capturingLLM) Complete(ctx context.Context, model string, msgs []llm.Message, jsonMode bool) (string, error) {
+	return "", errFakeLLMUnavailable
+}
+
+func (f *capturingLLM) systemPrompt() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, m := range f.lastMsgs {
+		if m.Role == llm.RoleSystem {
+			return m.Content
+		}
+	}
+	return ""
+}
+
 // fakeStore is an in-memory store.Store: these tests are about WS/session
 // wiring (does the handler load/seed/save correctly, mint/resume the right
 // session, persist turns off the right events?), not SQL correctness — that
@@ -81,6 +115,7 @@ func (f fakeLLM) Complete(ctx context.Context, model string, msgs []llm.Message,
 type fakeStore struct {
 	mu       sync.Mutex
 	sessions map[string]*fakeSession // key: userID + "\x00" + sessionID
+	styles   map[string]string       // userID -> interlocutorStyle
 }
 
 type fakeSession struct {
@@ -93,7 +128,20 @@ type fakeSession struct {
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{sessions: make(map[string]*fakeSession)}
+	return &fakeStore{sessions: make(map[string]*fakeSession), styles: make(map[string]string)}
+}
+
+func (f *fakeStore) GetInterlocutorStyle(ctx context.Context, userID string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.styles[userID], nil
+}
+
+func (f *fakeStore) SaveInterlocutorStyle(ctx context.Context, userID, style string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.styles[userID] = style
+	return nil
 }
 
 func fakeStoreKey(userID, sessionID string) string { return userID + "\x00" + sessionID }
@@ -624,6 +672,38 @@ func TestWSTextTurnRoundTrip(t *testing.T) {
 	done := readUntilTurn(t, c, protocol.EvAssistantDone, 1)
 	if done.Text == "" {
 		t.Fatalf("assistant_done had empty text")
+	}
+}
+
+// TestWSSessionSystemPromptIncludesSavedInterlocutorStyle verifies a
+// learner's conversation-style preference (saved via PUT /api/settings —
+// see httpserver.settingsSaveHandler) actually reaches the LLM: the session
+// created at connect time (ws.go) must build its system prompt with
+// pipeline.BuildSystemPrompt(style), not the bare default persona.
+func TestWSSessionSystemPromptIncludesSavedInterlocutorStyle(t *testing.T) {
+	st := newFakeStore()
+	if err := st.SaveInterlocutorStyle(context.Background(), "alex", "ask interview-style questions"); err != nil {
+		t.Fatalf("SaveInterlocutorStyle() error = %v", err)
+	}
+	llmDouble := &capturingLLM{}
+	pipe := &pipeline.Pipeline{
+		STT:                []stt.Recognizer{fakeSTT{text: "hello there"}},
+		LLM:                llmDouble,
+		MaxHistoryMessages: 20,
+	}
+	h := NewHandler(pipe, identity.NewCookieIdentifier(), st, nil, nil)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	c, _ := dial(t, srv, "alex", "")
+	readEvent(t, c) // ready
+
+	sendText(t, c, "Hello Buddy")
+	readUntil(t, c, protocol.EvAssistantDone)
+
+	prompt := llmDouble.systemPrompt()
+	if !strings.Contains(prompt, "ask interview-style questions") {
+		t.Fatalf("system prompt sent to the LLM = %q, want it to include the saved style", prompt)
 	}
 }
 

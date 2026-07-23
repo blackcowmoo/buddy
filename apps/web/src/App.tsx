@@ -21,6 +21,7 @@ import {
   type SessionCompaction,
   type SessionSummary,
 } from "./lib/sessions";
+import { fetchSettings, saveSettings } from "./lib/settings";
 import { applyTheme, getStoredTheme, setStoredTheme, type Theme } from "./lib/theme";
 import {
   MAX_EXTRA_RATES,
@@ -160,6 +161,9 @@ export function App() {
   const [theme, setTheme] = useState<Theme>(() => getStoredTheme());
   const [extraRates, setExtraRates] = useState<number[]>(() => loadExtraRates());
   const [newRateInput, setNewRateInput] = useState("");
+  const [styleInput, setStyleInput] = useState("");
+  const [styleSaving, setStyleSaving] = useState(false);
+  const [styleSaved, setStyleSaved] = useState(false);
 
   const clientRef = useRef<BuddyClient | null>(null);
   const recorderRef = useRef<PCMRecorder | null>(null);
@@ -271,6 +275,35 @@ export function App() {
     fetchMe().then((identity) => {
       setEmail(identity?.identityMode === "oidc" ? identity.id : null);
     });
+  }, []);
+
+  useEffect(() => {
+    fetchSettings().then((s) => setStyleInput(s.interlocutorStyle));
+  }, []);
+
+  // Saves the learner's conversation-style preference (e.g. "면접관처럼 질문해줘").
+  // It's layered onto the AI's system prompt for sessions created from now
+  // on (see pipeline.BuildSystemPrompt) — an already-open chat keeps talking
+  // in whatever style it started with.
+  const submitStyle = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
+      setStyleSaving(true);
+      setStyleSaved(false);
+      const trimmed = styleInput.trim();
+      const ok = await saveSettings(trimmed);
+      setStyleSaving(false);
+      if (ok) {
+        setStyleInput(trimmed);
+        setStyleSaved(true);
+      }
+    },
+    [styleInput],
+  );
+
+  const handleStyleInputChange = useCallback((v: string) => {
+    setStyleInput(v);
+    setStyleSaved(false);
   }, []);
 
   const refreshSessions = useCallback(() => {
@@ -689,6 +722,11 @@ export function App() {
           prError={prError}
           onGoToPath={goToPath}
           onGoToRecordings={goToRecordings}
+          styleInput={styleInput}
+          onStyleInputChange={handleStyleInputChange}
+          styleSaving={styleSaving}
+          styleSaved={styleSaved}
+          onSubmitStyle={submitStyle}
         />
 
         <main className="session-list">
@@ -752,6 +790,11 @@ export function App() {
         prError={prError}
         onGoToPath={goToPath}
         onGoToRecordings={goToRecordings}
+        styleInput={styleInput}
+        onStyleInputChange={handleStyleInputChange}
+        styleSaving={styleSaving}
+        styleSaved={styleSaved}
+        onSubmitStyle={submitStyle}
         chat={{
           tts,
           ttsProgress,
@@ -1173,6 +1216,11 @@ function MenuPanel({
   prError,
   onGoToPath,
   onGoToRecordings,
+  styleInput,
+  onStyleInputChange,
+  styleSaving,
+  styleSaved,
+  onSubmitStyle,
   chat,
 }: {
   email: string | null;
@@ -1183,6 +1231,11 @@ function MenuPanel({
   prError: boolean;
   onGoToPath: (e: React.FormEvent) => void;
   onGoToRecordings: () => void;
+  styleInput: string;
+  onStyleInputChange: (v: string) => void;
+  styleSaving: boolean;
+  styleSaved: boolean;
+  onSubmitStyle: (e: React.FormEvent) => void;
   chat?: ChatMenuProps;
 }) {
   return (
@@ -1236,6 +1289,24 @@ function MenuPanel({
       <div className="menu-row">
         <ThemeSwitch theme={theme} onChange={onThemeChange} />
       </div>
+      <div className="menu-divider" />
+      <form className="style-form" onSubmit={onSubmitStyle}>
+        <label htmlFor="interlocutor-style">대화 상대 스타일</label>
+        <textarea
+          id="interlocutor-style"
+          value={styleInput}
+          onChange={(e) => onStyleInputChange(e.target.value)}
+          placeholder="예: 면접관처럼 질문해줘 / 전문가처럼 답변해줘"
+          rows={2}
+        />
+        <div className="style-form-row">
+          <button type="submit" disabled={styleSaving}>
+            {styleSaving ? "저장 중…" : "저장"}
+          </button>
+          {styleSaved && <span className="style-saved">저장됨</span>}
+        </div>
+      </form>
+      <div className="menu-divider" />
       <button className="ghost menu-item" onClick={onGoToRecordings} role="menuitem">
         🎧 녹음 목록
       </button>

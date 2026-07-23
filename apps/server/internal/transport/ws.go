@@ -125,7 +125,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("store: last turn %s/%s: %v", userID, sessionID, err)
 	}
-	sess := session.New(pipeline.DefaultSystemPrompt)
+	style, err := h.store.GetInterlocutorStyle(ctx, userID)
+	if err != nil {
+		log.Printf("store: get interlocutor style %s: %v", userID, err)
+	}
+	sess := session.New(pipeline.BuildSystemPrompt(style))
 	sess.Seed(profile.Summary, profile.Recent, lastTurn)
 
 	save := func() {

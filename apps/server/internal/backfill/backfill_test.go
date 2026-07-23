@@ -172,6 +172,15 @@ func (f *fakeStore) SessionDetail(ctx context.Context, userID, sessionID string)
 func (f *fakeStore) DeleteSession(ctx context.Context, userID, sessionID string) error {
 	return errors.New("not used by these tests")
 }
+
+func (f *fakeStore) GetInterlocutorStyle(ctx context.Context, userID string) (string, error) {
+	return "", errors.New("not used by these tests")
+}
+
+func (f *fakeStore) SaveInterlocutorStyle(ctx context.Context, userID, style string) error {
+	return errors.New("not used by these tests")
+}
+
 func (f *fakeStore) Close() error { return nil }
 
 // ---- Queue -----------------------------------------------------------------
