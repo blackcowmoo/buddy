@@ -102,7 +102,7 @@ func TestReplyEmitsDeltaThenDoneAndAppends(t *testing.T) {
 	p := &Pipeline{LLM: &fakeLLM{chatReply: "hi there"}, ChatModel: "m"}
 
 	events := make(chan protocol.ServerEvent, 8)
-	p.reply(context.Background(), sess, 1, func(ev protocol.ServerEvent) { events <- ev })
+	p.reply(context.Background(), "alex", "sess-1", sess, 1, func(ev protocol.ServerEvent) { events <- ev })
 	close(events)
 
 	var got []protocol.ServerEvent
@@ -133,7 +133,7 @@ func TestReplyEmitsAssistantTranslation(t *testing.T) {
 	}
 
 	events := make(chan protocol.ServerEvent, 8)
-	p.reply(context.Background(), sess, 1, func(ev protocol.ServerEvent) { events <- ev })
+	p.reply(context.Background(), "alex", "sess-1", sess, 1, func(ev protocol.ServerEvent) { events <- ev })
 
 	got := collectUntilQuiet(t, events, 200*time.Millisecond, 2*time.Second)
 	var translations []protocol.ServerEvent
@@ -170,7 +170,7 @@ func TestReplyAssistantTranslationSurvivesBargeInAfterReplyLands(t *testing.T) {
 	}
 
 	events := make(chan protocol.ServerEvent, 8)
-	p.reply(ctx, sess, 1, func(ev protocol.ServerEvent) { events <- ev })
+	p.reply(ctx, "alex", "sess-1", sess, 1, func(ev protocol.ServerEvent) { events <- ev })
 	// Simulate the barge-in landing the instant the visible reply finishes
 	// streaming, before the background translation goroutine has run — the
 	// exact race ws.go's turnCancel() wins against translateAssistant today.
@@ -197,7 +197,7 @@ func TestReplyBargeInSkipsDoneAndAppend(t *testing.T) {
 	cancel() // already cancelled: simulates a barge-in landing before the reply lands
 
 	var got []protocol.ServerEvent
-	p.reply(ctx, sess, 1, func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.reply(ctx, "alex", "sess-1", sess, 1, func(ev protocol.ServerEvent) { got = append(got, ev) })
 
 	if len(got) != 0 {
 		t.Fatalf("expected no events emitted on barge-in, got %+v", got)
@@ -214,7 +214,7 @@ func TestReplyFallbackOnLLMError(t *testing.T) {
 	p := &Pipeline{LLM: &fakeLLM{chatErr: errors.New("connection refused")}, ChatModel: "m"}
 
 	var got []protocol.ServerEvent
-	p.reply(context.Background(), sess, 1, func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.reply(context.Background(), "alex", "sess-1", sess, 1, func(ev protocol.ServerEvent) { got = append(got, ev) })
 
 	if len(got) != 2 {
 		t.Fatalf("expected fallback delta + done, got %+v", got)
@@ -240,7 +240,7 @@ func TestStartConversationEmitsDeltaThenDoneOnTurnZeroAndAppends(t *testing.T) {
 	p := &Pipeline{LLM: &fakeLLM{chatReply: "Hey! What's on your mind today?"}, ChatModel: "m"}
 
 	events := make(chan protocol.ServerEvent, 8)
-	p.StartConversation(context.Background(), sess, func(ev protocol.ServerEvent) { events <- ev })
+	p.StartConversation(context.Background(), "alex", "sess-1", sess, func(ev protocol.ServerEvent) { events <- ev })
 	close(events)
 
 	var got []protocol.ServerEvent
@@ -280,7 +280,7 @@ func TestStartConversationEmitsTranslation(t *testing.T) {
 	}
 
 	events := make(chan protocol.ServerEvent, 8)
-	p.StartConversation(context.Background(), sess, func(ev protocol.ServerEvent) { events <- ev })
+	p.StartConversation(context.Background(), "alex", "sess-1", sess, func(ev protocol.ServerEvent) { events <- ev })
 
 	got := collectUntilQuiet(t, events, 200*time.Millisecond, 2*time.Second)
 	var translations []protocol.ServerEvent
@@ -299,7 +299,7 @@ func TestStartConversationFallbackOnLLMError(t *testing.T) {
 	p := &Pipeline{LLM: &fakeLLM{chatErr: errors.New("connection refused")}, ChatModel: "m"}
 
 	var got []protocol.ServerEvent
-	p.StartConversation(context.Background(), sess, func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.StartConversation(context.Background(), "alex", "sess-1", sess, func(ev protocol.ServerEvent) { got = append(got, ev) })
 
 	if len(got) != 2 || got[0].Text != openingFallback || got[1].Text != openingFallback {
 		t.Fatalf("expected fallback delta + done with the canned opening line, got %+v", got)
@@ -318,7 +318,7 @@ func TestStartConversationSkipsDoneAndAppendOnDisconnect(t *testing.T) {
 	cancel() // already cancelled: the connection closed before the greeting landed
 
 	var got []protocol.ServerEvent
-	p.StartConversation(ctx, sess, func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.StartConversation(ctx, "alex", "sess-1", sess, func(ev protocol.ServerEvent) { got = append(got, ev) })
 
 	if len(got) != 0 {
 		t.Fatalf("expected no events emitted after disconnect, got %+v", got)
@@ -413,7 +413,7 @@ func TestCorrectEmitsEventWhenChanged(t *testing.T) {
 		}}}},
 	}
 	var got []protocol.ServerEvent
-	p.correct(context.Background(), 1, "I likes pizza", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.correct(context.Background(), "alex", "sess-1", 1, "I likes pizza", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
 
 	if len(got) != 2 || got[0].Type != protocol.EvCorrection || got[1].Type != protocol.EvUserTranslation {
 		t.Fatalf("expected a correction event followed by a translation event, got %+v", got)
@@ -439,7 +439,7 @@ func TestCorrectEmitsEventWithNoIssuesWhenAlreadyCorrect(t *testing.T) {
 		}}}},
 	}
 	var got []protocol.ServerEvent
-	p.correct(context.Background(), 1, "I like pizza.", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.correct(context.Background(), "alex", "sess-1", 1, "I like pizza.", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
 
 	if len(got) != 1 || got[0].Type != protocol.EvCorrection {
 		t.Fatalf("expected exactly one correction event (no translation in the fixture), got %+v", got)
@@ -459,7 +459,7 @@ func TestCorrectEmitsTranslationEvenWhenAlreadyCorrect(t *testing.T) {
 		}}}},
 	}
 	var got []protocol.ServerEvent
-	p.correct(context.Background(), 1, "I like pizza.", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.correct(context.Background(), "alex", "sess-1", 1, "I like pizza.", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
 
 	if len(got) != 2 || got[0].Type != protocol.EvCorrection || got[1].Type != protocol.EvUserTranslation {
 		t.Fatalf("expected a no-issue correction event followed by a translation event, got %+v", got)
@@ -479,7 +479,7 @@ func TestCorrectIgnoresMalformedJSON(t *testing.T) {
 		}}}},
 	}
 	var got []protocol.ServerEvent
-	p.correct(context.Background(), 1, "whatever", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.correct(context.Background(), "alex", "sess-1", 1, "whatever", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
 	if len(got) != 0 {
 		t.Fatalf("expected no event for malformed JSON, got %+v", got)
 	}
@@ -492,7 +492,7 @@ func TestCorrectIgnoresLLMError(t *testing.T) {
 		}}}},
 	}
 	var got []protocol.ServerEvent
-	p.correct(context.Background(), 1, "whatever", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.correct(context.Background(), "alex", "sess-1", 1, "whatever", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
 	if len(got) != 0 {
 		t.Fatalf("expected no event when the LLM call fails, got %+v", got)
 	}
@@ -507,7 +507,7 @@ func TestTranslateAssistantEmitsEvent(t *testing.T) {
 		}}}},
 	}
 	var got []protocol.ServerEvent
-	p.translateAssistant(context.Background(), 3, "Hello, how are you today?", func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.translateAssistant(context.Background(), "alex", "sess-1", 3, "Hello, how are you today?", func(ev protocol.ServerEvent) { got = append(got, ev) })
 
 	if len(got) != 1 || got[0].Type != protocol.EvAssistantTranslation {
 		t.Fatalf("expected one assistant_translation event, got %+v", got)
@@ -524,7 +524,7 @@ func TestTranslateAssistantIgnoresLLMError(t *testing.T) {
 		}}}},
 	}
 	var got []protocol.ServerEvent
-	p.translateAssistant(context.Background(), 1, "whatever", func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.translateAssistant(context.Background(), "alex", "sess-1", 1, "whatever", func(ev protocol.ServerEvent) { got = append(got, ev) })
 	if len(got) != 0 {
 		t.Fatalf("expected no event when the LLM call fails, got %+v", got)
 	}
@@ -543,7 +543,7 @@ func TestTranslateAssistantSkipsEmptyResult(t *testing.T) {
 		}}}},
 	}
 	var got []protocol.ServerEvent
-	p.translateAssistant(context.Background(), 1, "whatever", func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.translateAssistant(context.Background(), "alex", "sess-1", 1, "whatever", func(ev protocol.ServerEvent) { got = append(got, ev) })
 	if len(got) != 0 {
 		t.Fatalf("expected no event when analyze() has nothing but blank output, got %+v", got)
 	}
@@ -560,7 +560,7 @@ func TestTranslateAssistantTrimsWhitespace(t *testing.T) {
 		}}}},
 	}
 	var got []protocol.ServerEvent
-	p.translateAssistant(context.Background(), 1, "whatever", func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.translateAssistant(context.Background(), "alex", "sess-1", 1, "whatever", func(ev protocol.ServerEvent) { got = append(got, ev) })
 	if len(got) != 1 || got[0].Text != "안녕하세요" {
 		t.Fatalf("expected trimmed translation text, got %+v", got)
 	}
@@ -657,7 +657,7 @@ func TestTranslationCallsAreSerializedAcrossLiveAndBackfill(t *testing.T) {
 		wg.Add(1)
 		go func(turn int) {
 			defer wg.Done()
-			p.translateAssistant(context.Background(), turn, "hello", func(protocol.ServerEvent) {})
+			p.translateAssistant(context.Background(), "alex", "sess-1", turn, "hello", func(protocol.ServerEvent) {})
 		}(i)
 	}
 	wg.Add(1)
@@ -780,7 +780,7 @@ func TestCorrectSendsBareSentenceWhenNoContext(t *testing.T) {
 			return `{"corrected":"ok","issues":[]}`, nil
 		}}}},
 	}
-	p.correct(context.Background(), 1, "ok", "", func(protocol.ServerEvent) {})
+	p.correct(context.Background(), "alex", "sess-1", 1, "ok", "", func(protocol.ServerEvent) {})
 	if gotInput != "ok" {
 		t.Fatalf("with no context, analyze input should be the bare sentence, got %q", gotInput)
 	}
@@ -795,7 +795,7 @@ func TestCorrectFoldsContextInFrontOfSentence(t *testing.T) {
 		}}}},
 	}
 	ctxMsg := "Conversation so far:\nassistant: How old are you?\n"
-	p.correct(context.Background(), 1, "I am 20 years old.", ctxMsg, func(protocol.ServerEvent) {})
+	p.correct(context.Background(), "alex", "sess-1", 1, "I am 20 years old.", ctxMsg, func(protocol.ServerEvent) {})
 
 	if !strings.Contains(gotInput, "How old are you?") {
 		t.Fatalf("analyze input missing the context block: %q", gotInput)
@@ -1141,7 +1141,7 @@ func TestRefineCorrectionSurvivesCtxCancellation(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	events := make(chan protocol.ServerEvent, 8)
-	go p.refine(ctx, sess, 1, "", nil, []string{"broken"}, "broken", func(ev protocol.ServerEvent) { events <- ev })
+	go p.refine(ctx, "alex", "sess-1", sess, 1, "", nil, []string{"broken"}, "broken", func(ev protocol.ServerEvent) { events <- ev })
 
 	<-gate.started                    // correct()'s analyze() call is in flight
 	cancel()                          // simulate a barge-in/disconnect cancelling the turn context
@@ -1177,7 +1177,7 @@ func TestRefineUpgradesSessionWhenJudgeDisagrees(t *testing.T) {
 	sess := session.New("sys")
 	sess.AppendUser("fast track guess")
 	var got []protocol.ServerEvent
-	p.refine(context.Background(), sess, 1, "", nil, []string{"fast track guess"}, "fast track guess", func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.refine(context.Background(), "alex", "sess-1", sess, 1, "", nil, []string{"fast track guess"}, "fast track guess", func(ev protocol.ServerEvent) { got = append(got, ev) })
 
 	var refinedEvents []protocol.ServerEvent
 	for _, ev := range got {
@@ -1209,7 +1209,7 @@ func TestRefineNoopWhenJudgeAgrees(t *testing.T) {
 	sess := session.New("sys")
 	sess.AppendUser("same text")
 	var got []protocol.ServerEvent
-	p.refine(context.Background(), sess, 1, "", nil, []string{"same text"}, "same text", func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.refine(context.Background(), "alex", "sess-1", sess, 1, "", nil, []string{"same text"}, "same text", func(ev protocol.ServerEvent) { got = append(got, ev) })
 
 	for _, ev := range got {
 		if ev.Type == protocol.EvRefined {
@@ -1233,7 +1233,7 @@ func TestRefineFallsBackToFastTextOnJudgeError(t *testing.T) {
 	sess := session.New("sys")
 	sess.AppendUser("fast text")
 	var got []protocol.ServerEvent
-	p.refine(context.Background(), sess, 1, "", nil, []string{"fast text"}, "fast text", func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.refine(context.Background(), "alex", "sess-1", sess, 1, "", nil, []string{"fast text"}, "fast text", func(ev protocol.ServerEvent) { got = append(got, ev) })
 
 	for _, ev := range got {
 		if ev.Type == protocol.EvRefined {
@@ -1331,7 +1331,7 @@ func TestHandleTextEndToEnd(t *testing.T) {
 	}
 	sess := session.New("sys")
 	events := make(chan protocol.ServerEvent, 16)
-	p.HandleText(context.Background(), sess, "  Hello name Alex  ", func(ev protocol.ServerEvent) { events <- ev })
+	p.HandleText(context.Background(), "alex", "sess-1", sess, "  Hello name Alex  ", func(ev protocol.ServerEvent) { events <- ev })
 
 	got := collectUntilQuiet(t, events, 200*time.Millisecond, 2*time.Second)
 	byType := map[protocol.EventType][]protocol.ServerEvent{}
@@ -1372,7 +1372,7 @@ func TestHandleUtteranceEmptyTranscriptIsNoop(t *testing.T) {
 	p := &Pipeline{STT: []stt.Recognizer{fakeSTT{text: "   "}}, LLM: &fakeLLM{}}
 	sess := session.New("sys")
 	var got []protocol.ServerEvent
-	p.HandleUtterance(context.Background(), sess, []byte("pcm"), func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.HandleUtterance(context.Background(), "alex", "sess-1", sess, []byte("pcm"), func(ev protocol.ServerEvent) { got = append(got, ev) })
 
 	if len(got) != 0 {
 		t.Fatalf("expected no events for an empty transcript, got %+v", got)
@@ -1387,7 +1387,7 @@ func TestHandleUtteranceSTTErrorEmitsError(t *testing.T) {
 	p := &Pipeline{STT: []stt.Recognizer{fakeSTT{err: errors.New("mic disconnected")}}, LLM: &fakeLLM{}}
 	sess := session.New("sys")
 	var got []protocol.ServerEvent
-	p.HandleUtterance(context.Background(), sess, []byte("pcm"), func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.HandleUtterance(context.Background(), "alex", "sess-1", sess, []byte("pcm"), func(ev protocol.ServerEvent) { got = append(got, ev) })
 
 	if len(got) != 1 || got[0].Type != protocol.EvError {
 		t.Fatalf("expected a single error event, got %+v", got)
@@ -1422,7 +1422,7 @@ func TestHandleUtteranceFullFlowUpgradesContextViaRefine(t *testing.T) {
 	}
 	sess := session.New("sys")
 	events := make(chan protocol.ServerEvent, 16)
-	p.HandleUtterance(context.Background(), sess, []byte("pcm-data"), func(ev protocol.ServerEvent) { events <- ev })
+	p.HandleUtterance(context.Background(), "alex", "sess-1", sess, []byte("pcm-data"), func(ev protocol.ServerEvent) { events <- ev })
 
 	got := collectUntilQuiet(t, events, 200*time.Millisecond, 2*time.Second)
 	byType := map[protocol.EventType][]protocol.ServerEvent{}
@@ -1487,7 +1487,7 @@ func TestHandleUtteranceCorrectionContextExcludesCurrentTurn(t *testing.T) {
 	sess.AppendAssistant("Glad to hear it!")
 
 	events := make(chan protocol.ServerEvent, 32)
-	p.HandleUtterance(context.Background(), sess, []byte("pcm"), func(ev protocol.ServerEvent) { events <- ev })
+	p.HandleUtterance(context.Background(), "alex", "sess-1", sess, []byte("pcm"), func(ev protocol.ServerEvent) { events <- ev })
 	collectUntilQuiet(t, events, 200*time.Millisecond, 2*time.Second)
 
 	analysis.mu.Lock()

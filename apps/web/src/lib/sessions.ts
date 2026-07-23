@@ -22,6 +22,12 @@ export interface TurnRecord {
   // fixtures / hand-built records don't need updating — real API responses
   // always set it (see store.Turn.CreatedAt).
   createdAt?: number;
+  // This turn's durable reply-job status ("pending" | "processing" | "done"
+  // | "failed"), set only for an assistant turn whose reply was generated
+  // via the async job queue (see store.Turn.ReplyStatus). Absent for a user
+  // turn, and for an assistant turn that predates this feature or was never
+  // queued — both mean "nothing to poll for."
+  replyStatus?: "pending" | "processing" | "done" | "failed";
 }
 
 export interface SessionDetail {

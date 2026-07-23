@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/identity"
 	"buddy/server/internal/llm"
 	"buddy/server/internal/pipeline"
@@ -64,10 +65,20 @@ type Handler struct {
 	store      store.Store
 	audio      AudioSaver
 	recordings recording.Store // nil disables recording archival (see config.Config's S3Bucket)
+	titleQueue *asyncjob.Queue // nil disables durable title generation — see SetTitleQueue
 }
 
 func NewHandler(p *pipeline.Pipeline, ident identity.Identifier, st store.Store, audio AudioSaver, recordings recording.Store) *Handler {
 	return &Handler{pipe: p, ident: ident, store: st, audio: audio, recordings: recordings}
+}
+
+// SetTitleQueue wires durable, queue-backed title generation (see
+// TitleJobHandler) — a separate setter, not a NewHandler parameter, so
+// every existing call site (production and tests) keeps working unchanged
+// when title generation stays on its original direct-call path (queue nil,
+// i.e. Redis unconfigured — see cmd/server/main.go).
+func (h *Handler) SetTitleQueue(q *asyncjob.Queue) {
+	h.titleQueue = q
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -199,7 +210,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// appended before the greeting, racing sess's in-memory ordering. A
 		// client that sends something while this blocks doesn't lose it: WS
 		// frames queue until c.Read below actually consumes them.
-		h.pipe.StartConversation(ctx, sess, emit)
+		h.pipe.StartConversation(ctx, userID, sessionID, sess, emit)
 	}
 
 	// turnCancel implements barge-in: a new input cancels the previous turn.
@@ -216,7 +227,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		switch typ {
 		case websocket.MessageBinary:
 			pcm := append([]byte(nil), data...) // copy: Read may reuse the buffer
-			go h.pipe.HandleUtterance(tctx, sess, pcm, emit)
+			go h.pipe.HandleUtterance(tctx, userID, sessionID, sess, pcm, emit)
 			// Both backups below are side-effects independent of the
 			// conversation pipeline, so they use context.Background() (like
 			// save() above) rather than ctx/tctx: a barge-in or the user
@@ -248,7 +259,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			switch m.Type {
 			case "text":
-				go h.pipe.HandleText(tctx, sess, m.Text, emit)
+				go h.pipe.HandleText(tctx, userID, sessionID, sess, m.Text, emit)
 			}
 		}
 	}
@@ -342,6 +353,42 @@ func (h *Handler) generateTitle(userID, sessionID string, sess *session.Session,
 	if userText == "" {
 		return
 	}
+	if h.titleQueue == nil {
+		h.generateTitleDirect(userID, sessionID, userText, assistantText)
+		return
+	}
+	// Durable path: queued in Redis and persisted independent of this
+	// connection or replica — see TitleJobHandler. No poll-fallback is
+	// needed here (unlike reply generation): a title landing after the
+	// fact has no live-connection UX to serve, it just shows up next time
+	// the room list is fetched.
+	payload := titleJobPayload{UserID: userID, SessionID: sessionID, UserText: userText, AssistantText: assistantText}
+	job, ok, err := h.titleQueue.Enqueue(context.Background(), asyncjob.KindTitle, titleDedupeKey(userID, sessionID), payload)
+	if err != nil {
+		log.Printf("title: enqueue %s/%s: %v", userID, sessionID, err)
+		return
+	}
+	if !ok {
+		return // already queued/in flight
+	}
+	claimed, err := h.titleQueue.TryClaimByID(context.Background(), job, TitleClaimTTL)
+	if err != nil {
+		log.Printf("title: inline claim %s/%s: %v", userID, sessionID, err)
+		return
+	}
+	if !claimed {
+		return // a pooled Worker already has it
+	}
+	if err := h.titleQueue.Execute(context.Background(), job, TitleJobHandler(h.pipe, h.store)); err != nil {
+		log.Printf("title: inline execute %s/%s: %v", userID, sessionID, err)
+	}
+}
+
+// generateTitleDirect is generateTitle's original direct-call behavior,
+// used when titleQueue is nil (Redis unconfigured) — same "optional
+// feature, zero setup by default" convention as every other Redis-backed
+// feature in this codebase.
+func (h *Handler) generateTitleDirect(userID, sessionID, userText, assistantText string) {
 	ctx, cancel := context.WithTimeout(context.Background(), titleTimeout)
 	defer cancel()
 	title, err := h.pipe.GenerateTitle(ctx, userText, assistantText)

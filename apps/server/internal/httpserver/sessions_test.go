@@ -70,6 +70,22 @@ func (f *fakeSessionStore) SaveGeneratedTitle(ctx context.Context, userID, sessi
 	return errors.New("not used by these tests")
 }
 
+func (f *fakeSessionStore) ReserveAssistantTurn(ctx context.Context, userID, sessionID string, turn int) error {
+	return errors.New("not used by these tests")
+}
+
+func (f *fakeSessionStore) CompleteAssistantTurn(ctx context.Context, userID, sessionID string, turn int, text string) error {
+	return errors.New("not used by these tests")
+}
+
+func (f *fakeSessionStore) FailJob(ctx context.Context, userID, sessionID string, turn int, kind, errMsg string) error {
+	return errors.New("not used by these tests")
+}
+
+func (f *fakeSessionStore) JobStatus(ctx context.Context, userID, sessionID string, turn int, kind string) (string, error) {
+	return "", errors.New("not used by these tests")
+}
+
 func (f *fakeSessionStore) LastTurn(ctx context.Context, userID, sessionID string) (int, error) {
 	if f.lastTurnErr != nil {
 		return 0, f.lastTurnErr

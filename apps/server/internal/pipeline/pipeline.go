@@ -109,7 +109,56 @@ type Pipeline struct {
 	// struct literal (see cmd/server/main.go).
 	translationSemOnce sync.Once
 	translationSem     chan struct{}
+
+	// ReplyHook, if set, replaces reply()/StartConversation()'s direct
+	// "call the chat model in this goroutine" behavior with a durable,
+	// queue-backed one — see transport.NewReplyHook, which builds this from
+	// internal/asyncjob so a turn's reply survives both the learner's
+	// connection disconnecting and this replica dying mid-generation. msgs
+	// is the exact conversation snapshot to reply to (already including
+	// StartConversation's extra opening-turn system message, where
+	// applicable) and fallback is the text to fall back to if the chat
+	// model call fails outright — both computed by the caller so the hook
+	// doesn't need to know which of reply()/StartConversation() invoked it.
+	// onToken/onDone mirror Emit's shape without requiring transport's hook
+	// to import internal/protocol: onToken fires per streamed token (only
+	// when this exact call ends up running the LLM itself — see the
+	// fast-path/poll-fallback split in transport.NewReplyHook), onDone
+	// fires exactly once with the finished text, however it was produced.
+	// Left nil (the zero-value default), reply()/StartConversation() call
+	// the chat model directly exactly as before this existed — entirely
+	// optional, gated on whether transport wired one up (itself gated on
+	// Redis being configured), the same convention as every other optional
+	// feature in this codebase.
+	ReplyHook ReplyHook
+
+	// CorrectHook/TranslateHook are correct()/translateAssistant()'s
+	// equivalents of ReplyHook — see that field's doc comment for the
+	// shared rationale (durability across disconnects and replica deaths,
+	// entirely optional, nil by default). Unlike replies, a correction or
+	// translation job that completes on a different replica than the
+	// learner's own has no live connection to stream a result to at all,
+	// so there's no analog of ReplyHook's poll-fallback here: the
+	// frontend's existing pollMissingFeedback (see apps/web/src/App.tsx)
+	// already re-fetches and picks up a correction/translation that landed
+	// after the fact, since both are just columns on a turn's row, not a
+	// live-only event.
+	CorrectHook   CorrectHook
+	TranslateHook TranslateHook
 }
+
+// ReplyHook is Pipeline.ReplyHook's type — see that field's doc comment.
+type ReplyHook func(ctx context.Context, userID, sessionID string, turn int, msgs []llm.Message, fallback string, onToken func(string), onDone func(string))
+
+// CorrectHook is Pipeline.CorrectHook's type. onResult delivers the parsed
+// analysis result exactly once, however (and on whichever replica) it was
+// produced.
+type CorrectHook func(ctx context.Context, userID, sessionID string, turn int, text, contextMsg string, onResult func(corrected string, issues []protocol.Issue, translation string))
+
+// TranslateHook is Pipeline.TranslateHook's type. onResult delivers the
+// finished translation exactly once, however (and on whichever replica) it
+// was produced.
+type TranslateHook func(ctx context.Context, userID, sessionID string, turn int, text string, onResult func(translation string))
 
 // STTNames returns the configured STT engines' Name()s, in registration
 // order. The ensemble is fixed once Pipeline is constructed, so callers that
@@ -123,8 +172,9 @@ func (p *Pipeline) STTNames() []string {
 	return names
 }
 
-// HandleUtterance runs one turn from raw audio.
-func (p *Pipeline) HandleUtterance(ctx context.Context, sess *session.Session, pcm []byte, emit Emit) {
+// HandleUtterance runs one turn from raw audio. userID/sessionID identify
+// this turn for ReplyHook (see Pipeline.ReplyHook) — unused when it's nil.
+func (p *Pipeline) HandleUtterance(ctx context.Context, userID, sessionID string, sess *session.Session, pcm []byte, emit Emit) {
 	turn := sess.NextTurn()
 	// Context as of BEFORE this utterance — used for both the FAST and
 	// REFINE reconciliation passes below so they answer the exact same
@@ -146,10 +196,10 @@ func (p *Pipeline) HandleUtterance(ctx context.Context, sess *session.Session, p
 	sess.AppendUser(userText)
 
 	// --- REFINE track (background) --------------------------------------
-	go p.refine(ctx, sess, turn, summary, recent, candidates, userText, emit)
+	go p.refine(ctx, userID, sessionID, sess, turn, summary, recent, candidates, userText, emit)
 
 	// --- FAST reply ------------------------------------------------------
-	p.reply(ctx, sess, turn, emit)
+	p.reply(ctx, userID, sessionID, sess, turn, emit)
 }
 
 // transcribe runs every configured STT engine concurrently on one utterance.
@@ -279,8 +329,10 @@ func renderTranscriptSynthesisInput(summary string, recent []llm.Message, candid
 	return b.String()
 }
 
-// HandleText runs one turn from typed input (skips STT).
-func (p *Pipeline) HandleText(ctx context.Context, sess *session.Session, text string, emit Emit) {
+// HandleText runs one turn from typed input (skips STT). userID/sessionID
+// identify this turn for ReplyHook (see Pipeline.ReplyHook) — unused when
+// it's nil.
+func (p *Pipeline) HandleText(ctx context.Context, userID, sessionID string, sess *session.Session, text string, emit Emit) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return
@@ -297,8 +349,8 @@ func (p *Pipeline) HandleText(ctx context.Context, sess *session.Session, text s
 	// reasoning as backupAudio/compact using a context independent of ctx,
 	// just without a fixed deadline since the LLM client already caps itself
 	// (see llm.NewOpenAI's http.Client timeout).
-	go p.correct(context.WithoutCancel(ctx), turn, text, contextMsg, emit) // correction only; no slow STT needed
-	p.reply(ctx, sess, turn, emit)
+	go p.correct(context.WithoutCancel(ctx), userID, sessionID, turn, text, contextMsg, emit) // correction only; no slow STT needed
+	p.reply(ctx, userID, sessionID, sess, turn, emit)
 }
 
 // StartConversation generates the assistant's opening line for a brand-new
@@ -319,33 +371,10 @@ func (p *Pipeline) HandleText(ctx context.Context, sess *session.Session, text s
 // The greeting also lives in the in-memory session history, so the LLM sees
 // it as context, and it rides along in Profile.Recent once a real reply
 // persists.
-func (p *Pipeline) StartConversation(ctx context.Context, sess *session.Session, emit Emit) {
+func (p *Pipeline) StartConversation(ctx context.Context, userID, sessionID string, sess *session.Session, emit Emit) {
 	const openingTurn = 0
 	msgs := append(sess.Snapshot(), llm.Message{Role: llm.RoleSystem, Content: openingSystemPrompt})
-	atomic.AddInt32(&p.chatActive, 1)
-	full, err := p.LLM.ChatStream(ctx, p.ChatModel, msgs, func(tok string) {
-		emit(protocol.ServerEvent{Type: protocol.EvAssistantDelta, Turn: openingTurn, Text: tok})
-	})
-	atomic.AddInt32(&p.chatActive, -1)
-	// The connection closed while this was still streaming: drop it rather
-	// than append a greeting nobody will ever see.
-	if ctx.Err() != nil {
-		return
-	}
-	if err != nil {
-		log.Printf("chat: opening: %v", err)
-		if strings.TrimSpace(full) == "" {
-			full = openingFallback
-			emit(protocol.ServerEvent{Type: protocol.EvAssistantDelta, Turn: openingTurn, Text: full})
-		}
-	}
-	emit(protocol.ServerEvent{Type: protocol.EvAssistantDone, Turn: openingTurn, Text: full})
-	sess.AppendAssistant(full)
-	if strings.TrimSpace(full) != "" {
-		// context.WithoutCancel: see reply()'s matching translateAssistant call
-		// for why this must survive the connection closing.
-		go p.translateAssistant(context.WithoutCancel(ctx), openingTurn, full, emit)
-	}
+	p.runReply(ctx, userID, sessionID, sess, openingTurn, msgs, openingFallback, emit)
 }
 
 const openingSystemPrompt = `Start the conversation: the learner has not said anything yet. Greet them
@@ -356,34 +385,86 @@ practice). Do not mention that you were told to do this.`
 const openingFallback = "Hey there! Glad you're here — what would you like to talk about today?"
 
 // reply streams the assistant response and records it in the session.
-func (p *Pipeline) reply(ctx context.Context, sess *session.Session, turn int, emit Emit) {
+func (p *Pipeline) reply(ctx context.Context, userID, sessionID string, sess *session.Session, turn int, emit Emit) {
 	msgs := sess.Snapshot()
-	atomic.AddInt32(&p.chatActive, 1)
-	full, err := p.LLM.ChatStream(ctx, p.ChatModel, msgs, func(tok string) {
+	p.runReply(ctx, userID, sessionID, sess, turn, msgs, fallbackReply(msgs), emit)
+}
+
+// runReply is reply()/StartConversation()'s shared body: either calls the
+// chat model directly (the default, when ReplyHook is nil) or delegates to
+// ReplyHook — see that field's doc comment for why a hook may finish
+// (or never even start) this exact call synchronously, and what onDone
+// firing later, asynchronously, out from under this ctx means for a caller.
+func (p *Pipeline) runReply(ctx context.Context, userID, sessionID string, sess *session.Session, turn int, msgs []llm.Message, fallback string, emit Emit) {
+	onToken := func(tok string) {
 		emit(protocol.ServerEvent{Type: protocol.EvAssistantDelta, Turn: turn, Text: tok})
-	})
-	atomic.AddInt32(&p.chatActive, -1)
-	// Barged in (user spoke again): drop this turn's tail, keep history clean.
+	}
+	// onDone is the bookkeeping that must happen exactly once, however (and
+	// whenever) the reply text was actually produced: tell the learner it's
+	// finished, fold it into this connection's in-memory context so
+	// subsequent turns see it, and kick off its translation/compaction.
+	// ReplyHook may call this synchronously (fast path, this connection ran
+	// the job itself) or much later from a poll loop (this connection
+	// didn't) — either way it's the same completion, so it's handled once,
+	// here, rather than duplicated in every hook implementation.
+	onDone := func(full string) {
+		emit(protocol.ServerEvent{Type: protocol.EvAssistantDone, Turn: turn, Text: full})
+		sess.AppendAssistant(full)
+		if strings.TrimSpace(full) != "" {
+			// context.WithoutCancel: the reply already streamed to the learner,
+			// so its translation is a self-contained piece of work with
+			// nothing left to race — a barge-in or disconnect must not lose
+			// it, same reasoning as backupAudio/persistEvent detaching from ctx.
+			go p.translateAssistant(context.WithoutCancel(ctx), userID, sessionID, turn, full, emit)
+		}
+		go p.compact(sess) // background: fold old turns into the long-term summary
+	}
+	if p.ReplyHook != nil {
+		p.ReplyHook(ctx, userID, sessionID, turn, msgs, fallback, onToken, onDone)
+		return
+	}
+	full, _ := p.GenerateReply(ctx, msgs, fallback, onToken)
+	// Barged in (user spoke again) or disconnected: drop this turn's tail,
+	// keep history clean, rather than appending/emitting a reply nobody will
+	// ever see. Only applies to this direct, in-process path — once a
+	// ReplyHook is handling durability, ctx no longer governs whether the
+	// reply completes (see that field's doc comment).
 	if ctx.Err() != nil {
 		return
+	}
+	onDone(full)
+}
+
+// GenerateReply calls the chat model once for msgs, streaming tokens via
+// onToken as they arrive, and returns the full text — substituting fallback
+// (and still calling onToken with it) if the call failed outright with
+// nothing usable. Exported so transport's queue-backed ReplyHook
+// implementation (running this same call on whichever replica ends up
+// executing the job — see internal/asyncjob) can reuse the exact same chat
+// call reply()/StartConversation() use directly by default. Has no
+// dependency on session/emit — see runReply for the bookkeeping layered on
+// top when it's called in-process.
+func (p *Pipeline) GenerateReply(ctx context.Context, msgs []llm.Message, fallback string, onToken func(string)) (full string, err error) {
+	atomic.AddInt32(&p.chatActive, 1)
+	full, err = p.LLM.ChatStream(ctx, p.ChatModel, msgs, onToken)
+	atomic.AddInt32(&p.chatActive, -1)
+	// A caller whose ctx is already done (e.g. runReply's direct path, on a
+	// barge-in or disconnect) is about to drop this result entirely — don't
+	// bother substituting/emitting a fallback nobody will ever see. A
+	// caller running on context.Background() (every ReplyHook path) never
+	// hits this, so the fallback substitution below still always applies
+	// there.
+	if ctx.Err() != nil {
+		return full, err
 	}
 	if err != nil {
 		log.Printf("chat: %v", err)
 		if strings.TrimSpace(full) == "" {
-			full = fallbackReply(msgs)
-			emit(protocol.ServerEvent{Type: protocol.EvAssistantDelta, Turn: turn, Text: full})
+			full = fallback
+			onToken(full)
 		}
 	}
-	emit(protocol.ServerEvent{Type: protocol.EvAssistantDone, Turn: turn, Text: full})
-	sess.AppendAssistant(full)
-	if strings.TrimSpace(full) != "" {
-		// context.WithoutCancel: the reply already streamed to the learner, so
-		// its translation is a self-contained piece of work with nothing left
-		// to race — a barge-in or disconnect right as it starts must not lose
-		// it, same reasoning as backupAudio/persistEvent detaching from ctx.
-		go p.translateAssistant(context.WithoutCancel(ctx), turn, full, emit)
-	}
-	go p.compact(sess) // background: fold old turns into the long-term summary
+	return full, err
 }
 
 // analyze runs one REFINE-track task (grammar correction or compaction)
@@ -521,7 +602,7 @@ func renderCompactionInput(prevSummary string, old []llm.Message) string {
 // fails), nothing changes. Runs even with a single STT candidate — Judge can
 // still catch a mishearing FAST's quick pass didn't, using context alone.
 // A nil Judge (unconfigured) just skips reconciliation — correct() still runs.
-func (p *Pipeline) refine(ctx context.Context, sess *session.Session, turn int, summary string, recent []llm.Message, candidates []string, fastText string, emit Emit) {
+func (p *Pipeline) refine(ctx context.Context, userID, sessionID string, sess *session.Session, turn int, summary string, recent []llm.Message, candidates []string, fastText string, emit Emit) {
 	refined := fastText
 	if p.Judge != nil {
 		text, err := p.synthesizeTranscript(ctx, p.Judge, p.JudgeModel, summary, recent, candidates)
@@ -544,7 +625,7 @@ func (p *Pipeline) refine(ctx context.Context, sess *session.Session, turn int, 
 	// correct() only emits+persists a result for this fixed turn number and
 	// never touches sess, so there's no ordering hazard in letting it outlive
 	// a barge-in or disconnect — same reasoning as HandleText's correct call.
-	p.correct(context.WithoutCancel(ctx), turn, refined, renderCorrectionContext(summary, recent), emit)
+	p.correct(context.WithoutCancel(ctx), userID, sessionID, turn, refined, renderCorrectionContext(summary, recent), emit)
 }
 
 // correct asks the analysis ensemble for grammar/vocabulary/context feedback
@@ -557,11 +638,47 @@ func (p *Pipeline) refine(ctx context.Context, sess *session.Session, turn int, 
 // the caller's turn-scoped or connection ctx directly: a barge-in or
 // disconnect must not silently drop a grammar-check/translation result that
 // was already in flight.
-func (p *Pipeline) correct(ctx context.Context, turn int, text, contextMsg string, emit Emit) {
-	raw, err := p.analyze(ctx, correctionSystemPrompt(p.FeedbackLang), renderCorrectionInput(contextMsg, text), true)
+func (p *Pipeline) correct(ctx context.Context, userID, sessionID string, turn int, text, contextMsg string, emit Emit) {
+	onResult := func(corrected string, issues []protocol.Issue, translation string) {
+		// Always emit, even when there's nothing to teach (Corrected == text,
+		// empty Issues) — the client hangs a per-turn pending/spinner state
+		// off this event, so it needs a definitive "the check finished"
+		// signal regardless of outcome, not just when there's a card to
+		// show. The translation below fires independently so a learner
+		// still gets a meaning check even on an already-correct sentence.
+		emit(protocol.ServerEvent{
+			Type: protocol.EvCorrection,
+			Turn: turn,
+			Correction: &protocol.Correction{
+				Original:  text,
+				Corrected: corrected,
+				Issues:    issues,
+			},
+		})
+		if strings.TrimSpace(translation) != "" {
+			emit(protocol.ServerEvent{Type: protocol.EvUserTranslation, Turn: turn, Text: translation})
+		}
+	}
+	if p.CorrectHook != nil {
+		p.CorrectHook(ctx, userID, sessionID, turn, text, contextMsg, onResult)
+		return
+	}
+	corrected, issues, translation, err := p.AnalyzeCorrection(ctx, text, contextMsg)
 	if err != nil {
 		log.Printf("correct: %v", err)
 		return
+	}
+	onResult(corrected, issues, translation)
+}
+
+// AnalyzeCorrection runs the grammar/vocabulary/context analysis ensemble
+// for one sentence and parses its strict-JSON result. Exported so
+// transport's queue-backed CorrectHook implementation reuses the exact same
+// call correct() uses directly by default.
+func (p *Pipeline) AnalyzeCorrection(ctx context.Context, text, contextMsg string) (corrected string, issues []protocol.Issue, translation string, err error) {
+	raw, err := p.analyze(ctx, correctionSystemPrompt(p.FeedbackLang), renderCorrectionInput(contextMsg, text), true)
+	if err != nil {
+		return "", nil, "", err
 	}
 	var parsed struct {
 		Corrected   string           `json:"corrected"`
@@ -569,27 +686,9 @@ func (p *Pipeline) correct(ctx context.Context, turn int, text, contextMsg strin
 		Issues      []protocol.Issue `json:"issues"`
 	}
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		log.Printf("correct: bad json: %v", err)
-		return
+		return "", nil, "", fmt.Errorf("bad json: %w", err)
 	}
-	// Always emit, even when there's nothing to teach (Corrected == text,
-	// empty Issues) — the client hangs a per-turn pending/spinner state off
-	// this event, so it needs a definitive "the check finished" signal
-	// regardless of outcome, not just when there's a card to show. The
-	// translation below fires independently so a learner still gets a
-	// meaning check even on an already-correct sentence.
-	emit(protocol.ServerEvent{
-		Type: protocol.EvCorrection,
-		Turn: turn,
-		Correction: &protocol.Correction{
-			Original:  text,
-			Corrected: parsed.Corrected,
-			Issues:    parsed.Issues,
-		},
-	})
-	if strings.TrimSpace(parsed.Translation) != "" {
-		emit(protocol.ServerEvent{Type: protocol.EvUserTranslation, Turn: turn, Text: parsed.Translation})
-	}
+	return parsed.Corrected, parsed.Issues, parsed.Translation, nil
 }
 
 // chatYieldPoll is how often acquireTranslationSlot rechecks chatActive
@@ -645,21 +744,42 @@ func (p *Pipeline) translationSemaphore() chan struct{} {
 // acquireTranslationSlot and analyze() (rather than dropping it) so a caller
 // that legitimately wants early cancellation — like internal/backfill's
 // long-lived worker ctx via TranslateWithContext below — still gets it.
-func (p *Pipeline) translateAssistant(ctx context.Context, turn int, text string, emit Emit) {
-	if err := p.acquireTranslationSlot(ctx); err != nil {
+func (p *Pipeline) translateAssistant(ctx context.Context, userID, sessionID string, turn int, text string, emit Emit) {
+	onResult := func(translation string) {
+		// analyze() never succeeds with a blank result (a candidate's own
+		// empty output is filtered out before it can win), so this event
+		// always carries real text — the client's pending/spinner state
+		// (see App.tsx) treats this event's arrival as the "translation
+		// finished" signal.
+		emit(protocol.ServerEvent{Type: protocol.EvAssistantTranslation, Turn: turn, Text: translation})
+	}
+	if p.TranslateHook != nil {
+		p.TranslateHook(ctx, userID, sessionID, turn, text, onResult)
 		return
 	}
-	defer p.releaseTranslationSlot()
-	raw, err := p.analyze(ctx, translationSystemPrompt(p.FeedbackLang), text, false)
+	translation, err := p.AnalyzeTranslation(ctx, text)
 	if err != nil {
 		log.Printf("translateAssistant: %v", err)
 		return
 	}
-	// analyze() never succeeds with a blank result (a candidate's own empty
-	// output is filtered out before it can win), so this event always carries
-	// real text — the client's pending/spinner state (see App.tsx) treats
-	// this event's arrival as the "translation finished" signal.
-	emit(protocol.ServerEvent{Type: protocol.EvAssistantTranslation, Turn: turn, Text: strings.TrimSpace(raw)})
+	onResult(translation)
+}
+
+// AnalyzeTranslation translates one assistant reply's full text into the
+// learner's native language, yielding to any in-flight chat reply first
+// (see acquireTranslationSlot). Exported so transport's queue-backed
+// TranslateHook implementation reuses the exact same call
+// translateAssistant() uses directly by default.
+func (p *Pipeline) AnalyzeTranslation(ctx context.Context, text string) (string, error) {
+	if err := p.acquireTranslationSlot(ctx); err != nil {
+		return "", err
+	}
+	defer p.releaseTranslationSlot()
+	raw, err := p.analyze(ctx, translationSystemPrompt(p.FeedbackLang), text, false)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(raw), nil
 }
 
 // TranslateWithContext translates text into the learner's native language
