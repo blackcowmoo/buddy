@@ -11,6 +11,7 @@ import (
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/protocol"
 	"buddy/server/internal/session"
+	"buddy/server/internal/store"
 )
 
 // ---- correction ---------------------------------------------------------
@@ -45,6 +46,7 @@ func TestCorrectHookFastPathPersistsAndCallsOnResult(t *testing.T) {
 			called = true
 			gotCorrected, gotIssues, gotTranslation = corrected, issues, translation
 		},
+		func() { t.Fatalf("onFailure called unexpectedly") },
 	)
 
 	if !called {
@@ -78,6 +80,57 @@ func TestCorrectHookFastPathPersistsAndCallsOnResult(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("user turn 1 not found: %+v", turns)
+	}
+}
+
+// TestCorrectHookFastPathCallsOnFailureAndMarksJobFailed is the fix for the
+// bug this file's other correction test doesn't cover: when analyze() itself
+// errors (every candidate LLM call failing), the live connection must still
+// hear about it via onFailure — not just have its grammar spinner hang
+// forever — and the job's durable status must land as JobStatusFailed, not
+// stay stuck on JobStatusPending indistinguishably from "still checking".
+func TestCorrectHookFastPathCallsOnFailureAndMarksJobFailed(t *testing.T) {
+	rdb := requireReplyRedis(t)
+	queue := asyncjob.NewQueue(rdb)
+	st := newFakeStore()
+	if err := st.SaveTurn(context.Background(), "alex", "sess-correct-fail", 1, "user", "he go school", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(user) error = %v", err)
+	}
+	pipe := &pipeline.Pipeline{
+		Analysis:     []pipeline.Candidate{{Model: "m", LLM: failingAnalysisLLM{}}},
+		FeedbackLang: "ko",
+	}
+	hook := NewCorrectHook(pipe, st, queue)
+
+	var onResultCalled, onFailureCalled bool
+	hook(context.Background(), "alex", "sess-correct-fail", 1, "he go school", "",
+		func(corrected string, issues []protocol.Issue, translation string) { onResultCalled = true },
+		func() { onFailureCalled = true },
+	)
+
+	if onResultCalled {
+		t.Fatalf("onResult was called, want only onFailure on an analyze() error")
+	}
+	if !onFailureCalled {
+		t.Fatalf("onFailure was never called")
+	}
+
+	status, err := st.JobStatus(context.Background(), "alex", "sess-correct-fail", 1, "correction")
+	if err != nil {
+		t.Fatalf("JobStatus() error = %v", err)
+	}
+	if status != store.JobStatusFailed {
+		t.Fatalf("JobStatus() = %q, want %q", status, store.JobStatusFailed)
+	}
+
+	_, turns, err := st.SessionDetail(context.Background(), "alex", "sess-correct-fail")
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	for _, tn := range turns {
+		if tn.Turn == 1 && tn.Role == "user" && tn.Correction != nil {
+			t.Fatalf("persisted correction = %+v, want nil after a failed analysis", tn.Correction)
+		}
 	}
 }
 
@@ -193,6 +246,17 @@ func (f fakeAnalysisLLM) ChatStream(ctx context.Context, model string, msgs []ll
 }
 func (f fakeAnalysisLLM) Complete(ctx context.Context, model string, msgs []llm.Message, jsonMode bool) (string, error) {
 	return f.complete, nil
+}
+
+// failingAnalysisLLM is a Complete that always errors, for exercising the
+// analyze()-fails path (see TestCorrectHookFastPathCallsOnFailureAndMarksJobFailed).
+type failingAnalysisLLM struct{}
+
+func (f failingAnalysisLLM) ChatStream(ctx context.Context, model string, msgs []llm.Message, onToken func(string)) (string, error) {
+	return "", errFakeLLMUnavailable
+}
+func (f failingAnalysisLLM) Complete(ctx context.Context, model string, msgs []llm.Message, jsonMode bool) (string, error) {
+	return "", errFakeLLMUnavailable
 }
 
 // fixedCompleteLLM is a minimal llm.Client double for GenerateTitle (which

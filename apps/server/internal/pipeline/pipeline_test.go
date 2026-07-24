@@ -472,7 +472,13 @@ func TestCorrectEmitsTranslationEvenWhenAlreadyCorrect(t *testing.T) {
 	}
 }
 
-func TestCorrectIgnoresMalformedJSON(t *testing.T) {
+// TestCorrectEmitsFailedOnMalformedJSON guards the fix for a real
+// confusion: a malformed model response used to just drop the event
+// entirely, leaving the frontend's grammar spinner indistinguishable from
+// "still checking" forever. It must now emit a definitive EvCorrection with
+// Failed set and no Correction, so the client can show a distinct failed
+// state instead (see protocol.ServerEvent.Failed).
+func TestCorrectEmitsFailedOnMalformedJSON(t *testing.T) {
 	p := &Pipeline{
 		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 			return "not json", nil
@@ -480,12 +486,17 @@ func TestCorrectIgnoresMalformedJSON(t *testing.T) {
 	}
 	var got []protocol.ServerEvent
 	p.correct(context.Background(), "alex", "sess-1", 1, "whatever", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
-	if len(got) != 0 {
-		t.Fatalf("expected no event for malformed JSON, got %+v", got)
+	if len(got) != 1 || got[0].Type != protocol.EvCorrection {
+		t.Fatalf("expected exactly one correction event, got %+v", got)
+	}
+	if !got[0].Failed || got[0].Correction != nil {
+		t.Fatalf("expected Failed=true and no Correction, got %+v", got[0])
 	}
 }
 
-func TestCorrectIgnoresLLMError(t *testing.T) {
+// TestCorrectEmitsFailedOnLLMError is TestCorrectEmitsFailedOnMalformedJSON's
+// counterpart for the LLM call itself failing (e.g. the backend down).
+func TestCorrectEmitsFailedOnLLMError(t *testing.T) {
 	p := &Pipeline{
 		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 			return "", errors.New("down")
@@ -493,8 +504,11 @@ func TestCorrectIgnoresLLMError(t *testing.T) {
 	}
 	var got []protocol.ServerEvent
 	p.correct(context.Background(), "alex", "sess-1", 1, "whatever", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
-	if len(got) != 0 {
-		t.Fatalf("expected no event when the LLM call fails, got %+v", got)
+	if len(got) != 1 || got[0].Type != protocol.EvCorrection {
+		t.Fatalf("expected exactly one correction event, got %+v", got)
+	}
+	if !got[0].Failed || got[0].Correction != nil {
+		t.Fatalf("expected Failed=true and no Correction, got %+v", got[0])
 	}
 }
 
@@ -1272,6 +1286,20 @@ func TestCorrectionSystemPromptFlagsUnnaturalPhrasingNotJustGrammar(t *testing.T
 	p := correctionSystemPrompt("ko")
 	if !strings.Contains(p, "natural, idiomatic English, not merely grammatically parseable") {
 		t.Fatalf("prompt should require flagging unnatural-but-grammatical phrasing, got: %s", p)
+	}
+}
+
+// TestCorrectionSystemPromptRequiresCorrectThenDiff guards the fix for a
+// one-shot-guess prompt: issues must now be derived from an explicit
+// before/after comparison against "corrected", not judged independently of
+// it, so every explanation traces back to a real textual change.
+func TestCorrectionSystemPromptRequiresCorrectThenDiff(t *testing.T) {
+	p := correctionSystemPrompt("ko")
+	if !strings.Contains(p, "Work in this order") {
+		t.Fatalf("prompt should force a correct-then-diff order, got: %s", p)
+	}
+	if !strings.Contains(p, `"span" MUST be verbatim text from the original sentence, and "suggestion" MUST be verbatim text from "corrected"`) {
+		t.Fatalf("prompt should require span/suggestion to be grounded in an actual diff, got: %s", p)
 	}
 }
 

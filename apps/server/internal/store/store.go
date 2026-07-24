@@ -74,6 +74,16 @@ type Turn struct {
 	// + CompleteAssistantTurn) — both cases mean "nothing to poll for", so
 	// the frontend doesn't need to tell them apart.
 	ReplyStatus string `json:"replyStatus,omitempty"`
+	// CorrectionStatus mirrors ReplyStatus for the grammar-correction job on
+	// a user turn, populated only when it was reserved via
+	// ReserveCorrectionJob. In particular JobStatusFailed here — as opposed
+	// to Correction present with an empty Issues slice — is what lets the
+	// frontend tell "the analysis pass ran and found nothing to flag" apart
+	// from "the analysis pass itself errored", instead of both looking like
+	// a turn that just never got a correction (see GrammarControl in
+	// apps/web/src/App.tsx). Empty for an assistant turn, and for a user
+	// turn saved before this feature existed.
+	CorrectionStatus string `json:"correctionStatus,omitempty"`
 }
 
 // Job status values for the (user_id, session_id, turn, kind) rows tracked
@@ -116,8 +126,21 @@ type Store interface {
 	// for an assistant turn.
 	SaveTurn(ctx context.Context, userID, sessionID string, turn int, role, text string, refined bool, source string) error
 	// SaveCorrection attaches grammar/vocabulary feedback to an existing
-	// user turn. A no-op if that turn hasn't been saved yet.
+	// user turn and, if a correction job was reserved for it (see
+	// ReserveCorrectionJob), marks that job done in the same transaction —
+	// so a poller never observes a "done" status before the correction text
+	// it belongs to is actually visible. A no-op on the turn write if that
+	// turn hasn't been saved yet; a no-op on the job write if none was ever
+	// reserved (e.g. a caller that predates ReserveCorrectionJob or a test
+	// double).
 	SaveCorrection(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction) error
+	// ReserveCorrectionJob writes a "pending" correction-job row for
+	// (userID, sessionID, turn), before that turn's correction job is even
+	// enqueued — mirrors ReserveAssistantTurn, minus the placeholder-text
+	// insert (the user turn this job corrects has already been saved by the
+	// time correction ever runs). A no-op if this exact job was already
+	// reserved (e.g. a race between two connections, or a retry).
+	ReserveCorrectionJob(ctx context.Context, userID, sessionID string, turn int) error
 	// SaveTranslation attaches a native-language translation to an existing
 	// turn. role disambiguates a user turn from its paired assistant turn,
 	// since both share the same turn number. A no-op if that turn hasn't
@@ -147,9 +170,9 @@ type Store interface {
 	FailJob(ctx context.Context, userID, sessionID string, turn int, kind, errMsg string) error
 	// JobStatus returns (userID, sessionID, turn, kind)'s current status
 	// (JobStatusPending/"processing"/JobStatusDone/JobStatusFailed), or ""
-	// if no such job was ever reserved (e.g. a turn from before this
-	// feature existed, or a kind other than "reply" that isn't tracked this
-	// way).
+	// if no such job was ever reserved (e.g. a turn from before "reply" or
+	// "correction" job tracking existed, or a kind that isn't tracked this
+	// way at all).
 	JobStatus(ctx context.Context, userID, sessionID string, turn int, kind string) (string, error)
 
 	// LastTurn returns the highest turn number already persisted for a

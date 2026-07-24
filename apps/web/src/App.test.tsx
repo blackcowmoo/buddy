@@ -663,6 +663,49 @@ describe("grammar feedback button", () => {
     await screen.findByText("hi");
     expect(await screen.findByRole("button", { name: "문법 확인 중" })).toBeDisabled();
   });
+
+  // Guards the fix for the actual reported confusion: a failed analysis pass
+  // used to just never emit an event, so the spinner hung forever with no
+  // way to tell it apart from "still checking" or, once the turn aged out of
+  // the frontend's recently-active window, from "already correct" (both
+  // rendered nothing). Failed must now be its own distinct, visible state.
+  it("shows a distinct failed state when the analysis pass itself errors", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "final_transcript", turn: 1, text: "I are fine." }));
+    act(() => emit({ type: "correction", turn: 1, failed: true }));
+
+    const btn = await screen.findByRole("button", {
+      name: "문법 피드백 열기 (확인 실패, 자동으로 다시 시도해요)",
+    });
+    expect(btn).not.toBeDisabled();
+    await user.click(btn);
+    expect(await screen.findByText(/문법 확인에 실패했어요/)).toBeInTheDocument();
+  });
+
+  // Unlike the old ambiguous "no correction saved" case (still hidden for a
+  // stale session, see the test above), a durably-recorded failure is shown
+  // regardless of how long ago the session was active — the backend already
+  // knows for a fact the job failed, so there's nothing left to guess at
+  // (see store.Turn.CorrectionStatus).
+  it("shows the failed state for a hydrated turn with a durably-failed correction job, even in a stale session", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+      turns: [{ turn: 1, role: "user", text: "hi", refined: false, correctionStatus: "failed" }],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+
+    await screen.findByText("hi");
+    expect(
+      await screen.findByRole("button", { name: "문법 피드백 열기 (확인 실패, 자동으로 다시 시도해요)" }),
+    ).toBeInTheDocument();
+  });
 });
 
 // Session-wide feedback list button, next to the ☰ menu in the chat header —

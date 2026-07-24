@@ -212,6 +212,7 @@ func (f *fakeStore) LastTurn(ctx context.Context, userID, sessionID string) (int
 	return last, nil
 }
 
+// SaveCorrection mirrors MySQLStore's text-write + job-done update.
 func (f *fakeStore) SaveCorrection(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -227,6 +228,35 @@ func (f *fakeStore) SaveCorrection(ctx context.Context, userID, sessionID string
 	cc := c
 	t.Correction = &cc
 	d.turns[tk] = t
+	if d.jobs != nil {
+		jk := fmt.Sprintf("%d|correction", turn)
+		if j, exists := d.jobs[jk]; exists {
+			j.status = store.JobStatusDone
+			d.jobs[jk] = j
+		}
+	}
+	return nil
+}
+
+// ReserveCorrectionJob mirrors MySQLStore's pending-job-row semantics: a
+// no-op on a second call for the same turn, so a race never clobbers an
+// already-completed job's status.
+func (f *fakeStore) ReserveCorrectionJob(ctx context.Context, userID, sessionID string, turn int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := fakeStoreKey(userID, sessionID)
+	d := f.sessions[key]
+	if d == nil {
+		d = &fakeSession{userID: userID, turns: map[string]store.Turn{}}
+		f.sessions[key] = d
+	}
+	if d.jobs == nil {
+		d.jobs = map[string]fakeJob{}
+	}
+	jk := fmt.Sprintf("%d|correction", turn)
+	if _, exists := d.jobs[jk]; !exists {
+		d.jobs[jk] = fakeJob{status: store.JobStatusPending}
+	}
 	return nil
 }
 

@@ -150,10 +150,13 @@ type Pipeline struct {
 // ReplyHook is Pipeline.ReplyHook's type — see that field's doc comment.
 type ReplyHook func(ctx context.Context, userID, sessionID string, turn int, msgs []llm.Message, fallback string, onToken func(string), onDone func(string))
 
-// CorrectHook is Pipeline.CorrectHook's type. onResult delivers the parsed
-// analysis result exactly once, however (and on whichever replica) it was
-// produced.
-type CorrectHook func(ctx context.Context, userID, sessionID string, turn int, text, contextMsg string, onResult func(corrected string, issues []protocol.Issue, translation string))
+// CorrectHook is Pipeline.CorrectHook's type. Exactly one of onResult/
+// onFailure fires, however (and on whichever replica) the job settles:
+// onResult delivers the parsed analysis result, onFailure signals that the
+// analysis pass itself errored (LLM call failed, or its output didn't
+// parse) — see correct()'s doc comment for why the live connection needs to
+// hear about a failure too, not just a durably-persisted job status.
+type CorrectHook func(ctx context.Context, userID, sessionID string, turn int, text, contextMsg string, onResult func(corrected string, issues []protocol.Issue, translation string), onFailure func())
 
 // TranslateHook is Pipeline.TranslateHook's type. onResult delivers the
 // finished translation exactly once, however (and on whichever replica) it
@@ -638,14 +641,19 @@ func (p *Pipeline) refine(ctx context.Context, userID, sessionID string, sess *s
 // the caller's turn-scoped or connection ctx directly: a barge-in or
 // disconnect must not silently drop a grammar-check/translation result that
 // was already in flight.
+//
+// Both onResult and onFailure emit an EvCorrection — the client hangs a
+// per-turn pending/spinner state off this event type, so it needs a
+// definitive "the check finished" signal regardless of outcome, not just
+// when there's a card to show. Without onFailure firing on an analyze()
+// error, that spinner used to hang forever (live) or quietly vanish once the
+// turn aged out of the frontend's "recently active" window (reloaded) —
+// indistinguishable from "already correct", which is exactly the confusion
+// this exists to remove.
 func (p *Pipeline) correct(ctx context.Context, userID, sessionID string, turn int, text, contextMsg string, emit Emit) {
 	onResult := func(corrected string, issues []protocol.Issue, translation string) {
-		// Always emit, even when there's nothing to teach (Corrected == text,
-		// empty Issues) — the client hangs a per-turn pending/spinner state
-		// off this event, so it needs a definitive "the check finished"
-		// signal regardless of outcome, not just when there's a card to
-		// show. The translation below fires independently so a learner
-		// still gets a meaning check even on an already-correct sentence.
+		// The translation fires independently so a learner still gets a
+		// meaning check even on an already-correct sentence.
 		emit(protocol.ServerEvent{
 			Type: protocol.EvCorrection,
 			Turn: turn,
@@ -659,13 +667,17 @@ func (p *Pipeline) correct(ctx context.Context, userID, sessionID string, turn i
 			emit(protocol.ServerEvent{Type: protocol.EvUserTranslation, Turn: turn, Text: translation})
 		}
 	}
+	onFailure := func() {
+		emit(protocol.ServerEvent{Type: protocol.EvCorrection, Turn: turn, Failed: true})
+	}
 	if p.CorrectHook != nil {
-		p.CorrectHook(ctx, userID, sessionID, turn, text, contextMsg, onResult)
+		p.CorrectHook(ctx, userID, sessionID, turn, text, contextMsg, onResult, onFailure)
 		return
 	}
 	corrected, issues, translation, err := p.AnalyzeCorrection(ctx, text, contextMsg)
 	if err != nil {
 		log.Printf("correct: %v", err)
+		onFailure()
 		return
 	}
 	onResult(corrected, issues, translation)
@@ -904,6 +916,14 @@ func renderCorrectionInput(contextMsg, text string) string {
 // fields written in the learner's native language, so the reasoning behind
 // each fix is taught in English first and then made easy to understand via
 // its translation, rather than being authored directly in the native language.
+//
+// The "Work in this order" block below exists so each issue is derived from
+// an actual before/after comparison instead of being judged in one holistic
+// guess: a model asked for "corrected" and "issues" in the same breath tends
+// to rationalize issues that don't match what it actually changed, or miss
+// ones it did change but forgot to mention. Forcing correct-then-diff, plus
+// the verbatim span/suggestion rule below, ties every explanation back to a
+// specific textual change instead of a generic restated rule.
 func correctionSystemPrompt(lang string) string {
 	native := languageName(lang)
 	return fmt.Sprintf(`You are an English writing coach for a %[1]s-speaking learner.
@@ -912,18 +932,33 @@ It may be preceded by a "Conversation so far" block for context; if so, correct
 only the sentence after "Sentence to correct:", and use the context solely to
 judge whether that sentence fits (e.g. pronoun/tense agreement with earlier
 turns, actually answering what was asked) — never correct the context itself.
+
+Work in this order, silently — output only the final JSON, never your
+intermediate steps:
+1. First rewrite the sentence into natural, idiomatic English. This becomes
+   "corrected". Fix everything a native speaker would actually change, not
+   just outright grammar errors (see "Already correct" below).
+2. Then compare "corrected" against the original sentence, word by word, and
+   list every difference as an issue. Never report an issue that isn't a
+   difference you actually made in step 1, and never leave a difference from
+   step 1 unreported.
+3. For each issue, write "explanation" by naming that specific before →
+   after change and why it was needed (e.g. "go" → "goes": the subject "he"
+   is third person singular) — not a generic rule disconnected from this
+   sentence.
 Return STRICT JSON only, no prose, in exactly this shape:
 {"corrected":"<the sentence rewritten in correct, natural English>",
  "translation":"<natural, colloquial %[1]s translation of the ORIGINAL sentence under correction, so the learner can check it against what they meant to say>",
- "issues":[{"type":"grammar|vocabulary|phrasing|context","span":"<original English text>","suggestion":"<the English fix>","explanation":"<why it is wrong, written in English, short and kind>","explanationTranslation":"<natural %[1]s translation of explanation, so the reasoning is easy to understand>"}]}
+ "issues":[{"type":"grammar|vocabulary|phrasing|context","span":"<the exact original words this issue changes>","suggestion":"<the exact replacement words, as they appear in corrected>","explanation":"<the specific before -> after change and why, written in English, short and kind>","explanationTranslation":"<natural %[1]s translation of explanation, so the reasoning is easy to understand>"}]}
 Rules:
 - "corrected", "span", "suggestion", and "explanation" MUST stay in English.
 - "translation" and "explanationTranslation" MUST be written in %[1]s.
 - "translation" MUST translate the ORIGINAL sentence, not the corrected one.
 - "explanationTranslation" MUST be a translation of "explanation", not a new or different explanation.
-- Use "context" as the issue type only when the sentence is fine in isolation but doesn't fit the conversation (wrong pronoun/tense given earlier turns, doesn't answer what was actually asked, etc.).
+- "span" MUST be verbatim text from the original sentence, and "suggestion" MUST be verbatim text from "corrected" — if you can't point to both, it isn't a real issue. The one exception is the "context" type below, where the fix isn't a simple word swap.
+- Use "context" as the issue type only when the sentence is fine in isolation but doesn't fit the conversation (wrong pronoun/tense given earlier turns, doesn't answer what was actually asked, etc.) — "span"/"suggestion" may describe the mismatch in that case instead of quoting exact words.
 - "Already correct" means natural, idiomatic English, not merely grammatically parseable. A sentence with no outright grammar error can still need a "phrasing" or "vocabulary" issue if a native speaker would not say it that way — e.g. an unnatural collocation ("using AI in working" instead of "using AI in our work"), a redundant or missing article ("the AI" for a general concept instead of "AI"), or a stiff/awkward word choice. Flag these too.
-- If the sentence is already correct, return the same text and an empty issues array — still fill in "translation".`, native)
+- If the sentence is already correct, "corrected" equals the original and "issues" is empty — still fill in "translation".`, native)
 }
 
 // translationSystemPrompt builds a plain-text translation prompt, reusing

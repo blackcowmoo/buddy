@@ -1120,3 +1120,143 @@ func TestMySQLJobStatusEmptyWhenNeverReserved(t *testing.T) {
 		}
 	}
 }
+
+// ---- ReserveCorrectionJob / SaveCorrection / FailJob (correction) --------
+
+func TestMySQLReserveCorrectionJobCreatesPendingStatus(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	sessionID := "sess-reserve-correction"
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "I go to school yesterday", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(user) error = %v", err)
+	}
+	if err := st.ReserveCorrectionJob(ctx, "alex", sessionID, 1); err != nil {
+		t.Fatalf("ReserveCorrectionJob() error = %v", err)
+	}
+
+	status, err := st.JobStatus(ctx, "alex", sessionID, 1, "correction")
+	if err != nil {
+		t.Fatalf("JobStatus() error = %v", err)
+	}
+	if status != JobStatusPending {
+		t.Fatalf("JobStatus() = %q, want %q", status, JobStatusPending)
+	}
+
+	_, turns, err := st.SessionDetail(ctx, "alex", sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	var user *Turn
+	for i := range turns {
+		if turns[i].Turn == 1 && turns[i].Role == "user" {
+			user = &turns[i]
+		}
+	}
+	if user == nil {
+		t.Fatalf("no user turn found: %+v", turns)
+	}
+	if user.CorrectionStatus != JobStatusPending {
+		t.Fatalf("CorrectionStatus = %q, want %q", user.CorrectionStatus, JobStatusPending)
+	}
+	if user.Correction != nil {
+		t.Fatalf("Correction = %+v, want nil before the job finishes", user.Correction)
+	}
+}
+
+// TestMySQLSaveCorrectionMarksJobDone guards the atomicity SaveCorrection now
+// gives the correction job status, mirroring CompleteAssistantTurn: a poller
+// must never see CorrectionStatus == done before the Correction it belongs to
+// is actually readable, and it must not need a reservation to still work
+// (backward-compatible with callers/tests that save a correction directly).
+func TestMySQLSaveCorrectionMarksJobDone(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	sessionID := "sess-save-correction-done"
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "I go to school yesterday", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(user) error = %v", err)
+	}
+	if err := st.ReserveCorrectionJob(ctx, "alex", sessionID, 1); err != nil {
+		t.Fatalf("ReserveCorrectionJob() error = %v", err)
+	}
+	c := protocol.Correction{
+		Original:  "I go to school yesterday",
+		Corrected: "I went to school yesterday",
+		Issues: []protocol.Issue{
+			{Type: "grammar", Span: "go", Suggestion: "went", Explanation: "past time needs past tense"},
+		},
+	}
+	if err := st.SaveCorrection(ctx, "alex", sessionID, 1, c); err != nil {
+		t.Fatalf("SaveCorrection() error = %v", err)
+	}
+
+	status, err := st.JobStatus(ctx, "alex", sessionID, 1, "correction")
+	if err != nil {
+		t.Fatalf("JobStatus() error = %v", err)
+	}
+	if status != JobStatusDone {
+		t.Fatalf("JobStatus() = %q, want %q", status, JobStatusDone)
+	}
+
+	_, turns, err := st.SessionDetail(ctx, "alex", sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	var found bool
+	for _, tn := range turns {
+		if tn.Turn == 1 && tn.Role == "user" {
+			found = true
+			if tn.CorrectionStatus != JobStatusDone {
+				t.Fatalf("CorrectionStatus = %q, want %q", tn.CorrectionStatus, JobStatusDone)
+			}
+			if tn.Correction == nil || tn.Correction.Corrected != "I went to school yesterday" {
+				t.Fatalf("Correction = %+v, want the saved correction", tn.Correction)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no user turn found: %+v", turns)
+	}
+}
+
+// TestMySQLFailJobSetsCorrectionFailedStatus is the case the frontend
+// actually needed: a correction job that errored out must be distinguishable
+// from "the sentence needed no fix" (Correction present, empty Issues) —
+// both look identical in buddy_turns.correction alone, so the frontend relies
+// on CorrectionStatus == JobStatusFailed instead (see store.Turn.CorrectionStatus).
+func TestMySQLFailJobSetsCorrectionFailedStatus(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	sessionID := "sess-fail-correction"
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "I go to school yesterday", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(user) error = %v", err)
+	}
+	if err := st.ReserveCorrectionJob(ctx, "alex", sessionID, 1); err != nil {
+		t.Fatalf("ReserveCorrectionJob() error = %v", err)
+	}
+	if err := st.FailJob(ctx, "alex", sessionID, 1, "correction", "llm: bad json"); err != nil {
+		t.Fatalf("FailJob() error = %v", err)
+	}
+
+	status, err := st.JobStatus(ctx, "alex", sessionID, 1, "correction")
+	if err != nil {
+		t.Fatalf("JobStatus() error = %v", err)
+	}
+	if status != JobStatusFailed {
+		t.Fatalf("JobStatus() = %q, want %q", status, JobStatusFailed)
+	}
+
+	_, turns, err := st.SessionDetail(ctx, "alex", sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	for _, tn := range turns {
+		if tn.Turn == 1 && tn.Role == "user" {
+			if tn.CorrectionStatus != JobStatusFailed {
+				t.Fatalf("CorrectionStatus = %q, want %q", tn.CorrectionStatus, JobStatusFailed)
+			}
+			if tn.Correction != nil {
+				t.Fatalf("Correction = %+v, want nil on a failed job", tn.Correction)
+			}
+		}
+	}
+}

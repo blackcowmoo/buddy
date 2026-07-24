@@ -40,6 +40,11 @@ export interface ServerEvent {
   // Resolved session (chat room) ID. Only set on "ready".
   session?: string;
   correction?: Correction;
+  // Only on "correction": true when the analysis pass itself errored (LLM
+  // call failed, or its output didn't parse) — as opposed to `correction`
+  // present with an empty `issues` array, which means the pass ran fine and
+  // found nothing to flag. `correction` is absent when this is true.
+  failed?: boolean;
 }
 
 export type ClientMsg = { type: "text"; text: string };
