@@ -1300,7 +1300,15 @@ func newTestServerWithTitleLLM(t *testing.T, st store.Store, completeFn func(msg
 // Handler.generateTitle), so tests can't observe it synchronously.
 func waitForTitle(t *testing.T, st store.Store, userID, sessionID, notWant string) string {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second) // CI runners can be much slower than local
+	// Must exceed titleTimeout (ws.go) — that's the budget generateTitleDirect's
+	// own LLM call context is allowed, so waiting any less here means this can
+	// time out on a legitimately-still-in-flight call, not just a stuck one.
+	// The extra 10s on top covers scheduling delay: generateTitle runs off a
+	// bare `go` with no bound on concurrent goroutines, and by this point in
+	// the file dozens of earlier tests have each fired their own (title/
+	// correct/translateAssistant) goroutines that may still be running, so a
+	// busy CI runner can leave this one waiting on the scheduler, not the LLM.
+	deadline := time.Now().Add(titleTimeout + 10*time.Second)
 	for time.Now().Before(deadline) {
 		meta, _, err := st.SessionDetail(context.Background(), userID, sessionID)
 		if err == nil && meta.Title != notWant {
