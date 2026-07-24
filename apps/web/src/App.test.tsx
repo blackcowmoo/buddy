@@ -214,6 +214,7 @@ describe("room list", () => {
       { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
     ]);
     vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
       session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
       turns: [
         { turn: 1, role: "user", text: "hi", refined: false },
@@ -226,8 +227,97 @@ describe("room list", () => {
 
     expect(await screen.findByText("hi")).toBeInTheDocument();
     expect(await screen.findByText("hello!")).toBeInTheDocument();
-    expect(fetchSessionDetail).toHaveBeenCalledWith("s1");
+    expect(fetchSessionDetail).toHaveBeenCalledWith("s1", { limit: 30 });
     expect(lastClientInstance().connect).toHaveBeenCalledWith("s1");
+  });
+
+  it("scrolls the transcript to the bottom when entering a room, so the latest turn is visible", async () => {
+    // jsdom never computes real layout, so .scrollHeight is always 0 — stub
+    // it to a value that would be "scrolled up" by default, and confirm
+    // App.tsx actively drives .scrollTop to match it on entry rather than
+    // leaving the view wherever it happened to render (the reported bug:
+    // reopening a room landed on the oldest turn, not the latest).
+    const scrollHeightSpy = vi
+      .spyOn(HTMLElement.prototype, "scrollHeight", "get")
+      .mockReturnValue(2000);
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
+      session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+      turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+    expect(await screen.findByText("hi")).toBeInTheDocument();
+
+    const convo = document.querySelector(".convo");
+    if (!convo) throw new Error("expected .convo container to be rendered");
+    expect((convo as HTMLElement).scrollTop).toBe(2000);
+
+    scrollHeightSpy.mockRestore();
+  });
+
+  it("scrolling near the top of a room with more history loads and prepends an older page", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValueOnce({
+      hasMore: true,
+      session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+      turns: [
+        { turn: 5, role: "user", text: "recent hi", refined: false },
+        { turn: 5, role: "assistant", text: "recent hello", refined: false },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+    expect(await screen.findByText("recent hi")).toBeInTheDocument();
+
+    vi.mocked(fetchSessionDetail).mockResolvedValueOnce({
+      hasMore: false,
+      session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+      turns: [
+        { turn: 4, role: "user", text: "older hi", refined: false },
+        { turn: 4, role: "assistant", text: "older hello", refined: false },
+      ],
+    });
+    const convo = document.querySelector(".convo");
+    if (!convo) throw new Error("expected .convo container to be rendered");
+    fireEvent.scroll(convo);
+
+    expect(await screen.findByText("older hi")).toBeInTheDocument();
+    expect(fetchSessionDetail).toHaveBeenLastCalledWith("s1", { before: 5, limit: 30 });
+
+    // Prepended, not appended: the older turn reads before the recent one.
+    const rows = Array.from(convo.querySelectorAll(".bubble")).map((n) => n.textContent);
+    expect(rows.indexOf("older hi")).toBeLessThan(rows.indexOf("recent hi"));
+  });
+
+  it("does not request another page on scroll once hasMore is false", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
+      session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
+      turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+    expect(await screen.findByText("hi")).toBeInTheDocument();
+
+    vi.mocked(fetchSessionDetail).mockClear();
+    const convo = document.querySelector(".convo");
+    if (!convo) throw new Error("expected .convo container to be rendered");
+    fireEvent.scroll(convo);
+    await Promise.resolve();
+
+    expect(fetchSessionDetail).not.toHaveBeenCalled();
   });
 
   it("asks for confirmation, deletes, and removes the row on confirmed success", async () => {
@@ -366,13 +456,14 @@ describe("browser history", () => {
   it("restores an open room from the URL hash on mount, e.g. after a refresh", async () => {
     vi.mocked(parseRoomHash).mockReturnValue({ view: "chat", id: "s1" });
     vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
       session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
       turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
     });
     render(<App />);
 
     expect(await screen.findByText("hi")).toBeInTheDocument();
-    expect(fetchSessionDetail).toHaveBeenCalledWith("s1");
+    expect(fetchSessionDetail).toHaveBeenCalledWith("s1", { limit: 30 });
     expect(lastClientInstance().connect).toHaveBeenCalledWith("s1");
   });
 
@@ -399,6 +490,7 @@ describe("browser history", () => {
 
   it("a popstate forward into a room hydrates and reconnects it", async () => {
     vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
       session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
       turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
     });
@@ -595,6 +687,7 @@ describe("input source indicator", () => {
       { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
     ]);
     vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
       session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
       turns: [{ turn: 1, role: "user", text: "hi", refined: false, source: "voice" }],
     });
@@ -640,6 +733,7 @@ describe("grammar feedback button", () => {
       { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
     ]);
     vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
       session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
       turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
     });
@@ -664,6 +758,7 @@ describe("grammar feedback button", () => {
       { id: "s1", title: "hello there", createdAt: 1, updatedAt: Math.floor(Date.now() / 1000) },
     ]);
     vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
       session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: Math.floor(Date.now() / 1000) },
       turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
     });
@@ -705,6 +800,7 @@ describe("grammar feedback button", () => {
       { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
     ]);
     vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
       session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
       turns: [{ turn: 1, role: "user", text: "hi", refined: false, correctionStatus: "failed" }],
     });
@@ -808,6 +904,7 @@ describe("feedback summary", () => {
       { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
     ]);
     vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
       session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
       turns: [
         {
@@ -849,6 +946,7 @@ describe("compaction info", () => {
       { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
     ]);
     vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
       session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
       turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
     });
@@ -1077,6 +1175,7 @@ describe("per-message translations", () => {
       { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
     ]);
     vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
       session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
       turns: [
         { turn: 1, role: "user", text: "hi", refined: false, translation: "안녕" },
@@ -1121,6 +1220,7 @@ describe("per-message translations", () => {
       { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
     ]);
     vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
       session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
       turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
     });
@@ -1139,6 +1239,7 @@ describe("per-message translations", () => {
     // An empty-text turn (e.g. a stray refined_transcript artifact) never
     // counts as "missing a translation" — there's nothing to translate.
     vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
       session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
       turns: [{ turn: 1, role: "user", text: "", refined: false }],
     });
@@ -1163,6 +1264,7 @@ describe("hydrated reply status", () => {
       { id: "s1", title: "hello there", createdAt: 1, updatedAt: Date.now() / 1000 },
     ]);
     vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
       session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: Date.now() / 1000 },
       turns: [
         { turn: 1, role: "user", text: "hi", refined: false },
@@ -1198,6 +1300,7 @@ describe("hydrated reply status", () => {
         { id: "s1", title: "hello there", createdAt: 1, updatedAt: Date.now() / 1000 },
       ]);
       vi.mocked(fetchSessionDetail).mockResolvedValueOnce({
+        hasMore: false,
         session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: Date.now() / 1000 },
         turns: [
           { turn: 1, role: "user", text: "hi", refined: false },
@@ -1212,6 +1315,7 @@ describe("hydrated reply status", () => {
       expect(screen.getByRole("status", { name: "답변 생성 중" })).toBeInTheDocument();
 
       vi.mocked(fetchSessionDetail).mockResolvedValue({
+        hasMore: false,
         session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: Date.now() / 1000 },
         turns: [
           { turn: 1, role: "user", text: "hi", refined: false },
@@ -1255,6 +1359,7 @@ describe("date dividers and message times", () => {
       { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
     ]);
     vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
       session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
       turns: [
         { turn: 1, role: "user", text: "hi", refined: false, createdAt: yesterdayUser },

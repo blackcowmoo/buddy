@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"testing"
@@ -266,7 +267,7 @@ func TestMySQLSaveTurnCreatesSessionWithTitleFromFirstMessage(t *testing.T) {
 	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "My name is Alex and I like hiking.", false, protocol.SourceText); err != nil {
 		t.Fatalf("SaveTurn() error = %v", err)
 	}
-	meta, _, err := st.SessionDetail(ctx, "alex", sessionID)
+	meta, _, _, err := st.SessionDetail(ctx, "alex", sessionID, 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -349,7 +350,7 @@ func TestMySQLSaveTurnTitleSurvivesLaterTurns(t *testing.T) {
 	if err := st.SaveTurn(ctx, "alex", sessionID, 2, "user", "second message", false, protocol.SourceText); err != nil {
 		t.Fatalf("SaveTurn(2) error = %v", err)
 	}
-	meta, _, err := st.SessionDetail(ctx, "alex", sessionID)
+	meta, _, _, err := st.SessionDetail(ctx, "alex", sessionID, 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -374,7 +375,7 @@ func TestMySQLSaveTurnGreetingAloneCreatesVisibleSession(t *testing.T) {
 	if err := st.SaveTurn(ctx, userID, sessionID, 0, "assistant", "Hi! How was your day?", false, ""); err != nil {
 		t.Fatalf("SaveTurn(greeting) error = %v", err)
 	}
-	meta, turns, err := st.SessionDetail(ctx, userID, sessionID)
+	meta, turns, _, err := st.SessionDetail(ctx, userID, sessionID, 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -407,7 +408,7 @@ func TestMySQLSaveTurnUserReplyReplacesGreetingTitle(t *testing.T) {
 	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "It was great, thanks!", false, protocol.SourceText); err != nil {
 		t.Fatalf("SaveTurn(reply) error = %v", err)
 	}
-	meta, _, err := st.SessionDetail(ctx, "alex", sessionID)
+	meta, _, _, err := st.SessionDetail(ctx, "alex", sessionID, 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -434,7 +435,7 @@ func TestMySQLSaveGeneratedTitleOverwritesPlaceholder(t *testing.T) {
 	if err := st.SaveGeneratedTitle(ctx, "alex", sessionID, "Hiking Trip Plans"); err != nil {
 		t.Fatalf("SaveGeneratedTitle() error = %v", err)
 	}
-	meta, _, err := st.SessionDetail(ctx, "alex", sessionID)
+	meta, _, _, err := st.SessionDetail(ctx, "alex", sessionID, 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -461,7 +462,7 @@ func TestMySQLSaveGeneratedTitleIsWriteOnce(t *testing.T) {
 	if err := st.SaveGeneratedTitle(ctx, "alex", sessionID, "Second Title"); err != nil {
 		t.Fatalf("SaveGeneratedTitle(2) error = %v", err)
 	}
-	meta, _, err := st.SessionDetail(ctx, "alex", sessionID)
+	meta, _, _, err := st.SessionDetail(ctx, "alex", sessionID, 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -476,7 +477,7 @@ func TestMySQLSaveGeneratedTitleNoopWhenSessionMissing(t *testing.T) {
 	if err := st.SaveGeneratedTitle(ctx, "alex", "sess-missing-for-title", "Some Title"); err != nil {
 		t.Fatalf("SaveGeneratedTitle() error = %v, want nil (no-op)", err)
 	}
-	if _, _, err := st.SessionDetail(ctx, "alex", "sess-missing-for-title"); !errors.Is(err, ErrNotFound) {
+	if _, _, _, err := st.SessionDetail(ctx, "alex", "sess-missing-for-title", 0, 0); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SessionDetail() error = %v, want ErrNotFound (no row should have been created)", err)
 	}
 }
@@ -491,7 +492,7 @@ func TestMySQLSaveTurnUpsertsRefinedText(t *testing.T) {
 	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "refined transcript", true, protocol.SourceVoice); err != nil {
 		t.Fatalf("SaveTurn(refined) error = %v", err)
 	}
-	_, turns, err := st.SessionDetail(ctx, "alex", sessionID)
+	_, turns, _, err := st.SessionDetail(ctx, "alex", sessionID, 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -517,7 +518,7 @@ func TestMySQLSaveTurnPersistsSource(t *testing.T) {
 	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "assistant", "reply", false, ""); err != nil {
 		t.Fatalf("SaveTurn(assistant) error = %v", err)
 	}
-	_, turns, err := st.SessionDetail(ctx, "alex", sessionID)
+	_, turns, _, err := st.SessionDetail(ctx, "alex", sessionID, 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -545,7 +546,7 @@ func TestMySQLSaveTurnUpsertsSource(t *testing.T) {
 	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "typed then corrected by voice", false, protocol.SourceVoice); err != nil {
 		t.Fatalf("SaveTurn(voice) error = %v", err)
 	}
-	_, turns, err := st.SessionDetail(ctx, "alex", sessionID)
+	_, turns, _, err := st.SessionDetail(ctx, "alex", sessionID, 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -571,7 +572,7 @@ func TestMySQLSaveCorrectionAttachesToExistingTurn(t *testing.T) {
 	if err := st.SaveCorrection(ctx, "alex", sessionID, 1, c); err != nil {
 		t.Fatalf("SaveCorrection() error = %v", err)
 	}
-	_, turns, err := st.SessionDetail(ctx, "alex", sessionID)
+	_, turns, _, err := st.SessionDetail(ctx, "alex", sessionID, 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -594,7 +595,7 @@ func TestMySQLSaveCorrectionNoopWhenTurnMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SaveCorrection() error = %v, want nil (no-op)", err)
 	}
-	_, _, err = st.SessionDetail(ctx, "alex", "sess-missing-turn")
+	_, _, _, err = st.SessionDetail(ctx, "alex", "sess-missing-turn", 0, 0)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SessionDetail() error = %v, want ErrNotFound (no session should have been created)", err)
 	}
@@ -621,7 +622,7 @@ func TestMySQLSaveTranslationAttachesToCorrectRole(t *testing.T) {
 	if err := st.SaveTranslation(ctx, "alex", sessionID, 1, "assistant", "좋아요!"); err != nil {
 		t.Fatalf("SaveTranslation(assistant) error = %v", err)
 	}
-	_, turns, err := st.SessionDetail(ctx, "alex", sessionID)
+	_, turns, _, err := st.SessionDetail(ctx, "alex", sessionID, 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -646,7 +647,7 @@ func TestMySQLSaveTranslationNoopWhenTurnMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SaveTranslation() error = %v, want nil (no-op)", err)
 	}
-	_, _, err = st.SessionDetail(ctx, "alex", "sess-missing-turn-translation")
+	_, _, _, err = st.SessionDetail(ctx, "alex", "sess-missing-turn-translation", 0, 0)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SessionDetail() error = %v, want ErrNotFound (no session should have been created)", err)
 	}
@@ -662,7 +663,7 @@ func TestMySQLSessionDetailOrdersUserBeforeAssistantWithinATurn(t *testing.T) {
 	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "assistant", "assistant text", false, ""); err != nil {
 		t.Fatalf("SaveTurn(assistant) error = %v", err)
 	}
-	_, turns, err := st.SessionDetail(ctx, "alex", sessionID)
+	_, turns, _, err := st.SessionDetail(ctx, "alex", sessionID, 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -681,7 +682,7 @@ func TestMySQLSessionDetailIncludesTurnCreatedAt(t *testing.T) {
 	}
 	after := time.Now().Unix()
 
-	_, turns, err := st.SessionDetail(ctx, "alex", sessionID)
+	_, turns, _, err := st.SessionDetail(ctx, "alex", sessionID, 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -700,7 +701,7 @@ func TestMySQLSessionDetailCreatedAtSurvivesRefinedUpsert(t *testing.T) {
 	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "i are hungry", false, protocol.SourceVoice); err != nil {
 		t.Fatalf("SaveTurn(fast) error = %v", err)
 	}
-	_, before, err := st.SessionDetail(ctx, "alex", sessionID)
+	_, before, _, err := st.SessionDetail(ctx, "alex", sessionID, 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -709,7 +710,7 @@ func TestMySQLSessionDetailCreatedAtSurvivesRefinedUpsert(t *testing.T) {
 	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "I am hungry", true, protocol.SourceVoice); err != nil {
 		t.Fatalf("SaveTurn(refined) error = %v", err)
 	}
-	_, after, err := st.SessionDetail(ctx, "alex", sessionID)
+	_, after, _, err := st.SessionDetail(ctx, "alex", sessionID, 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -719,6 +720,124 @@ func TestMySQLSessionDetailCreatedAtSurvivesRefinedUpsert(t *testing.T) {
 	}
 	if after[0].CreatedAt != before[0].CreatedAt {
 		t.Fatalf("CreatedAt changed on refine upsert: before = %d, after = %d", before[0].CreatedAt, after[0].CreatedAt)
+	}
+}
+
+// seedTurns saves a user+assistant pair for each of turns 1..n in sessionID,
+// for the pagination tests below — each pair is one "turn" as the frontend's
+// scroll-back page cursor counts them.
+func seedTurns(t *testing.T, st *MySQLStore, userID, sessionID string, n int) {
+	t.Helper()
+	ctx := context.Background()
+	for turn := 1; turn <= n; turn++ {
+		if err := st.SaveTurn(ctx, userID, sessionID, turn, "user", fmt.Sprintf("user turn %d", turn), false, protocol.SourceText); err != nil {
+			t.Fatalf("SaveTurn(user, %d) error = %v", turn, err)
+		}
+		if err := st.SaveTurn(ctx, userID, sessionID, turn, "assistant", fmt.Sprintf("assistant turn %d", turn), false, ""); err != nil {
+			t.Fatalf("SaveTurn(assistant, %d) error = %v", turn, err)
+		}
+	}
+}
+
+func TestMySQLSessionDetailPageReturnsMostRecentTurnsFirstAndFlagsHasMore(t *testing.T) {
+	st := requireStore(t)
+	sessionID := "sess-page-latest"
+	seedTurns(t, st, "alex", sessionID, 5)
+
+	_, turns, hasMore, err := st.SessionDetail(context.Background(), "alex", sessionID, 0, 2)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if !hasMore {
+		t.Fatalf("hasMore = false, want true (turns 1-3 still precede this page)")
+	}
+	wantTurns := []int{4, 4, 5, 5}
+	if len(turns) != len(wantTurns) {
+		t.Fatalf("turns = %+v, want 4 rows (turns 4 and 5, user+assistant each)", turns)
+	}
+	for i, want := range wantTurns {
+		if turns[i].Turn != want {
+			t.Fatalf("turns[%d].Turn = %d, want %d (turns = %+v)", i, turns[i].Turn, want, turns)
+		}
+	}
+}
+
+func TestMySQLSessionDetailPageHasMoreFalseWhenPageCoversWholeHistory(t *testing.T) {
+	st := requireStore(t)
+	sessionID := "sess-page-exact"
+	seedTurns(t, st, "alex", sessionID, 3)
+
+	_, turns, hasMore, err := st.SessionDetail(context.Background(), "alex", sessionID, 0, 3)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if hasMore {
+		t.Fatalf("hasMore = true, want false (exactly 3 turns exist and the page holds all 3)")
+	}
+	if len(turns) != 6 {
+		t.Fatalf("turns = %+v, want 6 rows (3 turns, user+assistant each)", turns)
+	}
+}
+
+func TestMySQLSessionDetailPageCursorWalksBackThroughOlderTurns(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	sessionID := "sess-page-cursor"
+	seedTurns(t, st, "alex", sessionID, 5)
+
+	_, page1, hasMore1, err := st.SessionDetail(ctx, "alex", sessionID, 0, 2)
+	if err != nil {
+		t.Fatalf("SessionDetail(page1) error = %v", err)
+	}
+	if !hasMore1 || len(page1) != 4 || page1[0].Turn != 4 {
+		t.Fatalf("page1 = %+v, hasMore1 = %v, want turns [4,4,5,5] with hasMore1 = true", page1, hasMore1)
+	}
+
+	_, page2, hasMore2, err := st.SessionDetail(ctx, "alex", sessionID, page1[0].Turn, 2)
+	if err != nil {
+		t.Fatalf("SessionDetail(page2) error = %v", err)
+	}
+	if !hasMore2 || len(page2) != 4 || page2[0].Turn != 2 {
+		t.Fatalf("page2 = %+v, hasMore2 = %v, want turns [2,2,3,3] with hasMore2 = true", page2, hasMore2)
+	}
+
+	_, page3, hasMore3, err := st.SessionDetail(ctx, "alex", sessionID, page2[0].Turn, 2)
+	if err != nil {
+		t.Fatalf("SessionDetail(page3) error = %v", err)
+	}
+	if hasMore3 || len(page3) != 2 || page3[0].Turn != 1 {
+		t.Fatalf("page3 = %+v, hasMore3 = %v, want turn [1,1] with hasMore3 = false (nothing older left)", page3, hasMore3)
+	}
+}
+
+func TestMySQLSessionDetailPageNonPositiveLimitIgnoresCursorAndReturnsEverything(t *testing.T) {
+	st := requireStore(t)
+	sessionID := "sess-page-full"
+	seedTurns(t, st, "alex", sessionID, 3)
+
+	// beforeTurn is set, but limit <= 0 means "no pagination" — the whole
+	// transcript comes back regardless, same as every non-paginated caller
+	// (reply_job.go, backfill.go) relies on.
+	_, turns, hasMore, err := st.SessionDetail(context.Background(), "alex", sessionID, 2, 0)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if hasMore {
+		t.Fatalf("hasMore = true, want false when limit <= 0")
+	}
+	if len(turns) != 6 {
+		t.Fatalf("turns = %+v, want all 6 rows (limit <= 0 ignores beforeTurn)", turns)
+	}
+}
+
+func TestMySQLSessionDetailPageNonexistentSessionReturnsErrNotFound(t *testing.T) {
+	st := requireStore(t)
+	_, turns, hasMore, err := st.SessionDetail(context.Background(), "alex", "sess-page-nonexistent", 0, 2)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SessionDetail() error = %v, want ErrNotFound for a session that was never created", err)
+	}
+	if hasMore || turns != nil {
+		t.Fatalf("turns = %+v, hasMore = %v, want nil/false on ErrNotFound", turns, hasMore)
 	}
 }
 
@@ -754,7 +873,7 @@ func TestMySQLDeleteSessionRemovesSessionAndTurns(t *testing.T) {
 		t.Fatalf("DeleteSession() error = %v", err)
 	}
 
-	if _, _, err := st.SessionDetail(ctx, "alex", sessionID); !errors.Is(err, ErrNotFound) {
+	if _, _, _, err := st.SessionDetail(ctx, "alex", sessionID, 0, 0); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SessionDetail() after delete error = %v, want ErrNotFound", err)
 	}
 	var n int
@@ -789,7 +908,7 @@ func TestMySQLDeleteSessionDoesNotAffectOtherUsers(t *testing.T) {
 	if err := st.DeleteSession(ctx, "attacker", sessionID); err != nil {
 		t.Fatalf("DeleteSession(attacker) error = %v", err)
 	}
-	if _, _, err := st.SessionDetail(ctx, "victim", sessionID); err != nil {
+	if _, _, _, err := st.SessionDetail(ctx, "victim", sessionID, 0, 0); err != nil {
 		t.Fatalf("victim's session should survive attacker's delete, SessionDetail() error = %v", err)
 	}
 }
@@ -884,7 +1003,7 @@ func TestMySQLSessionDetailNotFoundForWrongUser(t *testing.T) {
 	if err := st.SaveTurn(ctx, "victim", sessionID, 1, "user", "victim's secret message", false, protocol.SourceText); err != nil {
 		t.Fatalf("SaveTurn() error = %v", err)
 	}
-	_, _, err := st.SessionDetail(ctx, "attacker", sessionID)
+	_, _, _, err := st.SessionDetail(ctx, "attacker", sessionID, 0, 0)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SessionDetail(attacker, victim's session) error = %v, want ErrNotFound", err)
 	}
@@ -923,7 +1042,7 @@ func TestMySQLReserveAssistantTurnCreatesPendingPlaceholder(t *testing.T) {
 		t.Fatalf("JobStatus() = %q, want %q", status, JobStatusPending)
 	}
 
-	_, turns, err := st.SessionDetail(ctx, "alex", sessionID)
+	_, turns, _, err := st.SessionDetail(ctx, "alex", sessionID, 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -974,7 +1093,7 @@ func TestMySQLReserveAssistantTurnIsIdempotent(t *testing.T) {
 	if status != JobStatusDone {
 		t.Fatalf("JobStatus() = %q, want %q (second reserve must not revert it)", status, JobStatusDone)
 	}
-	_, turns, err := st.SessionDetail(ctx, "alex", sessionID)
+	_, turns, _, err := st.SessionDetail(ctx, "alex", sessionID, 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -1006,7 +1125,7 @@ func TestMySQLCompleteAssistantTurnSetsTextAndDoneStatus(t *testing.T) {
 	if status != JobStatusDone {
 		t.Fatalf("JobStatus() = %q, want %q", status, JobStatusDone)
 	}
-	_, turns, err := st.SessionDetail(ctx, "alex", sessionID)
+	_, turns, _, err := st.SessionDetail(ctx, "alex", sessionID, 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -1045,7 +1164,7 @@ func TestMySQLCompleteAssistantTurnAtTurnZeroCreatesVisibleSession(t *testing.T)
 		t.Fatalf("CompleteAssistantTurn() error = %v", err)
 	}
 
-	meta, turns, err := st.SessionDetail(ctx, userID, sessionID)
+	meta, turns, _, err := st.SessionDetail(ctx, userID, sessionID, 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -1110,7 +1229,7 @@ func TestMySQLJobStatusEmptyWhenNeverReserved(t *testing.T) {
 		t.Fatalf("JobStatus() = %q, want empty (never reserved)", status)
 	}
 
-	_, turns, err := st.SessionDetail(ctx, "alex", sessionID)
+	_, turns, _, err := st.SessionDetail(ctx, "alex", sessionID, 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -1142,7 +1261,7 @@ func TestMySQLReserveCorrectionJobCreatesPendingStatus(t *testing.T) {
 		t.Fatalf("JobStatus() = %q, want %q", status, JobStatusPending)
 	}
 
-	_, turns, err := st.SessionDetail(ctx, "alex", sessionID)
+	_, turns, _, err := st.SessionDetail(ctx, "alex", sessionID, 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -1197,7 +1316,7 @@ func TestMySQLSaveCorrectionMarksJobDone(t *testing.T) {
 		t.Fatalf("JobStatus() = %q, want %q", status, JobStatusDone)
 	}
 
-	_, turns, err := st.SessionDetail(ctx, "alex", sessionID)
+	_, turns, _, err := st.SessionDetail(ctx, "alex", sessionID, 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -1245,7 +1364,7 @@ func TestMySQLFailJobSetsCorrectionFailedStatus(t *testing.T) {
 		t.Fatalf("JobStatus() = %q, want %q", status, JobStatusFailed)
 	}
 
-	_, turns, err := st.SessionDetail(ctx, "alex", sessionID)
+	_, turns, _, err := st.SessionDetail(ctx, "alex", sessionID, 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}

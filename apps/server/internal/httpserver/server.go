@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -169,21 +170,35 @@ func sessionsListHandler(ident identity.Identifier, st store.Store) http.Handler
 	}
 }
 
-// sessionDetailHandler returns one session's full transcript for replay.
-// store.SessionDetail scopes the lookup by the caller's own userID, so a
-// session ID belonging to someone else 404s exactly like one that doesn't
-// exist at all — this handler can't tell the difference, on purpose.
+// defaultSessionPageLimit is how many distinct turns sessionDetailHandler
+// loads when the request doesn't specify ?limit= — enough for most rooms to
+// load in one page, small enough that a very long-running room's replay
+// doesn't ship its entire history (and every embedded correction/
+// translation) on first paint. The frontend requests older pages by turn
+// cursor (see ?before=) as the learner scrolls up.
+const defaultSessionPageLimit = 30
+
+// sessionDetailHandler returns a page of one session's transcript for
+// replay, most recent turns first: ?before= (a turn number cursor — omit or
+// 0 for the latest page) and ?limit= (page size — omit or non-positive for
+// defaultSessionPageLimit) select the page, and the "hasMore" field in the
+// response reports whether older turns exist beyond it. store.SessionDetail
+// scopes the lookup by the caller's own userID, so a session ID belonging to
+// someone else 404s exactly like one that doesn't exist at all — this
+// handler can't tell the difference, on purpose.
 //
 // Viewing a session is also what triggers translation backfill: if any turn
-// is missing its native-language translation (saved before the translation
-// feature existed, or a one-off async failure at the time — see
-// internal/backfill's doc comment), the session is queued for background
-// re-translation. This never delays the response: Enqueue is a couple of
-// fast Redis calls, but it's still fired via `go` so a slow/unavailable
-// Redis can never make opening a conversation wait on it, and the actual
-// translation work happens entirely out-of-band in internal/backfill.Worker
-// — the learner sees today's (possibly still-missing) translations
-// immediately and gets the filled-in ones on their next visit.
+// on the returned page is missing its native-language translation (saved
+// before the translation feature existed, or a one-off async failure at the
+// time — see internal/backfill's doc comment), the session is queued for
+// background re-translation. This never delays the response: Enqueue is a
+// couple of fast Redis calls, but it's still fired via `go` so a
+// slow/unavailable Redis can never make opening a conversation wait on it,
+// and the actual translation work happens entirely out-of-band in
+// internal/backfill.Worker, over the session's whole transcript regardless
+// of which page triggered it — the learner sees today's (possibly
+// still-missing) translations immediately and gets the filled-in ones on
+// their next visit.
 func sessionDetailHandler(ident identity.Identifier, st store.Store, translateQueue *backfill.Queue) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)
@@ -191,7 +206,20 @@ func sessionDetailHandler(ident identity.Identifier, st store.Store, translateQu
 			return
 		}
 		sessionID := r.PathValue("id")
-		meta, turns, err := st.SessionDetail(r.Context(), userID, sessionID)
+		beforeTurn, _ := strconv.Atoi(r.URL.Query().Get("before"))
+		// limit is only defaulted when the caller omits it entirely (or sends
+		// something unparseable) — an explicit "limit=0" (or negative) is a
+		// deliberate request for the whole transcript, same as
+		// store.SessionDetail's own limit <= 0 contract, and is how
+		// pollMissingFeedback (apps/web/src/App.tsx) still polls every turn
+		// rather than just the latest page.
+		limit := defaultSessionPageLimit
+		if v := r.URL.Query().Get("limit"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				limit = n
+			}
+		}
+		meta, turns, hasMore, err := st.SessionDetail(r.Context(), userID, sessionID, beforeTurn, limit)
 		if errors.Is(err, store.ErrNotFound) {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
@@ -203,7 +231,7 @@ func sessionDetailHandler(ident identity.Identifier, st store.Store, translateQu
 		if needsTranslationBackfill(turns) {
 			go translateQueue.Enqueue(context.Background(), userID, sessionID)
 		}
-		writeJSON(w, map[string]any{"session": meta, "turns": turns})
+		writeJSON(w, map[string]any{"session": meta, "turns": turns, "hasMore": hasMore})
 	}
 }
 

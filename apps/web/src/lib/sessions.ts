@@ -38,6 +38,11 @@ export interface TurnRecord {
 export interface SessionDetail {
   session: SessionSummary;
   turns: TurnRecord[];
+  // Whether older turns exist beyond this page (see sessionDetailHandler's
+  // ?before=/?limit= query params) — the cue to fetch another page when the
+  // learner scrolls to the top of the transcript instead of assuming
+  // `turns` is the whole history.
+  hasMore: boolean;
 }
 
 // Mirrors the JSON shape written by httpserver.sessionCompactionHandler.
@@ -54,11 +59,28 @@ export async function fetchSessions(): Promise<SessionSummary[]> {
   return fetchJSON<SessionSummary[]>("api/sessions", []);
 }
 
-// Fetches one room's full transcript for replay. Returns null on any
-// failure — network error, non-200 (including a 404 for someone else's
-// session ID), or bad JSON.
-export async function fetchSessionDetail(id: string): Promise<SessionDetail | null> {
-  return fetchJSON<SessionDetail | null>(`api/sessions/${encodeURIComponent(id)}`, null);
+// Fetches one page of a room's transcript for replay, most recent turns
+// first — opts.before (a turn-number cursor, for fetching the page older
+// than one already loaded) and opts.limit (page size) mirror
+// sessionDetailHandler's query params. Omitting opts.limit gets the
+// server's default page (defaultSessionPageLimit); opts.limit: 0
+// deliberately asks for the *whole* transcript instead (see
+// pollMissingFeedback, which needs every turn, not just the latest page) —
+// so limit/before are only left off the query string when actually
+// undefined, not just falsy. Returns null on any failure — network error,
+// non-200 (including a 404 for someone else's session ID), or bad JSON.
+export async function fetchSessionDetail(
+  id: string,
+  opts?: { before?: number; limit?: number },
+): Promise<SessionDetail | null> {
+  const params = new URLSearchParams();
+  if (opts?.before !== undefined) params.set("before", String(opts.before));
+  if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
+  const query = params.toString();
+  return fetchJSON<SessionDetail | null>(
+    `api/sessions/${encodeURIComponent(id)}${query ? `?${query}` : ""}`,
+    null,
+  );
 }
 
 // Fetches how much of a room's conversation is still sent to the LLM
