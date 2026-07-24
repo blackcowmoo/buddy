@@ -449,15 +449,16 @@ func (s *MySQLStore) ListSessions(ctx context.Context, userID string) ([]Session
 	return out, rows.Err()
 }
 
-// SessionDetail loads the session's metadata and its turns. The two are
-// independent reads against s.ro (the metadata row isn't needed to look up
-// turns, only to confirm the session exists), so they run concurrently
-// rather than paying two sequential round trips to what may be a
-// network-hop-away replica.
-func (s *MySQLStore) SessionDetail(ctx context.Context, userID, sessionID string) (SessionMeta, []Turn, error) {
+// SessionDetail loads the session's metadata and its turns (or transcript
+// page — see the Store interface doc). The two are independent reads
+// against s.ro (the metadata row isn't needed to look up turns, only to
+// confirm the session exists), so they run concurrently rather than paying
+// two sequential round trips to what may be a network-hop-away replica.
+func (s *MySQLStore) SessionDetail(ctx context.Context, userID, sessionID string, beforeTurn, limit int) (SessionMeta, []Turn, bool, error) {
 	meta := SessionMeta{ID: sessionID}
 	var metaErr, turnsErr error
 	var turns []Turn
+	var hasMore bool
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -469,32 +470,74 @@ func (s *MySQLStore) SessionDetail(ctx context.Context, userID, sessionID string
 	}()
 	go func() {
 		defer wg.Done()
-		turns, turnsErr = s.sessionTurns(ctx, userID, sessionID)
+		turns, hasMore, turnsErr = s.sessionTurns(ctx, userID, sessionID, beforeTurn, limit)
 	}()
 	wg.Wait()
 
 	if errors.Is(metaErr, sql.ErrNoRows) {
-		return SessionMeta{}, nil, ErrNotFound
+		return SessionMeta{}, nil, false, ErrNotFound
 	}
 	if metaErr != nil {
-		return SessionMeta{}, nil, fmt.Errorf("store: session detail: %w", metaErr)
+		return SessionMeta{}, nil, false, fmt.Errorf("store: session detail: %w", metaErr)
 	}
 	if turnsErr != nil {
-		return SessionMeta{}, nil, fmt.Errorf("store: session detail: %w", turnsErr)
+		return SessionMeta{}, nil, false, fmt.Errorf("store: session detail: %w", turnsErr)
 	}
-	return meta, turns, nil
+	return meta, turns, hasMore, nil
 }
 
-// sessionTurns loads every turn in (userID, sessionID), ordered so that
-// role = 'assistant' sorts after 'user' within a turn (false < true). Two
-// LEFT JOINs against buddy_jobs — one for kind='reply' (assistant turns),
-// one for kind='correction' (user turns) — surface each turn's job status,
-// so the frontend can tell "still generating"/"still checking"
+// sessionTurns loads (userID, sessionID)'s turns, ordered so that role =
+// 'assistant' sorts after 'user' within a turn (false < true). Two LEFT
+// JOINs against buddy_jobs — one for kind='reply' (assistant turns), one for
+// kind='correction' (user turns) — surface each turn's job status, so the
+// frontend can tell "still generating"/"still checking"
 // (ReplyStatus/CorrectionStatus == JobStatusPending, no result yet) apart
 // from "no job was ever tracked for this turn" (older turns saved before
 // that job kind's tracking existed) — both look identical in buddy_turns
 // alone.
-func (s *MySQLStore) sessionTurns(ctx context.Context, userID, sessionID string) ([]Turn, error) {
+//
+// limit <= 0 loads every turn (beforeTurn ignored) — same query this always
+// ran before pagination existed. limit > 0 first resolves the page's lower
+// turn-number bound with a cheap DISTINCT-turn probe (fetching one extra row
+// to detect whether older turns remain beyond the page, without a second
+// round trip), then reuses the same join for the page's actual rows.
+func (s *MySQLStore) sessionTurns(ctx context.Context, userID, sessionID string, beforeTurn, limit int) ([]Turn, bool, error) {
+	minTurn := 0
+	hasMore := false
+	if limit <= 0 {
+		beforeTurn = 0 // unbounded fetch: ignore any cursor, same as before pagination existed
+	} else {
+		boundRows, err := s.ro.QueryContext(ctx, `
+			SELECT DISTINCT turn FROM `+turnsTable+`
+			WHERE user_id = ? AND session_id = ? AND (? <= 0 OR turn < ?)
+			ORDER BY turn DESC LIMIT ?
+		`, userID, sessionID, beforeTurn, beforeTurn, limit+1)
+		if err != nil {
+			return nil, false, fmt.Errorf("store: session detail: page bounds: %w", err)
+		}
+		var turnNums []int
+		for boundRows.Next() {
+			var t int
+			if err := boundRows.Scan(&t); err != nil {
+				boundRows.Close()
+				return nil, false, fmt.Errorf("store: session detail: page bounds: %w", err)
+			}
+			turnNums = append(turnNums, t)
+		}
+		boundRows.Close()
+		if err := boundRows.Err(); err != nil {
+			return nil, false, fmt.Errorf("store: session detail: page bounds: %w", err)
+		}
+		if len(turnNums) == 0 {
+			return []Turn{}, false, nil
+		}
+		if len(turnNums) > limit {
+			hasMore = true
+			turnNums = turnNums[:limit]
+		}
+		minTurn = turnNums[len(turnNums)-1] // DESC order, so the last kept entry is the smallest
+	}
+
 	rows, err := s.ro.QueryContext(ctx, `
 		SELECT t.turn, t.role, t.text, t.refined, t.source, t.correction, t.translation, t.meta, t.created_at, rj.status, cj.status
 		FROM `+turnsTable+` t
@@ -504,10 +547,11 @@ func (s *MySQLStore) sessionTurns(ctx context.Context, userID, sessionID string)
 		LEFT JOIN `+jobsTable+` cj
 			ON cj.user_id = t.user_id AND cj.session_id = t.session_id AND cj.turn = t.turn
 			AND cj.kind = 'correction' AND t.role = 'user'
-		WHERE t.user_id = ? AND t.session_id = ? ORDER BY t.turn ASC, t.role = 'assistant' ASC
-	`, userID, sessionID)
+		WHERE t.user_id = ? AND t.session_id = ? AND t.turn >= ? AND (? <= 0 OR t.turn < ?)
+		ORDER BY t.turn ASC, t.role = 'assistant' ASC
+	`, userID, sessionID, minTurn, beforeTurn, beforeTurn)
 	if err != nil {
-		return nil, fmt.Errorf("store: session detail: %w", err)
+		return nil, false, fmt.Errorf("store: session detail: %w", err)
 	}
 	defer rows.Close()
 
@@ -517,7 +561,7 @@ func (s *MySQLStore) sessionTurns(ctx context.Context, userID, sessionID string)
 		var refined int
 		var correctionJSON, translation, metaJSON, replyStatus, correctionStatus sql.NullString
 		if err := rows.Scan(&t.Turn, &t.Role, &t.Text, &refined, &t.Source, &correctionJSON, &translation, &metaJSON, &t.CreatedAt, &replyStatus, &correctionStatus); err != nil {
-			return nil, fmt.Errorf("store: session detail: %w", err)
+			return nil, false, fmt.Errorf("store: session detail: %w", err)
 		}
 		t.Refined = refined != 0
 		if correctionJSON.Valid {
@@ -535,9 +579,9 @@ func (s *MySQLStore) sessionTurns(ctx context.Context, userID, sessionID string)
 		turns = append(turns, t)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: session detail: %w", err)
+		return nil, false, fmt.Errorf("store: session detail: %w", err)
 	}
-	return turns, nil
+	return turns, hasMore, nil
 }
 
 // ReserveAssistantTurn writes a placeholder assistant-turn row plus a

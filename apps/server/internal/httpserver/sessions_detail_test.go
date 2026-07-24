@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -186,5 +187,106 @@ func TestSessionDetailNotFoundPropagatesStoreErrNotFound(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+// TestSessionDetailDefaultsLimitWhenQueryParamsAreAbsent documents that a
+// plain GET (no ?before=/?limit=, what the frontend's very first page load
+// sends) still asks the store for a bounded page — defaultSessionPageLimit —
+// rather than silently falling back to "everything", which is the behavior
+// this handler had before pagination existed.
+func TestSessionDetailDefaultsLimitWhenQueryParamsAreAbsent(t *testing.T) {
+	st := &fakeSessionStore{
+		detailMeta:  store.SessionMeta{ID: "s1"},
+		detailTurns: []store.Turn{{Turn: 1, Role: "user", Text: "hi", Translation: "안녕"}},
+	}
+	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, nil)
+
+	req := httptest.NewRequest("GET", "/api/sessions/s1", nil)
+	req.SetPathValue("id", "s1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if st.detailBeforeTurn != 0 || st.detailLimit != defaultSessionPageLimit {
+		t.Fatalf("SessionDetail called with (before=%d, limit=%d), want (0, %d)", st.detailBeforeTurn, st.detailLimit, defaultSessionPageLimit)
+	}
+}
+
+// TestSessionDetailForwardsBeforeAndLimitQueryParams documents that
+// ?before=&?limit= (sent when the frontend scrolls up for an older page)
+// pass straight through to the store as the turn cursor and page size.
+func TestSessionDetailForwardsBeforeAndLimitQueryParams(t *testing.T) {
+	st := &fakeSessionStore{
+		detailMeta:  store.SessionMeta{ID: "s1"},
+		detailTurns: []store.Turn{{Turn: 1, Role: "user", Text: "hi", Translation: "안녕"}},
+	}
+	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, nil)
+
+	req := httptest.NewRequest("GET", "/api/sessions/s1?before=42&limit=10", nil)
+	req.SetPathValue("id", "s1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if st.detailBeforeTurn != 42 || st.detailLimit != 10 {
+		t.Fatalf("SessionDetail called with (before=%d, limit=%d), want (42, 10)", st.detailBeforeTurn, st.detailLimit)
+	}
+}
+
+// TestSessionDetailExplicitZeroLimitRequestsWholeTranscript documents that
+// ?limit=0 (what pollMissingFeedback in apps/web/src/App.tsx sends) is
+// deliberately different from omitting ?limit= altogether — it's forwarded
+// to the store as-is (0), which store.SessionDetail treats as "no limit",
+// rather than being defaulted to defaultSessionPageLimit like an absent or
+// unparseable value.
+func TestSessionDetailExplicitZeroLimitRequestsWholeTranscript(t *testing.T) {
+	st := &fakeSessionStore{
+		detailMeta:  store.SessionMeta{ID: "s1"},
+		detailTurns: []store.Turn{{Turn: 1, Role: "user", Text: "hi", Translation: "안녕"}},
+	}
+	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, nil)
+
+	req := httptest.NewRequest("GET", "/api/sessions/s1?limit=0", nil)
+	req.SetPathValue("id", "s1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if st.detailLimit != 0 {
+		t.Fatalf("SessionDetail called with limit=%d, want 0 (unbounded)", st.detailLimit)
+	}
+}
+
+// TestSessionDetailResponseIncludesHasMore checks the JSON response surfaces
+// the store's hasMore flag — the frontend's cue to offer/attempt loading
+// another page when the learner scrolls to the top of the transcript.
+func TestSessionDetailResponseIncludesHasMore(t *testing.T) {
+	st := &fakeSessionStore{
+		detailMeta:    store.SessionMeta{ID: "s1"},
+		detailTurns:   []store.Turn{{Turn: 5, Role: "user", Text: "hi", Translation: "안녕"}},
+		detailHasMore: true,
+	}
+	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, nil)
+
+	req := httptest.NewRequest("GET", "/api/sessions/s1", nil)
+	req.SetPathValue("id", "s1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var body struct {
+		HasMore bool `json:"hasMore"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !body.HasMore {
+		t.Fatalf("response hasMore = false, want true")
 	}
 }

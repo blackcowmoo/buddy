@@ -62,7 +62,7 @@ func TestCorrectHookFastPathPersistsAndCallsOnResult(t *testing.T) {
 		t.Fatalf("translation = %q", gotTranslation)
 	}
 
-	_, turns, err := st.SessionDetail(context.Background(), "alex", "sess-correct")
+	_, turns, _, err := st.SessionDetail(context.Background(), "alex", "sess-correct", 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -123,7 +123,7 @@ func TestCorrectHookFastPathCallsOnFailureAndMarksJobFailed(t *testing.T) {
 		t.Fatalf("JobStatus() = %q, want %q", status, store.JobStatusFailed)
 	}
 
-	_, turns, err := st.SessionDetail(context.Background(), "alex", "sess-correct-fail")
+	_, turns, _, err := st.SessionDetail(context.Background(), "alex", "sess-correct-fail", 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -170,7 +170,7 @@ func TestTranslateHookFastPathPersistsAndCallsOnResult(t *testing.T) {
 		t.Fatalf("onResult called=%v got=%q, want 만나서 반가워요!", called, got)
 	}
 
-	_, turns, err := st.SessionDetail(context.Background(), "alex", "sess-translate")
+	_, turns, _, err := st.SessionDetail(context.Background(), "alex", "sess-translate", 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -200,7 +200,7 @@ func TestTitleJobHandlerPersistsGeneratedTitle(t *testing.T) {
 		t.Fatalf("handler() error = %v", err)
 	}
 
-	meta, _, err := st.SessionDetail(context.Background(), "alex", "sess-title")
+	meta, _, _, err := st.SessionDetail(context.Background(), "alex", "sess-title", 0, 0)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -226,7 +226,7 @@ func TestHandlerGenerateTitleUsesQueueWhenConfigured(t *testing.T) {
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		meta, _, err := st.SessionDetail(context.Background(), "alex", "sess-handler-title")
+		meta, _, _, err := st.SessionDetail(context.Background(), "alex", "sess-handler-title", 0, 0)
 		if err == nil && meta.Title == "Queued Title" {
 			return
 		}

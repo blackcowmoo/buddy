@@ -194,9 +194,19 @@ type Store interface {
 	// ListSessions returns userID's chat rooms, most recently active first.
 	// Only sessions with at least one saved turn appear (see SaveTurn).
 	ListSessions(ctx context.Context, userID string) ([]SessionMeta, error)
-	// SessionDetail returns one session's full transcript, in turn order.
-	// Returns ErrNotFound if it doesn't exist or belongs to a different user.
-	SessionDetail(ctx context.Context, userID, sessionID string) (SessionMeta, []Turn, error)
+	// SessionDetail returns one session's transcript page, in turn order.
+	// beforeTurn/limit paginate by turn number: limit <= 0 returns the full
+	// transcript (beforeTurn is then ignored) — the contract every caller but
+	// the HTTP handler wants, since they need to reason about the whole
+	// session (translation backfill, reply-status polling, LLM context
+	// hydration). limit > 0 returns at most the `limit` most recent distinct
+	// turns with turn < beforeTurn (or the most recent `limit` turns overall
+	// when beforeTurn <= 0), and the bool return reports whether older turns
+	// still exist beyond the page — the frontend's cue to fetch another page
+	// on scrolling up rather than assuming it has the whole history.
+	// Returns ErrNotFound if the session doesn't exist or belongs to a
+	// different user.
+	SessionDetail(ctx context.Context, userID, sessionID string, beforeTurn, limit int) (SessionMeta, []Turn, bool, error)
 
 	// DeleteSession removes a session and its full transcript. A no-op (nil
 	// error) if sessionID doesn't exist or belongs to a different user — same

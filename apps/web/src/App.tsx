@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { BuddyClient, type Status } from "./lib/ws";
 import type { Correction, InputSource, ServerEvent } from "./lib/protocol";
 import { PCMRecorder } from "./audio/recorder";
@@ -49,6 +49,15 @@ interface Msg {
 type TtsState = "idle" | "loading" | "ready" | "error";
 type View = "list" | "chat";
 type PanelKind = "rate" | "grammar";
+
+// How many turns enterChat loads up front, and how many more loadOlderTurns
+// fetches per scroll-to-top request — mirrors the server's
+// defaultSessionPageLimit (apps/server/internal/httpserver/server.go).
+const HISTORY_PAGE_SIZE = 30;
+// How close to the top/bottom edge (px) of .convo counts as "there" for
+// triggering loadOlderTurns and for auto-scrolling to newly arrived
+// messages, respectively.
+const SCROLL_EDGE_THRESHOLD = 80;
 
 function isPanelOpen(
   openPanel: { index: number; kind: PanelKind } | null,
@@ -169,12 +178,34 @@ export function App() {
   const [styleInput, setStyleInput] = useState("");
   const [styleSaving, setStyleSaving] = useState(false);
   const [styleSaved, setStyleSaved] = useState(false);
+  // Whether older turns exist beyond what's currently loaded into msgs (see
+  // enterChat's/loadOlderTurns' hasMore) — scrolling to the top of .convo
+  // while this is true triggers loadOlderTurns.
+  const [hasMoreHistory, setHasMoreHistory] = useState(false);
+  const [loadingMoreHistory, setLoadingMoreHistory] = useState(false);
 
   const clientRef = useRef<BuddyClient | null>(null);
   const recorderRef = useRef<PCMRecorder | null>(null);
   const speakerRef = useRef<KokoroSpeaker | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const studyRef = useRef<HTMLDivElement>(null);
+  // The scrollable message list (see the .convo <main> below) — read/written
+  // directly by the scroll-to-bottom and load-older-history effects, since
+  // scroll position isn't state React should own a re-render for.
+  const convoRef = useRef<HTMLElement | null>(null);
+  // Whether the view should follow new content added at the end of msgs
+  // (a fresh room entry, or a live message arriving while already at/near
+  // the bottom) — false once the learner has scrolled up to read older
+  // turns, so a background poll landing a translation doesn't yank them back
+  // down. Kept as a ref, not state: it's written on every scroll event and
+  // must never itself trigger a render.
+  const stickToBottomRef = useRef(true);
+  // Set just before loadOlderTurns prepends older turns to msgs, consumed
+  // once by the scroll-position effect below to hold the visual scroll
+  // position steady across the height added above (rather than the natural
+  // "still scrolled 80px from a now-relocated top" jump). Null the rest of
+  // the time, including while stickToBottomRef governs a normal append.
+  const prependAdjustRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
   // Identifies the most recent translation/correction poll (see
   // pollMissingFeedback) so a slow fetch that resolves after the learner
   // already left the room, or opened a different one, doesn't apply its
@@ -355,7 +386,10 @@ export function App() {
     const tick = async () => {
       if (pollTokenRef.current !== token) return; // left this room, or opened another
       attempt++;
-      const detail = await fetchSessionDetail(sessionId);
+      // limit: 0 asks for the whole transcript, not just the latest page —
+      // a pending correction/translation/reply can sit on any turn, not
+      // just ones on the page currently loaded into msgs.
+      const detail = await fetchSessionDetail(sessionId, { limit: 0 });
       if (pollTokenRef.current !== token || !detail) return;
       let stillMissing = false;
       const patches: Record<number, Partial<TurnMeta>> = {};
@@ -425,6 +459,14 @@ export function App() {
     async (sessionId?: string, opts?: { push?: boolean }) => {
       resetTurnState();
       setAwaitingReply(false);
+      // A fresh room entry always starts stuck to the bottom (the most
+      // recent turns, loaded below) with no older page pending — cleared
+      // again if this turns out to be a brand-new room with nothing to page
+      // through at all.
+      stickToBottomRef.current = true;
+      prependAdjustRef.current = null;
+      setHasMoreHistory(false);
+      setLoadingMoreHistory(false);
       const token = {};
       pollTokenRef.current = token;
       if (opts?.push ?? true) {
@@ -439,13 +481,19 @@ export function App() {
         // Fire the WS handshake alongside the transcript fetch — they're
         // independent round trips — instead of waiting for the fetch first.
         clientRef.current?.connect(sessionId);
-        const detail = await fetchSessionDetail(sessionId);
+        // Only the most recent HISTORY_PAGE_SIZE turns load up front — a
+        // long-running room's whole history would otherwise ship (and
+        // render) on every visit; loadOlderTurns fetches the rest as the
+        // learner scrolls up. See PAGE_SIZE and defaultSessionPageLimit
+        // (apps/server/internal/httpserver/server.go).
+        const detail = await fetchSessionDetail(sessionId, { limit: HISTORY_PAGE_SIZE });
         if (!detail) {
           clientRef.current?.close(); // fetch failed (e.g. deleted elsewhere) — stay on the list
           replaceRoomState({ view: "list" });
           hasPushedRoomEntryRef.current = false;
           return;
         }
+        setHasMoreHistory(detail.hasMore);
         setMsgs(
           detail.turns
             // A reply still being generated (see store.Turn.ReplyStatus) is
@@ -537,6 +585,61 @@ export function App() {
     [resetTurnState, pollMissingFeedback],
   );
 
+  // Fetches the page of turns older than whatever's currently loaded —
+  // triggered by scrolling .convo to (near) its top, see handleConvoScroll.
+  // Prepends onto msgs/turns rather than replacing them, and records the
+  // pre-prepend scroll metrics in prependAdjustRef so the scroll-position
+  // effect below can hold the visible content steady instead of letting the
+  // added height above shove the viewport down.
+  const loadOlderTurns = useCallback(async () => {
+    const oldestTurn = msgs[0]?.turn;
+    if (!activeSessionId || oldestTurn == null || loadingMoreHistory) return;
+    setLoadingMoreHistory(true);
+    const el = convoRef.current;
+    if (el) prependAdjustRef.current = { scrollHeight: el.scrollHeight, scrollTop: el.scrollTop };
+    const detail = await fetchSessionDetail(activeSessionId, {
+      before: oldestTurn,
+      limit: HISTORY_PAGE_SIZE,
+    });
+    setLoadingMoreHistory(false);
+    if (!detail) {
+      prependAdjustRef.current = null; // fetch failed — nothing to hold position for
+      return;
+    }
+    setHasMoreHistory(detail.hasMore);
+    if (detail.turns.length === 0) return;
+
+    const older = detail.turns
+      .filter((t) => !(t.role === "assistant" && !t.text))
+      .map((t) => ({
+        turn: t.turn,
+        role: t.role,
+        text: t.text,
+        refined: t.refined,
+        source: t.source,
+        timestamp: t.createdAt,
+      }));
+    setMsgs((m) => [...older, ...m]);
+
+    const hydrated: Record<number, TurnMeta> = {};
+    for (const t of detail.turns) {
+      if (t.role === "assistant" && !t.text) continue; // stale pending placeholder from way back — nothing to show
+      const meta: TurnMeta = {};
+      if (t.correction) meta.correction = t.correction;
+      else if (t.correctionStatus === "failed") meta.correctionFailed = true;
+      else if (t.correctionStatus === "pending" || t.correctionStatus === "processing") meta.correctionPending = true;
+      if (t.translation) {
+        if (t.role === "user") meta.userTranslation = t.translation;
+        else meta.assistantTranslation = t.translation;
+      } else if (t.text) {
+        if (t.role === "user") meta.userTranslationPending = true;
+        else meta.assistantTranslationPending = true;
+      }
+      hydrated[t.turn] = { ...hydrated[t.turn], ...meta };
+    }
+    setTurns((prev) => ({ ...hydrated, ...prev }));
+  }, [activeSessionId, msgs, loadingMoreHistory]);
+
   // Shared by backToList and the popstate handler below — actually leaving
   // the room, as opposed to deciding how the browser's history entry should
   // reflect that.
@@ -549,9 +652,41 @@ export function App() {
     setMenuOpen(false);
     setView("list");
     setActiveSessionId(null);
+    setHasMoreHistory(false);
+    setLoadingMoreHistory(false);
     hasPushedRoomEntryRef.current = false;
     refreshSessions();
   }, [refreshSessions, resetTurnState]);
+
+  // Holds the .convo scroll position steady when new content is added:
+  // pinned to the bottom for a fresh room entry or a live message arriving
+  // while already there (stickToBottomRef), or held at the same visual spot
+  // when loadOlderTurns prepends older turns above what's currently in view
+  // (prependAdjustRef, consumed once per prepend).
+  useLayoutEffect(() => {
+    const el = convoRef.current;
+    if (!el) return;
+    if (prependAdjustRef.current) {
+      const { scrollHeight, scrollTop } = prependAdjustRef.current;
+      el.scrollTop = scrollTop + (el.scrollHeight - scrollHeight);
+      prependAdjustRef.current = null;
+      return;
+    }
+    if (stickToBottomRef.current) el.scrollTop = el.scrollHeight;
+  }, [msgs]);
+
+  // Tracks whether the learner is at/near the bottom (stickToBottomRef, so
+  // later message arrivals know whether to auto-scroll) and, near the top,
+  // triggers loadOlderTurns — the "끊어서 스크롤을 올리면 갱신" behavior.
+  const handleConvoScroll = useCallback(() => {
+    const el = convoRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottomRef.current = distanceFromBottom < SCROLL_EDGE_THRESHOLD;
+    if (el.scrollTop < SCROLL_EDGE_THRESHOLD && hasMoreHistory && !loadingMoreHistory) {
+      void loadOlderTurns();
+    }
+  }, [hasMoreHistory, loadingMoreHistory, loadOlderTurns]);
 
   const backToList = useCallback(() => {
     if (hasPushedRoomEntryRef.current) {
@@ -873,7 +1008,12 @@ export function App() {
         }}
       />
 
-      <main className="convo">
+      <main className="convo" ref={convoRef} onScroll={handleConvoScroll}>
+        {loadingMoreHistory && (
+          <p className="hint" role="status" aria-label="이전 대화 불러오는 중">
+            <span className="spinning">⏳</span>
+          </p>
+        )}
         {msgs.length === 0 && (
           <p className="hint">
             Tap <strong>Enable voice</strong> to load kokoro, tap the{" "}

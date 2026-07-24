@@ -36,6 +36,7 @@ describe("fetchSessionDetail", () => {
     const detail = {
       session: { id: "s1", title: "hello", createdAt: 1, updatedAt: 2 },
       turns: [{ turn: 1, role: "user" as const, text: "hi", refined: false }],
+      hasMore: false,
     };
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(detail) });
     vi.stubGlobal("fetch", fetchMock);
@@ -52,6 +53,38 @@ describe("fetchSessionDetail", () => {
   it("returns null when fetch rejects", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
     await expect(fetchSessionDetail("s1")).resolves.toBeNull();
+  });
+
+  it("omits the query string when no opts are given", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchSessionDetail("s1");
+    expect(fetchMock).toHaveBeenCalledWith("api/sessions/s1");
+  });
+
+  it("appends before/limit as query params when given", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchSessionDetail("s1", { before: 12, limit: 30 });
+    expect(fetchMock).toHaveBeenCalledWith("api/sessions/s1?before=12&limit=30");
+  });
+
+  it("sends an explicit limit: 0 as ?limit=0 rather than omitting it (pollMissingFeedback's whole-transcript request)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchSessionDetail("s1", { limit: 0 });
+    expect(fetchMock).toHaveBeenCalledWith("api/sessions/s1?limit=0");
+  });
+
+  it("omits a zero/undefined before or limit from the query string", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchSessionDetail("s1", { limit: 30 });
+    expect(fetchMock).toHaveBeenCalledWith("api/sessions/s1?limit=30");
   });
 });
 
