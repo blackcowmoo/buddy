@@ -170,6 +170,17 @@ function emit(e: ServerEvent) {
   capturedOnEvent?.(e);
 }
 
+// With fake timers installed, a promise-chain-driven re-render (e.g. a
+// fetchSessionDetail().then(setMsgs) continuation) needs its scheduler
+// macrotask advanced by hand — advanceTimersByTimeAsync(0) runs whatever's
+// due "now", but a render that takes a couple of microtask/timer hops to
+// land can outrun a single call, so this repeats it a few times to be safe.
+async function flushRenders() {
+  for (let i = 0; i < 5; i++) {
+    await vi.advanceTimersByTimeAsync(0);
+  }
+}
+
 describe("room list", () => {
   it("is the initial view — no WS connection until a room is opened", () => {
     render(<App />);
@@ -1272,7 +1283,18 @@ describe("hydrated reply status", () => {
   });
 
   it("materializes the reply and clears the typing indicator once polling sees it finish", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    // Fake timers from the start, so pollMissingFeedback's setTimeout(…,
+    // 4000) is one we control (see the advanceTimersByTimeAsync(4000) below)
+    // instead of a real one we'd have to wait out. The room click below uses
+    // fireEvent rather than userEvent — userEvent's click hangs forever once
+    // setTimeout is faked (it awaits something that never settles without
+    // real time passing), even with delay: null/advanceTimers configured;
+    // fireEvent dispatches the event directly through a single act() and
+    // isn't affected. { shouldAdvanceTime: true } used to paper over this by
+    // ticking the mocked clock off the real wall clock instead, but that
+    // raced findByText's own timeout under CI load and flaked; this version
+    // never depends on real elapsed time.
+    vi.useFakeTimers();
     try {
       vi.mocked(fetchSessions).mockResolvedValue([
         { id: "s1", title: "hello there", createdAt: 1, updatedAt: Date.now() / 1000 },
@@ -1285,10 +1307,11 @@ describe("hydrated reply status", () => {
           { turn: 1, role: "assistant", text: "", refined: false, replyStatus: "pending" },
         ],
       });
-      const user = userEvent.setup();
       render(<App />);
-      await user.click(await screen.findByText("hello there"));
-      await screen.findByText("hi");
+      await flushRenders();
+      fireEvent.click(screen.getByText("hello there"));
+      await flushRenders();
+      expect(screen.getByText("hi")).toBeInTheDocument();
       expect(screen.getByRole("status", { name: "답변 생성 중" })).toBeInTheDocument();
 
       vi.mocked(fetchSessionDetail).mockResolvedValue({
@@ -1300,8 +1323,9 @@ describe("hydrated reply status", () => {
         ],
       });
       await vi.advanceTimersByTimeAsync(4000);
+      await flushRenders();
 
-      expect(await screen.findByText("recovered on another replica")).toBeInTheDocument();
+      expect(screen.getByText("recovered on another replica")).toBeInTheDocument();
       expect(screen.queryByRole("status", { name: "답변 생성 중" })).not.toBeInTheDocument();
     } finally {
       vi.useRealTimers();
@@ -1310,15 +1334,21 @@ describe("hydrated reply status", () => {
 });
 
 describe("date dividers and message times", () => {
-  // shouldAdvanceTime keeps real timers ticking (userEvent's internal
-  // delays rely on them) while still letting us pin what "now" is for
-  // formatDateDivider's 오늘/어제 logic.
+  // Only Date is faked, to pin what "now" is for formatDateDivider's
+  // 오늘/어제 logic — setTimeout/setInterval stay real, since faking them
+  // wholesale makes userEvent.click hang forever (its wait never settles
+  // without real time passing, see "materializes the reply…" above) and
+  // needs every resulting render flushed by hand. { shouldAdvanceTime: true
+  // } used to be needed here to keep those real-timer-dependent bits alive
+  // under full fake timers, but it ties the clock's advancement to the real
+  // wall clock and flakes under CI load; toFake: ["Date"] sidesteps the
+  // whole problem by never faking setTimeout in the first place.
   afterEach(() => {
     vi.useRealTimers();
   });
 
   it("shows one divider per calendar day and a time under every message when hydrating a session", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2024, 5, 15, 10, 0, 0));
 
     const yesterdayUser = new Date(2024, 5, 14, 9, 5, 0).getTime() / 1000;
@@ -1349,7 +1379,7 @@ describe("date dividers and message times", () => {
   });
 
   it("stamps a live message with today's divider and the current clock time", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2024, 5, 15, 14, 30, 0));
 
     const user = userEvent.setup();
