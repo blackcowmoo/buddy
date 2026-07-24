@@ -57,6 +57,12 @@ func correctionDedupeKey(userID, sessionID string, turn int) string {
 // correction naturally overwrites the same row with an equivalent result
 // (store.SaveCorrection is a plain UPDATE), so no done-status guard is
 // needed for idempotency here.
+//
+// An analyze() error is recorded via st.FailJob before the error is
+// returned — the reaper still retries the job from scratch regardless (see
+// asyncjob.Queue.Execute), but this way a poller (or a page reload) sees
+// CorrectionStatus == JobStatusFailed in the meantime instead of a job that
+// looks like it's simply still pending forever.
 func CorrectionJobHandler(pipe *pipeline.Pipeline, st store.Store, onResult func(corrected string, issues []protocol.Issue, translation string)) asyncjob.Handler {
 	return func(ctx context.Context, job asyncjob.Job) error {
 		var payload correctionJobPayload
@@ -65,6 +71,9 @@ func CorrectionJobHandler(pipe *pipeline.Pipeline, st store.Store, onResult func
 		}
 		corrected, issues, translation, err := pipe.AnalyzeCorrection(ctx, payload.Text, payload.ContextMsg)
 		if err != nil {
+			if failErr := st.FailJob(ctx, payload.UserID, payload.SessionID, payload.Turn, "correction", err.Error()); failErr != nil {
+				log.Printf("correction job: fail %s/%s#%d: %v", payload.UserID, payload.SessionID, payload.Turn, failErr)
+			}
 			return fmt.Errorf("correction job: analyze: %w", err)
 		}
 		if err := st.SaveCorrection(ctx, payload.UserID, payload.SessionID, payload.Turn, protocol.Correction{
@@ -92,15 +101,27 @@ func CorrectionJobHandler(pipe *pipeline.Pipeline, st store.Store, onResult func
 // stream to anyway, and the frontend's existing pollMissingFeedback (see
 // apps/web/src/App.tsx) already re-fetches and picks up a correction that
 // landed after the fact.
+//
+// onFailure fires on every error path below (enqueue, inline claim, inline
+// execute) so a connection that's still open never just sees its grammar
+// spinner hang — CorrectionJobHandler's own st.FailJob call is what makes
+// the failure durable for a poller/reload; this is only about the live
+// signal. A dedup ("!ok") or lost-race ("!claimed") return deliberately
+// skips onFailure: another attempt already owns this job and will report
+// its own outcome.
 func NewCorrectHook(pipe *pipeline.Pipeline, st store.Store, queue *asyncjob.Queue) pipeline.CorrectHook {
 	if queue == nil {
 		return nil
 	}
-	return func(ctx context.Context, userID, sessionID string, turn int, text, contextMsg string, onResult func(string, []protocol.Issue, string)) {
+	return func(ctx context.Context, userID, sessionID string, turn int, text, contextMsg string, onResult func(string, []protocol.Issue, string), onFailure func()) {
+		if err := st.ReserveCorrectionJob(context.Background(), userID, sessionID, turn); err != nil {
+			log.Printf("correct: reserve %s/%s#%d: %v", userID, sessionID, turn, err)
+		}
 		payload := correctionJobPayload{UserID: userID, SessionID: sessionID, Turn: turn, Text: text, ContextMsg: contextMsg}
 		job, ok, err := queue.Enqueue(context.Background(), asyncjob.KindCorrection, correctionDedupeKey(userID, sessionID, turn), payload)
 		if err != nil {
 			log.Printf("correct: enqueue %s/%s#%d: %v", userID, sessionID, turn, err)
+			onFailure()
 			return
 		}
 		if !ok {
@@ -109,6 +130,7 @@ func NewCorrectHook(pipe *pipeline.Pipeline, st store.Store, queue *asyncjob.Que
 		claimed, err := queue.TryClaimByID(context.Background(), job, CorrectionClaimTTL)
 		if err != nil {
 			log.Printf("correct: inline claim %s/%s#%d: %v", userID, sessionID, turn, err)
+			onFailure()
 			return
 		}
 		if !claimed {
@@ -116,6 +138,7 @@ func NewCorrectHook(pipe *pipeline.Pipeline, st store.Store, queue *asyncjob.Que
 		}
 		if err := queue.Execute(context.Background(), job, CorrectionJobHandler(pipe, st, onResult)); err != nil {
 			log.Printf("correct: inline execute %s/%s#%d: %v", userID, sessionID, turn, err)
+			onFailure()
 		}
 	}
 }

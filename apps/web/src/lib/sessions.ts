@@ -28,6 +28,11 @@ export interface TurnRecord {
   // turn, and for an assistant turn that predates this feature or was never
   // queued — both mean "nothing to poll for."
   replyStatus?: "pending" | "processing" | "done" | "failed";
+  // Mirrors replyStatus for the grammar-correction job on a user turn (see
+  // store.Turn.CorrectionStatus). "failed" is what lets a reload tell "the
+  // analysis errored" apart from "it ran and found nothing" (correction
+  // present, empty issues) — both look the same in `correction` alone.
+  correctionStatus?: "pending" | "processing" | "done" | "failed";
 }
 
 export interface SessionDetail {

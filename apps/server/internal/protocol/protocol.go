@@ -59,6 +59,14 @@ type ServerEvent struct {
 
 	// Only on EvCorrection.
 	Correction *Correction `json:"correction,omitempty"`
+	// Failed is true on an EvCorrection whose analysis pass itself errored
+	// (LLM call failed, or its output didn't parse) — as opposed to
+	// Correction present with an empty Issues slice, which means the pass
+	// ran fine and simply found nothing to flag. Correction is nil when
+	// Failed is true. Without this, both a failed check and a clean
+	// sentence looked identical to the frontend once the analysis "just
+	// stopped" — see GrammarControl in apps/web/src/App.tsx.
+	Failed bool `json:"failed,omitempty"`
 }
 
 type Correction struct {

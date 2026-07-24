@@ -348,16 +348,53 @@ func (s *MySQLStore) LastTurn(ctx context.Context, userID, sessionID string) (in
 	return last, nil
 }
 
+// SaveCorrection writes the correction text and marks its job "done" in one
+// transaction — same atomicity reasoning as CompleteAssistantTurn, so a
+// poller never sees a "done" correction-job status before the correction it
+// belongs to is readable. The job update is a plain UPDATE (not an upsert),
+// so it's a harmless no-op when no job was ever reserved for this turn (e.g.
+// a caller that predates ReserveCorrectionJob, or a test double).
 func (s *MySQLStore) SaveCorrection(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction) error {
 	corrJSON, err := json.Marshal(c)
 	if err != nil {
 		return fmt.Errorf("store: encode correction: %w", err)
 	}
-	if _, err := s.rw.ExecContext(ctx, `
+	tx, err := s.rw.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: save correction: begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op once Commit succeeds
+
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE `+turnsTable+` SET correction = ?
 		WHERE user_id = ? AND session_id = ? AND turn = ? AND role = 'user'
 	`, string(corrJSON), userID, sessionID, turn); err != nil {
-		return fmt.Errorf("store: save correction: %w", err)
+		return fmt.Errorf("store: save correction: text: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE `+jobsTable+` SET status = ?, updated_at = UNIX_TIMESTAMP()
+		WHERE user_id = ? AND session_id = ? AND turn = ? AND kind = 'correction'
+	`, JobStatusDone, userID, sessionID, turn); err != nil {
+		return fmt.Errorf("store: save correction: job: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: save correction: commit: %w", err)
+	}
+	return nil
+}
+
+// ReserveCorrectionJob writes a "pending" correction-job row for (userID,
+// sessionID, turn) — see ReserveAssistantTurn's doc comment for the shared
+// reasoning; unlike that method, there's no placeholder turn to insert here
+// since the user turn under correction has already been saved by the time
+// correction ever runs.
+func (s *MySQLStore) ReserveCorrectionJob(ctx context.Context, userID, sessionID string, turn int) error {
+	if _, err := s.rw.ExecContext(ctx, `
+		INSERT INTO `+jobsTable+` (user_id, session_id, turn, kind, status, created_at, updated_at)
+		VALUES (?, ?, ?, 'correction', ?, UNIX_TIMESTAMP(), UNIX_TIMESTAMP())
+		ON DUPLICATE KEY UPDATE user_id = user_id
+	`, userID, sessionID, turn, JobStatusPending); err != nil {
+		return fmt.Errorf("store: reserve correction job: %w", err)
 	}
 	return nil
 }
@@ -449,19 +486,24 @@ func (s *MySQLStore) SessionDetail(ctx context.Context, userID, sessionID string
 }
 
 // sessionTurns loads every turn in (userID, sessionID), ordered so that
-// role = 'assistant' sorts after 'user' within a turn (false < true). A
-// LEFT JOIN against buddy_jobs (kind='reply') surfaces each assistant
-// turn's reply-job status, so the frontend can tell "still generating"
-// (ReplyStatus == JobStatusPending, empty Text) apart from "no reply job
-// was ever tracked for this turn" (older turns saved via plain SaveTurn) —
-// both look identical in buddy_turns alone.
+// role = 'assistant' sorts after 'user' within a turn (false < true). Two
+// LEFT JOINs against buddy_jobs — one for kind='reply' (assistant turns),
+// one for kind='correction' (user turns) — surface each turn's job status,
+// so the frontend can tell "still generating"/"still checking"
+// (ReplyStatus/CorrectionStatus == JobStatusPending, no result yet) apart
+// from "no job was ever tracked for this turn" (older turns saved before
+// that job kind's tracking existed) — both look identical in buddy_turns
+// alone.
 func (s *MySQLStore) sessionTurns(ctx context.Context, userID, sessionID string) ([]Turn, error) {
 	rows, err := s.ro.QueryContext(ctx, `
-		SELECT t.turn, t.role, t.text, t.refined, t.source, t.correction, t.translation, t.meta, t.created_at, j.status
+		SELECT t.turn, t.role, t.text, t.refined, t.source, t.correction, t.translation, t.meta, t.created_at, rj.status, cj.status
 		FROM `+turnsTable+` t
-		LEFT JOIN `+jobsTable+` j
-			ON j.user_id = t.user_id AND j.session_id = t.session_id AND j.turn = t.turn
-			AND j.kind = 'reply' AND t.role = 'assistant'
+		LEFT JOIN `+jobsTable+` rj
+			ON rj.user_id = t.user_id AND rj.session_id = t.session_id AND rj.turn = t.turn
+			AND rj.kind = 'reply' AND t.role = 'assistant'
+		LEFT JOIN `+jobsTable+` cj
+			ON cj.user_id = t.user_id AND cj.session_id = t.session_id AND cj.turn = t.turn
+			AND cj.kind = 'correction' AND t.role = 'user'
 		WHERE t.user_id = ? AND t.session_id = ? ORDER BY t.turn ASC, t.role = 'assistant' ASC
 	`, userID, sessionID)
 	if err != nil {
@@ -473,8 +515,8 @@ func (s *MySQLStore) sessionTurns(ctx context.Context, userID, sessionID string)
 	for rows.Next() {
 		var t Turn
 		var refined int
-		var correctionJSON, translation, metaJSON, replyStatus sql.NullString
-		if err := rows.Scan(&t.Turn, &t.Role, &t.Text, &refined, &t.Source, &correctionJSON, &translation, &metaJSON, &t.CreatedAt, &replyStatus); err != nil {
+		var correctionJSON, translation, metaJSON, replyStatus, correctionStatus sql.NullString
+		if err := rows.Scan(&t.Turn, &t.Role, &t.Text, &refined, &t.Source, &correctionJSON, &translation, &metaJSON, &t.CreatedAt, &replyStatus, &correctionStatus); err != nil {
 			return nil, fmt.Errorf("store: session detail: %w", err)
 		}
 		t.Refined = refined != 0
@@ -489,6 +531,7 @@ func (s *MySQLStore) sessionTurns(ctx context.Context, userID, sessionID string)
 			t.Meta = json.RawMessage(metaJSON.String)
 		}
 		t.ReplyStatus = replyStatus.String
+		t.CorrectionStatus = correctionStatus.String
 		turns = append(turns, t)
 	}
 	if err := rows.Err(); err != nil {

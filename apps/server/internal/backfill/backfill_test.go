@@ -137,6 +137,10 @@ func (f *fakeStore) SaveCorrection(ctx context.Context, userID, sessionID string
 	return errors.New("not used by these tests")
 }
 
+func (f *fakeStore) ReserveCorrectionJob(ctx context.Context, userID, sessionID string, turn int) error {
+	return errors.New("not used by these tests")
+}
+
 func (f *fakeStore) SaveTranslation(ctx context.Context, userID, sessionID string, turn int, role, translation string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -65,6 +65,11 @@ function isPanelOpen(
 interface TurnMeta {
   correction?: Correction;
   correctionPending?: boolean;
+  // True when the grammar-check pass itself errored rather than finding
+  // nothing to flag — see GrammarControl, which shows a distinct icon for
+  // this instead of leaving the pending spinner stuck or silently showing
+  // nothing (the old, indistinguishable-from-"already correct" behavior).
+  correctionFailed?: boolean;
   userTranslation?: string;
   userTranslationPending?: boolean;
   assistantTranslation?: string;
@@ -208,7 +213,7 @@ export function App() {
             timestamp: Math.floor(Date.now() / 1000),
           },
         ]);
-        patchTurn(e.turn, { correctionPending: true, userTranslationPending: true });
+        patchTurn(e.turn, { correctionPending: true, correctionFailed: false, userTranslationPending: true });
         break;
       case "refined_transcript":
         setMsgs((m) =>
@@ -231,13 +236,14 @@ export function App() {
         break;
       case "correction":
         // correct() always emits this once its analyze() pass finishes, even
-        // when the sentence needed no teaching — the definitive "done"
-        // signal both correctionPending and userTranslationPending clear on,
-        // since a clean sentence can still come back with no translation
-        // attached.
+        // when the sentence needed no teaching or the pass itself errored
+        // (e.failed) — the definitive "done" signal both correctionPending
+        // and userTranslationPending clear on, since a clean sentence can
+        // still come back with no translation attached.
         patchTurn(e.turn, {
           ...(e.correction ? { correction: e.correction } : {}),
           correctionPending: false,
+          correctionFailed: !!e.failed,
           userTranslationPending: false,
         });
         break;
@@ -385,7 +391,20 @@ export function App() {
         }
         if (t.role === "user" && t.text) {
           if (t.correction) {
-            patches[t.turn] = { ...patches[t.turn], correction: t.correction, correctionPending: false };
+            patches[t.turn] = {
+              ...patches[t.turn],
+              correction: t.correction,
+              correctionPending: false,
+              correctionFailed: false,
+            };
+          } else if (t.correctionStatus === "failed") {
+            // The job errored, but the reaper (see internal/asyncjob) still
+            // retries it from scratch on its own — keep polling in case a
+            // later attempt succeeds, while showing the failed state in the
+            // meantime instead of a spinner that looks like it's still
+            // working on the first attempt.
+            patches[t.turn] = { ...patches[t.turn], correctionPending: false, correctionFailed: true };
+            stillMissing = true;
           } else {
             stillMissing = true;
           }
@@ -445,12 +464,11 @@ export function App() {
             })),
         );
         // Whether this room saw activity recently enough that a user turn
-        // still missing its correction is plausibly still in flight (rather
-        // than a session from before this feature existed, or one whose
-        // correct() call failed with nothing left to ever retry it) — bounds
-        // the hourglass-on-reopen fix below so a genuinely old, permanently
-        // uncorrected turn goes back to showing "no data" instead of
-        // spinning forever.
+        // with no correctionStatus at all is plausibly still in flight
+        // (rather than a session from before correction-job tracking
+        // existed) — only needed for that untracked case; a turn that DOES
+        // have a correctionStatus (pending/failed) tells us its actual state
+        // directly, no guessing required (see store.Turn.CorrectionStatus).
         const recentlyActive = Date.now() / 1000 - detail.session.updatedAt < 120;
         const hydrated: Record<number, TurnMeta> = {};
         let anyPending = false;
@@ -468,6 +486,15 @@ export function App() {
           const meta: TurnMeta = {};
           if (t.correction) {
             meta.correction = t.correction;
+          } else if (t.correctionStatus === "failed") {
+            // Durably recorded as failed — the reaper (internal/asyncjob)
+            // still retries it from scratch on its own, so keep polling
+            // while showing the failed state instead of a spinner.
+            meta.correctionFailed = true;
+            anyPending = true;
+          } else if (t.correctionStatus === "pending" || t.correctionStatus === "processing") {
+            meta.correctionPending = true;
+            anyPending = true;
           } else if (t.role === "user" && t.text && recentlyActive) {
             // Missing correction on a hydrated user turn: correct() runs
             // detached from the connection (see pipeline.HandleText) so it
@@ -899,6 +926,7 @@ export function App() {
                         index={i}
                         pending={!!meta?.correctionPending}
                         correction={meta?.correction}
+                        failed={!!meta?.correctionFailed}
                         open={isPanelOpen(openPanel, i, "grammar")}
                         onToggle={(idx) =>
                           setOpenPanel(idx === null ? null : { index: idx, kind: "grammar" })
@@ -1042,10 +1070,16 @@ function correctionHasIssues(c: Correction): boolean {
 // small button, next to StudyControl's 🔊, instead of an always-visible card:
 // it spins while correct() is still running for this turn, then opens a
 // popover with the CorrectionCard (or a "no issues" message) on click.
+// `failed` is a fourth, distinct state from pending/issues/clean: the
+// analysis pass itself errored (see protocol.ServerEvent.Failed /
+// store.Turn.CorrectionStatus) rather than running and finding nothing —
+// without it, a failure was indistinguishable from "already correct" once
+// the pending spinner cleared.
 function GrammarControl({
   index,
   pending,
   correction,
+  failed,
   open,
   onToggle,
   panelRef,
@@ -1053,20 +1087,23 @@ function GrammarControl({
   index: number;
   pending: boolean;
   correction?: Correction;
+  failed?: boolean;
   open: boolean;
   onToggle: (index: number | null) => void;
   panelRef?: React.RefObject<HTMLDivElement | null>;
 }) {
-  if (!pending && !correction) return null; // no data (e.g. old session predating this feature)
+  if (!pending && !correction && !failed) return null; // no data (e.g. old session predating this feature)
 
   const hasIssues = !!correction && correctionHasIssues(correction);
 
-  const glyph = pending ? "⏳" : hasIssues ? "✎" : "✓";
+  const glyph = pending ? "⏳" : failed ? "⚠" : hasIssues ? "✎" : "✓";
   const label = pending
     ? "문법 확인 중"
-    : hasIssues
-      ? "문법 피드백 열기"
-      : "문법 피드백 열기 (문제 없음)";
+    : failed
+      ? "문법 피드백 열기 (확인 실패, 자동으로 다시 시도해요)"
+      : hasIssues
+        ? "문법 피드백 열기"
+        : "문법 피드백 열기 (문제 없음)";
 
   return (
     <div className="grammar-control" ref={panelRef}>
@@ -1082,10 +1119,12 @@ function GrammarControl({
       >
         <span className={pending ? "spinning" : undefined}>{glyph}</span>
       </button>
-      {open && correction && (
+      {open && (correction || failed) && (
         <div className="study-panel grammar-panel" role="menu">
-          {hasIssues ? (
-            <CorrectionCard c={correction} />
+          {failed ? (
+            <div className="grammar-clean">문법 확인에 실패했어요. 자동으로 다시 시도할게요 🔁</div>
+          ) : hasIssues ? (
+            <CorrectionCard c={correction!} />
           ) : (
             <div className="grammar-clean">문법 문제가 없어요 👍</div>
           )}

@@ -296,6 +296,14 @@ func persistEvent(st store.Store, userID, sessionID string, ev protocol.ServerEv
 	case protocol.EvAssistantDone:
 		go saveTurn(st, userID, sessionID, ev.Turn, "assistant", ev.Text, false, "")
 	case protocol.EvCorrection:
+		if ev.Failed {
+			// Only durable when a job was actually reserved for this turn
+			// (see store.ReserveCorrectionJob) — a plain UPDATE with no
+			// matching row is a harmless no-op, same as saveCorrection below
+			// when the queue-backed path isn't configured.
+			go failCorrectionJob(st, userID, sessionID, ev.Turn)
+			return
+		}
 		if ev.Correction == nil {
 			return
 		}
@@ -316,6 +324,17 @@ func saveTurn(st store.Store, userID, sessionID string, turn int, role, text str
 func saveCorrection(st store.Store, userID, sessionID string, turn int, c protocol.Correction) {
 	if err := st.SaveCorrection(context.Background(), userID, sessionID, turn, c); err != nil {
 		log.Printf("store: save correction %s/%s#%d: %v", userID, sessionID, turn, err)
+	}
+}
+
+// failCorrectionJob mirrors saveCorrection for the failure path — a second,
+// less-detailed FailJob write on top of CorrectionJobHandler's own (see
+// analysis_jobs.go) when the queue-backed path is configured, and the only
+// one at all when it isn't (a harmless no-op there, same as saveCorrection
+// above with no reservation to match).
+func failCorrectionJob(st store.Store, userID, sessionID string, turn int) {
+	if err := st.FailJob(context.Background(), userID, sessionID, turn, "correction", "analysis failed"); err != nil {
+		log.Printf("store: fail correction job %s/%s#%d: %v", userID, sessionID, turn, err)
 	}
 }
 
