@@ -278,18 +278,28 @@ func (f *fakeStore) SaveTranslation(ctx context.Context, userID, sessionID strin
 }
 
 // SaveGeneratedTitle mirrors MySQLStore's write-once-then-pinned semantics:
-// only the first call for a session actually changes its title. Also a
-// no-op if the session row doesn't exist yet (hasRow false — e.g. only a
-// turn-0 greeting has landed so far), matching how the real UPDATE's
-// `WHERE ... AND title_generated = 0` silently affects zero rows when
-// there's no buddy_sessions row to match.
+// only the first call for a session actually changes its title. It creates
+// the session row if it doesn't exist yet (hasRow false — e.g. the turn-1
+// SaveTurn call that would normally create it first hasn't landed, since
+// Handler.generateTitle fires independently and unsynchronized off the same
+// turn-1 event — see MySQLStore.SaveGeneratedTitle's matching doc comment),
+// same as the real store's upsert: a plain "no-op unless the row already
+// exists" would silently and permanently lose the generated title whenever
+// this call wins that race.
 func (f *fakeStore) SaveGeneratedTitle(ctx context.Context, userID, sessionID, title string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	d := f.sessions[fakeStoreKey(userID, sessionID)]
-	if d == nil || !d.hasRow || d.titleGenerated {
+	key := fakeStoreKey(userID, sessionID)
+	d := f.sessions[key]
+	if d == nil {
+		d = &fakeSession{userID: userID, turns: map[string]store.Turn{}}
+		f.sessions[key] = d
+	}
+	if d.titleGenerated {
 		return nil
 	}
+	d.hasRow = true
+	d.meta.ID = sessionID
 	d.meta.Title = title
 	d.titleGenerated = true
 	return nil

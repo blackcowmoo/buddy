@@ -424,18 +424,33 @@ func (s *MySQLStore) SaveTranslation(ctx context.Context, userID, sessionID stri
 
 // SaveGeneratedTitle overwrites a session's title with an LLM-generated one,
 // but only the first time it's called for that session: the
-// `title_generated = 0` guard in the WHERE clause makes this a no-op on
-// every subsequent call (0 rows affected, no error), the same
+// `title_generated = 0` guard makes every later call a no-op, the same
 // write-once-then-pinned semantics SaveTurn already gives the
 // truncated-first-message title. See internal/transport for why that
 // matters — the trigger condition alone (WS turn 1) fires once per
-// *connection*, not once per session, so this DB-level guard is what
-// actually prevents a reconnect from re-rolling the title.
+// *connection*, not once per session, so this guard is what actually
+// prevents a reconnect from re-rolling the title.
+//
+// This must be an upsert, not a plain UPDATE: Handler.generateTitle (see
+// ws.go) is fired off `go`, independently and unsynchronized, from the same
+// turn-1 event that triggers SaveTurn's own session-row-creating write —
+// there is no ordering guarantee between the two beyond "both eventually
+// run". A plain UPDATE would silently affect 0 rows if this call reached
+// the database first (no row to match yet), permanently losing the
+// generated title with nothing to retry it. Creating the row here too, with
+// title_generated already 1, makes the outcome correct regardless of which
+// of the two writes lands first: if SaveTurn's own upsert (ensureSessionRow)
+// runs after this one, its `IF(title_generated = 0, ...)` guard already
+// knows to leave this title alone.
 func (s *MySQLStore) SaveGeneratedTitle(ctx context.Context, userID, sessionID, title string) error {
 	if _, err := s.rw.ExecContext(ctx, `
-		UPDATE `+sessionsTable+` SET title = ?, title_generated = 1
-		WHERE user_id = ? AND id = ? AND title_generated = 0
-	`, truncateTitle(title), userID, sessionID); err != nil {
+		INSERT INTO `+sessionsTable+` (user_id, id, title, summary, recent, created_at, updated_at, title_generated)
+		VALUES (?, ?, ?, '', '[]', UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), 1)
+		ON DUPLICATE KEY UPDATE
+			title = IF(title_generated = 0, VALUES(title), title),
+			title_generated = 1,
+			updated_at = VALUES(updated_at)
+	`, userID, sessionID, truncateTitle(title)); err != nil {
 		return fmt.Errorf("store: save generated title: %w", err)
 	}
 	return nil
