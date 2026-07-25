@@ -41,8 +41,20 @@ const (
 	// rather than erroring — not worth the risk to save one Redis queue.
 	KindTranslation     Kind = "translation"
 	KindLiveTranslation Kind = "translation-live"
-	KindTitle           Kind = "title"
-	KindCompaction      Kind = "compaction"
+	// KindCorrectionBackfill mirrors KindTranslation's split from
+	// KindLiveTranslation, but for grammar correction: it's
+	// internal/backfill's session-level batch job (payload: {UserID,
+	// SessionID}, same shape as KindTranslation's) that fills in a result for
+	// every user turn missing one entirely — CorrectionStatus == "" (see
+	// store.Turn's doc comment) — as opposed to KindCorrection, the turn-level
+	// live job created by a real conversation turn, whose own reaper already
+	// retries a failed attempt. A turn can only reach CorrectionStatus == ""
+	// by never having had a KindCorrection job reserved for it in the first
+	// place (saved before this feature existed, or produced by the
+	// no-Redis/no-hook inline path), so nothing else would ever retry it.
+	KindCorrectionBackfill Kind = "correction-backfill"
+	KindTitle              Kind = "title"
+	KindCompaction         Kind = "compaction"
 )
 
 // Job is the durable Redis envelope for one unit of background work.

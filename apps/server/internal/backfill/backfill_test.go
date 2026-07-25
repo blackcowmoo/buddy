@@ -98,18 +98,26 @@ func (f *fakeLLM) Complete(ctx context.Context, model string, msgs []llm.Message
 }
 
 // fakeStore is an in-memory store.Store — real SQL correctness is covered by
-// internal/store's own container-backed tests; this only needs SessionDetail
-// and SaveTranslation for translateSession to exercise.
+// internal/store's own container-backed tests; this only needs SessionDetail,
+// SaveTranslation, and SaveCorrection for translateSession/correctSession to
+// exercise.
 type fakeStore struct {
-	mu    sync.Mutex
-	turns map[string][]store.Turn // "userID/sessionID" -> turns, in SessionDetail order
-	saved []savedTranslation
+	mu               sync.Mutex
+	turns            map[string][]store.Turn // "userID/sessionID" -> turns, in SessionDetail order
+	saved            []savedTranslation
+	savedCorrections []savedCorrection
 }
 
 type savedTranslation struct {
 	userID, sessionID string
 	turn              int
 	role, translation string
+}
+
+type savedCorrection struct {
+	userID, sessionID string
+	turn              int
+	correction        protocol.Correction
 }
 
 func newFakeStore() *fakeStore {
@@ -134,7 +142,16 @@ func (f *fakeStore) SaveTurn(ctx context.Context, userID, sessionID string, turn
 	return errors.New("not used by these tests")
 }
 func (f *fakeStore) SaveCorrection(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction) error {
-	return errors.New("not used by these tests")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.savedCorrections = append(f.savedCorrections, savedCorrection{userID, sessionID, turn, c})
+	turns := f.turns[f.key(userID, sessionID)]
+	for i := range turns {
+		if turns[i].Turn == turn && turns[i].Role == "user" {
+			turns[i].Correction = &c
+		}
+	}
+	return nil
 }
 
 func (f *fakeStore) ReserveCorrectionJob(ctx context.Context, userID, sessionID string, turn int) error {
@@ -377,6 +394,220 @@ func TestTranslateSessionSkipsSessionMissingFromStore(t *testing.T) {
 
 	if calls != 0 {
 		t.Fatalf("LLM called %d times, want 0", calls)
+	}
+}
+
+// ---- CorrectionQueue ----------------------------------------------------
+
+func TestCorrectionQueueEnqueueDedupesAlreadyQueuedSession(t *testing.T) {
+	rdb := requireRedis(t)
+	q := NewCorrectionQueue(rdb)
+	ctx := context.Background()
+
+	q.Enqueue(ctx, "alex", "sess-1")
+	q.Enqueue(ctx, "alex", "sess-1")
+
+	n, err := rdb.LLen(ctx, "buddy:job:{correction-backfill}:queue").Result()
+	if err != nil {
+		t.Fatalf("LLen: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("queue length = %d, want 1 (second Enqueue should have deduped)", n)
+	}
+}
+
+func TestCorrectionQueueEnqueueNilQueueIsNoop(t *testing.T) {
+	var q *CorrectionQueue
+	q.Enqueue(context.Background(), "alex", "sess-1") // must not panic
+}
+
+// correctionJSON builds the strict-JSON shape pipeline.parseCorrection
+// expects from a fake analysis-ensemble response.
+func correctionJSON(corrected string, translation string) string {
+	return `{"corrected":"` + corrected + `","translation":"` + translation + `","issues":[]}`
+}
+
+// ---- correctSession -----------------------------------------------------
+
+func TestCorrectSessionCorrectsUntrackedTurnsWithAccumulatingContext(t *testing.T) {
+	ctx := context.Background()
+
+	var seenInputs []string
+	pipe := newTestPipeline(func(msgs []llm.Message) (string, error) {
+		in := msgs[len(msgs)-1].Content
+		seenInputs = append(seenInputs, in)
+		switch {
+		case strings.Contains(in, "Sentence to correct:\nIt run fast."):
+			return correctionJSON("It runs fast.", "빨리 뛴다."), nil
+		case strings.Contains(in, "I has a dog."):
+			return correctionJSON("I have a dog.", "개가 있어요."), nil
+		}
+		return correctionJSON("?", "?"), nil
+	})
+
+	st := newFakeStore()
+	st.seed("alex", "sess-1", []store.Turn{
+		{Turn: 1, Role: "user", Text: "I has a dog."},
+		{Turn: 1, Role: "assistant", Text: "Nice!"},
+		{Turn: 2, Role: "user", Text: "It run fast."},
+	})
+
+	correctSession(ctx, st, pipe, "alex", "sess-1")
+
+	if len(st.savedCorrections) != 2 {
+		t.Fatalf("saved %d corrections, want 2: %+v", len(st.savedCorrections), st.savedCorrections)
+	}
+	if st.savedCorrections[0].turn != 1 || st.savedCorrections[0].correction.Corrected != "I have a dog." {
+		t.Fatalf("first saved correction wrong: %+v", st.savedCorrections[0])
+	}
+	if st.savedCorrections[1].turn != 2 || st.savedCorrections[1].correction.Corrected != "It runs fast." {
+		t.Fatalf("second saved correction wrong: %+v", st.savedCorrections[1])
+	}
+	// Turn 2's correction input must include turn 1's original text as
+	// context, the same "conversation so far" shape correct() uses live.
+	if !strings.Contains(seenInputs[1], "I has a dog.") {
+		t.Fatalf("turn 2's correction input should include turn 1 as context, got %q", seenInputs[1])
+	}
+	// AnalyzeCorrection's own translation output also gets persisted, same
+	// as CorrectionJobHandler does for the live path.
+	if len(st.saved) != 2 || st.saved[0].translation != "개가 있어요." || st.saved[1].translation != "빨리 뛴다." {
+		t.Fatalf("saved translations = %+v", st.saved)
+	}
+}
+
+func TestCorrectSessionSkipsTurnsThatAlreadyHaveACorrectionOrStatusButStillUsesThemAsContext(t *testing.T) {
+	ctx := context.Background()
+
+	var calls int
+	var lastInput string
+	pipe := newTestPipeline(func(msgs []llm.Message) (string, error) {
+		calls++
+		lastInput = msgs[len(msgs)-1].Content
+		return correctionJSON("It runs fast.", "빨리 뛴다."), nil
+	})
+
+	st := newFakeStore()
+	st.seed("alex", "sess-1", []store.Turn{
+		{Turn: 1, Role: "user", Text: "I has a dog.", Correction: &protocol.Correction{Original: "I has a dog.", Corrected: "I have a dog."}},
+		{Turn: 2, Role: "user", Text: "already flagged as failed", CorrectionStatus: "failed"}, // tracked by the live job's own reaper
+		{Turn: 3, Role: "user", Text: "It run fast."},                                          // untracked — needs backfill
+	})
+
+	correctSession(ctx, st, pipe, "alex", "sess-1")
+
+	if calls != 1 {
+		t.Fatalf("LLM called %d times, want 1 (turns 1 and 2 must not be re-corrected)", calls)
+	}
+	if len(st.savedCorrections) != 1 || st.savedCorrections[0].turn != 3 {
+		t.Fatalf("saved corrections = %+v, want exactly turn 3", st.savedCorrections)
+	}
+	if !strings.Contains(lastInput, "I has a dog.") {
+		t.Fatalf("already-corrected turn 1 should still be used as context, got %q", lastInput)
+	}
+}
+
+func TestCorrectSessionOnlyConsidersUserTurns(t *testing.T) {
+	ctx := context.Background()
+
+	var calls int
+	pipe := newTestPipeline(func(msgs []llm.Message) (string, error) {
+		calls++
+		return correctionJSON("fine", "번역"), nil
+	})
+
+	st := newFakeStore()
+	st.seed("alex", "sess-1", []store.Turn{
+		{Turn: 1, Role: "assistant", Text: "an assistant turn, never correction-tracked"},
+	})
+
+	correctSession(ctx, st, pipe, "alex", "sess-1")
+
+	if calls != 0 {
+		t.Fatalf("LLM called %d times, want 0 (assistant turns are never corrected)", calls)
+	}
+}
+
+func TestCorrectSessionContinuesAfterAPerTurnCorrectError(t *testing.T) {
+	ctx := context.Background()
+
+	var calls int
+	pipe := newTestPipeline(func(msgs []llm.Message) (string, error) {
+		calls++
+		if calls == 1 {
+			return "", errors.New("llm down")
+		}
+		return correctionJSON("second, fixed", "번역"), nil
+	})
+
+	st := newFakeStore()
+	st.seed("alex", "sess-1", []store.Turn{
+		{Turn: 1, Role: "user", Text: "first"},
+		{Turn: 2, Role: "user", Text: "second"},
+	})
+
+	correctSession(ctx, st, pipe, "alex", "sess-1")
+
+	if len(st.savedCorrections) != 1 || st.savedCorrections[0].turn != 2 {
+		t.Fatalf("saved corrections = %+v, want only turn 2 (turn 1 failed)", st.savedCorrections)
+	}
+}
+
+func TestCorrectSessionSkipsSessionMissingFromStore(t *testing.T) {
+	ctx := context.Background()
+
+	var calls int
+	pipe := newTestPipeline(func(msgs []llm.Message) (string, error) {
+		calls++
+		return correctionJSON("x", "y"), nil
+	})
+	st := newFakeStore() // nothing seeded — SessionDetail returns ErrNotFound
+
+	correctSession(ctx, st, pipe, "alex", "sess-gone") // must not panic
+
+	if calls != 0 {
+		t.Fatalf("LLM called %d times, want 0", calls)
+	}
+}
+
+// ---- end-to-end: CorrectionQueue -> CorrectionWorker wiring --------------
+
+func TestCorrectionQueueAndWorkerEndToEnd(t *testing.T) {
+	rdb := requireRedis(t)
+	ctx := context.Background()
+
+	pipe := newTestPipeline(func(msgs []llm.Message) (string, error) {
+		return correctionJSON("fixed.", "번역"), nil
+	})
+	st := newFakeStore()
+	st.seed("alex", "sess-1", []store.Turn{{Turn: 1, Role: "user", Text: "hi"}})
+
+	q := NewCorrectionQueue(rdb)
+	q.Enqueue(ctx, "alex", "sess-1")
+
+	w := NewCorrectionWorker(rdb, st, pipe)
+	runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() { w.Run(runCtx); close(done) }()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		st.mu.Lock()
+		n := len(st.savedCorrections)
+		st.mu.Unlock()
+		if n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("correction not saved within deadline")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	if st.savedCorrections[0].turn != 1 || st.savedCorrections[0].correction.Corrected != "fixed." {
+		t.Fatalf("saved correction wrong: %+v", st.savedCorrections[0])
 	}
 }
 

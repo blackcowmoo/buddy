@@ -1,13 +1,15 @@
-// Package backfill asynchronously fills in the native-language translation
-// for chat turns that never got one — e.g. turns saved before the
-// translation feature existed, or ones whose original async translation
-// call failed. It never runs inline with a learner's live conversation:
-// sessions are queued when viewed (see httpserver.sessionDetailHandler) and
-// drained by asyncjob.Worker (asyncjob.KindTranslation), so translation
+// Package backfill asynchronously fills in results that never landed for a
+// chat turn — the native-language translation, or (see CorrectionQueue below)
+// a grammar-correction result for a turn whose CorrectionStatus is entirely
+// empty (saved before that feature existed, or produced by the no-Redis
+// inline path — see store.Turn's doc comment). Both kinds never run inline
+// with a learner's live conversation: sessions are queued when viewed (see
+// httpserver.sessionDetailHandler) and drained by asyncjob.Worker
+// (asyncjob.KindTranslation / asyncjob.KindCorrectionBackfill), so this work
 // never competes with or delays the interactive pipeline. Durability,
 // concurrent claiming across replicas, and crash recovery all come from
-// internal/asyncjob — this package only supplies the translation-specific
-// job shape and the handler that does the actual translating.
+// internal/asyncjob — this package only supplies the session-level job shape
+// and the handlers that do the actual translating/correcting.
 package backfill
 
 import (
@@ -22,6 +24,7 @@ import (
 	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/llm"
 	"buddy/server/internal/pipeline"
+	"buddy/server/internal/protocol"
 	"buddy/server/internal/store"
 )
 
@@ -33,7 +36,10 @@ import (
 // mid-translation (killed, OOM, deploy).
 const claimTTL = 10 * time.Minute
 
-// job is one session queued for translation backfill.
+// job is one session queued for backfill — the same (userID, sessionID)
+// shape for both translation (Queue/Worker below) and correction
+// (CorrectionQueue/CorrectionWorker), since each kind's own asyncjob.Kind
+// keyspace already keeps the two from ever mixing up a payload.
 type job struct {
 	UserID    string `json:"userId"`
 	SessionID string `json:"sessionId"`
@@ -137,6 +143,112 @@ func translateSession(ctx context.Context, st store.Store, pipe *pipeline.Pipeli
 			} else if translation != "" {
 				if err := st.SaveTranslation(ctx, userID, sessionID, t.Turn, t.Role, translation); err != nil {
 					log.Printf("backfill: save translation %s/%s turn %d/%s: %v", userID, sessionID, t.Turn, t.Role, err)
+				}
+			}
+		}
+		priorTurns = append(priorTurns, llm.Message{Role: t.Role, Content: text})
+	}
+}
+
+// CorrectionQueue enqueues sessions that have at least one user turn missing
+// a grammar-correction result entirely, onto the shared
+// asyncjob.KindCorrectionBackfill queue — CorrectionQueue/CorrectionWorker's
+// equivalent of Queue/Worker above; see the package doc and
+// asyncjob.KindCorrectionBackfill for why this is a separate kind from the
+// live, turn-level asyncjob.KindCorrection job.
+type CorrectionQueue struct {
+	q *asyncjob.Queue
+}
+
+func NewCorrectionQueue(rdb redis.UniversalClient) *CorrectionQueue {
+	return &CorrectionQueue{q: asyncjob.NewQueue(rdb)}
+}
+
+// Enqueue mirrors Queue.Enqueue's reasoning (best-effort, dedupe on already
+// queued/in-flight, safe on a nil *CorrectionQueue when Redis isn't
+// configured, meant to be called via `go` from a request handler).
+func (q *CorrectionQueue) Enqueue(ctx context.Context, userID, sessionID string) {
+	if q == nil {
+		return
+	}
+	j := job{UserID: userID, SessionID: sessionID}
+	if _, _, err := q.q.Enqueue(ctx, asyncjob.KindCorrectionBackfill, j.dedupeKey(), j); err != nil {
+		log.Printf("backfill: enqueue correction %s: %v", j.dedupeKey(), err)
+	}
+}
+
+// CorrectionWorker drains the correction-backfill queue, mirroring Worker's
+// reasoning for translation — one session, one turn at a time, concurrency 1
+// per replica (this work isn't latency-sensitive, and keeping it modest
+// avoids contending with the live analysis ensemble for the same LLM
+// backend).
+type CorrectionWorker struct {
+	w *asyncjob.Worker
+}
+
+func NewCorrectionWorker(rdb redis.UniversalClient, st store.Store, pipe *pipeline.Pipeline) *CorrectionWorker {
+	handler := func(ctx context.Context, j asyncjob.Job) error {
+		var payload job
+		if err := json.Unmarshal(j.Payload, &payload); err != nil {
+			log.Printf("backfill: bad correction job payload %q: %v", j.Payload, err)
+			return nil // unparseable; retrying it would never succeed
+		}
+		correctSession(ctx, st, pipe, payload.UserID, payload.SessionID)
+		return nil
+	}
+	return &CorrectionWorker{w: asyncjob.NewWorker(rdb, asyncjob.KindCorrectionBackfill, 1, claimTTL, handler)}
+}
+
+// Run mirrors Worker.Run — see that doc comment.
+func (w *CorrectionWorker) Run(ctx context.Context) {
+	if w == nil {
+		return
+	}
+	w.w.Run(ctx)
+}
+
+// correctSession fills in a grammar-correction result for every user turn in
+// (userID, sessionID) whose CorrectionStatus is entirely empty and which has
+// no Correction yet — see store.Turn's doc comment: this is the "saved
+// before this feature existed" case, or a live pass that ran without a
+// CorrectHook configured and left nothing durable behind, as opposed to
+// CorrectionStatus == "pending"/"processing"/"failed", which the live job's
+// own asyncjob reaper already retries on its own (see
+// asyncjob.KindCorrectionBackfill's doc comment). Feeds each turn every turn
+// before it (verbatim, original text) as context via
+// pipeline.Pipeline.CorrectWithContext, the same "conversation so far" shape
+// correct() uses live, so a backfilled correction reads the same as if it had
+// been generated at the time. Best-effort per turn: one failed correction is
+// logged and skipped, not retried within this pass — the turn is simply
+// picked up again the next time its session is viewed and re-queued (see
+// httpserver.sessionDetailHandler).
+func correctSession(ctx context.Context, st store.Store, pipe *pipeline.Pipeline, userID, sessionID string) {
+	_, turns, err := st.SessionDetail(ctx, userID, sessionID)
+	if err != nil {
+		log.Printf("backfill: session detail %s/%s: %v", userID, sessionID, err)
+		return
+	}
+
+	var priorTurns []llm.Message
+	for _, t := range turns {
+		text := strings.TrimSpace(t.Text)
+		if text == "" {
+			continue
+		}
+		if t.Role == "user" && t.Correction == nil && t.CorrectionStatus == "" {
+			corrected, issues, translation, err := pipe.CorrectWithContext(ctx, priorTurns, text)
+			if err != nil {
+				log.Printf("backfill: correct %s/%s turn %d: %v", userID, sessionID, t.Turn, err)
+			} else {
+				if err := st.SaveCorrection(ctx, userID, sessionID, t.Turn, protocol.Correction{
+					Original: text, Corrected: corrected, Issues: issues,
+				}); err != nil {
+					log.Printf("backfill: save correction %s/%s turn %d: %v", userID, sessionID, t.Turn, err)
+				}
+				if strings.TrimSpace(translation) != "" && strings.TrimSpace(t.Translation) == "" {
+					if err := st.SaveTranslation(ctx, userID, sessionID, t.Turn, "user", translation); err != nil {
+						log.Printf("backfill: save translation %s/%s turn %d: %v", userID, sessionID, t.Turn, err)
+					}
 				}
 			}
 		}

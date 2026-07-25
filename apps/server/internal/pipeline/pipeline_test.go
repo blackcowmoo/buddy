@@ -1022,6 +1022,61 @@ func TestRenderCorrectionContext(t *testing.T) {
 	}
 }
 
+// ---- CorrectWithContext() -------------------------------------------------
+
+func TestCorrectWithContextSendsBareSentenceWhenNoPriorTurns(t *testing.T) {
+	var gotInput string
+	p := &Pipeline{
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			gotInput = msgs[len(msgs)-1].Content
+			return `{"corrected":"I like pizza.","translation":"저는 피자를 좋아해요.","issues":[]}`, nil
+		}}}},
+	}
+	corrected, issues, translation, err := p.CorrectWithContext(context.Background(), nil, "I likes pizza.")
+	if err != nil {
+		t.Fatalf("CorrectWithContext() error = %v", err)
+	}
+	if corrected != "I like pizza." || len(issues) != 0 || translation != "저는 피자를 좋아해요." {
+		t.Fatalf("CorrectWithContext() = (%q, %v, %q)", corrected, issues, translation)
+	}
+	if gotInput != "I likes pizza." {
+		t.Fatalf("input with no prior turns should be the bare sentence, got %q", gotInput)
+	}
+}
+
+func TestCorrectWithContextFoldsPriorTurnsIntoInput(t *testing.T) {
+	var gotInput string
+	p := &Pipeline{
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			gotInput = msgs[len(msgs)-1].Content
+			return `{"corrected":"I am 20 years old.","issues":[]}`, nil
+		}}}},
+	}
+	prior := []llm.Message{
+		{Role: llm.RoleAssistant, Content: "How old are you?"},
+	}
+	if _, _, _, err := p.CorrectWithContext(context.Background(), prior, "I am 20 years old."); err != nil {
+		t.Fatalf("CorrectWithContext() error = %v", err)
+	}
+	if !strings.Contains(gotInput, "How old are you?") {
+		t.Fatalf("input should fold in prior turns for context, got %q", gotInput)
+	}
+	if !strings.HasSuffix(gotInput, "Sentence to correct:\nI am 20 years old.") {
+		t.Fatalf("input should label the sentence under correction, got %q", gotInput)
+	}
+}
+
+func TestCorrectWithContextPropagatesAnalyzeError(t *testing.T) {
+	p := &Pipeline{
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			return "", errors.New("down")
+		}}}},
+	}
+	if _, _, _, err := p.CorrectWithContext(context.Background(), nil, "whatever"); err == nil {
+		t.Fatal("expected an error when every candidate fails")
+	}
+}
+
 func TestRenderCorrectionInput(t *testing.T) {
 	if got := renderCorrectionInput("", "just the sentence"); got != "just the sentence" {
 		t.Fatalf("no context should pass the sentence through unchanged, got %q", got)
