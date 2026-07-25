@@ -28,9 +28,19 @@ jobs:
         with:
           go-version-file: apps/server/go.mod
 
+      # -p 2 caps how many packages' test binaries run concurrently. Several
+      # packages (asyncjob, store, recording, identity, backfill) each spin
+      # up their own Docker testcontainer (Redis/MySQL/minio); left at the
+      # default (-p == GOMAXPROCS, up to 4 on this runner), enough of them
+      # can land in the same window to starve the CI runner's CPU, which has
+      # made transport's TestWSFirstReplyGeneratesTitle intermittently time
+      # out waiting for a background goroutine that normally finishes in
+      # milliseconds (see waitForTitle's deadline comment) — that test
+      # doesn't touch Docker at all, it was just scheduled behind packages
+      # that were mid-container-startup at the same wall-clock moment.
       - name: go test
         working-directory: apps/server
-        run: go test ./... -covermode=atomic -coverprofile=coverage.out
+        run: go test ./... -p 2 -covermode=atomic -coverprofile=coverage.out
 
       - name: Compute coverage
         id: coverage
@@ -65,7 +75,7 @@ jobs:
         run: |
           percent="0.0%"
           git worktree add /tmp/base-ref "${{ github.event.pull_request.base.sha }}"
-          if (cd /tmp/base-ref/apps/server && go test ./... -covermode=atomic -coverprofile=/tmp/base-coverage.out); then
+          if (cd /tmp/base-ref/apps/server && go test ./... -p 2 -covermode=atomic -coverprofile=/tmp/base-coverage.out); then
             percent=$(cd /tmp/base-ref/apps/server && go tool cover -func=/tmp/base-coverage.out | tail -1 | awk '{print $3}')
           fi
           echo "percent=$percent" >> "$GITHUB_OUTPUT"
