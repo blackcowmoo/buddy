@@ -44,12 +44,32 @@ func main() {
 		MaxHistoryMessages: cfg.MaxHistoryMessages,
 	}
 
-	// Shared Redis Cluster client, backing two independent optional
+	// Shared Redis Cluster client, backing several independent optional
 	// features below (OIDC verification cache, translation backfill
-	// queue/lock) — both come up, or both stay disabled, together based on
-	// REDIS_CLUSTER_HOST, rather than each opening its own connection.
+	// queue/lock, the model-call cache just below) — all come up, or all
+	// stay disabled, together based on REDIS_CLUSTER_HOST, rather than each
+	// opening its own connection.
 	rdb, redisCloser := buildRedis(cfg)
 	defer redisCloser.Close()
+
+	// Cache Analysis/Judge/STT candidates' external calls in Redis, keyed by
+	// model+input (see llm.NewCached/stt.NewCached). This is what makes an
+	// asyncjob reap-retry (worker crash/OOM/redeploy — jobs always rerun
+	// "from scratch", see that package's doc comment) cheap: a candidate
+	// that already succeeded on the failed attempt is served from cache
+	// instead of being called again, so only the candidate(s) that actually
+	// failed do real work the second time. pipe.LLM (the streamed chat
+	// reply) is deliberately left unwrapped — see llm.CachedClient's doc
+	// comment.
+	if rdb != nil {
+		pipe.Judge = llm.NewCached(pipe.Judge, rdb, llm.DefaultCacheTTL)
+		for i := range pipe.Analysis {
+			pipe.Analysis[i].LLM = llm.NewCached(pipe.Analysis[i].LLM, rdb, llm.DefaultCacheTTL)
+		}
+		for i := range pipe.STT {
+			pipe.STT[i] = stt.NewCached(pipe.STT[i], rdb, stt.DefaultCacheTTL)
+		}
+	}
 
 	// Persistent per-user memory. Identity verification and the MySQL
 	// connection/schema bootstrap don't depend on each other, so they run
