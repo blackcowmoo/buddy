@@ -173,11 +173,26 @@ function emit(e: ServerEvent) {
 // With fake timers installed, a promise-chain-driven re-render (e.g. a
 // fetchSessionDetail().then(setMsgs) continuation) needs its scheduler
 // macrotask advanced by hand — advanceTimersByTimeAsync(0) runs whatever's
-// due "now", but a render that takes a couple of microtask/timer hops to
-// land can outrun a single call, so this repeats it a few times to be safe.
-async function flushRenders() {
-  for (let i = 0; i < 5; i++) {
+// due "now", but only drains one microtask "layer" per call, so a render
+// that chains multiple .then()s needs it called more than once. Note that
+// "the DOM didn't change this tick" is NOT a valid stopping condition either
+// (tried that; it flaked immediately) — nothing may have happened yet on an
+// early tick, which looks identical to "already settled" from the outside. A
+// fixed iteration count used to paper over this by guessing how many ticks
+// the current code path happens to need, which is a property of the promise
+// chain's shape and the test environment's scheduling, not of the code being
+// correct — it flaked in CI once that guess (5) undercounted. The only
+// actually-correct stopping condition is the real one the caller is waiting
+// for, so this advances one tick at a time until check() says so, capped
+// well above anything real as a safety net against a genuinely hung update
+// rather than a substitute for checking the real condition.
+async function flushUntil(check: () => boolean, maxTicks = 50) {
+  for (let i = 0; i < maxTicks; i++) {
+    if (check()) return;
     await vi.advanceTimersByTimeAsync(0);
+  }
+  if (!check()) {
+    throw new Error(`flushUntil: condition still false after ${maxTicks} ticks`);
   }
 }
 
@@ -1308,9 +1323,9 @@ describe("hydrated reply status", () => {
         ],
       });
       render(<App />);
-      await flushRenders();
+      await flushUntil(() => screen.queryByText("hello there") !== null);
       fireEvent.click(screen.getByText("hello there"));
-      await flushRenders();
+      await flushUntil(() => screen.queryByText("hi") !== null);
       expect(screen.getByText("hi")).toBeInTheDocument();
       expect(screen.getByRole("status", { name: "답변 생성 중" })).toBeInTheDocument();
 
@@ -1323,7 +1338,7 @@ describe("hydrated reply status", () => {
         ],
       });
       await vi.advanceTimersByTimeAsync(4000);
-      await flushRenders();
+      await flushUntil(() => screen.queryByText("recovered on another replica") !== null);
 
       expect(screen.getByText("recovered on another replica")).toBeInTheDocument();
       expect(screen.queryByRole("status", { name: "답변 생성 중" })).not.toBeInTheDocument();
