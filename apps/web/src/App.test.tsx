@@ -411,7 +411,7 @@ describe("room list", () => {
     expect(screen.getByRole("group", { name: "테마" })).toBeInTheDocument();
     expect(screen.getByLabelText("PR 미리보기로 이동")).toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: /대화 초기화/ })).not.toBeInTheDocument();
-    expect(screen.queryByText("Enable voice")).not.toBeInTheDocument();
+    expect(screen.queryByText("음성 활성화")).not.toBeInTheDocument();
   });
 
   it("closes the list menu when a room is opened", async () => {
@@ -1041,6 +1041,28 @@ describe("per-message tts playback", () => {
       speak: ReturnType<typeof vi.fn>;
     };
     expect(speaker.speak).toHaveBeenCalledWith("Hello there", 0.5);
+  });
+});
+
+describe("voice enable button", () => {
+  it("lets the learner retry from the error pill after a failed load", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    await openMenu(user);
+
+    const speaker = vi.mocked(KokoroSpeaker).mock.instances[0] as unknown as {
+      load: ReturnType<typeof vi.fn>;
+    };
+    speaker.load.mockRejectedValueOnce(new Error("boom"));
+
+    await user.click(screen.getByRole("button", { name: "음성 활성화" }));
+    const retry = await screen.findByRole("button", { name: "음성 다시 불러오기" });
+    expect(retry).toBeInTheDocument();
+
+    speaker.load.mockResolvedValueOnce(undefined);
+    await user.click(retry);
+    expect(await screen.findByText("🔊 음성 준비 완료")).toBeInTheDocument();
   });
 });
 
