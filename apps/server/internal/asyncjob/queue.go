@@ -168,10 +168,21 @@ func (q *Queue) Execute(ctx context.Context, job Job, handler Handler) error {
 	if err != nil {
 		return fmt.Errorf("asyncjob: marshal job: %w", err)
 	}
-	if err := completeScript.Run(ctx, q.rdb,
-		[]string{processingKey(job.Kind), claimKey(job.Kind, job.ID), dedupeSetKey(job.Kind)}, raw, job.DedupeKey,
-	).Err(); err != nil {
+	if err := completeJob(ctx, q.rdb, job.Kind, job.ID, raw, job.DedupeKey); err != nil {
 		return fmt.Errorf("asyncjob: complete: %w", err)
 	}
 	return nil
+}
+
+// completeJob marks a claimed job done: removed from processing, its claim
+// released, and its dedupe entry cleared, so a later Enqueue with the same
+// dedupe key is treated as a fresh job rather than a duplicate of one
+// that's already finished. raw is the job's still-queued list entry
+// (whatever bytes/string form the caller already has on hand — Execute's
+// freshly marshaled JSON, or Worker.run's raw BLMove result) that
+// completeScript needs to LREM out of processingKey.
+func completeJob(ctx context.Context, rdb redis.UniversalClient, kind Kind, id string, raw any, dedupeKey string) error {
+	return completeScript.Run(ctx, rdb,
+		[]string{processingKey(kind), claimKey(kind, id), dedupeSetKey(kind)}, raw, dedupeKey,
+	).Err()
 }

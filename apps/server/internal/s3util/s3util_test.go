@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -67,7 +68,7 @@ func TestDeleteAllRemovesEveryKey(t *testing.T) {
 	}
 
 	sort.Strings(deleted)
-	if want := []string{"a", "b", "c"}; !equalStrings(deleted, want) {
+	if want := []string{"a", "b", "c"}; !slices.Equal(deleted, want) {
 		t.Errorf("deleted = %v, want %v", deleted, want)
 	}
 }
@@ -102,16 +103,4 @@ func TestDeleteAllReturnsErrorOnFailure(t *testing.T) {
 	if err := DeleteAll(context.Background(), client, "bucket", []string{"a"}); err == nil {
 		t.Fatal("DeleteAll() error = nil, want an error when the server rejects the delete")
 	}
-}
-
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

@@ -297,6 +297,31 @@ func truncateTitle(text string) string {
 	return string(r[:maxTitleLen]) + "…"
 }
 
+// execer is satisfied by both *sql.DB and *sql.Tx, so ensureSessionRow can
+// run either as a standalone statement or as part of a caller's transaction.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// ensureSessionRow creates the session row on first sight (either the
+// opening greeting or the learner's own first message — see SaveTurn and
+// CompleteAssistantTurn) and otherwise refreshes updated_at, only ever
+// overwriting title while title_generated is still 0. That guard is the
+// same one SaveGeneratedTitle relies on to pin a title for good, so a
+// session that already has a real (possibly LLM-generated) title — e.g.
+// after a "reset" that cleared buddy_turns but left buddy_sessions alone —
+// keeps it.
+func ensureSessionRow(ctx context.Context, exec execer, userID, sessionID, text string) error {
+	_, err := exec.ExecContext(ctx, `
+		INSERT INTO `+sessionsTable+` (user_id, id, title, summary, recent, created_at, updated_at)
+		VALUES (?, ?, ?, '', '[]', UNIX_TIMESTAMP(), UNIX_TIMESTAMP())
+		ON DUPLICATE KEY UPDATE
+			title = IF(title_generated = 0, VALUES(title), title),
+			updated_at = VALUES(updated_at)
+	`, userID, sessionID, truncateTitle(text))
+	return err
+}
+
 func (s *MySQLStore) SaveTurn(ctx context.Context, userID, sessionID string, turn int, role, text string, refined bool, source string) error {
 	// The session row is created lazily by whichever turn lands first for a
 	// room — either the opening greeting (turn 0, assistant) or the
@@ -304,21 +329,9 @@ func (s *MySQLStore) SaveTurn(ctx context.Context, userID, sessionID string, tur
 	// ListSessions/SessionDetail (and can be deleted from there) even if
 	// they never answered the greeting, instead of leaving an invisible
 	// orphan sitting in buddy_turns with no row in buddy_sessions to find it
-	// by. Once turn 1 lands, its title (the learner's own first message)
-	// always supersedes the greeting-derived placeholder: title is only
-	// overwritten while title_generated is still 0, the same guard
-	// SaveGeneratedTitle relies on to pin a title for good, so a session
-	// that already has a real (possibly LLM-generated) title — e.g. after a
-	// "reset" that cleared buddy_turns but left buddy_sessions alone —
-	// keeps it.
+	// by.
 	if turn == 0 || (turn == 1 && role == "user") {
-		if _, err := s.rw.ExecContext(ctx, `
-			INSERT INTO `+sessionsTable+` (user_id, id, title, summary, recent, created_at, updated_at)
-			VALUES (?, ?, ?, '', '[]', UNIX_TIMESTAMP(), UNIX_TIMESTAMP())
-			ON DUPLICATE KEY UPDATE
-				title = IF(title_generated = 0, VALUES(title), title),
-				updated_at = VALUES(updated_at)
-		`, userID, sessionID, truncateTitle(text)); err != nil {
+		if err := ensureSessionRow(ctx, s.rw, userID, sessionID, text); err != nil {
 			return fmt.Errorf("store: ensure session: %w", err)
 		}
 	}
@@ -702,13 +715,7 @@ func (s *MySQLStore) CompleteAssistantTurn(ctx context.Context, userID, sessionI
 	// branch normally provides (a greeting-only room already visible to
 	// ListSessions/SessionDetail) happens here instead.
 	if turn == 0 {
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO `+sessionsTable+` (user_id, id, title, summary, recent, created_at, updated_at)
-			VALUES (?, ?, ?, '', '[]', UNIX_TIMESTAMP(), UNIX_TIMESTAMP())
-			ON DUPLICATE KEY UPDATE
-				title = IF(title_generated = 0, VALUES(title), title),
-				updated_at = VALUES(updated_at)
-		`, userID, sessionID, truncateTitle(text)); err != nil {
+		if err := ensureSessionRow(ctx, tx, userID, sessionID, text); err != nil {
 			return fmt.Errorf("store: complete assistant turn: ensure session: %w", err)
 		}
 	}
