@@ -20,6 +20,7 @@ import {
   fetchSessions,
   type SessionCompaction,
   type SessionSummary,
+  type TurnRecord,
 } from "./lib/sessions";
 import { fetchSettings, saveSettings } from "./lib/settings";
 import { applyTheme, getStoredTheme, setStoredTheme, type Theme } from "./lib/theme";
@@ -65,6 +66,78 @@ function isPanelOpen(
   kind: PanelKind,
 ): boolean {
   return openPanel?.index === index && openPanel.kind === kind;
+}
+
+// A reply still being generated (see store.Turn.ReplyStatus) is an empty
+// placeholder row — rendering it now would show a blank bubble; the typing
+// indicator covers this gap instead, until pollMissingFeedback hydrates the
+// real text once it lands. Shared by enterChat and loadOlderTurns, which
+// both page in TurnRecords that may include one.
+function isPendingPlaceholder(t: TurnRecord): boolean {
+  return t.role === "assistant" && !t.text;
+}
+
+// Maps a fetched page of turns into Msg rows, dropping in-flight
+// placeholders — shared by enterChat (initial page) and loadOlderTurns
+// (older pages), which otherwise duplicate this exact filter+map.
+function turnsToMsgs(turns: TurnRecord[]): Msg[] {
+  return turns
+    .filter((t) => !isPendingPlaceholder(t))
+    .map((t) => ({
+      turn: t.turn,
+      role: t.role,
+      text: t.text,
+      refined: t.refined,
+      source: t.source,
+      timestamp: t.createdAt,
+    }));
+}
+
+// Builds the TurnMeta patch for one already-hydrated (non-placeholder) turn
+// from its correction/translation state — shared by enterChat and
+// loadOlderTurns. `recentlyActive` extends correctionPending to a hydrated
+// user turn with no correctionStatus at all (see enterChat's own comment);
+// loadOlderTurns always passes false, since its older pages predate the
+// "recently active" window enterChat cares about. `pending` reports whether
+// this turn is still missing a result worth polling for — enterChat uses it
+// to decide whether to start pollMissingFeedback; loadOlderTurns doesn't
+// poll its older pages at all, so it ignores this field.
+function hydrateTurnMeta(t: TurnRecord, recentlyActive: boolean): { meta: TurnMeta; pending: boolean } {
+  const meta: TurnMeta = {};
+  let pending = false;
+  if (t.correction) {
+    meta.correction = t.correction;
+  } else if (t.correctionStatus === "failed") {
+    // Durably recorded as failed — the reaper (internal/asyncjob) still
+    // retries it from scratch on its own, so keep polling while showing the
+    // failed state instead of a spinner.
+    meta.correctionFailed = true;
+    pending = true;
+  } else if (t.correctionStatus === "pending" || t.correctionStatus === "processing") {
+    meta.correctionPending = true;
+    pending = true;
+  } else if (t.role === "user" && t.text && recentlyActive) {
+    // Missing correction on a hydrated user turn: correct() runs detached
+    // from the connection (see pipeline.HandleText) so it keeps going and
+    // persists even after the learner leaves the room — show the hourglass
+    // as still in-progress instead of dropping it, and poll until the
+    // result lands (see pollMissingFeedback).
+    meta.correctionPending = true;
+    pending = true;
+  }
+  if (t.translation) {
+    if (t.role === "user") meta.userTranslation = t.translation;
+    else meta.assistantTranslation = t.translation;
+  } else if (t.text) {
+    // Missing translation on a hydrated turn: the server queues backfill
+    // for it the moment this fetch lands (see
+    // httpserver.sessionDetailHandler), so show it as in-progress rather
+    // than silently absent, and poll until it lands.
+    if (t.role === "user") meta.userTranslationPending = true;
+    else meta.assistantTranslationPending = true;
+    pending = true;
+  }
+  return { meta, pending };
 }
 
 // Everything the UI tracks per turn beyond the transcript text itself
@@ -178,10 +251,6 @@ export function App() {
   const [styleInput, setStyleInput] = useState("");
   const [styleSaving, setStyleSaving] = useState(false);
   const [styleSaved, setStyleSaved] = useState(false);
-  // Whether older turns exist beyond what's currently loaded into msgs (see
-  // enterChat's/loadOlderTurns' hasMore) — scrolling to the top of .convo
-  // while this is true triggers loadOlderTurns.
-  const [hasMoreHistory, setHasMoreHistory] = useState(false);
   const [loadingMoreHistory, setLoadingMoreHistory] = useState(false);
 
   const clientRef = useRef<BuddyClient | null>(null);
@@ -206,6 +275,12 @@ export function App() {
   // "still scrolled 80px from a now-relocated top" jump). Null the rest of
   // the time, including while stickToBottomRef governs a normal append.
   const prependAdjustRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
+  // Whether older turns exist beyond what's currently loaded into msgs (see
+  // enterChat's/loadOlderTurns' hasMore) — scrolling to the top of .convo
+  // while this is true triggers loadOlderTurns. Only read inside the scroll
+  // handler, never rendered, so it's a ref rather than state — setting it
+  // shouldn't force a re-render on every page load.
+  const hasMoreHistoryRef = useRef(false);
   // Identifies the most recent translation/correction poll (see
   // pollMissingFeedback) so a slow fetch that resolves after the learner
   // already left the room, or opened a different one, doesn't apply its
@@ -465,7 +540,7 @@ export function App() {
       // through at all.
       stickToBottomRef.current = true;
       prependAdjustRef.current = null;
-      setHasMoreHistory(false);
+      hasMoreHistoryRef.current = false;
       setLoadingMoreHistory(false);
       const token = {};
       pollTokenRef.current = token;
@@ -493,24 +568,8 @@ export function App() {
           hasPushedRoomEntryRef.current = false;
           return;
         }
-        setHasMoreHistory(detail.hasMore);
-        setMsgs(
-          detail.turns
-            // A reply still being generated (see store.Turn.ReplyStatus) is
-            // an empty placeholder row — rendering it now would show a
-            // blank bubble; the typing indicator (awaitingReply, set below)
-            // covers this gap instead, until pollMissingFeedback hydrates
-            // the real text once it lands.
-            .filter((t) => !(t.role === "assistant" && !t.text))
-            .map((t) => ({
-              turn: t.turn,
-              role: t.role,
-              text: t.text,
-              refined: t.refined,
-              source: t.source,
-              timestamp: t.createdAt,
-            })),
-        );
+        hasMoreHistoryRef.current = detail.hasMore;
+        setMsgs(turnsToMsgs(detail.turns));
         // Whether this room saw activity recently enough that a user turn
         // with no correctionStatus at all is plausibly still in flight
         // (rather than a session from before correction-job tracking
@@ -521,50 +580,18 @@ export function App() {
         const hydrated: Record<number, TurnMeta> = {};
         let anyPending = false;
         for (const t of detail.turns) {
-          if (t.role === "assistant" && !t.text) {
-            // Reply still in flight (see the filter above) — show the same
-            // typing indicator a brand-new room's opening line gets, and
-            // poll until pollMissingFeedback sees it complete.
+          if (isPendingPlaceholder(t)) {
+            // Reply still in flight — show the same typing indicator a
+            // brand-new room's opening line gets, and poll until
+            // pollMissingFeedback sees it complete.
             if (t.replyStatus === "pending" || t.replyStatus === "processing") {
               setAwaitingReply(true);
               anyPending = true;
             }
             continue;
           }
-          const meta: TurnMeta = {};
-          if (t.correction) {
-            meta.correction = t.correction;
-          } else if (t.correctionStatus === "failed") {
-            // Durably recorded as failed — the reaper (internal/asyncjob)
-            // still retries it from scratch on its own, so keep polling
-            // while showing the failed state instead of a spinner.
-            meta.correctionFailed = true;
-            anyPending = true;
-          } else if (t.correctionStatus === "pending" || t.correctionStatus === "processing") {
-            meta.correctionPending = true;
-            anyPending = true;
-          } else if (t.role === "user" && t.text && recentlyActive) {
-            // Missing correction on a hydrated user turn: correct() runs
-            // detached from the connection (see pipeline.HandleText) so it
-            // keeps going and persists even after the learner leaves the
-            // room — show the hourglass as still in-progress instead of
-            // dropping it, and poll until the result lands (see
-            // pollMissingFeedback).
-            meta.correctionPending = true;
-            anyPending = true;
-          }
-          if (t.translation) {
-            if (t.role === "user") meta.userTranslation = t.translation;
-            else meta.assistantTranslation = t.translation;
-          } else if (t.text) {
-            // Missing translation on a hydrated turn: the server queues
-            // backfill for it the moment this fetch lands (see
-            // httpserver.sessionDetailHandler), so show it as in-progress
-            // rather than silently absent, and poll until it lands.
-            if (t.role === "user") meta.userTranslationPending = true;
-            else meta.assistantTranslationPending = true;
-            anyPending = true;
-          }
+          const { meta, pending } = hydrateTurnMeta(t, recentlyActive);
+          if (pending) anyPending = true;
           // A user turn and its paired assistant reply share the same turn
           // number, so merge rather than overwrite.
           hydrated[t.turn] = { ...hydrated[t.turn], ...meta };
@@ -606,35 +633,15 @@ export function App() {
       prependAdjustRef.current = null; // fetch failed — nothing to hold position for
       return;
     }
-    setHasMoreHistory(detail.hasMore);
+    hasMoreHistoryRef.current = detail.hasMore;
     if (detail.turns.length === 0) return;
 
-    const older = detail.turns
-      .filter((t) => !(t.role === "assistant" && !t.text))
-      .map((t) => ({
-        turn: t.turn,
-        role: t.role,
-        text: t.text,
-        refined: t.refined,
-        source: t.source,
-        timestamp: t.createdAt,
-      }));
-    setMsgs((m) => [...older, ...m]);
+    setMsgs((m) => [...turnsToMsgs(detail.turns), ...m]);
 
     const hydrated: Record<number, TurnMeta> = {};
     for (const t of detail.turns) {
-      if (t.role === "assistant" && !t.text) continue; // stale pending placeholder from way back — nothing to show
-      const meta: TurnMeta = {};
-      if (t.correction) meta.correction = t.correction;
-      else if (t.correctionStatus === "failed") meta.correctionFailed = true;
-      else if (t.correctionStatus === "pending" || t.correctionStatus === "processing") meta.correctionPending = true;
-      if (t.translation) {
-        if (t.role === "user") meta.userTranslation = t.translation;
-        else meta.assistantTranslation = t.translation;
-      } else if (t.text) {
-        if (t.role === "user") meta.userTranslationPending = true;
-        else meta.assistantTranslationPending = true;
-      }
+      if (isPendingPlaceholder(t)) continue; // stale pending placeholder from way back — nothing to show
+      const { meta } = hydrateTurnMeta(t, false);
       hydrated[t.turn] = { ...hydrated[t.turn], ...meta };
     }
     setTurns((prev) => ({ ...hydrated, ...prev }));
@@ -652,7 +659,7 @@ export function App() {
     setMenuOpen(false);
     setView("list");
     setActiveSessionId(null);
-    setHasMoreHistory(false);
+    hasMoreHistoryRef.current = false;
     setLoadingMoreHistory(false);
     hasPushedRoomEntryRef.current = false;
     refreshSessions();
@@ -683,10 +690,10 @@ export function App() {
     if (!el) return;
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     stickToBottomRef.current = distanceFromBottom < SCROLL_EDGE_THRESHOLD;
-    if (el.scrollTop < SCROLL_EDGE_THRESHOLD && hasMoreHistory && !loadingMoreHistory) {
+    if (el.scrollTop < SCROLL_EDGE_THRESHOLD && hasMoreHistoryRef.current && !loadingMoreHistory) {
       void loadOlderTurns();
     }
-  }, [hasMoreHistory, loadingMoreHistory, loadOlderTurns]);
+  }, [loadingMoreHistory, loadOlderTurns]);
 
   const backToList = useCallback(() => {
     if (hasPushedRoomEntryRef.current) {

@@ -182,10 +182,12 @@ const defaultSessionPageLimit = 30
 // replay, most recent turns first: ?before= (a turn number cursor — omit or
 // 0 for the latest page) and ?limit= (page size — omit or non-positive for
 // defaultSessionPageLimit) select the page, and the "hasMore" field in the
-// response reports whether older turns exist beyond it. store.SessionDetail
-// scopes the lookup by the caller's own userID, so a session ID belonging to
-// someone else 404s exactly like one that doesn't exist at all — this
-// handler can't tell the difference, on purpose.
+// response reports whether older turns exist beyond it. An explicit
+// non-positive ?limit= instead requests the whole transcript via the
+// unbounded store.SessionDetail, with "hasMore" always false. Either way,
+// the store scopes the lookup by the caller's own userID, so a session ID
+// belonging to someone else 404s exactly like one that doesn't exist at
+// all — this handler can't tell the difference, on purpose.
 //
 // Viewing a session is also what triggers translation backfill: if any turn
 // on the returned page is missing its native-language translation (saved
@@ -209,8 +211,8 @@ func sessionDetailHandler(ident identity.Identifier, st store.Store, translateQu
 		beforeTurn, _ := strconv.Atoi(r.URL.Query().Get("before"))
 		// limit is only defaulted when the caller omits it entirely (or sends
 		// something unparseable) — an explicit "limit=0" (or negative) is a
-		// deliberate request for the whole transcript, same as
-		// store.SessionDetail's own limit <= 0 contract, and is how
+		// deliberate request for the whole transcript (routed to the
+		// unbounded store.SessionDetail below), which is how
 		// pollMissingFeedback (apps/web/src/App.tsx) still polls every turn
 		// rather than just the latest page.
 		limit := defaultSessionPageLimit
@@ -219,7 +221,15 @@ func sessionDetailHandler(ident identity.Identifier, st store.Store, translateQu
 				limit = n
 			}
 		}
-		meta, turns, hasMore, err := st.SessionDetail(r.Context(), userID, sessionID, beforeTurn, limit)
+		var meta store.SessionMeta
+		var turns []store.Turn
+		var hasMore bool
+		var err error
+		if limit <= 0 {
+			meta, turns, err = st.SessionDetail(r.Context(), userID, sessionID)
+		} else {
+			meta, turns, hasMore, err = st.SessionDetailPage(r.Context(), userID, sessionID, beforeTurn, limit)
+		}
 		if errors.Is(err, store.ErrNotFound) {
 			http.Error(w, "not found", http.StatusNotFound)
 			return

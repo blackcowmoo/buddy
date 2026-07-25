@@ -240,10 +240,10 @@ func TestSessionDetailForwardsBeforeAndLimitQueryParams(t *testing.T) {
 
 // TestSessionDetailExplicitZeroLimitRequestsWholeTranscript documents that
 // ?limit=0 (what pollMissingFeedback in apps/web/src/App.tsx sends) is
-// deliberately different from omitting ?limit= altogether — it's forwarded
-// to the store as-is (0), which store.SessionDetail treats as "no limit",
-// rather than being defaulted to defaultSessionPageLimit like an absent or
-// unparseable value.
+// deliberately different from omitting ?limit= altogether — it routes to
+// the unbounded store.SessionDetail instead of the paginated
+// SessionDetailPage, rather than being defaulted to defaultSessionPageLimit
+// like an absent or unparseable value.
 func TestSessionDetailExplicitZeroLimitRequestsWholeTranscript(t *testing.T) {
 	st := &fakeSessionStore{
 		detailMeta:  store.SessionMeta{ID: "s1"},
@@ -259,8 +259,8 @@ func TestSessionDetailExplicitZeroLimitRequestsWholeTranscript(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if st.detailLimit != 0 {
-		t.Fatalf("SessionDetail called with limit=%d, want 0 (unbounded)", st.detailLimit)
+	if !st.detailUnboundedCalled {
+		t.Fatalf("SessionDetailPage was called, want the unbounded SessionDetail")
 	}
 }
 

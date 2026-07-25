@@ -392,12 +392,12 @@ func (f *fakeStore) ListSessions(ctx context.Context, userID string) ([]store.Se
 	return out, nil
 }
 
-func (f *fakeStore) SessionDetail(ctx context.Context, userID, sessionID string, beforeTurn, limit int) (store.SessionMeta, []store.Turn, bool, error) {
+func (f *fakeStore) SessionDetail(ctx context.Context, userID, sessionID string) (store.SessionMeta, []store.Turn, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	d := f.sessions[fakeStoreKey(userID, sessionID)]
 	if d == nil || !d.hasRow {
-		return store.SessionMeta{}, nil, false, store.ErrNotFound
+		return store.SessionMeta{}, nil, store.ErrNotFound
 	}
 	turns := make([]store.Turn, 0, len(d.turns))
 	for _, t := range d.turns {
@@ -409,7 +409,11 @@ func (f *fakeStore) SessionDetail(ctx context.Context, userID, sessionID string,
 		}
 		return turns[i].Role == "user" // user sorts before assistant within a turn
 	})
-	return d.meta, turns, false, nil
+	return d.meta, turns, nil
+}
+
+func (f *fakeStore) SessionDetailPage(ctx context.Context, userID, sessionID string, beforeTurn, limit int) (store.SessionMeta, []store.Turn, bool, error) {
+	return store.SessionMeta{}, nil, false, errors.New("not used by these tests")
 }
 
 func (f *fakeStore) DeleteSession(ctx context.Context, userID, sessionID string) error {
@@ -996,7 +1000,7 @@ func TestWSMemoryPersistsAcrossReconnects(t *testing.T) {
 	// buddy_turns (not just the LLM-context Profile.Recent above) still has
 	// both exchanges intact under distinct turn numbers, rather than the
 	// second connection's turn 1 having overwritten the first's.
-	_, turns, _, err := st.SessionDetail(context.Background(), cookie, sessionID, 0, 0)
+	_, turns, err := st.SessionDetail(context.Background(), cookie, sessionID)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -1035,7 +1039,7 @@ func TestWSNewSessionGetsOpeningGreeting(t *testing.T) {
 	c.Close(websocket.StatusNormalClosure, "")
 
 	time.Sleep(50 * time.Millisecond) // let the deferred save (a no-op here) run
-	if _, _, _, err := st.SessionDetail(context.Background(), "greet-user", ready.Session, 0, 0); !errors.Is(err, store.ErrNotFound) {
+	if _, _, err := st.SessionDetail(context.Background(), "greet-user", ready.Session); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("greeting-only session should still leave no visible session, err = %v", err)
 	}
 }
@@ -1063,7 +1067,7 @@ func TestWSSessionDetailIncludesOpeningGreetingAfterFirstReply(t *testing.T) {
 	var turns []store.Turn
 	deadline := time.Now().Add(10 * time.Second) // CI runners can be much slower than local
 	for time.Now().Before(deadline) {
-		_, ts, _, err := st.SessionDetail(context.Background(), "greet-reply-user", ready.Session, 0, 0)
+		_, ts, err := st.SessionDetail(context.Background(), "greet-reply-user", ready.Session)
 		if err == nil && len(ts) == 3 {
 			turns = ts
 			break
@@ -1214,7 +1218,7 @@ func TestWSFinalAndAssistantTurnsArePersisted(t *testing.T) {
 	var turns []store.Turn
 	deadline := time.Now().Add(10 * time.Second) // CI runners can be much slower than local
 	for time.Now().Before(deadline) {
-		_, ts, _, err := st.SessionDetail(context.Background(), "turn-user", ready.Session, 0, 0)
+		_, ts, err := st.SessionDetail(context.Background(), "turn-user", ready.Session)
 		if err == nil && len(ts) == 3 {
 			turns = ts
 			break
@@ -1258,7 +1262,7 @@ func TestWSBinaryFramePersistsVoiceSource(t *testing.T) {
 	found := false
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) && !found {
-		_, ts, _, err := st.SessionDetail(context.Background(), "voice-user", ready.Session, 0, 0)
+		_, ts, err := st.SessionDetail(context.Background(), "voice-user", ready.Session)
 		if err == nil {
 			for _, turn := range ts {
 				if turn.Role == "user" {
@@ -1310,7 +1314,7 @@ func waitForTitle(t *testing.T, st store.Store, userID, sessionID, notWant strin
 	// busy CI runner can leave this one waiting on the scheduler, not the LLM.
 	deadline := time.Now().Add(titleTimeout + 10*time.Second)
 	for time.Now().Before(deadline) {
-		meta, _, _, err := st.SessionDetail(context.Background(), userID, sessionID, 0, 0)
+		meta, _, err := st.SessionDetail(context.Background(), userID, sessionID)
 		if err == nil && meta.Title != notWant {
 			return meta.Title
 		}
@@ -1379,7 +1383,7 @@ func TestWSReconnectDoesNotRegenerateTitle(t *testing.T) {
 	c2.Close(websocket.StatusNormalClosure, "")
 
 	time.Sleep(200 * time.Millisecond) // give a wrongly-firing regeneration time to land
-	meta, _, _, err := st.SessionDetail(context.Background(), cookie, ready1.Session, 0, 0)
+	meta, _, err := st.SessionDetail(context.Background(), cookie, ready1.Session)
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
@@ -1409,7 +1413,7 @@ func TestPersistEventSavesTranslationsByRole(t *testing.T) {
 	var turns []store.Turn
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		_, ts, _, err := st.SessionDetail(ctx, "alex", "sess-1", 0, 0)
+		_, ts, err := st.SessionDetail(ctx, "alex", "sess-1")
 		if err == nil && len(ts) == 2 && ts[0].Translation != "" && ts[1].Translation != "" {
 			turns = ts
 			break
@@ -1466,7 +1470,7 @@ func TestWSCorrectionAndTranslationSurviveDisconnect(t *testing.T) {
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		_, turns, _, err := st.SessionDetail(context.Background(), "gate-user", ready.Session, 0, 0)
+		_, turns, err := st.SessionDetail(context.Background(), "gate-user", ready.Session)
 		if err == nil {
 			for _, tn := range turns {
 				if tn.Turn == 1 && tn.Role == "user" && tn.Correction != nil && tn.Correction.Corrected == "Hello there." {

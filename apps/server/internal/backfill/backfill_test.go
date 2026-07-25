@@ -182,16 +182,20 @@ func (f *fakeStore) ListSessions(ctx context.Context, userID string) ([]store.Se
 	return nil, errors.New("not used by these tests")
 }
 
-func (f *fakeStore) SessionDetail(ctx context.Context, userID, sessionID string, beforeTurn, limit int) (store.SessionMeta, []store.Turn, bool, error) {
+func (f *fakeStore) SessionDetail(ctx context.Context, userID, sessionID string) (store.SessionMeta, []store.Turn, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	turns, ok := f.turns[f.key(userID, sessionID)]
 	if !ok {
-		return store.SessionMeta{}, nil, false, store.ErrNotFound
+		return store.SessionMeta{}, nil, store.ErrNotFound
 	}
 	out := make([]store.Turn, len(turns))
 	copy(out, turns)
-	return store.SessionMeta{ID: sessionID}, out, false, nil
+	return store.SessionMeta{ID: sessionID}, out, nil
+}
+
+func (f *fakeStore) SessionDetailPage(ctx context.Context, userID, sessionID string, beforeTurn, limit int) (store.SessionMeta, []store.Turn, bool, error) {
+	return store.SessionMeta{}, nil, false, errors.New("not used by these tests")
 }
 
 func (f *fakeStore) DeleteSession(ctx context.Context, userID, sessionID string) error {
