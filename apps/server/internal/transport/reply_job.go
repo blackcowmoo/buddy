@@ -197,7 +197,7 @@ func pollReplyUntilDone(ctx context.Context, st store.Store, userID, sessionID s
 		if status != store.JobStatusDone {
 			continue
 		}
-		_, turns, _, err := st.SessionDetail(context.Background(), userID, sessionID, 0, 0)
+		_, turns, err := st.SessionDetail(context.Background(), userID, sessionID)
 		if err != nil {
 			log.Printf("reply: poll detail %s/%s#%d: %v", userID, sessionID, turn, err)
 			return

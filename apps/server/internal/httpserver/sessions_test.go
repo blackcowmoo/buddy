@@ -21,17 +21,21 @@ type fakeSessionStore struct {
 	deleted []struct{ userID, sessionID string }
 	err     error
 
-	// detailMeta/detailTurns/detailHasMore/detailErr back SessionDetail for
-	// sessionDetailHandler tests (see sessions_detail_test.go); left zero for
-	// the sessionDeleteHandler tests in this file, which don't call it.
-	// detailBeforeTurn/detailLimit record the pagination args the handler
-	// actually passed through, so a test can assert on them.
-	detailMeta       store.SessionMeta
-	detailTurns      []store.Turn
-	detailHasMore    bool
-	detailErr        error
-	detailBeforeTurn int
-	detailLimit      int
+	// detailMeta/detailTurns/detailHasMore/detailErr back SessionDetail/
+	// SessionDetailPage for sessionDetailHandler tests (see
+	// sessions_detail_test.go); left zero for the sessionDeleteHandler tests
+	// in this file, which don't call either.
+	// detailBeforeTurn/detailLimit record the pagination args
+	// SessionDetailPage was actually called with; detailUnboundedCalled
+	// records whether the unbounded SessionDetail was called instead — a
+	// test can assert on whichever it expects the handler to have used.
+	detailMeta            store.SessionMeta
+	detailTurns           []store.Turn
+	detailHasMore         bool
+	detailErr             error
+	detailBeforeTurn      int
+	detailLimit           int
+	detailUnboundedCalled bool
 
 	// profile/profileErr/lastTurnVal/lastTurnErr back Load/LastTurn for
 	// sessionCompactionHandler tests (see sessions_compaction_test.go); left
@@ -106,7 +110,18 @@ func (f *fakeSessionStore) ListSessions(ctx context.Context, userID string) ([]s
 	return nil, errors.New("not used by these tests")
 }
 
-func (f *fakeSessionStore) SessionDetail(ctx context.Context, userID, sessionID string, beforeTurn, limit int) (store.SessionMeta, []store.Turn, bool, error) {
+func (f *fakeSessionStore) SessionDetail(ctx context.Context, userID, sessionID string) (store.SessionMeta, []store.Turn, error) {
+	f.detailUnboundedCalled = true
+	if f.detailTurns == nil && f.detailErr == nil {
+		return store.SessionMeta{}, nil, errors.New("not used by these tests")
+	}
+	if f.detailErr != nil {
+		return store.SessionMeta{}, nil, f.detailErr
+	}
+	return f.detailMeta, f.detailTurns, nil
+}
+
+func (f *fakeSessionStore) SessionDetailPage(ctx context.Context, userID, sessionID string, beforeTurn, limit int) (store.SessionMeta, []store.Turn, bool, error) {
 	f.detailBeforeTurn = beforeTurn
 	f.detailLimit = limit
 	if f.detailTurns == nil && f.detailErr == nil {

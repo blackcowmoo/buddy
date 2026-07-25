@@ -118,7 +118,7 @@ func (w *Worker) Run(ctx context.Context) {
 // picked up again the next time its session is viewed and re-queued (see
 // httpserver.sessionDetailHandler).
 func translateSession(ctx context.Context, st store.Store, pipe *pipeline.Pipeline, userID, sessionID string) {
-	_, turns, _, err := st.SessionDetail(ctx, userID, sessionID, 0, 0)
+	_, turns, err := st.SessionDetail(ctx, userID, sessionID)
 	if err != nil {
 		log.Printf("backfill: session detail %s/%s: %v", userID, sessionID, err)
 		return

@@ -113,7 +113,7 @@ func waitForJobStatusDone(t *testing.T, st *fakeStore, userID, sessionID string,
 			t.Fatalf("JobStatus() error = %v", err)
 		}
 		if status == "done" {
-			_, turns, _, err := st.SessionDetail(context.Background(), userID, sessionID, 0, 0)
+			_, turns, err := st.SessionDetail(context.Background(), userID, sessionID)
 			if err != nil {
 				t.Fatalf("SessionDetail() error = %v", err)
 			}
@@ -293,7 +293,7 @@ func TestReplyJobHandlerSkipsAlreadyDoneJob(t *testing.T) {
 	if calls != 0 {
 		t.Fatalf("onDone called %d times, want 0 (job was already done, LLM must not be re-invoked)", calls)
 	}
-	_, turns, _, err := st.SessionDetail(context.Background(), "alex", "sess-idempotent", 0, 0)
+	_, turns, err := st.SessionDetail(context.Background(), "alex", "sess-idempotent")
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
