@@ -914,28 +914,31 @@ export function App() {
     setPrError(false);
   }, []);
 
+  // Shared by both TopBar calls below (list view and chat view) — only
+  // `brand`/`actions`/`chat` differ between them.
+  const topBarProps = {
+    menuOpen,
+    onToggleMenu: () => setMenuOpen((o) => !o),
+    menuRef,
+    email,
+    theme,
+    onThemeChange: selectTheme,
+    prInput,
+    onPrInputChange: handlePrInputChange,
+    prError,
+    onGoToPath: goToPath,
+    onGoToRecordings: goToRecordings,
+    styleInput,
+    onStyleInputChange: handleStyleInputChange,
+    styleSaving,
+    styleSaved,
+    onSubmitStyle: submitStyle,
+  };
+
   if (view === "list") {
     return (
       <div className="app">
-        <TopBar
-          brand={<h1>Buddy</h1>}
-          menuOpen={menuOpen}
-          onToggleMenu={() => setMenuOpen((o) => !o)}
-          menuRef={menuRef}
-          email={email}
-          theme={theme}
-          onThemeChange={selectTheme}
-          prInput={prInput}
-          onPrInputChange={handlePrInputChange}
-          prError={prError}
-          onGoToPath={goToPath}
-          onGoToRecordings={goToRecordings}
-          styleInput={styleInput}
-          onStyleInputChange={handleStyleInputChange}
-          styleSaving={styleSaving}
-          styleSaved={styleSaved}
-          onSubmitStyle={submitStyle}
-        />
+        <TopBar brand={<h1>Buddy</h1>} {...topBarProps} />
 
         <main className="session-list">
           <button className="new-chat" onClick={() => void enterChat()}>
@@ -987,22 +990,7 @@ export function App() {
             <FeedbackSummary turns={feedbackTurns} />
           </>
         }
-        menuOpen={menuOpen}
-        onToggleMenu={() => setMenuOpen((o) => !o)}
-        menuRef={menuRef}
-        email={email}
-        theme={theme}
-        onThemeChange={selectTheme}
-        prInput={prInput}
-        onPrInputChange={handlePrInputChange}
-        prError={prError}
-        onGoToPath={goToPath}
-        onGoToRecordings={goToRecordings}
-        styleInput={styleInput}
-        onStyleInputChange={handleStyleInputChange}
-        styleSaving={styleSaving}
-        styleSaved={styleSaved}
-        onSubmitStyle={submitStyle}
+        {...topBarProps}
         chat={{
           tts,
           ttsProgress,
@@ -1036,6 +1024,8 @@ export function App() {
           const prev = msgs[i - 1];
           const showDivider =
             m.timestamp != null && (!prev || prev.timestamp == null || !isSameDay(prev.timestamp, m.timestamp));
+          const grammarOpen = isPanelOpen(openPanel, i, "grammar");
+          const rateOpen = isPanelOpen(openPanel, i, "rate");
           return (
             <Fragment key={i}>
               {showDivider && (
@@ -1074,23 +1064,23 @@ export function App() {
                         pending={!!meta?.correctionPending}
                         correction={meta?.correction}
                         failed={!!meta?.correctionFailed}
-                        open={isPanelOpen(openPanel, i, "grammar")}
+                        open={grammarOpen}
                         onToggle={(idx) =>
                           setOpenPanel(idx === null ? null : { index: idx, kind: "grammar" })
                         }
-                        panelRef={isPanelOpen(openPanel, i, "grammar") ? studyRef : undefined}
+                        panelRef={grammarOpen ? studyRef : undefined}
                       />
                     )}
                     <StudyControl
                       index={i}
                       text={m.text}
                       rates={playRates}
-                      open={isPanelOpen(openPanel, i, "rate")}
+                      open={rateOpen}
                       onToggle={(idx) =>
                         setOpenPanel(idx === null ? null : { index: idx, kind: "rate" })
                       }
                       onPlay={playMessage}
-                      panelRef={isPanelOpen(openPanel, i, "rate") ? studyRef : undefined}
+                      panelRef={rateOpen ? studyRef : undefined}
                     />
                   </div>
                 )}

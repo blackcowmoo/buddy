@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -208,7 +209,7 @@ func TestDeleteBySessionRemovesOnlyThatSessionsBackups(t *testing.T) {
 	}
 
 	sort.Strings(fake.deleted)
-	if want := []string{"alex/s1/a.pcm", "alex/s1/b.pcm"}; !equalStrings(fake.deleted, want) {
+	if want := []string{"alex/s1/a.pcm", "alex/s1/b.pcm"}; !slices.Equal(fake.deleted, want) {
 		t.Errorf("deleted = %v, want %v", fake.deleted, want)
 	}
 	if !fake.keys["alex/s2/c.pcm"] {
@@ -226,16 +227,4 @@ func TestDeleteBySessionIsNoopWhenNoneMatch(t *testing.T) {
 	if len(fake.deleted) != 0 {
 		t.Errorf("deleted = %v, want none", fake.deleted)
 	}
-}
-
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

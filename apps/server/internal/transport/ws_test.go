@@ -278,18 +278,28 @@ func (f *fakeStore) SaveTranslation(ctx context.Context, userID, sessionID strin
 }
 
 // SaveGeneratedTitle mirrors MySQLStore's write-once-then-pinned semantics:
-// only the first call for a session actually changes its title. Also a
-// no-op if the session row doesn't exist yet (hasRow false — e.g. only a
-// turn-0 greeting has landed so far), matching how the real UPDATE's
-// `WHERE ... AND title_generated = 0` silently affects zero rows when
-// there's no buddy_sessions row to match.
+// only the first call for a session actually changes its title. It creates
+// the session row if it doesn't exist yet (hasRow false — e.g. the turn-1
+// SaveTurn call that would normally create it first hasn't landed, since
+// Handler.generateTitle fires independently and unsynchronized off the same
+// turn-1 event — see MySQLStore.SaveGeneratedTitle's matching doc comment),
+// same as the real store's upsert: a plain "no-op unless the row already
+// exists" would silently and permanently lose the generated title whenever
+// this call wins that race.
 func (f *fakeStore) SaveGeneratedTitle(ctx context.Context, userID, sessionID, title string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	d := f.sessions[fakeStoreKey(userID, sessionID)]
-	if d == nil || !d.hasRow || d.titleGenerated {
+	key := fakeStoreKey(userID, sessionID)
+	d := f.sessions[key]
+	if d == nil {
+		d = &fakeSession{userID: userID, turns: map[string]store.Turn{}}
+		f.sessions[key] = d
+	}
+	if d.titleGenerated {
 		return nil
 	}
+	d.hasRow = true
+	d.meta.ID = sessionID
 	d.meta.Title = title
 	d.titleGenerated = true
 	return nil
@@ -706,6 +716,43 @@ func sendText(t *testing.T, c *websocket.Conn, text string) {
 	}
 }
 
+// backgroundWorkTimeout bounds every poll below that waits on transport's
+// fire-and-forget background work (chat replies, corrections, translations,
+// title generation, audio backups) — none of it is observable synchronously
+// from a WS client, so these tests have no choice but to poll store/saver
+// state until it shows up. It must comfortably exceed titleTimeout (ws.go),
+// the longest budget any single one of those background calls is allowed:
+// generateTitleDirect's own LLM call context is bounded by it, so waiting
+// any less here risks timing out on a call that's still legitimately in
+// flight. The margin on top exists because none of these calls are usually
+// anywhere near that slow in tests (the fake LLM/store/S3 doubles they use
+// resolve in microseconds) — what actually eats the time on a busy CI
+// runner is scheduling delay: by the time later tests in this file run,
+// dozens of earlier ones have each fired their own un-awaited background
+// goroutines that may still be competing for the runner's CPU. A single
+// generous shared deadline (rather than each call site guessing its own —
+// several tighter ones here have each individually flaked before) means a
+// real bug still fails within a bounded time, while CI scheduling noise no
+// longer costs a false failure.
+const backgroundWorkTimeout = 60 * time.Second
+
+// pollUntil retries cond every 20ms until it returns true or
+// backgroundWorkTimeout elapses, returning whether cond ever succeeded. cond
+// may itself call t.Fatalf once it has enough state to assert on — pollUntil
+// runs it synchronously on the test's own goroutine, so that's safe and
+// stops the poll immediately, same as returning true would.
+func pollUntil(t *testing.T, cond func() bool) bool {
+	t.Helper()
+	deadline := time.Now().Add(backgroundWorkTimeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return false
+}
+
 // ---- tests -----------------------------------------------------------------
 
 func TestWSHandshakeSendsReady(t *testing.T) {
@@ -848,10 +895,7 @@ func TestWSBinaryFrameBacksUpAudio(t *testing.T) {
 	}
 	readUntil(t, c, protocol.EvFinal) // the pipeline consumed the frame
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && audio.count() == 0 {
-		time.Sleep(20 * time.Millisecond)
-	}
+	pollUntil(t, func() bool { return audio.count() > 0 })
 	if audio.count() != 1 {
 		t.Fatalf("audio saves = %d, want 1", audio.count())
 	}
@@ -889,10 +933,7 @@ func TestWSBinaryFrameSharesIDBetweenBackupAndRecording(t *testing.T) {
 	}
 	readUntil(t, c, protocol.EvFinal)
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && (audio.count() == 0 || len(rec.all()) == 0) {
-		time.Sleep(20 * time.Millisecond)
-	}
+	pollUntil(t, func() bool { return audio.count() > 0 && len(rec.all()) > 0 })
 	saves := rec.all()
 	if len(saves) != 1 {
 		t.Fatalf("recording saves = %d, want 1", len(saves))
@@ -964,19 +1005,22 @@ func TestWSMemoryPersistsAcrossReconnects(t *testing.T) {
 
 	waitForRecentCount := func(want int) store.Profile {
 		t.Helper()
-		deadline := time.Now().Add(10 * time.Second) // CI runners can be much slower than local
-		for time.Now().Before(deadline) {
+		var profile store.Profile
+		ok := pollUntil(t, func() bool {
 			p, err := st.Load(context.Background(), cookie, sessionID)
 			if err != nil {
 				t.Fatalf("Load() error = %v", err)
 			}
 			if len(p.Recent) >= want {
-				return p
+				profile = p
+				return true
 			}
-			time.Sleep(20 * time.Millisecond)
+			return false
+		})
+		if !ok {
+			t.Fatalf("timed out waiting for %d persisted messages", want)
 		}
-		t.Fatalf("timed out waiting for %d persisted messages", want)
-		return store.Profile{}
+		return profile
 	}
 
 	send("My name is Alex.", 1) // turn 1: this send's own reply, not the opening greeting's turn 0
@@ -1065,15 +1109,14 @@ func TestWSSessionDetailIncludesOpeningGreetingAfterFirstReply(t *testing.T) {
 	c.Close(websocket.StatusNormalClosure, "")
 
 	var turns []store.Turn
-	deadline := time.Now().Add(10 * time.Second) // CI runners can be much slower than local
-	for time.Now().Before(deadline) {
+	pollUntil(t, func() bool {
 		_, ts, err := st.SessionDetail(context.Background(), "greet-reply-user", ready.Session)
 		if err == nil && len(ts) == 3 {
 			turns = ts
-			break
+			return true
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return false
+	})
 	if len(turns) != 3 {
 		t.Fatalf("expected 3 persisted turns (greeting+user+assistant), got %+v", turns)
 	}
@@ -1101,13 +1144,10 @@ func TestWSResumedSessionSkipsOpeningGreeting(t *testing.T) {
 	readUntilTurn(t, c1, protocol.EvAssistantDone, 1)
 	c1.Close(websocket.StatusNormalClosure, "")
 
-	deadline := time.Now().Add(10 * time.Second) // CI runners can be much slower than local
-	for time.Now().Before(deadline) {
-		if p, _ := st.Load(context.Background(), cookie, ready1.Session); len(p.Recent) > 0 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	pollUntil(t, func() bool {
+		p, _ := st.Load(context.Background(), cookie, ready1.Session)
+		return len(p.Recent) > 0
+	})
 
 	c2, _ := dial(t, srv, cookie, ready1.Session)
 	readEvent(t, c2) // ready
@@ -1138,13 +1178,10 @@ func TestWSOmittingSessionParamStartsNewSession(t *testing.T) {
 	c1.Close(websocket.StatusNormalClosure, "")
 
 	// Wait for the first connection's turn to land before opening the second.
-	deadline := time.Now().Add(10 * time.Second) // CI runners can be much slower than local
-	for time.Now().Before(deadline) {
-		if p, _ := st.Load(context.Background(), cookie, ready1.Session); len(p.Recent) > 0 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	pollUntil(t, func() bool {
+		p, _ := st.Load(context.Background(), cookie, ready1.Session)
+		return len(p.Recent) > 0
+	})
 
 	c2, _ := dial(t, srv, cookie, "") // no session param: a new room
 	ready2 := readEvent(t, c2)
@@ -1185,19 +1222,20 @@ func TestWSDifferentCookiesAreIsolated(t *testing.T) {
 	// 3, not 1: each of these is a brand-new session, so its opening greeting
 	// (see pipeline.StartConversation) lands in history ahead of the real
 	// user/assistant pair, at index 0.
-	deadline := time.Now().Add(10 * time.Second) // CI runners can be much slower than local
-	for time.Now().Before(deadline) {
+	ok := pollUntil(t, func() bool {
 		a, _ := st.Load(context.Background(), "user-a", sessions["user-a"])
 		b, _ := st.Load(context.Background(), "user-b", sessions["user-b"])
 		if len(a.Recent) >= 3 && len(b.Recent) >= 3 {
 			if a.Recent[1].Content != "I am user A" || b.Recent[1].Content != "I am user B" {
 				t.Fatalf("cross-contamination between users: a=%+v b=%+v", a, b)
 			}
-			return
+			return true
 		}
-		time.Sleep(20 * time.Millisecond)
+		return false
+	})
+	if !ok {
+		t.Fatal("timed out waiting for both users' profiles to persist")
 	}
-	t.Fatal("timed out waiting for both users' profiles to persist")
 }
 
 // TestWSFinalAndAssistantTurnsArePersisted checks the transport-layer hook
@@ -1216,15 +1254,14 @@ func TestWSFinalAndAssistantTurnsArePersisted(t *testing.T) {
 	readUntilTurn(t, c, protocol.EvAssistantDone, 1)
 
 	var turns []store.Turn
-	deadline := time.Now().Add(10 * time.Second) // CI runners can be much slower than local
-	for time.Now().Before(deadline) {
+	pollUntil(t, func() bool {
 		_, ts, err := st.SessionDetail(context.Background(), "turn-user", ready.Session)
 		if err == nil && len(ts) == 3 {
 			turns = ts
-			break
+			return true
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return false
+	})
 	if len(turns) != 3 {
 		t.Fatalf("expected 3 persisted turns (greeting+user+assistant), got %+v", turns)
 	}
@@ -1259,22 +1296,19 @@ func TestWSBinaryFramePersistsVoiceSource(t *testing.T) {
 	readUntil(t, c, protocol.EvFinal)
 
 	var userTurn store.Turn
-	found := false
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) && !found {
+	found := pollUntil(t, func() bool {
 		_, ts, err := st.SessionDetail(context.Background(), "voice-user", ready.Session)
-		if err == nil {
-			for _, turn := range ts {
-				if turn.Role == "user" {
-					userTurn, found = turn, true
-					break
-				}
+		if err != nil {
+			return false
+		}
+		for _, turn := range ts {
+			if turn.Role == "user" {
+				userTurn = turn
+				return true
 			}
 		}
-		if !found {
-			time.Sleep(20 * time.Millisecond)
-		}
-	}
+		return false
+	})
 	if !found {
 		t.Fatalf("no user turn persisted in time")
 	}
@@ -1300,28 +1334,24 @@ func newTestServerWithTitleLLM(t *testing.T, st store.Store, completeFn func(msg
 }
 
 // waitForTitle polls st for sessionID's title until it stops matching want,
-// or times out — title generation is fired off `go` from emit (see
+// or times out (backgroundWorkTimeout, comfortably above titleTimeout — see
+// its doc) — title generation is fired off `go` from emit (see
 // Handler.generateTitle), so tests can't observe it synchronously.
 func waitForTitle(t *testing.T, st store.Store, userID, sessionID, notWant string) string {
 	t.Helper()
-	// Must exceed titleTimeout (ws.go) — that's the budget generateTitleDirect's
-	// own LLM call context is allowed, so waiting any less here means this can
-	// time out on a legitimately-still-in-flight call, not just a stuck one.
-	// The extra 10s on top covers scheduling delay: generateTitle runs off a
-	// bare `go` with no bound on concurrent goroutines, and by this point in
-	// the file dozens of earlier tests have each fired their own (title/
-	// correct/translateAssistant) goroutines that may still be running, so a
-	// busy CI runner can leave this one waiting on the scheduler, not the LLM.
-	deadline := time.Now().Add(titleTimeout + 10*time.Second)
-	for time.Now().Before(deadline) {
+	var title string
+	ok := pollUntil(t, func() bool {
 		meta, _, err := st.SessionDetail(context.Background(), userID, sessionID)
 		if err == nil && meta.Title != notWant {
-			return meta.Title
+			title = meta.Title
+			return true
 		}
-		time.Sleep(20 * time.Millisecond)
+		return false
+	})
+	if !ok {
+		t.Fatalf("timed out waiting for title to change from %q", notWant)
 	}
-	t.Fatalf("timed out waiting for title to change from %q", notWant)
-	return ""
+	return title
 }
 
 // TestWSFirstReplyGeneratesTitle checks the trigger wired into emit: once
@@ -1411,15 +1441,14 @@ func TestPersistEventSavesTranslationsByRole(t *testing.T) {
 	persistEvent(st, "alex", "sess-1", protocol.ServerEvent{Type: protocol.EvAssistantTranslation, Turn: 1, Text: "좋아요!"})
 
 	var turns []store.Turn
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	pollUntil(t, func() bool {
 		_, ts, err := st.SessionDetail(ctx, "alex", "sess-1")
 		if err == nil && len(ts) == 2 && ts[0].Translation != "" && ts[1].Translation != "" {
 			turns = ts
-			break
+			return true
 		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return false
+	})
 	if len(turns) != 2 {
 		t.Fatalf("translations did not persist in time: %+v", turns)
 	}
@@ -1468,19 +1497,21 @@ func TestWSCorrectionAndTranslationSurviveDisconnect(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)         // give the server time to notice and cancel the connection's context
 	close(gate.release)                        // let the still in-flight analysis call finish
 
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	ok := pollUntil(t, func() bool {
 		_, turns, err := st.SessionDetail(context.Background(), "gate-user", ready.Session)
-		if err == nil {
-			for _, tn := range turns {
-				if tn.Turn == 1 && tn.Role == "user" && tn.Correction != nil && tn.Correction.Corrected == "Hello there." {
-					return // correction landed even though the client had already disconnected
-				}
+		if err != nil {
+			return false
+		}
+		for _, tn := range turns {
+			if tn.Turn == 1 && tn.Role == "user" && tn.Correction != nil && tn.Correction.Corrected == "Hello there." {
+				return true // correction landed even though the client had already disconnected
 			}
 		}
-		time.Sleep(20 * time.Millisecond)
+		return false
+	})
+	if !ok {
+		t.Fatal("correction was not persisted after the client disconnected")
 	}
-	t.Fatal("correction was not persisted after the client disconnected")
 }
 
 // TestWSListSessionsOnlyShowsSessionsWithMessages ensures a connection that
@@ -1522,25 +1553,27 @@ func TestWSBinaryFrameSavesRecording(t *testing.T) {
 	}
 	readUntil(t, c, protocol.EvFinal) // wait for the pipeline to process the utterance
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if saved := rec.all(); len(saved) == 1 {
-			if saved[0].userID != "voice-user" {
-				t.Fatalf("saved userID = %q, want voice-user", saved[0].userID)
-			}
-			// sessionID must be threaded through so a later session delete can
-			// cascade to this recording (see recording.Store.DeleteBySession).
-			if saved[0].sessionID != ready.Session {
-				t.Fatalf("saved sessionID = %q, want %q (the minted WS session)", saved[0].sessionID, ready.Session)
-			}
-			if string(saved[0].pcm) != string(pcm) {
-				t.Fatalf("saved pcm = %v, want %v", saved[0].pcm, pcm)
-			}
-			return
+	ok := pollUntil(t, func() bool {
+		saved := rec.all()
+		if len(saved) != 1 {
+			return false
 		}
-		time.Sleep(20 * time.Millisecond)
+		if saved[0].userID != "voice-user" {
+			t.Fatalf("saved userID = %q, want voice-user", saved[0].userID)
+		}
+		// sessionID must be threaded through so a later session delete can
+		// cascade to this recording (see recording.Store.DeleteBySession).
+		if saved[0].sessionID != ready.Session {
+			t.Fatalf("saved sessionID = %q, want %q (the minted WS session)", saved[0].sessionID, ready.Session)
+		}
+		if string(saved[0].pcm) != string(pcm) {
+			t.Fatalf("saved pcm = %v, want %v", saved[0].pcm, pcm)
+		}
+		return true
+	})
+	if !ok {
+		t.Fatalf("timed out waiting for a recording save, got %+v", rec.all())
 	}
-	t.Fatalf("timed out waiting for a recording save, got %+v", rec.all())
 }
 
 // TestWSNilRecordingStoreDisablesArchival documents that a nil recordings

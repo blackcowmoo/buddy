@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // allBuddyEnvVars lists every key Load() reads, so tests can force a clean
 // slate regardless of what the host environment happens to have set. The
@@ -100,19 +103,19 @@ func TestLoadSTTEnginesCollectsEveryConfiguredEngine(t *testing.T) {
 	if whisper.Name != "whisper" {
 		t.Fatalf("STTEngines[0].Name = %q, want whisper (checked before parakeet)", whisper.Name)
 	}
-	if want := []string{"http://w1:8082/v1", "http://w2:8082/v1"}; !equalStrings(whisper.URLs, want) {
+	if want := []string{"http://w1:8082/v1", "http://w2:8082/v1"}; !slices.Equal(whisper.URLs, want) {
 		t.Fatalf("whisper.URLs = %v, want %v", whisper.URLs, want)
 	}
-	if want := []string{"whisper-large-v3-turbo", "whisper-large-v3-turbo"}; !equalStrings(whisper.Models, want) {
+	if want := []string{"whisper-large-v3-turbo", "whisper-large-v3-turbo"}; !slices.Equal(whisper.Models, want) {
 		t.Fatalf("whisper.Models = %v, want %v", whisper.Models, want)
 	}
 	if parakeet.Name != "parakeet" {
 		t.Fatalf("STTEngines[1].Name = %q, want parakeet", parakeet.Name)
 	}
-	if want := []string{"http://p1:8083/v1"}; !equalStrings(parakeet.URLs, want) {
+	if want := []string{"http://p1:8083/v1"}; !slices.Equal(parakeet.URLs, want) {
 		t.Fatalf("parakeet.URLs = %v, want %v", parakeet.URLs, want)
 	}
-	if want := []string{""}; !equalStrings(parakeet.Models, want) {
+	if want := []string{""}; !slices.Equal(parakeet.Models, want) {
 		t.Fatalf("parakeet.Models = %v, want %v (bare url, no \"model@\" prefix)", parakeet.Models, want)
 	}
 }
@@ -133,11 +136,11 @@ func TestLoadLLMAnalysisURLsParsesModelAtURLPairs(t *testing.T) {
 
 	c := Load()
 	wantURLs := []string{"http://a:8081/v1", "http://b:8081/v1", "http://c:8081/v1"}
-	if !equalStrings(c.LLMAnalysisURLs, wantURLs) {
+	if !slices.Equal(c.LLMAnalysisURLs, wantURLs) {
 		t.Fatalf("LLMAnalysisURLs = %v, want %v", c.LLMAnalysisURLs, wantURLs)
 	}
 	wantModels := []string{"gemma-4-e4b", "qwen3-6-35b-a3b", ""}
-	if !equalStrings(c.LLMAnalysisModels, wantModels) {
+	if !slices.Equal(c.LLMAnalysisModels, wantModels) {
 		t.Fatalf("LLMAnalysisModels = %v, want %v", c.LLMAnalysisModels, wantModels)
 	}
 }
@@ -189,24 +192,12 @@ func TestParseModelURLPairs(t *testing.T) {
 	models, urls := parseModelURLPairs("gemma-4-e4b@http://a:8081/v1,http://b:8081/v1, qwen3@http://c:8081/v1 ")
 	wantModels := []string{"gemma-4-e4b", "", "qwen3"}
 	wantURLs := []string{"http://a:8081/v1", "http://b:8081/v1", "http://c:8081/v1"}
-	if !equalStrings(models, wantModels) {
+	if !slices.Equal(models, wantModels) {
 		t.Fatalf("models = %v, want %v", models, wantModels)
 	}
-	if !equalStrings(urls, wantURLs) {
+	if !slices.Equal(urls, wantURLs) {
 		t.Fatalf("urls = %v, want %v", urls, wantURLs)
 	}
-}
-
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func TestLoadOverrides(t *testing.T) {

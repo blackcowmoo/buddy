@@ -471,14 +471,50 @@ func TestMySQLSaveGeneratedTitleIsWriteOnce(t *testing.T) {
 	}
 }
 
-func TestMySQLSaveGeneratedTitleNoopWhenSessionMissing(t *testing.T) {
+// TestMySQLSaveGeneratedTitleCreatesRowWhenSessionMissing guards the fix for
+// a real production race: Handler.generateTitle (ws.go) and the turn-1
+// SaveTurn call that normally creates a session's row are fired off two
+// independent, unsynchronized `go` statements, with no ordering guarantee
+// between them. SaveGeneratedTitle must create the row itself when it wins
+// that race — a plain no-op here would silently and permanently lose the
+// generated title, since nothing else retries it.
+func TestMySQLSaveGeneratedTitleCreatesRowWhenSessionMissing(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
-	if err := st.SaveGeneratedTitle(ctx, "alex", "sess-missing-for-title", "Some Title"); err != nil {
-		t.Fatalf("SaveGeneratedTitle() error = %v, want nil (no-op)", err)
+	sessionID := "sess-missing-for-title"
+	if err := st.SaveGeneratedTitle(ctx, "alex", sessionID, "Some Title"); err != nil {
+		t.Fatalf("SaveGeneratedTitle() error = %v", err)
 	}
-	if _, _, err := st.SessionDetail(ctx, "alex", "sess-missing-for-title"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("SessionDetail() error = %v, want ErrNotFound (no row should have been created)", err)
+	meta, _, err := st.SessionDetail(ctx, "alex", sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if meta.Title != "Some Title" {
+		t.Fatalf("Title = %q, want the generated title even though no turn had been saved yet", meta.Title)
+	}
+}
+
+// TestMySQLSaveGeneratedTitleSurvivesLaterSaveTurn is the other half of the
+// race TestMySQLSaveGeneratedTitleCreatesRowWhenSessionMissing covers: once
+// SaveGeneratedTitle has won the race and created the row, the turn-1
+// SaveTurn call that eventually does run must not clobber the generated
+// title back to the raw-text placeholder.
+func TestMySQLSaveGeneratedTitleSurvivesLaterSaveTurn(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	sessionID := "sess-title-race"
+	if err := st.SaveGeneratedTitle(ctx, "alex", sessionID, "Generated Title"); err != nil {
+		t.Fatalf("SaveGeneratedTitle() error = %v", err)
+	}
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "first message", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn() error = %v", err)
+	}
+	meta, _, err := st.SessionDetail(ctx, "alex", sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if meta.Title != "Generated Title" {
+		t.Fatalf("Title = %q, want the already-generated title to survive the later turn-1 save", meta.Title)
 	}
 }
 

@@ -137,9 +137,7 @@ func (w *Worker) run(raw string) {
 		log.Printf("asyncjob: %s: handler failed for job %s: %v", w.kind, job.ID, handlerErr)
 		return
 	}
-	if err := completeScript.Run(context.Background(), w.rdb,
-		[]string{processingKey(w.kind), ck, dedupeSetKey(w.kind)}, raw, job.DedupeKey,
-	).Err(); err != nil {
+	if err := completeJob(context.Background(), w.rdb, w.kind, job.ID, raw, job.DedupeKey); err != nil {
 		log.Printf("asyncjob: %s: complete job %s: %v", w.kind, job.ID, err)
 	}
 }

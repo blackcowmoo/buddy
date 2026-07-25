@@ -205,6 +205,25 @@ func (p *Pipeline) HandleUtterance(ctx context.Context, userID, sessionID string
 	p.reply(ctx, userID, sessionID, sess, turn, emit)
 }
 
+// fanOutOrdered runs call(0), call(1), ..., call(n-1) concurrently and
+// returns their results in that same index order rather than completion
+// order — both transcribe (STT engines) and analyze (LLM candidates) rely
+// on "results[0]" meaning "the first configured engine/candidate" for their
+// first-candidate fallback, regardless of which goroutine finishes first.
+func fanOutOrdered[T any](n int, call func(i int) T) []T {
+	results := make([]T, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i] = call(i)
+		}(i)
+	}
+	wg.Wait()
+	return results
+}
+
 // transcribe runs every configured STT engine concurrently on one utterance.
 // A lone engine's result (or the zero-setup mock default) is used directly.
 // Two or more candidates go to the FAST chat model to reconcile into the
@@ -226,22 +245,15 @@ func (p *Pipeline) transcribe(ctx context.Context, summary string, recent []llm.
 		text string
 		err  error
 	}
-	slots := make([]slot, len(p.STT))
-	var wg sync.WaitGroup
-	for i, rec := range p.STT {
-		wg.Add(1)
-		go func(i int, rec stt.Recognizer) {
-			defer wg.Done()
-			res, err := rec.Transcribe(ctx, pcm)
-			if err != nil {
-				log.Printf("transcribe: %s: %v", rec.Name(), err)
-				slots[i] = slot{err: err}
-				return
-			}
-			slots[i] = slot{text: strings.TrimSpace(res.Text)}
-		}(i, rec)
-	}
-	wg.Wait()
+	slots := fanOutOrdered(len(p.STT), func(i int) slot {
+		rec := p.STT[i]
+		res, err := rec.Transcribe(ctx, pcm)
+		if err != nil {
+			log.Printf("transcribe: %s: %v", rec.Name(), err)
+			return slot{err: err}
+		}
+		return slot{text: strings.TrimSpace(res.Text)}
+	})
 
 	succeeded := 0
 	var errs []error
@@ -491,28 +503,22 @@ func (p *Pipeline) analyze(ctx context.Context, systemPrompt, input string, json
 		{Role: llm.RoleUser, Content: input},
 	}
 
-	// Each goroutine owns a fixed slot by index, so the results slice stays
-	// in Analysis's configured order regardless of completion timing — the
+	// Each slot is filled by index, so the results slice stays in
+	// Analysis's configured order regardless of completion timing — the
 	// judge-error fallback below always means "the first configured
 	// candidate", not "whichever happened to finish first".
-	slots := make([]candidateResult, len(p.Analysis))
-	var wg sync.WaitGroup
-	for i, c := range p.Analysis {
-		wg.Add(1)
-		go func(i int, c Candidate) {
-			defer wg.Done()
-			text, err := c.LLM.Complete(ctx, c.Model, msgs, jsonMode)
-			if err != nil {
-				log.Printf("analyze: candidate %s: %v", c.Model, err)
-				return
-			}
-			if text = strings.TrimSpace(text); text == "" {
-				return
-			}
-			slots[i] = candidateResult{model: c.Model, text: text, ok: true}
-		}(i, c)
-	}
-	wg.Wait()
+	slots := fanOutOrdered(len(p.Analysis), func(i int) candidateResult {
+		c := p.Analysis[i]
+		text, err := c.LLM.Complete(ctx, c.Model, msgs, jsonMode)
+		if err != nil {
+			log.Printf("analyze: candidate %s: %v", c.Model, err)
+			return candidateResult{}
+		}
+		if text = strings.TrimSpace(text); text == "" {
+			return candidateResult{}
+		}
+		return candidateResult{model: c.Model, text: text, ok: true}
+	})
 
 	var results []candidateResult
 	for _, r := range slots {
