@@ -1390,6 +1390,15 @@ func TestWSReconnectDoesNotRegenerateTitle(t *testing.T) {
 	st := newTestStore(t)
 	titleN := 0
 	srv := newTestServerWithTitleLLM(t, st, func(msgs []llm.Message) (string, error) {
+		// pipeline.Pipeline.LLM/ChatModel is now also used for the
+		// FAST-track grammar-correction/translation pre-pass (see
+		// correct()/translateAssistant()), which shares this same fake and
+		// would otherwise steal a "Title N" slot meant for an actual title
+		// request — only count calls whose system prompt is really the
+		// title prompt.
+		if len(msgs) == 0 || !strings.Contains(msgs[0].Content, "descriptive title") {
+			return "", nil
+		}
 		titleN++
 		return fmt.Sprintf("Title %d", titleN), nil
 	})

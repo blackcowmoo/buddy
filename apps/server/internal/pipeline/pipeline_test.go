@@ -407,10 +407,13 @@ func TestCompactLeavesHistoryOnLLMError(t *testing.T) {
 // ---- correct() -----------------------------------------------------------------
 
 func TestCorrectEmitsEventWhenChanged(t *testing.T) {
+	fixture := func(msgs []llm.Message) (string, error) {
+		return `{"corrected":"I like pizza.","translation":"저는 피자를 좋아해요.","issues":[{"type":"grammar","span":"I likes","suggestion":"I like","explanation":"subject-verb agreement error","explanationTranslation":"수 일치 오류"}]}`, nil
+	}
 	p := &Pipeline{
-		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
-			return `{"corrected":"I like pizza.","translation":"저는 피자를 좋아해요.","issues":[{"type":"grammar","span":"I likes","suggestion":"I like","explanation":"subject-verb agreement error","explanationTranslation":"수 일치 오류"}]}`, nil
-		}}}},
+		LLM:       &fakeLLM{complete: fixture},
+		ChatModel: "m",
+		Analysis:  []Candidate{{Model: "m", LLM: &fakeLLM{complete: fixture}}},
 	}
 	var got []protocol.ServerEvent
 	p.correct(context.Background(), "alex", "sess-1", 1, "I likes pizza", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
@@ -433,10 +436,13 @@ func TestCorrectEmitsEventWhenChanged(t *testing.T) {
 }
 
 func TestCorrectEmitsEventWithNoIssuesWhenAlreadyCorrect(t *testing.T) {
+	fixture := func(msgs []llm.Message) (string, error) {
+		return `{"corrected":"I like pizza.","issues":[]}`, nil
+	}
 	p := &Pipeline{
-		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
-			return `{"corrected":"I like pizza.","issues":[]}`, nil
-		}}}},
+		LLM:       &fakeLLM{complete: fixture},
+		ChatModel: "m",
+		Analysis:  []Candidate{{Model: "m", LLM: &fakeLLM{complete: fixture}}},
 	}
 	var got []protocol.ServerEvent
 	p.correct(context.Background(), "alex", "sess-1", 1, "I like pizza.", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
@@ -453,10 +459,13 @@ func TestCorrectEmitsEventWithNoIssuesWhenAlreadyCorrect(t *testing.T) {
 // use case: a learner should still get a translation to compare against what
 // they meant to say even when the sentence needed no grammar teaching.
 func TestCorrectEmitsTranslationEvenWhenAlreadyCorrect(t *testing.T) {
+	fixture := func(msgs []llm.Message) (string, error) {
+		return `{"corrected":"I like pizza.","translation":"저는 피자를 좋아해요.","issues":[]}`, nil
+	}
 	p := &Pipeline{
-		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
-			return `{"corrected":"I like pizza.","translation":"저는 피자를 좋아해요.","issues":[]}`, nil
-		}}}},
+		LLM:       &fakeLLM{complete: fixture},
+		ChatModel: "m",
+		Analysis:  []Candidate{{Model: "m", LLM: &fakeLLM{complete: fixture}}},
 	}
 	var got []protocol.ServerEvent
 	p.correct(context.Background(), "alex", "sess-1", 1, "I like pizza.", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
@@ -479,10 +488,13 @@ func TestCorrectEmitsTranslationEvenWhenAlreadyCorrect(t *testing.T) {
 // Failed set and no Correction, so the client can show a distinct failed
 // state instead (see protocol.ServerEvent.Failed).
 func TestCorrectEmitsFailedOnMalformedJSON(t *testing.T) {
+	fixture := func(msgs []llm.Message) (string, error) {
+		return "not json", nil
+	}
 	p := &Pipeline{
-		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
-			return "not json", nil
-		}}}},
+		LLM:       &fakeLLM{complete: fixture},
+		ChatModel: "m",
+		Analysis:  []Candidate{{Model: "m", LLM: &fakeLLM{complete: fixture}}},
 	}
 	var got []protocol.ServerEvent
 	p.correct(context.Background(), "alex", "sess-1", 1, "whatever", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
@@ -497,10 +509,13 @@ func TestCorrectEmitsFailedOnMalformedJSON(t *testing.T) {
 // TestCorrectEmitsFailedOnLLMError is TestCorrectEmitsFailedOnMalformedJSON's
 // counterpart for the LLM call itself failing (e.g. the backend down).
 func TestCorrectEmitsFailedOnLLMError(t *testing.T) {
+	fixture := func(msgs []llm.Message) (string, error) {
+		return "", errors.New("down")
+	}
 	p := &Pipeline{
-		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
-			return "", errors.New("down")
-		}}}},
+		LLM:       &fakeLLM{complete: fixture},
+		ChatModel: "m",
+		Analysis:  []Candidate{{Model: "m", LLM: &fakeLLM{complete: fixture}}},
 	}
 	var got []protocol.ServerEvent
 	p.correct(context.Background(), "alex", "sess-1", 1, "whatever", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
@@ -512,13 +527,106 @@ func TestCorrectEmitsFailedOnLLMError(t *testing.T) {
 	}
 }
 
+// TestCorrectEmitsFastThenRefinedWhenDifferent guards the two-stage flow
+// itself: the FAST pass (p.LLM/p.ChatModel) must emit first, and once the
+// slower REFINE ensemble lands on a different answer, correct() must patch
+// it in with a second event rather than silently dropping the upgrade.
+func TestCorrectEmitsFastThenRefinedWhenDifferent(t *testing.T) {
+	p := &Pipeline{
+		LLM:       &fakeLLM{complete: func(msgs []llm.Message) (string, error) { return `{"corrected":"I likes pizza.","issues":[]}`, nil }},
+		ChatModel: "chat",
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			return `{"corrected":"I like pizza.","issues":[{"type":"grammar","span":"likes","suggestion":"like","explanation":"subject-verb agreement","explanationTranslation":"수 일치"}]}`, nil
+		}}}},
+	}
+	var got []protocol.ServerEvent
+	p.correct(context.Background(), "alex", "sess-1", 1, "I likes pizza", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
+
+	if len(got) != 2 || got[0].Type != protocol.EvCorrection || got[1].Type != protocol.EvCorrection {
+		t.Fatalf("expected two correction events (fast, then refined), got %+v", got)
+	}
+	if got[0].Correction.Corrected != "I likes pizza." {
+		t.Fatalf("fast event should carry the fast pass's own (uncorrected) result, got %+v", got[0].Correction)
+	}
+	if got[1].Correction.Corrected != "I like pizza." || len(got[1].Correction.Issues) != 1 {
+		t.Fatalf("refined event should carry the ensemble's better result, got %+v", got[1].Correction)
+	}
+}
+
+// TestCorrectSkipsSecondEmitWhenRefineAgreesWithFast is
+// TestCorrectEmitsFastThenRefinedWhenDifferent's counterpart: when the
+// ensemble lands on the exact same answer the fast pass already showed,
+// correct() must not emit a second, identical card.
+func TestCorrectSkipsSecondEmitWhenRefineAgreesWithFast(t *testing.T) {
+	fixture := func(msgs []llm.Message) (string, error) {
+		return `{"corrected":"I like pizza.","issues":[]}`, nil
+	}
+	p := &Pipeline{
+		LLM:       &fakeLLM{complete: fixture},
+		ChatModel: "chat",
+		Analysis:  []Candidate{{Model: "m", LLM: &fakeLLM{complete: fixture}}},
+	}
+	var got []protocol.ServerEvent
+	p.correct(context.Background(), "alex", "sess-1", 1, "I like pizza.", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
+
+	if len(got) != 1 {
+		t.Fatalf("expected exactly one correction event when fast and refined agree, got %+v", got)
+	}
+}
+
+// TestCorrectFastFailureFallsBackToRefineOnlyNoFailedEvent: if the fast pass
+// errors but the ensemble still succeeds, correct() must not report a
+// failure — the learner ends up with a real (if slightly delayed) result,
+// not a false "check failed" state.
+func TestCorrectFastFailureFallsBackToRefineOnlyNoFailedEvent(t *testing.T) {
+	p := &Pipeline{
+		LLM:       &fakeLLM{complete: func(msgs []llm.Message) (string, error) { return "", errors.New("chat model down") }},
+		ChatModel: "chat",
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			return `{"corrected":"I like pizza.","issues":[]}`, nil
+		}}}},
+	}
+	var got []protocol.ServerEvent
+	p.correct(context.Background(), "alex", "sess-1", 1, "I like pizza.", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
+
+	if len(got) != 1 || got[0].Failed {
+		t.Fatalf("expected exactly one non-failed correction event from the ensemble, got %+v", got)
+	}
+	if got[0].Correction == nil || got[0].Correction.Corrected != "I like pizza." {
+		t.Fatalf("expected the ensemble's result, got %+v", got[0])
+	}
+}
+
+// TestCorrectEmitsFailedOnlyWhenBothFastAndRefineFail is
+// TestCorrectFastFailureFallsBackToRefineOnlyNoFailedEvent's counterpart:
+// only when neither pass produced anything usable should the learner see a
+// failed state.
+func TestCorrectEmitsFailedOnlyWhenBothFastAndRefineFail(t *testing.T) {
+	p := &Pipeline{
+		LLM:       &fakeLLM{complete: func(msgs []llm.Message) (string, error) { return "", errors.New("chat model down") }},
+		ChatModel: "chat",
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			return "", errors.New("analysis down")
+		}}}},
+	}
+	var got []protocol.ServerEvent
+	p.correct(context.Background(), "alex", "sess-1", 1, "I like pizza.", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
+
+	if len(got) != 1 || !got[0].Failed || got[0].Correction != nil {
+		t.Fatalf("expected exactly one Failed=true correction event, got %+v", got)
+	}
+}
+
 // ---- translateAssistant() -------------------------------------------------------
 
 func TestTranslateAssistantEmitsEvent(t *testing.T) {
+	fixture := func(msgs []llm.Message) (string, error) {
+		return "안녕하세요, 오늘 어때요?", nil
+	}
 	p := &Pipeline{
-		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
-			return "안녕하세요, 오늘 어때요?", nil
-		}}}},
+		LLM:       &fakeLLM{complete: fixture},
+		ChatModel: "m",
+		Analysis:  []Candidate{{Model: "m", LLM: &fakeLLM{complete: fixture}}},
 	}
 	var got []protocol.ServerEvent
 	p.translateAssistant(context.Background(), "alex", "sess-1", 3, "Hello, how are you today?", func(ev protocol.ServerEvent) { got = append(got, ev) })
@@ -532,10 +640,13 @@ func TestTranslateAssistantEmitsEvent(t *testing.T) {
 }
 
 func TestTranslateAssistantIgnoresLLMError(t *testing.T) {
+	fixture := func(msgs []llm.Message) (string, error) {
+		return "", errors.New("down")
+	}
 	p := &Pipeline{
-		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
-			return "", errors.New("down")
-		}}}},
+		LLM:       &fakeLLM{complete: fixture},
+		ChatModel: "m",
+		Analysis:  []Candidate{{Model: "m", LLM: &fakeLLM{complete: fixture}}},
 	}
 	var got []protocol.ServerEvent
 	p.translateAssistant(context.Background(), "alex", "sess-1", 1, "whatever", func(ev protocol.ServerEvent) { got = append(got, ev) })
@@ -551,10 +662,13 @@ func TestTranslateAssistantIgnoresLLMError(t *testing.T) {
 // translateAssistant swallows without emitting, same as any other analyze()
 // error.
 func TestTranslateAssistantSkipsEmptyResult(t *testing.T) {
+	fixture := func(msgs []llm.Message) (string, error) {
+		return "   ", nil
+	}
 	p := &Pipeline{
-		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
-			return "   ", nil
-		}}}},
+		LLM:       &fakeLLM{complete: fixture},
+		ChatModel: "m",
+		Analysis:  []Candidate{{Model: "m", LLM: &fakeLLM{complete: fixture}}},
 	}
 	var got []protocol.ServerEvent
 	p.translateAssistant(context.Background(), "alex", "sess-1", 1, "whatever", func(ev protocol.ServerEvent) { got = append(got, ev) })
@@ -568,15 +682,78 @@ func TestTranslateAssistantSkipsEmptyResult(t *testing.T) {
 // a model wrapping its answer in a newline), and the emitted event's Text
 // must be trimmed before it reaches the client.
 func TestTranslateAssistantTrimsWhitespace(t *testing.T) {
+	fixture := func(msgs []llm.Message) (string, error) {
+		return "  안녕하세요  \n", nil
+	}
 	p := &Pipeline{
-		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
-			return "  안녕하세요  \n", nil
-		}}}},
+		LLM:       &fakeLLM{complete: fixture},
+		ChatModel: "m",
+		Analysis:  []Candidate{{Model: "m", LLM: &fakeLLM{complete: fixture}}},
 	}
 	var got []protocol.ServerEvent
 	p.translateAssistant(context.Background(), "alex", "sess-1", 1, "whatever", func(ev protocol.ServerEvent) { got = append(got, ev) })
 	if len(got) != 1 || got[0].Text != "안녕하세요" {
 		t.Fatalf("expected trimmed translation text, got %+v", got)
+	}
+}
+
+// TestTranslateAssistantEmitsFastThenRefinedWhenDifferent guards the
+// two-stage flow: the FAST pass (p.LLM/p.ChatModel) emits first, and the
+// slower REFINE ensemble patches it in with a second event once it lands on
+// a different translation.
+func TestTranslateAssistantEmitsFastThenRefinedWhenDifferent(t *testing.T) {
+	p := &Pipeline{
+		LLM:       &fakeLLM{complete: func(msgs []llm.Message) (string, error) { return "빠른 번역", nil }},
+		ChatModel: "chat",
+		Analysis:  []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) { return "정제된 번역", nil }}}},
+	}
+	var got []protocol.ServerEvent
+	p.translateAssistant(context.Background(), "alex", "sess-1", 3, "Hello, how are you today?", func(ev protocol.ServerEvent) { got = append(got, ev) })
+
+	if len(got) != 2 || got[0].Type != protocol.EvAssistantTranslation || got[1].Type != protocol.EvAssistantTranslation {
+		t.Fatalf("expected two assistant_translation events (fast, then refined), got %+v", got)
+	}
+	if got[0].Text != "빠른 번역" {
+		t.Fatalf("fast event should carry the fast pass's own translation, got %+v", got[0])
+	}
+	if got[1].Text != "정제된 번역" {
+		t.Fatalf("refined event should carry the ensemble's translation, got %+v", got[1])
+	}
+}
+
+// TestTranslateAssistantSkipsSecondEmitWhenSame is
+// TestTranslateAssistantEmitsFastThenRefinedWhenDifferent's counterpart: no
+// second event when the ensemble agrees with the fast pass.
+func TestTranslateAssistantSkipsSecondEmitWhenSame(t *testing.T) {
+	fixture := func(msgs []llm.Message) (string, error) { return "같은 번역", nil }
+	p := &Pipeline{
+		LLM:       &fakeLLM{complete: fixture},
+		ChatModel: "chat",
+		Analysis:  []Candidate{{Model: "m", LLM: &fakeLLM{complete: fixture}}},
+	}
+	var got []protocol.ServerEvent
+	p.translateAssistant(context.Background(), "alex", "sess-1", 3, "Hello, how are you today?", func(ev protocol.ServerEvent) { got = append(got, ev) })
+
+	if len(got) != 1 {
+		t.Fatalf("expected exactly one assistant_translation event when fast and refined agree, got %+v", got)
+	}
+}
+
+// TestTranslateAssistantFastFailureFallsBackToRefineOnly: a fast-pass error
+// must not stop the ensemble's own result from reaching the learner, and
+// must not itself produce any event (translateAssistant has never reported
+// translation failures — see TestTranslateAssistantIgnoresLLMError).
+func TestTranslateAssistantFastFailureFallsBackToRefineOnly(t *testing.T) {
+	p := &Pipeline{
+		LLM:       &fakeLLM{complete: func(msgs []llm.Message) (string, error) { return "", errors.New("chat model down") }},
+		ChatModel: "chat",
+		Analysis:  []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) { return "정제된 번역", nil }}}},
+	}
+	var got []protocol.ServerEvent
+	p.translateAssistant(context.Background(), "alex", "sess-1", 3, "Hello, how are you today?", func(ev protocol.ServerEvent) { got = append(got, ev) })
+
+	if len(got) != 1 || got[0].Text != "정제된 번역" {
+		t.Fatalf("expected exactly one event carrying the ensemble's translation, got %+v", got)
 	}
 }
 
@@ -664,7 +841,14 @@ func TestTranslationCallsAreSerializedAcrossLiveAndBackfill(t *testing.T) {
 		mu.Unlock()
 		return "translated", nil
 	}}
-	p := &Pipeline{Analysis: []Candidate{{Model: "m", LLM: slow}}}
+	// translateAssistant's FAST pass (p.LLM/p.ChatModel) is a separate,
+	// immediate call unrelated to the ensemble slot this test measures —
+	// give it its own fast fake so it doesn't perturb maxInFlight.
+	p := &Pipeline{
+		LLM:       &fakeLLM{complete: func(msgs []llm.Message) (string, error) { return "fast", nil }},
+		ChatModel: "chat",
+		Analysis:  []Candidate{{Model: "m", LLM: slow}},
+	}
 
 	var wg sync.WaitGroup
 	for i := 0; i < 3; i++ {
@@ -788,11 +972,14 @@ func TestGenerateTitlePropagatesLLMError(t *testing.T) {
 
 func TestCorrectSendsBareSentenceWhenNoContext(t *testing.T) {
 	var gotInput string
+	fixture := func(msgs []llm.Message) (string, error) {
+		gotInput = msgs[len(msgs)-1].Content
+		return `{"corrected":"ok","issues":[]}`, nil
+	}
 	p := &Pipeline{
-		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
-			gotInput = msgs[len(msgs)-1].Content
-			return `{"corrected":"ok","issues":[]}`, nil
-		}}}},
+		LLM:       &fakeLLM{complete: fixture},
+		ChatModel: "m",
+		Analysis:  []Candidate{{Model: "m", LLM: &fakeLLM{complete: fixture}}},
 	}
 	p.correct(context.Background(), "alex", "sess-1", 1, "ok", "", func(protocol.ServerEvent) {})
 	if gotInput != "ok" {
@@ -802,11 +989,14 @@ func TestCorrectSendsBareSentenceWhenNoContext(t *testing.T) {
 
 func TestCorrectFoldsContextInFrontOfSentence(t *testing.T) {
 	var gotInput string
+	fixture := func(msgs []llm.Message) (string, error) {
+		gotInput = msgs[len(msgs)-1].Content
+		return `{"corrected":"I am 20 years old.","issues":[]}`, nil
+	}
 	p := &Pipeline{
-		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
-			gotInput = msgs[len(msgs)-1].Content
-			return `{"corrected":"I am 20 years old.","issues":[]}`, nil
-		}}}},
+		LLM:       &fakeLLM{complete: fixture},
+		ChatModel: "m",
+		Analysis:  []Candidate{{Model: "m", LLM: &fakeLLM{complete: fixture}}},
 	}
 	ctxMsg := "Conversation so far:\nassistant: How old are you?\n"
 	p.correct(context.Background(), "alex", "sess-1", 1, "I am 20 years old.", ctxMsg, func(protocol.ServerEvent) {})
@@ -1149,7 +1339,11 @@ func TestRefineCorrectionSurvivesCtxCancellation(t *testing.T) {
 		release: make(chan struct{}),
 		reply:   `{"corrected":"fixed.","issues":[]}`,
 	}
-	p := &Pipeline{Analysis: []Candidate{{Model: "m", LLM: gate}}}
+	p := &Pipeline{
+		LLM:       &fakeLLM{complete: func(msgs []llm.Message) (string, error) { return `{"corrected":"fixed.","issues":[]}`, nil }},
+		ChatModel: "chat-model",
+		Analysis:  []Candidate{{Model: "m", LLM: gate}},
+	}
 	sess := session.New("sys")
 	sess.AppendUser("broken")
 
@@ -1184,6 +1378,8 @@ func TestRefineUpgradesSessionWhenJudgeDisagrees(t *testing.T) {
 		return `{"corrected":"the real sentence","issues":[]}`, nil
 	}}
 	p := &Pipeline{
+		LLM:        &fakeLLM{complete: func(msgs []llm.Message) (string, error) { return `{"corrected":"the real sentence","issues":[]}`, nil }},
+		ChatModel:  "chat-model",
 		Judge:      judge,
 		JudgeModel: "judge-model",
 		Analysis:   []Candidate{{Model: "m", LLM: analysis}},
@@ -1216,6 +1412,8 @@ func TestRefineNoopWhenJudgeAgrees(t *testing.T) {
 		return `{"corrected":"same text","issues":[]}`, nil
 	}}
 	p := &Pipeline{
+		LLM:        &fakeLLM{complete: func(msgs []llm.Message) (string, error) { return `{"corrected":"same text","issues":[]}`, nil }},
+		ChatModel:  "chat-model",
 		Judge:      judge,
 		JudgeModel: "judge-model",
 		Analysis:   []Candidate{{Model: "m", LLM: analysis}},
@@ -1240,6 +1438,8 @@ func TestRefineFallsBackToFastTextOnJudgeError(t *testing.T) {
 		return `{"corrected":"fast text","issues":[]}`, nil
 	}}
 	p := &Pipeline{
+		LLM:        &fakeLLM{complete: func(msgs []llm.Message) (string, error) { return `{"corrected":"fast text","issues":[]}`, nil }},
+		ChatModel:  "chat-model",
 		Judge:      judge,
 		JudgeModel: "judge-model",
 		Analysis:   []Candidate{{Model: "m", LLM: analysis}},

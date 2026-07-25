@@ -643,6 +643,16 @@ func (p *Pipeline) refine(ctx context.Context, userID, sessionID string, sess *s
 // in, folded into the analysis input the same way compaction folds its
 // prior-summary context; it is empty on the first turn.
 //
+// This runs FAST then REFINE, the same shape refine() already uses for
+// transcription: AnalyzeCorrectionFast (one quick chat-model call) emits
+// first so the learner sees feedback without waiting on the analysis
+// ensemble; the ensemble pass below then emits again ONLY if its answer
+// actually differs from what the fast pass already showed (see
+// correctionsEqual) — the same only-patch-if-it-changed rule refine()
+// applies to EvRefined. If the fast pass itself failed, the ensemble's
+// result is emitted unconditionally, since there's nothing yet to compare it
+// against.
+//
 // Callers pass context.WithoutCancel(ctx) (see HandleText/refine above), not
 // the caller's turn-scoped or connection ctx directly: a barge-in or
 // disconnect must not silently drop a grammar-check/translation result that
@@ -655,9 +665,11 @@ func (p *Pipeline) refine(ctx context.Context, userID, sessionID string, sess *s
 // error, that spinner used to hang forever (live) or quietly vanish once the
 // turn aged out of the frontend's "recently active" window (reloaded) —
 // indistinguishable from "already correct", which is exactly the confusion
-// this exists to remove.
+// this exists to remove. onFailure only fires when the FAST pass also
+// failed: once the learner already has a real (fast) result, a slower
+// ensemble error is a missed upgrade, not a failure worth reporting.
 func (p *Pipeline) correct(ctx context.Context, userID, sessionID string, turn int, text, contextMsg string, emit Emit) {
-	onResult := func(corrected string, issues []protocol.Issue, translation string) {
+	emitResult := func(corrected string, issues []protocol.Issue, translation string) {
 		// The translation fires independently so a learner still gets a
 		// meaning check even on an already-correct sentence.
 		emit(protocol.ServerEvent{
@@ -673,8 +685,25 @@ func (p *Pipeline) correct(ctx context.Context, userID, sessionID string, turn i
 			emit(protocol.ServerEvent{Type: protocol.EvUserTranslation, Turn: turn, Text: translation})
 		}
 	}
+
+	fastCorrected, fastIssues, fastTranslation, fastErr := p.AnalyzeCorrectionFast(ctx, text, contextMsg)
+	fastOK := fastErr == nil
+	if fastOK {
+		emitResult(fastCorrected, fastIssues, fastTranslation)
+	} else {
+		log.Printf("correct: fast pass: %v", fastErr)
+	}
+
+	onResult := func(corrected string, issues []protocol.Issue, translation string) {
+		if fastOK && correctionsEqual(fastCorrected, fastIssues, fastTranslation, corrected, issues, translation) {
+			return // the ensemble agrees with what the learner already sees
+		}
+		emitResult(corrected, issues, translation)
+	}
 	onFailure := func() {
-		emit(protocol.ServerEvent{Type: protocol.EvCorrection, Turn: turn, Failed: true})
+		if !fastOK {
+			emit(protocol.ServerEvent{Type: protocol.EvCorrection, Turn: turn, Failed: true})
+		}
 	}
 	if p.CorrectHook != nil {
 		p.CorrectHook(ctx, userID, sessionID, turn, text, contextMsg, onResult, onFailure)
@@ -689,6 +718,28 @@ func (p *Pipeline) correct(ctx context.Context, userID, sessionID string, turn i
 	onResult(corrected, issues, translation)
 }
 
+// correctionsEqual reports whether two correction results are the same for
+// display purposes — used by correct() to decide whether the REFINE
+// ensemble pass actually improved on the FAST pass, so a learner is never
+// shown a second, identical card.
+func correctionsEqual(aCorrected string, aIssues []protocol.Issue, aTranslation string, bCorrected string, bIssues []protocol.Issue, bTranslation string) bool {
+	if strings.TrimSpace(aCorrected) != strings.TrimSpace(bCorrected) {
+		return false
+	}
+	if strings.TrimSpace(aTranslation) != strings.TrimSpace(bTranslation) {
+		return false
+	}
+	if len(aIssues) != len(bIssues) {
+		return false
+	}
+	for i := range aIssues {
+		if aIssues[i] != bIssues[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // AnalyzeCorrection runs the grammar/vocabulary/context analysis ensemble
 // for one sentence and parses its strict-JSON result. Exported so
 // transport's queue-backed CorrectHook implementation reuses the exact same
@@ -698,6 +749,30 @@ func (p *Pipeline) AnalyzeCorrection(ctx context.Context, text, contextMsg strin
 	if err != nil {
 		return "", nil, "", err
 	}
+	return parseCorrection(raw)
+}
+
+// AnalyzeCorrectionFast is AnalyzeCorrection's FAST-track counterpart: one
+// call to the chat model (p.LLM/p.ChatModel) instead of the analysis
+// ensemble, so correct() can show a result immediately while the slower,
+// more accurate ensemble pass keeps running in the background — see
+// correct()'s doc comment. Same prompt and JSON shape as AnalyzeCorrection;
+// only the model tier differs.
+func (p *Pipeline) AnalyzeCorrectionFast(ctx context.Context, text, contextMsg string) (corrected string, issues []protocol.Issue, translation string, err error) {
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: correctionSystemPrompt(p.FeedbackLang)},
+		{Role: llm.RoleUser, Content: renderCorrectionInput(contextMsg, text)},
+	}
+	raw, err := p.LLM.Complete(ctx, p.ChatModel, msgs, true)
+	if err != nil {
+		return "", nil, "", err
+	}
+	return parseCorrection(raw)
+}
+
+// parseCorrection parses AnalyzeCorrection/AnalyzeCorrectionFast's shared
+// strict-JSON output shape.
+func parseCorrection(raw string) (corrected string, issues []protocol.Issue, translation string, err error) {
 	var parsed struct {
 		Corrected   string           `json:"corrected"`
 		Translation string           `json:"translation"`
@@ -763,7 +838,22 @@ func (p *Pipeline) translationSemaphore() chan struct{} {
 // that legitimately wants early cancellation — like internal/backfill's
 // long-lived worker ctx via TranslateWithContext below — still gets it.
 func (p *Pipeline) translateAssistant(ctx context.Context, userID, sessionID string, turn int, text string, emit Emit) {
+	// FAST pass: one quick chat-model call so the learner sees a translation
+	// immediately; REFINE (below) re-checks it with the analysis ensemble and
+	// silently patches the result only if it disagrees — same shape as
+	// correct()'s two-stage flow.
+	fastTranslation, fastErr := p.AnalyzeTranslationFast(ctx, text)
+	fastOK := fastErr == nil
+	if fastOK {
+		emit(protocol.ServerEvent{Type: protocol.EvAssistantTranslation, Turn: turn, Text: fastTranslation})
+	} else {
+		log.Printf("translateAssistant: fast pass: %v", fastErr)
+	}
+
 	onResult := func(translation string) {
+		if fastOK && strings.TrimSpace(fastTranslation) == strings.TrimSpace(translation) {
+			return // the ensemble agrees with what the learner already sees
+		}
 		// analyze() never succeeds with a blank result (a candidate's own
 		// empty output is filtered out before it can win), so this event
 		// always carries real text — the client's pending/spinner state
@@ -798,6 +888,29 @@ func (p *Pipeline) AnalyzeTranslation(ctx context.Context, text string) (string,
 		return "", err
 	}
 	return strings.TrimSpace(raw), nil
+}
+
+// AnalyzeTranslationFast is AnalyzeTranslation's FAST-track counterpart: one
+// call to the chat model (p.LLM/p.ChatModel) instead of the analysis
+// ensemble, mirroring AnalyzeCorrectionFast — see translateAssistant()'s
+// two-stage flow. Unlike AnalyzeTranslation, it does not go through
+// acquireTranslationSlot: it isn't contending with the Analysis ensemble's
+// backend, and the whole point is to answer before that slot would even
+// matter. A blank (whitespace-only) result is treated as an error, matching
+// analyze()'s own "no blank winners" contract.
+func (p *Pipeline) AnalyzeTranslationFast(ctx context.Context, text string) (string, error) {
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: translationSystemPrompt(p.FeedbackLang)},
+		{Role: llm.RoleUser, Content: text},
+	}
+	raw, err := p.LLM.Complete(ctx, p.ChatModel, msgs, false)
+	if err != nil {
+		return "", err
+	}
+	if trimmed := strings.TrimSpace(raw); trimmed != "" {
+		return trimmed, nil
+	}
+	return "", fmt.Errorf("translateFast: empty result")
 }
 
 // TranslateWithContext translates text into the learner's native language
