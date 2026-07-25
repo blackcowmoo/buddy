@@ -934,6 +934,22 @@ func (p *Pipeline) TranslateWithContext(ctx context.Context, priorTurns []llm.Me
 	return strings.TrimSpace(raw), nil
 }
 
+// CorrectWithContext runs the grammar-correction analysis ensemble for one
+// turn using priorTurns — verbatim, in order — as context, the same
+// "conversation so far" shape correct() feeds via renderCorrectionContext, so
+// a backfilled correction reads the same as if it had been generated live.
+// Unlike correct() (which always has the session's long-term summary
+// available), this exists for internal/backfill, which only has the raw turn
+// history — mirrors TranslateWithContext's reasoning for the identical gap on
+// the translation side. Does not go through acquireTranslationSlot: that only
+// guards the shared translation LLM call, which this doesn't make (the
+// "translation" it returns is AnalyzeCorrection's own translation-of-the-
+// original-sentence field, produced by the SAME analysis call as the
+// correction, not a second one).
+func (p *Pipeline) CorrectWithContext(ctx context.Context, priorTurns []llm.Message, text string) (corrected string, issues []protocol.Issue, translation string, err error) {
+	return p.AnalyzeCorrection(ctx, text, renderCorrectionContext("", priorTurns))
+}
+
 // GenerateTitle asks the LLM for a short, descriptive chat-room title from
 // its opening exchange, for internal/transport to save once the first reply
 // completes (see Handler.generateTitle there) — replacing the raw

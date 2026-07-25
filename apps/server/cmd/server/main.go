@@ -81,17 +81,22 @@ func main() {
 	}
 	defer st.Close()
 
-	// Translation backfill: fills in the native-language translation for
-	// turns that never got one (see internal/backfill's doc comment).
-	// Disabled (translateQueue stays nil, Enqueue becomes a no-op) unless
-	// Redis is configured — same "zero setup by default" convention as
+	// Translation/correction backfill: fills in the native-language
+	// translation, or grammar-correction result, for turns that never got one
+	// (see internal/backfill's doc comment). Disabled (translateQueue/
+	// correctionQueue stay nil, Enqueue becomes a no-op) unless Redis is
+	// configured — same "zero setup by default" convention as
 	// audio/recordings below.
 	backfillCtx, backfillCancel := context.WithCancel(context.Background())
 	defer backfillCancel()
 	var translateQueue *backfill.Queue
+	var correctionBackfillQueue *backfill.CorrectionQueue
 	if rdb != nil {
 		translateQueue = backfill.NewQueue(rdb)
 		go backfill.NewWorker(rdb, st, pipe).Run(backfillCtx)
+
+		correctionBackfillQueue = backfill.NewCorrectionQueue(rdb)
+		go backfill.NewCorrectionWorker(rdb, st, pipe).Run(backfillCtx)
 	}
 
 	// Durable background work: makes chat replies, grammar correction, live
@@ -160,7 +165,7 @@ func main() {
 		defer recordings.Close()
 	}
 
-	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, translateQueue, titleQueue)
+	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, translateQueue, correctionBackfillQueue, titleQueue)
 
 	go func() {
 		log.Printf("buddy up on %s  env=%s  stt=%v  feedback=%s",

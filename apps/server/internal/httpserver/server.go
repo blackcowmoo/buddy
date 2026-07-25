@@ -34,13 +34,14 @@ import (
 // disabled (see config.Config's S3Bucket) — the /api/recordings routes still
 // exist but answer 503. audio and recordings are two independent features
 // that happen to share the same S3_* config — see internal/recording.S3Config's
-// doc comment for why. translateQueue is nil when Redis isn't configured (see
-// config.Config's RedisClusterHost) — sessionDetailHandler simply stops
-// queueing translation backfills, the same "optional feature, falls through
-// to doing nothing" convention as audio/recordings above. titleQueue is the
-// same kind of optional wiring for durable title generation — see
+// doc comment for why. translateQueue/correctionQueue are nil when Redis
+// isn't configured (see config.Config's RedisClusterHost) —
+// sessionDetailHandler simply stops queueing translation/correction
+// backfills, the same "optional feature, falls through to doing nothing"
+// convention as audio/recordings above. titleQueue is the same kind of
+// optional wiring for durable title generation — see
 // transport.Handler.SetTitleQueue.
-func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, translateQueue *backfill.Queue, titleQueue *asyncjob.Queue) *http.Server {
+func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue, titleQueue *asyncjob.Queue) *http.Server {
 	mux := http.NewServeMux()
 
 	// Realtime + API first (exact patterns win over the "/" catch-all).
@@ -60,7 +61,7 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	})
 	mux.HandleFunc("/api/me", meHandler(cfg.IdentityMode, ident))
 	mux.HandleFunc("GET /api/sessions", sessionsListHandler(ident, st))
-	mux.HandleFunc("GET /api/sessions/{id}", sessionDetailHandler(ident, st, translateQueue))
+	mux.HandleFunc("GET /api/sessions/{id}", sessionDetailHandler(ident, st, translateQueue, correctionQueue))
 	mux.HandleFunc("GET /api/sessions/{id}/compaction", sessionCompactionHandler(ident, st))
 	mux.HandleFunc("DELETE /api/sessions/{id}", sessionDeleteHandler(ident, st, audio, recordings))
 	mux.HandleFunc("GET /api/settings", settingsGetHandler(ident, st))
@@ -189,19 +190,23 @@ const defaultSessionPageLimit = 30
 // belonging to someone else 404s exactly like one that doesn't exist at
 // all — this handler can't tell the difference, on purpose.
 //
-// Viewing a session is also what triggers translation backfill: if any turn
-// on the returned page is missing its native-language translation (saved
-// before the translation feature existed, or a one-off async failure at the
-// time — see internal/backfill's doc comment), the session is queued for
-// background re-translation. This never delays the response: Enqueue is a
-// couple of fast Redis calls, but it's still fired via `go` so a
-// slow/unavailable Redis can never make opening a conversation wait on it,
-// and the actual translation work happens entirely out-of-band in
-// internal/backfill.Worker, over the session's whole transcript regardless
-// of which page triggered it — the learner sees today's (possibly
-// still-missing) translations immediately and gets the filled-in ones on
-// their next visit.
-func sessionDetailHandler(ident identity.Identifier, st store.Store, translateQueue *backfill.Queue) http.HandlerFunc {
+// Viewing a session is also what triggers translation and correction
+// backfill: if any turn on the returned page is missing its native-language
+// translation (saved before the translation feature existed, or a one-off
+// async failure at the time — see internal/backfill's doc comment), the
+// session is queued for background re-translation; likewise, if any user
+// turn is missing a grammar-correction result entirely — CorrectionStatus ==
+// "" (see store.Turn's doc comment) — it's queued for background
+// re-correction via asyncjob.KindCorrectionBackfill, since (unlike a
+// CorrectionStatus == "failed" turn) nothing else would ever retry it. Either
+// way this never delays the response: Enqueue is a couple of fast Redis
+// calls, but it's still fired via `go` so a slow/unavailable Redis can never
+// make opening a conversation wait on it, and the actual work happens
+// entirely out-of-band in internal/backfill's Workers, over the session's
+// whole transcript regardless of which page triggered it — the learner sees
+// today's (possibly still-missing) results immediately and gets the
+// filled-in ones on their next visit.
+func sessionDetailHandler(ident identity.Identifier, st store.Store, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)
 		if !ok {
@@ -241,6 +246,9 @@ func sessionDetailHandler(ident identity.Identifier, st store.Store, translateQu
 		if needsTranslationBackfill(turns) {
 			go translateQueue.Enqueue(context.Background(), userID, sessionID)
 		}
+		if needsCorrectionBackfill(turns) {
+			go correctionQueue.Enqueue(context.Background(), userID, sessionID)
+		}
 		writeJSON(w, map[string]any{"session": meta, "turns": turns, "hasMore": hasMore})
 	}
 }
@@ -250,6 +258,22 @@ func sessionDetailHandler(ident identity.Identifier, st store.Store, translateQu
 func needsTranslationBackfill(turns []store.Turn) bool {
 	for _, t := range turns {
 		if strings.TrimSpace(t.Text) != "" && strings.TrimSpace(t.Translation) == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// needsCorrectionBackfill reports whether any non-blank user turn in the
+// transcript is missing a grammar-correction result entirely —
+// CorrectionStatus == "" and no Correction yet. A turn with CorrectionStatus
+// "pending"/"processing"/"failed" is excluded on purpose: those are already
+// tracked by a live asyncjob.KindCorrection job, whose own reaper retries a
+// failed attempt on its own (see pollMissingFeedback in apps/web/src/App.tsx)
+// — only a turn no job was ever reserved for needs this backfill path.
+func needsCorrectionBackfill(turns []store.Turn) bool {
+	for _, t := range turns {
+		if t.Role == "user" && strings.TrimSpace(t.Text) != "" && t.Correction == nil && t.CorrectionStatus == "" {
 			return true
 		}
 	}

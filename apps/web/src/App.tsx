@@ -515,6 +515,13 @@ export function App() {
             patches[t.turn] = { ...patches[t.turn], correctionPending: false, correctionFailed: true };
             stillMissing = true;
           } else {
+            // No correctionStatus at all (saved before correction-job
+            // tracking existed, or the no-Redis inline path) — no live job
+            // was ever reserved for the reaper above to retry. This
+            // fetchSessionDetail call is itself what queues it for
+            // server-side backfill (see httpserver.sessionDetailHandler /
+            // internal/backfill.CorrectionWorker), so keep polling the same
+            // way as the "failed" branch above.
             stillMissing = true;
           }
         }
