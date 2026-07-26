@@ -13,6 +13,7 @@ vi.mock("../lib/recordings", async () => {
 
 import { Recordings } from "./Recordings";
 import { deleteRecording, fetchRecordings } from "../lib/recordings";
+import { formatAbsoluteDateTime } from "../lib/time";
 
 afterEach(() => {
   cleanup();
@@ -52,6 +53,15 @@ describe("Recordings page", () => {
 
     expect(await screen.findByText(/1:30/)).toBeInTheDocument();
     expect(screen.getByText(/120\.6 KB/)).toBeInTheDocument();
+  });
+
+  it("shows the recording's creation time using the shared date/time formatter", async () => {
+    vi.mocked(fetchRecordings).mockResolvedValue([
+      { id: "rec-1", createdAt: 1700000000, durationMs: 1000, sizeBytes: 100 },
+    ]);
+    render(<Recordings />);
+
+    expect(await screen.findByText(formatAbsoluteDateTime(1700000000))).toBeInTheDocument();
   });
 
   it("links the audio source to the recording's audio endpoint", async () => {

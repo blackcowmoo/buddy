@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { applyTheme, getStoredTheme, resolveTheme, setStoredTheme } from "./theme";
+import { applyTheme, getStoredTheme, onSystemThemeChange, resolveTheme, setStoredTheme } from "./theme";
 
 function stubMatchMedia(prefersLight: boolean) {
   vi.stubGlobal(
@@ -86,5 +86,24 @@ describe("applyTheme", () => {
     stubMatchMedia(true);
     applyTheme("system");
     expect(document.documentElement.getAttribute("data-theme")).toBe("white");
+  });
+});
+
+describe("onSystemThemeChange", () => {
+  it("subscribes the handler to the system-theme media query's change event", () => {
+    stubMatchMedia(true);
+    const handler = vi.fn();
+    onSystemThemeChange(handler);
+    const mql = vi.mocked(window.matchMedia).mock.results.at(-1)!.value;
+    expect(mql.addEventListener).toHaveBeenCalledWith("change", handler);
+  });
+
+  it("returns an unsubscribe function that removes the handler", () => {
+    stubMatchMedia(true);
+    const handler = vi.fn();
+    const unsubscribe = onSystemThemeChange(handler);
+    const mql = vi.mocked(window.matchMedia).mock.results.at(-1)!.value;
+    unsubscribe();
+    expect(mql.removeEventListener).toHaveBeenCalledWith("change", handler);
   });
 });

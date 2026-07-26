@@ -4,11 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
-	"log"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"buddy/server/internal/rediscache"
 )
 
 // DefaultCacheTTL mirrors llm.DefaultCacheTTL's reasoning for the STT
@@ -39,25 +39,10 @@ func NewCached(inner Recognizer, rdb redis.UniversalClient, ttl time.Duration) R
 
 func (c *CachedRecognizer) Transcribe(ctx context.Context, pcm []byte) (Result, error) {
 	key := transcribeCacheKey(c.Recognizer.Name(), pcm)
-	if raw, err := c.rdb.Get(ctx, key).Bytes(); err == nil {
-		var res Result
-		if jsonErr := json.Unmarshal(raw, &res); jsonErr == nil {
-			return res, nil
-		}
-	} else if err != redis.Nil {
-		log.Printf("stt: cache get: %v", err)
-	}
-
-	res, err := c.Recognizer.Transcribe(ctx, pcm)
-	if err != nil || res.Text == "" {
-		return res, err
-	}
-	if b, jsonErr := json.Marshal(res); jsonErr == nil {
-		if err := c.rdb.Set(ctx, key, b, c.ttl).Err(); err != nil {
-			log.Printf("stt: cache set: %v", err)
-		}
-	}
-	return res, nil
+	return rediscache.GetOrSet(ctx, c.rdb, key, c.ttl, "stt",
+		func() (Result, error) { return c.Recognizer.Transcribe(ctx, pcm) },
+		func(res Result) bool { return res.Text == "" },
+	)
 }
 
 func transcribeCacheKey(name string, pcm []byte) string {

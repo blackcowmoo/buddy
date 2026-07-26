@@ -4,6 +4,7 @@ import type { Correction, InputSource, ServerEvent } from "./lib/protocol";
 import { PCMRecorder } from "./audio/recorder";
 import { KokoroSpeaker } from "./tts/kokoro";
 import { prPath } from "./lib/rootPath";
+import { confirmThenDelete } from "./lib/confirmDelete";
 import {
   currentRoomHistoryState,
   goBack,
@@ -23,7 +24,8 @@ import {
   type TurnRecord,
 } from "./lib/sessions";
 import { fetchSettings, saveSettings } from "./lib/settings";
-import { applyTheme, getStoredTheme, setStoredTheme, type Theme } from "./lib/theme";
+import { applyTheme, getStoredTheme, onSystemThemeChange, setStoredTheme, type Theme } from "./lib/theme";
+import { formatDateDivider, formatMessageTime, formatRelativeTime, isSameDay } from "./lib/time";
 import {
   MAX_EXTRA_RATES,
   NATIVE_RATE,
@@ -431,10 +433,7 @@ export function App() {
   // httpserver.sessionDeleteHandler), so this is the one action that clears
   // both the transcript and its audio.
   const handleDeleteSession = useCallback(async (id: string) => {
-    if (!window.confirm("이 대화를 삭제할까요? 저장된 녹음도 함께 삭제됩니다.")) return;
-    if (await deleteSession(id)) {
-      setSessions((list) => list.filter((s) => s.id !== id));
-    }
+    await confirmThenDelete("이 대화를 삭제할까요? 저장된 녹음도 함께 삭제됩니다.", deleteSession, id, setSessions);
   }, []);
 
   // Polls a room's transcript for translations, grammar corrections, and
@@ -745,10 +744,7 @@ export function App() {
     if (theme !== "system") return;
     // Live-follow OS/browser theme changes while "system" is selected,
     // instead of only resolving once at mount.
-    const mql = window.matchMedia("(prefers-color-scheme: light)");
-    const onChange = () => applyTheme("system");
-    mql.addEventListener("change", onChange);
-    return () => mql.removeEventListener("change", onChange);
+    return onSystemThemeChange(() => applyTheme("system"));
   }, [theme]);
 
   const selectTheme = useCallback((t: Theme) => {
@@ -1034,7 +1030,11 @@ export function App() {
           const grammarOpen = isPanelOpen(openPanel, i, "grammar");
           const rateOpen = isPanelOpen(openPanel, i, "rate");
           return (
-            <Fragment key={i}>
+            // Keyed on (turn, role) rather than array index i: loadOlderTurns
+            // prepends to msgs, and an index key would make React reconcile
+            // every already-rendered row below the insertion point instead of
+            // just mounting the new ones.
+            <Fragment key={`${m.turn}-${m.role}`}>
               {showDivider && (
                 <div className="date-divider">
                   <span>{formatDateDivider(m.timestamp as number)}</span>
@@ -1133,59 +1133,6 @@ export function App() {
       </footer>
     </div>
   );
-}
-
-function formatRelativeTime(unixSeconds: number): string {
-  const mins = Math.floor((Date.now() - unixSeconds * 1000) / 60000);
-  if (mins < 1) return "방금 전";
-  if (mins < 60) return `${mins}분 전`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}시간 전`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}일 전`;
-  return new Date(unixSeconds * 1000).toLocaleDateString();
-}
-
-const WEEKDAYS_KO = ["일", "월", "화", "수", "목", "금", "토"];
-
-// Local calendar day the two timestamps fall on — not a 24h-window diff, so
-// 11:59pm and 12:01am on consecutive days count as different days even
-// though they're 2 minutes apart.
-function isSameDay(aUnixSeconds: number, bUnixSeconds: number): boolean {
-  const a = new Date(aUnixSeconds * 1000);
-  const b = new Date(bUnixSeconds * 1000);
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
-}
-
-// Divider label shown between messages sent on different days: "오늘"/"어제"
-// for the last two days, "7월 20일 (월)" within the current year, and a full
-// "2024. 05. 20. (화)" once the year rolls over — each step drops precision
-// that's no longer useful (nobody needs the year for something said today).
-function formatDateDivider(unixSeconds: number): string {
-  const d = new Date(unixSeconds * 1000);
-  const now = new Date();
-  const startOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
-  const diffDays = Math.round((startOfDay(now) - startOfDay(d)) / 86_400_000);
-  if (diffDays === 0) return "오늘";
-  if (diffDays === 1) return "어제";
-  const weekday = WEEKDAYS_KO[d.getDay()];
-  if (d.getFullYear() === now.getFullYear()) return `${d.getMonth() + 1}월 ${d.getDate()}일 (${weekday})`;
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${d.getFullYear()}. ${mm}. ${dd}. (${weekday})`;
-}
-
-// Per-message clock time, Korean AM/PM convention ("오전/오후 h:mm").
-function formatMessageTime(unixSeconds: number): string {
-  const d = new Date(unixSeconds * 1000);
-  const period = d.getHours() < 12 ? "오전" : "오후";
-  const h12 = d.getHours() % 12 || 12;
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  return `${period} ${h12}:${mm}`;
 }
 
 function upsertAssistant(m: Msg[], turn: number, patch: (prev: string) => string): Msg[] {
@@ -1621,18 +1568,14 @@ function CompactionInfo({ sessionId }: { sessionId: string | null }) {
 
   const toggle = useCallback(() => {
     if (!sessionId) return;
-    setOpen((o) => {
-      const next = !o;
-      if (next) {
-        setLoading(true);
-        void fetchSessionCompaction(sessionId).then((result) => {
-          setInfo(result);
-          setLoading(false);
-        });
-      }
-      return next;
+    setOpen((o) => !o);
+    if (open) return; // was open, now closing — nothing to fetch
+    setLoading(true);
+    void fetchSessionCompaction(sessionId).then((result) => {
+      setInfo(result);
+      setLoading(false);
     });
-  }, [sessionId]);
+  }, [sessionId, open]);
 
   if (!sessionId) return null;
 

@@ -4,10 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"log"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"buddy/server/internal/rediscache"
 )
 
 // DefaultCacheTTL bounds how long a cached Complete result is reused before
@@ -47,20 +48,10 @@ func NewCached(inner Client, rdb redis.UniversalClient, ttl time.Duration) Clien
 
 func (c *CachedClient) Complete(ctx context.Context, model string, msgs []Message, jsonMode bool) (string, error) {
 	key := completeCacheKey(model, msgs, jsonMode)
-	if cached, err := c.rdb.Get(ctx, key).Result(); err == nil {
-		return cached, nil
-	} else if err != redis.Nil {
-		log.Printf("llm: cache get: %v", err)
-	}
-
-	text, err := c.Client.Complete(ctx, model, msgs, jsonMode)
-	if err != nil || text == "" {
-		return text, err
-	}
-	if err := c.rdb.Set(ctx, key, text, c.ttl).Err(); err != nil {
-		log.Printf("llm: cache set: %v", err)
-	}
-	return text, nil
+	return rediscache.GetOrSet(ctx, c.rdb, key, c.ttl, "llm",
+		func() (string, error) { return c.Client.Complete(ctx, model, msgs, jsonMode) },
+		func(text string) bool { return text == "" },
+	)
 }
 
 func completeCacheKey(model string, msgs []Message, jsonMode bool) string {

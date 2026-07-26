@@ -557,16 +557,31 @@ func (s *MySQLStore) SessionDetailPage(ctx context.Context, userID, sessionID st
 // from "no job was ever tracked for this turn" (older turns saved before
 // that job kind's tracking existed) — both look identical in buddy_turns
 // alone.
+// turnColumns is the column list sessionTurns and sessionTurnsPage both
+// select, aliased to a `t` for the buddy_turns row and `rj`/`cj` for the
+// reply/correction job-status LEFT JOINs turnJobJoins adds.
+const turnColumns = `t.turn, t.role, t.text, t.refined, t.source, t.correction, t.translation, t.meta, t.created_at, rj.status, cj.status`
+
+// turnJobJoins is the pair of job-status LEFT JOINs shared by sessionTurns
+// and sessionTurnsPage — one for kind='reply' (assistant turns), one for
+// kind='correction' (user turns) — kept as one fragment so the two queries'
+// join conditions can't silently drift apart (e.g. when a column is added,
+// see mysqlerr.ApplyAdditive's callers in this file). Assumes the query's
+// FROM clause aliases the turns row as `t`.
+const turnJobJoins = `
+	LEFT JOIN ` + jobsTable + ` rj
+		ON rj.user_id = t.user_id AND rj.session_id = t.session_id AND rj.turn = t.turn
+		AND rj.kind = 'reply' AND t.role = 'assistant'
+	LEFT JOIN ` + jobsTable + ` cj
+		ON cj.user_id = t.user_id AND cj.session_id = t.session_id AND cj.turn = t.turn
+		AND cj.kind = 'correction' AND t.role = 'user'
+`
+
 func (s *MySQLStore) sessionTurns(ctx context.Context, userID, sessionID string) ([]Turn, error) {
 	rows, err := s.ro.QueryContext(ctx, `
-		SELECT t.turn, t.role, t.text, t.refined, t.source, t.correction, t.translation, t.meta, t.created_at, rj.status, cj.status
+		SELECT `+turnColumns+`
 		FROM `+turnsTable+` t
-		LEFT JOIN `+jobsTable+` rj
-			ON rj.user_id = t.user_id AND rj.session_id = t.session_id AND rj.turn = t.turn
-			AND rj.kind = 'reply' AND t.role = 'assistant'
-		LEFT JOIN `+jobsTable+` cj
-			ON cj.user_id = t.user_id AND cj.session_id = t.session_id AND cj.turn = t.turn
-			AND cj.kind = 'correction' AND t.role = 'user'
+		`+turnJobJoins+`
 		WHERE t.user_id = ? AND t.session_id = ? ORDER BY t.turn ASC, t.role = 'assistant' ASC
 	`, userID, sessionID)
 	if err != nil {
@@ -600,19 +615,14 @@ func (s *MySQLStore) sessionTurns(ctx context.Context, userID, sessionID string)
 // not the turn count, is known until they're read.
 func (s *MySQLStore) sessionTurnsPage(ctx context.Context, userID, sessionID string, beforeTurn, limit int) ([]Turn, bool, error) {
 	rows, err := s.ro.QueryContext(ctx, `
-		SELECT t.turn, t.role, t.text, t.refined, t.source, t.correction, t.translation, t.meta, t.created_at, rj.status, cj.status
+		SELECT `+turnColumns+`
 		FROM (
 			SELECT DISTINCT turn FROM `+turnsTable+`
 			WHERE user_id = ? AND session_id = ? AND (? <= 0 OR turn < ?)
 			ORDER BY turn DESC LIMIT ?
 		) page
 		JOIN `+turnsTable+` t ON t.turn = page.turn AND t.user_id = ? AND t.session_id = ?
-		LEFT JOIN `+jobsTable+` rj
-			ON rj.user_id = t.user_id AND rj.session_id = t.session_id AND rj.turn = t.turn
-			AND rj.kind = 'reply' AND t.role = 'assistant'
-		LEFT JOIN `+jobsTable+` cj
-			ON cj.user_id = t.user_id AND cj.session_id = t.session_id AND cj.turn = t.turn
-			AND cj.kind = 'correction' AND t.role = 'user'
+		`+turnJobJoins+`
 		ORDER BY t.turn ASC, t.role = 'assistant' ASC
 	`, userID, sessionID, beforeTurn, beforeTurn, limit+1, userID, sessionID)
 	if err != nil {
