@@ -32,6 +32,19 @@ const (
 	reapPollInterval = 30 * time.Second
 )
 
+// FailureRetryBackoff bounds how long a job whose handler returned an error
+// stays claimed before the reaper retries it — deliberately independent of
+// claimTTL, which instead bounds how long a *legitimately still-running*
+// handler may take before it's presumed crashed (see NewWorker's doc
+// comment). Some claimTTLs are loosened to many hours to avoid reaping a
+// call that's still legitimately running against a slow local model (e.g.
+// transport.CorrectionClaimTTL); without this separate, short backoff, a
+// handler that fails fast (bad payload, downstream error) would also wait
+// that same multi-hour margin before its retry, instead of recovering soon.
+// A var, not a const, so tests can shrink it rather than waiting out the
+// production interval.
+var FailureRetryBackoff = 2 * time.Minute
+
 // Worker runs one job Kind's handler across concurrency goroutines, each
 // independently blocking on Redis to claim the next job. Unlike
 // internal/backfill's single cluster-wide-locked drainer, any number of
@@ -130,11 +143,15 @@ func (w *Worker) run(raw string) {
 		return
 	}
 	if handlerErr := w.handler(context.Background(), job); handlerErr != nil {
-		// Deliberately do NOT complete the job here: leave it claimed so
-		// reapOnce retries it from scratch once claimTTL lapses, rather than
-		// requeueing immediately and hot-looping a handler that's failing
-		// fast (e.g. a downstream LLM outage).
+		// Deliberately do NOT complete the job here: leave it claimed, but
+		// shorten that claim to FailureRetryBackoff (rather than the full,
+		// possibly many-hours-long claimTTL) so reapOnce retries it from
+		// scratch soon, without hot-looping a handler that's failing fast
+		// (e.g. a downstream LLM outage).
 		log.Printf("asyncjob: %s: handler failed for job %s: %v", w.kind, job.ID, handlerErr)
+		if err := w.rdb.PExpire(context.Background(), ck, FailureRetryBackoff).Err(); err != nil {
+			log.Printf("asyncjob: %s: shorten claim after failure %s: %v", w.kind, job.ID, err)
+		}
 		return
 	}
 	if err := completeJob(context.Background(), w.rdb, w.kind, job.ID, raw, job.DedupeKey); err != nil {
