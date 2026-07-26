@@ -186,10 +186,23 @@ function emit(e: ServerEvent) {
 // for, so this advances one tick at a time until check() says so, capped
 // well above anything real as a safety net against a genuinely hung update
 // rather than a substitute for checking the real condition.
+//
+// The tick advance itself must be wrapped in act() — every other
+// state-mutating call in this file (the act(() => emit(...)) calls) already
+// is, but this one wasn't, and it's the only place advancing fake timers.
+// Without it, React is free to leave the resulting state update queued
+// rather than flushed by the time check() runs right after, so the loop can
+// still observe "not yet" on every tick despite the promise chain having
+// actually settled — indistinguishable from a real hang from the outside,
+// except it only shows up under CI's scheduling, never locally. This is the
+// same failure this function already flaked with twice before (once as a
+// fixed-iteration-count guess, once as this tick loop without act()) — both
+// times the visible symptom was "the update just wasn't there yet",
+// consistent with a missing act() rather than an actually-hung update.
 async function flushUntil(check: () => boolean, maxTicks = 50) {
   for (let i = 0; i < maxTicks; i++) {
     if (check()) return;
-    await vi.advanceTimersByTimeAsync(0);
+    await act(() => vi.advanceTimersByTimeAsync(0));
   }
   if (!check()) {
     throw new Error(`flushUntil: condition still false after ${maxTicks} ticks`);
