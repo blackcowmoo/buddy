@@ -178,6 +178,44 @@ func (q *Queue) Execute(ctx context.Context, job Job, handler Handler) error {
 	return nil
 }
 
+// EnqueueAndTryRun is the shared "enqueue, then try to run it inline" fast
+// path behind every transport job hook (reply/correction/translation/title
+// in package transport): Enqueue, and — only if this call is the one that
+// created the job rather than deduping against one already in flight —
+// TryClaimByID and Execute it before any pooled Worker's blocking dequeue
+// gets to it. Enqueue/claim/execute errors are logged here, tagged with
+// kind and logID (e.g. "userID/sessionID#turn"), so call sites don't each
+// repeat the same three log lines. ran reports whether this call actually
+// invoked handler; false covers both "deduped" and "lost the claim race to
+// a pooled Worker" — cases callers already treat identically, since another
+// attempt owns reporting that job's outcome.
+func (q *Queue) EnqueueAndTryRun(ctx context.Context, kind Kind, dedupeKey, logID string, payload any, claimTTL time.Duration, handler Handler) (ran bool, err error) {
+	if q == nil {
+		return false, nil
+	}
+	job, ok, err := q.Enqueue(ctx, kind, dedupeKey, payload)
+	if err != nil {
+		log.Printf("asyncjob: %s: enqueue %s: %v", kind, logID, err)
+		return false, err
+	}
+	if !ok {
+		return false, nil // deduped: another attempt already owns this job
+	}
+	claimed, err := q.TryClaimByID(ctx, job, claimTTL)
+	if err != nil {
+		log.Printf("asyncjob: %s: inline claim %s: %v", kind, logID, err)
+		return false, err
+	}
+	if !claimed {
+		return false, nil // lost the race to a pooled Worker
+	}
+	if err := q.Execute(ctx, job, handler); err != nil {
+		log.Printf("asyncjob: %s: inline execute %s: %v", kind, logID, err)
+		return true, err
+	}
+	return true, nil
+}
+
 // completeJob marks a claimed job done: removed from processing, its claim
 // released, and its dedupe entry cleared, so a later Enqueue with the same
 // dedupe key is treated as a fresh job rather than a duplicate of one

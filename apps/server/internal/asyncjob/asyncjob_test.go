@@ -3,6 +3,7 @@ package asyncjob
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"sync"
 	"testing"
@@ -498,6 +499,108 @@ func TestTryClaimByIDLosesRaceToAWorker(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("worker handler calls = %d, want 1", calls)
+	}
+}
+
+// ---- Fast path: EnqueueAndTryRun ----------------------------------------
+
+func TestEnqueueAndTryRunRunsHandlerInlineAndCompletes(t *testing.T) {
+	rdb := requireRedis(t)
+	kind := testKind(t)
+	q := NewQueue(rdb)
+	ctx := context.Background()
+
+	var calls int
+	ran, err := q.EnqueueAndTryRun(ctx, kind, "d1", "user/session#1", 1, time.Minute, func(_ context.Context, j Job) error {
+		calls++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("EnqueueAndTryRun: %v", err)
+	}
+	if !ran {
+		t.Fatalf("ran = false, want true: nothing else was competing for this job")
+	}
+	if calls != 1 {
+		t.Fatalf("handler calls = %d, want 1", calls)
+	}
+	// Success must leave the job fully completed, exactly as Execute does:
+	// out of processing, claim released, dedupe entry cleared.
+	if n, _ := rdb.LLen(ctx, processingKey(kind)).Result(); n != 0 {
+		t.Fatalf("processing length = %d, want 0 after a successful inline run", n)
+	}
+	if n, _ := rdb.SCard(ctx, dedupeSetKey(kind)).Result(); n != 0 {
+		t.Fatalf("dedupe set size = %d, want 0 after a successful inline run", n)
+	}
+}
+
+func TestEnqueueAndTryRunReportsNotRunWhenDeduped(t *testing.T) {
+	rdb := requireRedis(t)
+	kind := testKind(t)
+	q := NewQueue(rdb)
+	ctx := context.Background()
+
+	// An in-flight job for the same dedupe key: the second call must dedupe
+	// against it rather than running a second handler for the same work.
+	if _, ok, err := q.Enqueue(ctx, kind, "d1", 1); err != nil || !ok {
+		t.Fatalf("seed enqueue: ok=%v err=%v", ok, err)
+	}
+
+	var calls int
+	ran, err := q.EnqueueAndTryRun(ctx, kind, "d1", "user/session#1", 1, time.Minute, func(_ context.Context, j Job) error {
+		calls++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("EnqueueAndTryRun: %v", err)
+	}
+	// ran=false with a nil error is what tells callers "another attempt owns
+	// this job" — the correction hook relies on it to skip its onFailure.
+	if ran {
+		t.Fatalf("ran = true, want false: an identical job was already queued")
+	}
+	if calls != 0 {
+		t.Fatalf("handler calls = %d, want 0 when deduped", calls)
+	}
+}
+
+func TestEnqueueAndTryRunReturnsErrorWhenHandlerFails(t *testing.T) {
+	rdb := requireRedis(t)
+	kind := testKind(t)
+	q := NewQueue(rdb)
+	ctx := context.Background()
+
+	wantErr := errors.New("handler boom")
+	ran, err := q.EnqueueAndTryRun(ctx, kind, "d1", "user/session#1", 1, time.Minute, func(_ context.Context, j Job) error {
+		return wantErr
+	})
+	// ran=true with a non-nil error is the "this caller ran it and it
+	// failed" case: reply falls back to polling and correction fires
+	// onFailure off exactly this signal.
+	if !ran {
+		t.Fatalf("ran = false, want true: the handler did run, it just failed")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err = %v, want it to wrap %v", err, wantErr)
+	}
+	// A failed job stays in processing for the stale-claim reaper to retry.
+	if n, _ := rdb.LLen(ctx, processingKey(kind)).Result(); n != 1 {
+		t.Fatalf("processing length = %d, want 1 (left for the reaper) after a failed inline run", n)
+	}
+}
+
+func TestEnqueueAndTryRunOnNilQueueIsNoOp(t *testing.T) {
+	var q *Queue
+	var calls int
+	ran, err := q.EnqueueAndTryRun(context.Background(), Kind("nil-queue"), "d1", "user/session#1", 1, time.Minute, func(_ context.Context, j Job) error {
+		calls++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("EnqueueAndTryRun on nil queue: %v", err)
+	}
+	if ran || calls != 0 {
+		t.Fatalf("ran=%v calls=%d, want false/0: a nil Queue is a safe no-op", ran, calls)
 	}
 }
 

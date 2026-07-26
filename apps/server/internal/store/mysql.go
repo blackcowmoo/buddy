@@ -483,40 +483,29 @@ func (s *MySQLStore) ListSessions(ctx context.Context, userID string) ([]Session
 // concurrently rather than paying two sequential round trips to what may be
 // a network-hop-away replica.
 func (s *MySQLStore) SessionDetail(ctx context.Context, userID, sessionID string) (SessionMeta, []Turn, error) {
-	meta := SessionMeta{ID: sessionID}
-	var metaErr, turnsErr error
-	var turns []Turn
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		metaErr = s.ro.QueryRowContext(ctx, `
-			SELECT title, created_at, updated_at FROM `+sessionsTable+` WHERE user_id = ? AND id = ?
-		`, userID, sessionID).Scan(&meta.Title, &meta.CreatedAt, &meta.UpdatedAt)
-	}()
-	go func() {
-		defer wg.Done()
-		turns, turnsErr = s.sessionTurns(ctx, userID, sessionID)
-	}()
-	wg.Wait()
-
-	if errors.Is(metaErr, sql.ErrNoRows) {
-		return SessionMeta{}, nil, ErrNotFound
-	}
-	if metaErr != nil {
-		return SessionMeta{}, nil, fmt.Errorf("store: session detail: %w", metaErr)
-	}
-	if turnsErr != nil {
-		return SessionMeta{}, nil, fmt.Errorf("store: session detail: %w", turnsErr)
-	}
-	return meta, turns, nil
+	meta, turns, _, err := s.sessionDetail(ctx, userID, sessionID, func() ([]Turn, bool, error) {
+		turns, err := s.sessionTurns(ctx, userID, sessionID)
+		return turns, false, err
+	})
+	return meta, turns, err
 }
 
 // SessionDetailPage loads the session's metadata and one page of its
 // transcript — see the Store interface doc. Same concurrency reasoning as
 // SessionDetail: the metadata read and the page read are independent.
 func (s *MySQLStore) SessionDetailPage(ctx context.Context, userID, sessionID string, beforeTurn, limit int) (SessionMeta, []Turn, bool, error) {
+	return s.sessionDetail(ctx, userID, sessionID, func() ([]Turn, bool, error) {
+		return s.sessionTurnsPage(ctx, userID, sessionID, beforeTurn, limit)
+	})
+}
+
+// sessionDetail is the shared body of SessionDetail/SessionDetailPage: it
+// reads the session's metadata row concurrently with fetchTurns (whichever
+// transcript slice that caller wants — all of it, or one page), then applies
+// the error handling both need, including mapping a missing metadata row to
+// ErrNotFound. The turns half is the only part that differs between the two,
+// so it's the only part passed in.
+func (s *MySQLStore) sessionDetail(ctx context.Context, userID, sessionID string, fetchTurns func() ([]Turn, bool, error)) (SessionMeta, []Turn, bool, error) {
 	meta := SessionMeta{ID: sessionID}
 	var metaErr, turnsErr error
 	var turns []Turn
@@ -532,7 +521,7 @@ func (s *MySQLStore) SessionDetailPage(ctx context.Context, userID, sessionID st
 	}()
 	go func() {
 		defer wg.Done()
-		turns, hasMore, turnsErr = s.sessionTurnsPage(ctx, userID, sessionID, beforeTurn, limit)
+		turns, hasMore, turnsErr = fetchTurns()
 	}()
 	wg.Wait()
 
@@ -787,6 +776,24 @@ func (s *MySQLStore) JobStatus(ctx context.Context, userID, sessionID string, tu
 		return "", fmt.Errorf("store: job status: %w", err)
 	}
 	return status, nil
+}
+
+// AssistantTurnText reads one turn's assistant text — see the Store
+// interface doc for why this exists alongside SessionDetail. Against s.rw,
+// not s.ro, for the same reason as JobStatus: its caller is polling for a
+// write that just happened, which a read replica may not have yet.
+func (s *MySQLStore) AssistantTurnText(ctx context.Context, userID, sessionID string, turn int) (string, error) {
+	var text string
+	err := s.rw.QueryRowContext(ctx, `
+		SELECT text FROM `+turnsTable+` WHERE user_id = ? AND session_id = ? AND turn = ? AND role = 'assistant'
+	`, userID, sessionID, turn).Scan(&text)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: assistant turn text: %w", err)
+	}
+	return text, nil
 }
 
 // DeleteSession removes a session and its transcript in one transaction, so

@@ -60,6 +60,7 @@ vi.mock("./lib/sessions", () => ({
   fetchSessions: vi.fn(),
   fetchSessionDetail: vi.fn(),
   fetchSessionCompaction: vi.fn(),
+  fetchStudySummary: vi.fn(),
   deleteSession: vi.fn(),
 }));
 

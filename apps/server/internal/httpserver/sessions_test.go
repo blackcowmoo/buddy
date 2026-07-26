@@ -99,6 +99,10 @@ func (f *fakeSessionStore) JobStatus(ctx context.Context, userID, sessionID stri
 	return "", errors.New("not used by these tests")
 }
 
+func (f *fakeSessionStore) AssistantTurnText(ctx context.Context, userID, sessionID string, turn int) (string, error) {
+	return "", errors.New("not used by these tests")
+}
+
 func (f *fakeSessionStore) LastTurn(ctx context.Context, userID, sessionID string) (int, error) {
 	if f.lastTurnErr != nil {
 		return 0, f.lastTurnErr
