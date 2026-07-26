@@ -716,6 +716,20 @@ func sendText(t *testing.T, c *websocket.Conn, text string) {
 	}
 }
 
+// sendVoiceConfirm is sendText, but tagged as a learner-confirmed voice
+// draft (Source: voice) — what the frontend sends once the learner reviews
+// (and possibly edits) an EvPendingTranscript draft and hits Send.
+func sendVoiceConfirm(t *testing.T, c *websocket.Conn, text string) {
+	t.Helper()
+	msg, err := json.Marshal(protocol.ClientMsg{Type: "text", Text: text, Source: protocol.SourceVoice})
+	if err != nil {
+		t.Fatalf("marshal ClientMsg: %v", err)
+	}
+	if err := c.Write(context.Background(), websocket.MessageText, msg); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+}
+
 // backgroundWorkTimeout bounds every poll below that waits on transport's
 // fire-and-forget background work (chat replies, corrections, translations,
 // title generation, audio backups) — none of it is observable synchronously
@@ -891,7 +905,7 @@ func TestWSBinaryFrameBacksUpAudio(t *testing.T) {
 	if err := c.Write(context.Background(), websocket.MessageBinary, pcm); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
-	readUntil(t, c, protocol.EvFinal) // the pipeline consumed the frame
+	readUntil(t, c, protocol.EvPendingTranscript) // the pipeline consumed the frame
 
 	pollUntil(t, func() bool { return audio.count() > 0 })
 	if audio.count() != 1 {
@@ -929,7 +943,7 @@ func TestWSBinaryFrameSharesIDBetweenBackupAndRecording(t *testing.T) {
 	if err := c.Write(context.Background(), websocket.MessageBinary, []byte("fake pcm bytes")); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
-	readUntil(t, c, protocol.EvFinal)
+	readUntil(t, c, protocol.EvPendingTranscript)
 
 	pollUntil(t, func() bool { return audio.count() > 0 && len(rec.all()) > 0 })
 	saves := rec.all()
@@ -1291,7 +1305,8 @@ func TestWSBinaryFramePersistsVoiceSource(t *testing.T) {
 	if err := c.Write(context.Background(), websocket.MessageBinary, []byte("fake pcm bytes")); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
-	readUntil(t, c, protocol.EvFinal)
+	draft := readUntil(t, c, protocol.EvPendingTranscript)
+	sendVoiceConfirm(t, c, draft.Text) // learner reviews the draft and sends it
 
 	var userTurn store.Turn
 	found := pollUntil(t, func() bool {
@@ -1558,7 +1573,7 @@ func TestWSBinaryFrameSavesRecording(t *testing.T) {
 	if err := c.Write(context.Background(), websocket.MessageBinary, pcm); err != nil {
 		t.Fatalf("Write(binary) error = %v", err)
 	}
-	readUntil(t, c, protocol.EvFinal) // wait for the pipeline to process the utterance
+	readUntil(t, c, protocol.EvPendingTranscript) // wait for the pipeline to process the utterance
 
 	ok := pollUntil(t, func() bool {
 		saved := rec.all()
@@ -1594,5 +1609,5 @@ func TestWSNilRecordingStoreDisablesArchival(t *testing.T) {
 	if err := c.Write(context.Background(), websocket.MessageBinary, []byte{1, 2, 3, 4}); err != nil {
 		t.Fatalf("Write(binary) error = %v", err)
 	}
-	readUntil(t, c, protocol.EvFinal) // would hang/fail if the nil store panicked
+	readUntil(t, c, protocol.EvPendingTranscript) // would hang/fail if the nil store panicked
 }

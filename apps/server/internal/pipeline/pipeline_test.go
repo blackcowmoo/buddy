@@ -1380,31 +1380,29 @@ func (g *gateAnalysisLLM) Complete(ctx context.Context, model string, msgs []llm
 	}
 }
 
-// TestRefineCorrectionSurvivesCtxCancellation guards refine()'s tail call
-// into correct(): it must run on a context detached from ctx (see
-// pipeline.go's context.WithoutCancel there), so a barge-in or disconnect
-// that cancels the turn context doesn't silently drop the grammar-check
-// result for the previous utterance. Unlike the Judge reconciliation pass
-// earlier in refine() (which stays tied to ctx, since it mutates sess and
-// must respect turn ordering), correct() only emits/persists — nothing about
-// it depends on the turn still being "current".
-func TestRefineCorrectionSurvivesCtxCancellation(t *testing.T) {
+// TestHandleTextCorrectionSurvivesCtxCancellation guards HandleText's
+// backgrounded correct() call: it must run on a context detached from ctx
+// (see pipeline.go's context.WithoutCancel there), so a barge-in or
+// disconnect that cancels the turn context doesn't silently drop the
+// grammar-check result. This is the only place voice input reaches correct()
+// too now (see HandleText's doc comment) — a confirmed voice draft goes
+// through this exact same call.
+func TestHandleTextCorrectionSurvivesCtxCancellation(t *testing.T) {
 	gate := &gateAnalysisLLM{
 		started: make(chan struct{}),
 		release: make(chan struct{}),
 		reply:   `{"corrected":"fixed.","issues":[]}`,
 	}
 	p := &Pipeline{
-		LLM:       &fakeLLM{complete: func(msgs []llm.Message) (string, error) { return `{"corrected":"fixed.","issues":[]}`, nil }},
+		LLM:       &fakeLLM{chatReply: "ok"},
 		ChatModel: "chat-model",
 		Analysis:  []Candidate{{Model: "m", LLM: gate}},
 	}
 	sess := session.New("sys")
-	sess.AppendUser("broken")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	events := make(chan protocol.ServerEvent, 8)
-	go p.refine(ctx, "alex", "sess-1", sess, 1, "", nil, []string{"broken"}, "broken", func(ev protocol.ServerEvent) { events <- ev })
+	go p.HandleText(ctx, "alex", "sess-1", sess, "broken", protocol.SourceText, func(ev protocol.ServerEvent) { events <- ev })
 
 	<-gate.started                    // correct()'s analyze() call is in flight
 	cancel()                          // simulate a barge-in/disconnect cancelling the turn context
@@ -1423,95 +1421,92 @@ func TestRefineCorrectionSurvivesCtxCancellation(t *testing.T) {
 	}
 }
 
-// ---- refine() -----------------------------------------------------------------
+// ---- HandleUtterance draft flow (EvPendingTranscript) --------------------------
+//
+// HandleUtterance no longer commits anything: it only ever emits
+// EvPendingTranscript (once, or twice if a Judge upgrade differs) and
+// otherwise leaves the session, correct(), and reply() entirely untouched —
+// those only run once the learner sends the draft back as a "text" ClientMsg
+// (see HandleText). Pipeline.LLM/ChatModel/Analysis are deliberately left
+// unset in these tests: if HandleUtterance ever regressed into calling
+// reply()/correct() again, that would panic on the nil LLM instead of
+// silently passing.
 
-func TestRefineUpgradesSessionWhenJudgeDisagrees(t *testing.T) {
-	judge := &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
-		return "the real sentence", nil
-	}}
-	analysis := &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
-		return `{"corrected":"the real sentence","issues":[]}`, nil
-	}}
-	p := &Pipeline{
-		LLM:        &fakeLLM{complete: func(msgs []llm.Message) (string, error) { return `{"corrected":"the real sentence","issues":[]}`, nil }},
-		ChatModel:  "chat-model",
-		Judge:      judge,
-		JudgeModel: "judge-model",
-		Analysis:   []Candidate{{Model: "m", LLM: analysis}},
-	}
+func TestHandleUtteranceEmitsPendingTranscriptWithNoJudgeConfigured(t *testing.T) {
+	p := &Pipeline{STT: []stt.Recognizer{fakeSTT{text: "i are hungry"}}}
 	sess := session.New("sys")
-	sess.AppendUser("fast track guess")
 	var got []protocol.ServerEvent
-	p.refine(context.Background(), "alex", "sess-1", sess, 1, "", nil, []string{"fast track guess"}, "fast track guess", func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.HandleUtterance(context.Background(), "alex", "sess-1", sess, []byte("pcm"), func(ev protocol.ServerEvent) { got = append(got, ev) })
 
-	var refinedEvents []protocol.ServerEvent
-	for _, ev := range got {
-		if ev.Type == protocol.EvRefined {
-			refinedEvents = append(refinedEvents, ev)
-		}
+	if len(got) != 1 || got[0].Type != protocol.EvPendingTranscript || got[0].Text != "i are hungry" {
+		t.Fatalf("expected a single pending_transcript event, got %+v", got)
 	}
-	if len(refinedEvents) != 1 || refinedEvents[0].Text != "the real sentence" {
-		t.Fatalf("expected one refined_transcript event, got %+v", got)
+	if got[0].Source != protocol.SourceVoice {
+		t.Fatalf("pending_transcript Source = %q, want %q", got[0].Source, protocol.SourceVoice)
 	}
 	_, recent := sess.Export()
-	if len(recent) != 1 || recent[0].Content != "the real sentence" {
-		t.Fatalf("session user turn not upgraded: %+v", recent)
+	if len(recent) != 0 {
+		t.Fatalf("session should be untouched by an unconfirmed draft, got %+v", recent)
 	}
 }
 
-func TestRefineNoopWhenJudgeAgrees(t *testing.T) {
+func TestHandleUtteranceEmitsUpgradedPendingTranscriptWhenJudgeDisagrees(t *testing.T) {
 	judge := &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
-		return "same text", nil
-	}}
-	analysis := &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
-		return `{"corrected":"same text","issues":[]}`, nil
+		return "I am hungry", nil // Judge reconciles the STT mishearing using context
 	}}
 	p := &Pipeline{
-		LLM:        &fakeLLM{complete: func(msgs []llm.Message) (string, error) { return `{"corrected":"same text","issues":[]}`, nil }},
-		ChatModel:  "chat-model",
+		STT:        []stt.Recognizer{fakeSTT{text: "i are hungry"}},
 		Judge:      judge,
 		JudgeModel: "judge-model",
-		Analysis:   []Candidate{{Model: "m", LLM: analysis}},
 	}
 	sess := session.New("sys")
-	sess.AppendUser("same text")
 	var got []protocol.ServerEvent
-	p.refine(context.Background(), "alex", "sess-1", sess, 1, "", nil, []string{"same text"}, "same text", func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.HandleUtterance(context.Background(), "alex", "sess-1", sess, []byte("pcm"), func(ev protocol.ServerEvent) { got = append(got, ev) })
 
-	for _, ev := range got {
-		if ev.Type == protocol.EvRefined {
-			t.Fatalf("expected no refined_transcript event when Judge agrees, got %+v", got)
-		}
+	if len(got) != 2 {
+		t.Fatalf("expected fast + upgraded pending_transcript events, got %+v", got)
+	}
+	if got[0].Type != protocol.EvPendingTranscript || got[0].Text != "i are hungry" {
+		t.Fatalf("first event should be the FAST guess, got %+v", got[0])
+	}
+	if got[1].Type != protocol.EvPendingTranscript || got[1].Text != "I am hungry" || got[1].Source != protocol.SourceVoice {
+		t.Fatalf("second event should be the Judge-reconciled guess, got %+v", got[1])
+	}
+	_, recent := sess.Export()
+	if len(recent) != 0 {
+		t.Fatalf("session should be untouched by an unconfirmed draft, got %+v", recent)
 	}
 }
 
-func TestRefineFallsBackToFastTextOnJudgeError(t *testing.T) {
-	judge := &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
-		return "", errors.New("judge down")
-	}}
-	analysis := &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
-		return `{"corrected":"fast text","issues":[]}`, nil
-	}}
+func TestHandleUtteranceNoopSecondEmitWhenJudgeAgrees(t *testing.T) {
+	judge := &fakeLLM{complete: func(msgs []llm.Message) (string, error) { return "same text", nil }}
 	p := &Pipeline{
-		LLM:        &fakeLLM{complete: func(msgs []llm.Message) (string, error) { return `{"corrected":"fast text","issues":[]}`, nil }},
-		ChatModel:  "chat-model",
+		STT:        []stt.Recognizer{fakeSTT{text: "same text"}},
 		Judge:      judge,
 		JudgeModel: "judge-model",
-		Analysis:   []Candidate{{Model: "m", LLM: analysis}},
 	}
 	sess := session.New("sys")
-	sess.AppendUser("fast text")
 	var got []protocol.ServerEvent
-	p.refine(context.Background(), "alex", "sess-1", sess, 1, "", nil, []string{"fast text"}, "fast text", func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.HandleUtterance(context.Background(), "alex", "sess-1", sess, []byte("pcm"), func(ev protocol.ServerEvent) { got = append(got, ev) })
 
-	for _, ev := range got {
-		if ev.Type == protocol.EvRefined {
-			t.Fatalf("expected no refined_transcript event on judge error, got %+v", got)
-		}
+	if len(got) != 1 {
+		t.Fatalf("expected no second pending_transcript event when Judge agrees, got %+v", got)
 	}
-	_, recent := sess.Export()
-	if recent[0].Content != "fast text" {
-		t.Fatalf("session user turn should be untouched on judge error: %+v", recent)
+}
+
+func TestHandleUtteranceKeepsFastGuessOnJudgeError(t *testing.T) {
+	judge := &fakeLLM{complete: func(msgs []llm.Message) (string, error) { return "", errors.New("judge down") }}
+	p := &Pipeline{
+		STT:        []stt.Recognizer{fakeSTT{text: "fast text"}},
+		Judge:      judge,
+		JudgeModel: "judge-model",
+	}
+	sess := session.New("sys")
+	var got []protocol.ServerEvent
+	p.HandleUtterance(context.Background(), "alex", "sess-1", sess, []byte("pcm"), func(ev protocol.ServerEvent) { got = append(got, ev) })
+
+	if len(got) != 1 || got[0].Text != "fast text" {
+		t.Fatalf("expected only the fast guess on judge error, got %+v", got)
 	}
 }
 
@@ -1614,7 +1609,7 @@ func TestHandleTextEndToEnd(t *testing.T) {
 	}
 	sess := session.New("sys")
 	events := make(chan protocol.ServerEvent, 16)
-	p.HandleText(context.Background(), "alex", "sess-1", sess, "  Hello name Alex  ", func(ev protocol.ServerEvent) { events <- ev })
+	p.HandleText(context.Background(), "alex", "sess-1", sess, "  Hello name Alex  ", protocol.SourceText, func(ev protocol.ServerEvent) { events <- ev })
 
 	got := collectUntilQuiet(t, events, 200*time.Millisecond, 2*time.Second)
 	byType := map[protocol.EventType][]protocol.ServerEvent{}
@@ -1651,6 +1646,22 @@ func TestHandleTextEndToEnd(t *testing.T) {
 	}
 }
 
+// TestHandleTextUnknownSourceNormalizedToText guards HandleText's source
+// normalization: anything other than protocol.SourceVoice must fall back to
+// protocol.SourceText, so a malformed/forged ClientMsg.Source never taints a
+// typed turn with an incorrect "voice" label.
+func TestHandleTextUnknownSourceNormalizedToText(t *testing.T) {
+	p := &Pipeline{LLM: &fakeLLM{chatReply: "ok"}, ChatModel: "chat-model"}
+	sess := session.New("sys")
+	events := make(chan protocol.ServerEvent, 8)
+	p.HandleText(context.Background(), "alex", "sess-1", sess, "hi", "bogus", func(ev protocol.ServerEvent) { events <- ev })
+
+	got := collectUntilQuiet(t, events, 200*time.Millisecond, 2*time.Second)
+	if len(got) == 0 || got[0].Type != protocol.EvFinal || got[0].Source != protocol.SourceText {
+		t.Fatalf("expected final_transcript with Source normalized to %q, got %+v", protocol.SourceText, got)
+	}
+}
+
 func TestHandleUtteranceEmptyTranscriptIsNoop(t *testing.T) {
 	p := &Pipeline{STT: []stt.Recognizer{fakeSTT{text: "   "}}, LLM: &fakeLLM{}}
 	sess := session.New("sys")
@@ -1680,32 +1691,29 @@ func TestHandleUtteranceSTTErrorEmitsError(t *testing.T) {
 	}
 }
 
-// TestHandleUtteranceFullFlowUpgradesContextViaRefine guards a deliberate
-// product decision: the refine track upgrades the session's user turn to
-// Judge's reconciled transcript (accuracy), never to the grammar-corrected
-// version — the learner's actual mistakes must stay in context.
-func TestHandleUtteranceFullFlowUpgradesContextViaRefine(t *testing.T) {
+// TestHandleTextCommitsConfirmedVoiceDraftEndToEnd guards the funnel's other
+// half: once the learner sends back a draft HandleUtterance proposed (with
+// Source tagged voice), it must go through the exact same commit path as
+// typed input — session append, correct(), reply() — with the voice Source
+// preserved on the committed turn.
+func TestHandleTextCommitsConfirmedVoiceDraftEndToEnd(t *testing.T) {
 	shared := &fakeLLM{
 		chatReply: "Let's get you some food!",
 		complete: func(msgs []llm.Message) (string, error) {
 			return `{"corrected":"I am hungry.","issues":[{"type":"grammar","span":"I are","suggestion":"I am","explanation":"be-verb agreement error","explanationTranslation":"be동사 인칭 오류"}]}`, nil
 		},
 	}
-	judge := &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
-		return "I am hungry", nil // Judge reconciles the STT mishearing using context
-	}}
 	p := &Pipeline{
-		STT:          []stt.Recognizer{fakeSTT{text: "i are hungry"}},
 		LLM:          shared,
 		ChatModel:    "chat-model",
 		Analysis:     []Candidate{{Model: "correct-model", LLM: shared}},
-		Judge:        judge,
-		JudgeModel:   "judge-model",
 		FeedbackLang: "ko",
 	}
 	sess := session.New("sys")
 	events := make(chan protocol.ServerEvent, 16)
-	p.HandleUtterance(context.Background(), "alex", "sess-1", sess, []byte("pcm-data"), func(ev protocol.ServerEvent) { events <- ev })
+	// "I am hungry" stands in for the learner's confirmed (possibly
+	// hand-edited or Judge-upgraded) draft text — HandleText never re-runs STT.
+	p.HandleText(context.Background(), "alex", "sess-1", sess, "I am hungry", protocol.SourceVoice, func(ev protocol.ServerEvent) { events <- ev })
 
 	got := collectUntilQuiet(t, events, 200*time.Millisecond, 2*time.Second)
 	byType := map[protocol.EventType][]protocol.ServerEvent{}
@@ -1713,17 +1721,11 @@ func TestHandleUtteranceFullFlowUpgradesContextViaRefine(t *testing.T) {
 		byType[ev.Type] = append(byType[ev.Type], ev)
 	}
 
-	if len(byType[protocol.EvFinal]) != 1 || byType[protocol.EvFinal][0].Text != "i are hungry" {
-		t.Fatalf("final_transcript (FAST track) wrong: %+v", byType[protocol.EvFinal])
+	if len(byType[protocol.EvFinal]) != 1 || byType[protocol.EvFinal][0].Text != "I am hungry" {
+		t.Fatalf("final_transcript wrong: %+v", byType[protocol.EvFinal])
 	}
 	if byType[protocol.EvFinal][0].Source != protocol.SourceVoice {
-		t.Fatalf("final_transcript Source = %q, want %q (spoken input)", byType[protocol.EvFinal][0].Source, protocol.SourceVoice)
-	}
-	if len(byType[protocol.EvRefined]) != 1 || byType[protocol.EvRefined][0].Text != "I am hungry" {
-		t.Fatalf("refined_transcript (Judge reconciliation) wrong: %+v", byType[protocol.EvRefined])
-	}
-	if byType[protocol.EvRefined][0].Source != protocol.SourceVoice {
-		t.Fatalf("refined_transcript Source = %q, want %q", byType[protocol.EvRefined][0].Source, protocol.SourceVoice)
+		t.Fatalf("final_transcript Source = %q, want %q (confirmed voice draft)", byType[protocol.EvFinal][0].Source, protocol.SourceVoice)
 	}
 	if len(byType[protocol.EvAssistantDone]) != 1 || byType[protocol.EvAssistantDone][0].Text != "Let's get you some food!" {
 		t.Fatalf("assistant_done wrong: %+v", byType[protocol.EvAssistantDone])
@@ -1737,28 +1739,27 @@ func TestHandleUtteranceFullFlowUpgradesContextViaRefine(t *testing.T) {
 		t.Fatalf("expected 2 messages (user+assistant), got %+v", recent)
 	}
 	if recent[0].Content != "I am hungry" {
-		t.Fatalf("session user turn not upgraded by refine: %+v", recent[0])
+		t.Fatalf("session user turn wrong: %+v", recent[0])
 	}
 	if recent[1].Content != "Let's get you some food!" {
 		t.Fatalf("assistant reply wrong: %+v", recent[1])
 	}
 }
 
-// TestHandleUtteranceCorrectionContextExcludesCurrentTurn guards the voice
-// path's context capture: HandleUtterance snapshots the conversation with
-// sess.Export() BEFORE appending the new utterance and threads it into
-// refine()'s correction pass. If that capture ever moved after the append
-// (or were recomputed inside refine(), racing reply()'s assistant append),
-// the sentence under correction would leak into its own "prior conversation"
-// block. Here the correction sees the prior turn but never the current words.
-func TestHandleUtteranceCorrectionContextExcludesCurrentTurn(t *testing.T) {
+// TestHandleTextCorrectionContextExcludesCurrentTurn guards context capture
+// shared by typed input and confirmed voice drafts alike: HandleText
+// snapshots the conversation with sess.Export() BEFORE appending the new
+// turn and threads it into correct(). If that capture ever moved after the
+// append, the sentence under correction would leak into its own "prior
+// conversation" block. Here the correction sees the prior turn but never the
+// current words.
+func TestHandleTextCorrectionContextExcludesCurrentTurn(t *testing.T) {
 	var inputs []string
 	analysis := &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 		inputs = append(inputs, msgs[len(msgs)-1].Content)
 		return `{"corrected":"I am sad.","issues":[]}`, nil
 	}}
 	p := &Pipeline{
-		STT:          []stt.Recognizer{fakeSTT{text: "I are sad"}},
 		LLM:          &fakeLLM{chatReply: "There, there."},
 		ChatModel:    "chat-model",
 		Analysis:     []Candidate{{Model: "correct-model", LLM: analysis}},
@@ -1770,7 +1771,7 @@ func TestHandleUtteranceCorrectionContextExcludesCurrentTurn(t *testing.T) {
 	sess.AppendAssistant("Glad to hear it!")
 
 	events := make(chan protocol.ServerEvent, 32)
-	p.HandleUtterance(context.Background(), "alex", "sess-1", sess, []byte("pcm"), func(ev protocol.ServerEvent) { events <- ev })
+	p.HandleText(context.Background(), "alex", "sess-1", sess, "I are sad", protocol.SourceVoice, func(ev protocol.ServerEvent) { events <- ev })
 	collectUntilQuiet(t, events, 200*time.Millisecond, 2*time.Second)
 
 	analysis.mu.Lock()

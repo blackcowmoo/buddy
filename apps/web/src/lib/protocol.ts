@@ -2,6 +2,7 @@
 
 export type EventType =
   | "ready"
+  | "pending_transcript"
   | "final_transcript"
   | "assistant_delta"
   | "assistant_done"
@@ -34,8 +35,9 @@ export interface ServerEvent {
   // pipeline.StartConversation server-side) — real turns start at 1.
   turn: number;
   text?: string;
-  // Only set on "final_transcript"/"refined_transcript" — there's no
-  // ambiguity to record on any other event type.
+  // Set on "final_transcript"/"refined_transcript" (a committed turn) and on
+  // "pending_transcript" (a not-yet-committed voice draft, always "voice") —
+  // there's no ambiguity to record on any other event type.
   source?: InputSource;
   // Resolved session (chat room) ID. Only set on "ready".
   session?: string;
@@ -47,4 +49,7 @@ export interface ServerEvent {
   failed?: boolean;
 }
 
-export type ClientMsg = { type: "text"; text: string };
+// source, when set to "voice", marks this "text" send as a learner-confirmed
+// voice draft (see ServerEvent's "pending_transcript") rather than typed
+// input — omitted/undefined means ordinary typed input.
+export type ClientMsg = { type: "text"; text: string; source?: "voice" };

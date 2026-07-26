@@ -1198,7 +1198,7 @@ describe("composer", () => {
     const textarea = screen.getByPlaceholderText("…or type in English");
     await user.type(textarea, "Hello Buddy{Enter}");
 
-    expect(lastSendText()).toHaveBeenCalledWith("Hello Buddy");
+    expect(lastSendText()).toHaveBeenCalledWith("Hello Buddy", undefined);
     expect(textarea).toHaveValue("");
   });
 
@@ -1213,6 +1213,94 @@ describe("composer", () => {
 
     expect(lastSendText()).not.toHaveBeenCalled();
     expect(textarea).toHaveValue("Hello\nBuddy");
+  });
+});
+
+// A spoken utterance no longer sends itself: the server proposes a
+// still-editable guess ("pending_transcript") and the learner has to review
+// and actually hit Send — guarding against STT hallucinating words never
+// said, which used to burn a reply/correction/TTS call on every mis-hearing.
+describe("voice draft confirmation funnel", () => {
+  function lastSendText() {
+    const mocked = vi.mocked(BuddyClient);
+    const instance = mocked.mock.results[mocked.mock.results.length - 1].value as {
+      sendText: ReturnType<typeof vi.fn>;
+    };
+    return instance.sendText;
+  }
+
+  it("drops a pending_transcript draft into the composer instead of sending it", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+
+    act(() => emit({ type: "pending_transcript", turn: 0, text: "i are hungry", source: "voice" }));
+
+    expect(screen.getByPlaceholderText("…or type in English")).toHaveValue("i are hungry");
+    expect(lastSendText()).not.toHaveBeenCalled();
+  });
+
+  it("sends the confirmed draft tagged with voice source", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "pending_transcript", turn: 0, text: "i are hungry", source: "voice" }));
+
+    await user.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(lastSendText()).toHaveBeenCalledWith("i are hungry", "voice");
+    expect(screen.getByPlaceholderText("…or type in English")).toHaveValue("");
+  });
+
+  it("upgrades an untouched draft when a slower (Judge-reconciled) guess arrives", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "pending_transcript", turn: 0, text: "i are hungry", source: "voice" }));
+
+    act(() => emit({ type: "pending_transcript", turn: 0, text: "I am hungry", source: "voice" }));
+
+    expect(screen.getByPlaceholderText("…or type in English")).toHaveValue("I am hungry");
+  });
+
+  it("does not clobber a learner's own edit with a later pending_transcript upgrade", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "pending_transcript", turn: 0, text: "i are hungry", source: "voice" }));
+
+    const textarea = screen.getByPlaceholderText("…or type in English");
+    await user.type(textarea, " a lot"); // the learner tweaks the draft themselves
+
+    act(() => emit({ type: "pending_transcript", turn: 0, text: "I am hungry", source: "voice" }));
+
+    expect(textarea).toHaveValue("i are hungry a lot");
+  });
+
+  it("discards the draft via the cancel button", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "pending_transcript", turn: 0, text: "i are hungry", source: "voice" }));
+
+    await user.click(screen.getByRole("button", { name: "음성 초안 취소" }));
+    const textarea = screen.getByPlaceholderText("…or type in English");
+    expect(textarea).toHaveValue("");
+
+    await user.type(textarea, "hello");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(lastSendText()).toHaveBeenCalledWith("hello", undefined);
+  });
+
+  it("discards an unsent draft when a new recording starts", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "pending_transcript", turn: 0, text: "i are hungry", source: "voice" }));
+
+    await user.click(screen.getByRole("button", { name: "Push to talk" }));
+
+    expect(screen.getByPlaceholderText("…or type in English")).toHaveValue("");
   });
 });
 

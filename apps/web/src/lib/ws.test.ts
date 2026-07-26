@@ -139,6 +139,13 @@ describe("BuddyClient", () => {
     expect(lastSocket.sent).toEqual([JSON.stringify({ type: "text", text: "hello" })]);
   });
 
+  it("sendText tags a confirmed voice draft with source: voice", () => {
+    const client = connectedClient();
+    lastSocket.open();
+    client.sendText("hello", "voice");
+    expect(lastSocket.sent).toEqual([JSON.stringify({ type: "text", text: "hello", source: "voice" })]);
+  });
+
   it("sendAudio writes the raw PCM buffer once open", () => {
     const client = connectedClient();
     lastSocket.open();
