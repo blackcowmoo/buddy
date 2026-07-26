@@ -23,6 +23,16 @@ type OpenAI struct {
 	http    *http.Client
 }
 
+// requestTimeout bounds one chat-completions call end-to-end (including a
+// streamed response's full duration, not just time-to-first-byte). Sized for
+// a locally hosted model on modest hardware, which can legitimately take far
+// longer than a hosted API to finish a single completion — not for detecting
+// a hung request quickly. A short timeout here just turns a slow-but-healthy
+// response into a failure, which callers then retry, piling more load onto
+// an already-slow server (see asyncjob's matching claimTTL constants, which
+// must stay comfortably above this).
+const requestTimeout = 24 * time.Hour
+
 // NewOpenAI normalizes baseURL to end in exactly one "/v1", so a config value
 // with or without the suffix (e.g. a copy-pasted server address that forgot
 // it) both reach POST {baseURL}/chat/completions instead of 404ing.
@@ -34,7 +44,7 @@ func NewOpenAI(baseURL, apiKey string) *OpenAI {
 	return &OpenAI{
 		BaseURL: baseURL,
 		APIKey:  apiKey,
-		http:    &http.Client{Timeout: 120 * time.Second},
+		http:    &http.Client{Timeout: requestTimeout},
 	}
 }
 

@@ -17,24 +17,31 @@ import (
 
 const (
 	// CorrectionClaimTTL/CorrectionWorkerConcurrency mirror ReplyClaimTTL/
-	// ReplyWorkerConcurrency's reasoning, sized for grammar-analysis calls
-	// rather than the chat model.
-	CorrectionClaimTTL          = 2 * time.Minute
+	// ReplyWorkerConcurrency's reasoning (see reply_job.go), sized for
+	// grammar-analysis calls rather than the chat model but kept just as
+	// comfortably above llm.OpenAI's own request timeout, for the same
+	// reason: a shorter TTL would reap and duplicate a call that's still
+	// legitimately running against a slow local model.
+	CorrectionClaimTTL          = 25 * time.Hour
 	CorrectionWorkerConcurrency = 8
 
-	// LiveTranslationClaimTTL bounds one turn's translation call.
+	// LiveTranslationClaimTTL bounds one turn's translation call — same
+	// margin-above-the-LLM-timeout reasoning as ReplyClaimTTL.
 	// LiveTranslationWorkerConcurrency stays at 1 to match
 	// pipeline.Pipeline.translationSem's process-wide one-call-at-a-time
 	// cap on the translation LLM (see pipeline.acquireTranslationSlot,
 	// which every AnalyzeTranslation call — direct or via this queue —
 	// still goes through).
-	LiveTranslationClaimTTL          = 2 * time.Minute
+	LiveTranslationClaimTTL          = 25 * time.Hour
 	LiveTranslationWorkerConcurrency = 1
 
 	// TitleClaimTTL/TitleWorkerConcurrency: title generation is a single
-	// fast Complete() call (see pipeline.Pipeline.GenerateTitle), so a
-	// short TTL and modest concurrency are plenty.
-	TitleClaimTTL          = 30 * time.Second
+	// Complete() call (see pipeline.Pipeline.GenerateTitle) — fast against a
+	// hosted API, but no faster than any other call against a slow local
+	// model, so TitleClaimTTL needs the same margin above llm.OpenAI's
+	// request timeout as the other job kinds. Concurrency stays modest since
+	// there's still only ever one title per room.
+	TitleClaimTTL          = 25 * time.Hour
 	TitleWorkerConcurrency = 4
 )
 
