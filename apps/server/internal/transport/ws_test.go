@@ -720,13 +720,11 @@ func sendText(t *testing.T, c *websocket.Conn, text string) {
 // fire-and-forget background work (chat replies, corrections, translations,
 // title generation, audio backups) — none of it is observable synchronously
 // from a WS client, so these tests have no choice but to poll store/saver
-// state until it shows up. It must comfortably exceed titleTimeout (ws.go),
-// the longest budget any single one of those background calls is allowed:
-// generateTitleDirect's own LLM call context is bounded by it, so waiting
-// any less here risks timing out on a call that's still legitimately in
-// flight. The margin on top exists because none of these calls are usually
-// anywhere near that slow in tests (the fake LLM/store/S3 doubles they use
-// resolve in microseconds) — what actually eats the time on a busy CI
+// state until it shows up. It does NOT need to exceed titleTimeout (ws.go)
+// or the other production LLM-call budgets: those are sized for a slow
+// real local model and now run into the hours, but every test here uses
+// fake LLM/store/S3 doubles that resolve in microseconds regardless of what
+// those production budgets allow. What actually eats the time on a busy CI
 // runner is scheduling delay: by the time later tests in this file run,
 // dozens of earlier ones have each fired their own un-awaited background
 // goroutines that may still be competing for the runner's CPU. A single
@@ -1334,9 +1332,9 @@ func newTestServerWithTitleLLM(t *testing.T, st store.Store, completeFn func(msg
 }
 
 // waitForTitle polls st for sessionID's title until it stops matching want,
-// or times out (backgroundWorkTimeout, comfortably above titleTimeout — see
-// its doc) — title generation is fired off `go` from emit (see
-// Handler.generateTitle), so tests can't observe it synchronously.
+// or times out (backgroundWorkTimeout — see its doc for why this doesn't
+// need to track titleTimeout) — title generation is fired off `go` from
+// emit (see Handler.generateTitle), so tests can't observe it synchronously.
 func waitForTitle(t *testing.T, st store.Store, userID, sessionID, notWant string) string {
 	t.Helper()
 	var title string

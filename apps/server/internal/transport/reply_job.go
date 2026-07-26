@@ -20,9 +20,12 @@ const (
 	// reaper treats its owner as dead and hands it to another replica to
 	// regenerate from scratch — there is no way to resume a
 	// partially-streamed LLM generation (see internal/asyncjob's package
-	// doc). Comfortably above a slow chat completion's realistic worst
-	// case.
-	ReplyClaimTTL = 2 * time.Minute
+	// doc). Kept comfortably above llm.OpenAI's own request timeout: if
+	// this were shorter (or even close to it), a still-legitimately-running
+	// local-model completion would get reaped and requeued out from under
+	// itself, piling duplicate retries onto an already-slow server instead
+	// of just waiting for the one in flight to finish.
+	ReplyClaimTTL = 25 * time.Hour
 
 	// ReplyWorkerConcurrency is how many reply jobs one replica's
 	// background Worker pool runs at once — picking up jobs whose original

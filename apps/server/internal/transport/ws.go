@@ -36,8 +36,12 @@ const (
 	// titleTimeout bounds Handler.generateTitle's LLM call — its own budget,
 	// not the connection's ctx, since a barge-in or disconnect right after
 	// the first reply must not cut short the one-shot title generation for
-	// that room (mirrors audioSaveTimeout below).
-	titleTimeout = 15 * time.Second
+	// that room (mirrors audioSaveTimeout below). Matches llm.OpenAI's own
+	// request timeout: a locally hosted model can take far longer than a
+	// hosted API to answer even this one-shot call, and a tighter budget
+	// here would just fail it early and force a retry on an already-slow
+	// server.
+	titleTimeout = 24 * time.Hour
 )
 
 // AudioSaver persists one utterance's raw audio bytes to a temporary backing
