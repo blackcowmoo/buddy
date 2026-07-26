@@ -187,18 +187,21 @@ function emit(e: ServerEvent) {
 // well above anything real as a safety net against a genuinely hung update
 // rather than a substitute for checking the real condition.
 //
-// The tick advance itself must be wrapped in act() — every other
-// state-mutating call in this file (the act(() => emit(...)) calls) already
-// is, but this one wasn't, and it's the only place advancing fake timers.
-// Without it, React is free to leave the resulting state update queued
-// rather than flushed by the time check() runs right after, so the loop can
-// still observe "not yet" on every tick despite the promise chain having
-// actually settled — indistinguishable from a real hang from the outside,
-// except it only shows up under CI's scheduling, never locally. This is the
-// same failure this function already flaked with twice before (once as a
-// fixed-iteration-count guess, once as this tick loop without act()) — both
-// times the visible symptom was "the update just wasn't there yet",
-// consistent with a missing act() rather than an actually-hung update.
+// Every advance of vitest's fake timers in this file — this tick included —
+// must be wrapped in act(), same as the act(() => emit(...)) calls below for
+// WS events. Without it, React is free to leave the resulting state update
+// queued rather than flushed by the time check() runs right after, so the
+// loop can still observe "not yet" on every tick despite the promise chain
+// having actually settled — indistinguishable from a real hang from the
+// outside, except it only shows up under CI's scheduling, never locally.
+// This function already flaked in CI three times chasing this: once as a
+// fixed-iteration-count guess, once as this tick loop without act() here,
+// and once more after that fix landed — because the very next line in the
+// test using this helper (the standalone `vi.advanceTimersByTimeAsync(4000)`
+// past the pollMissingFeedback retry) had the same gap and wasn't caught
+// along with this one. Every fake-timer advance anywhere in this file needs
+// the same treatment — this loop alone isn't sufficient if a call site
+// upstream of it skips act().
 async function flushUntil(check: () => boolean, maxTicks = 50) {
   for (let i = 0; i < maxTicks; i++) {
     if (check()) return;
@@ -1483,7 +1486,7 @@ describe("hydrated reply status", () => {
           { turn: 1, role: "assistant", text: "recovered on another replica", refined: false, replyStatus: "done" },
         ],
       });
-      await vi.advanceTimersByTimeAsync(4000);
+      await act(() => vi.advanceTimersByTimeAsync(4000));
       await flushUntil(() => screen.queryByText("recovered on another replica") !== null);
 
       expect(screen.getByText("recovered on another replica")).toBeInTheDocument();
