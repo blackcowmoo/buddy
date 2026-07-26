@@ -390,6 +390,16 @@ func (f *fakeStore) JobStatus(ctx context.Context, userID, sessionID string, tur
 	return j.status, nil
 }
 
+func (f *fakeStore) AssistantTurnText(ctx context.Context, userID, sessionID string, turn int) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.sessions[fakeStoreKey(userID, sessionID)]
+	if d == nil {
+		return "", nil
+	}
+	return d.turns[fmt.Sprintf("%d|assistant", turn)].Text, nil
+}
+
 func (f *fakeStore) ListSessions(ctx context.Context, userID string) ([]store.SessionMeta, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

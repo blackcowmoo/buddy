@@ -174,6 +174,14 @@ type Store interface {
 	// "correction" job tracking existed, or a kind that isn't tracked this
 	// way at all).
 	JobStatus(ctx context.Context, userID, sessionID string, turn int, kind string) (string, error)
+	// AssistantTurnText returns just one turn's assistant reply text ("" if
+	// that turn has no assistant row yet). A narrow single-row read for the
+	// reply-poll fallback path (see internal/transport's
+	// pollReplyUntilDone), which only needs the one text a finished reply
+	// job wrote — SessionDetail would fetch the session row plus the entire
+	// transcript, with its per-turn job-status joins, to answer the same
+	// question.
+	AssistantTurnText(ctx context.Context, userID, sessionID string, turn int) (string, error)
 
 	// LastTurn returns the highest turn number already persisted for a
 	// session (0 if none), so a resumed session can continue numbering

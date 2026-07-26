@@ -637,6 +637,46 @@ func TestMySQLSaveCorrectionNoopWhenTurnMissing(t *testing.T) {
 	}
 }
 
+// TestMySQLAssistantTurnTextReadsOnlyTheAssistantRow guards the reason
+// AssistantTurnText scopes on role rather than just (session, turn): a user
+// turn and its paired assistant turn share the same turn number, so without
+// role-scoping the reply poller could hand the learner their own sentence
+// back as the reply.
+func TestMySQLAssistantTurnTextReadsOnlyTheAssistantRow(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	sessionID := "sess-assistant-text"
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "how are you", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(user) error = %v", err)
+	}
+	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "assistant", "I'm good, thanks!", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(assistant) error = %v", err)
+	}
+	text, err := st.AssistantTurnText(ctx, "alex", sessionID, 1)
+	if err != nil {
+		t.Fatalf("AssistantTurnText() error = %v", err)
+	}
+	if text != "I'm good, thanks!" {
+		t.Fatalf("AssistantTurnText() = %q, want the assistant row's text", text)
+	}
+}
+
+// TestMySQLAssistantTurnTextEmptyWhenNoAssistantRow covers what the reply
+// poller sees for a turn whose assistant row doesn't exist (or is still the
+// placeholder ReserveAssistantTurn wrote): "" and no error, so the poll path
+// distinguishes "nothing to deliver" from a real query failure.
+func TestMySQLAssistantTurnTextEmptyWhenNoAssistantRow(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	text, err := st.AssistantTurnText(ctx, "alex", "sess-no-assistant-row", 1)
+	if err != nil {
+		t.Fatalf("AssistantTurnText() error = %v, want nil for a missing row", err)
+	}
+	if text != "" {
+		t.Fatalf("AssistantTurnText() = %q, want \"\"", text)
+	}
+}
+
 // TestMySQLSaveTranslationAttachesToCorrectRole guards the reason
 // SaveTranslation takes role in its WHERE clause instead of just
 // (session, turn): a user turn and its paired assistant turn share the same

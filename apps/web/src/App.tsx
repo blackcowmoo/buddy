@@ -20,9 +20,7 @@ import {
   fetchSessionDetail,
   fetchSessions,
   fetchStudySummary,
-  type SessionCompaction,
   type SessionSummary,
-  type StudySummary,
   type TurnRecord,
 } from "./lib/sessions";
 import { fetchSettings, saveSettings } from "./lib/settings";
@@ -181,6 +179,37 @@ function useDismiss(open: boolean, ref: React.RefObject<HTMLElement | null>, onC
       document.removeEventListener("keydown", onKeyDown);
     };
   }, [open, ref, onClose]);
+}
+
+// usePopoverFetch is the shared state machine behind the header's
+// fetch-on-open popovers (CompactionInfo, EndConversationControl): a panel
+// that owns its open state, dismisses like every other one (useDismiss), and
+// only fetches when it's actually opened — these are on-demand affordances,
+// not something worth a request on every room entry. Data is cleared as the
+// fetch starts so a reopen can't flash the previous room's (or previous
+// point in this room's) result while the new one is in flight. Returns null
+// data until the first fetch resolves; a failed fetch resolves to null too,
+// which callers render as their own "couldn't load" message.
+function usePopoverFetch<T>(sessionId: string | null, fetchData: (sessionId: string) => Promise<T | null>) {
+  const [open, setOpen] = useState(false);
+  const [data, setData] = useState<T | null>(null);
+  const [loading, setLoading] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  useDismiss(open, panelRef, () => setOpen(false));
+
+  const toggle = useCallback(() => {
+    if (!sessionId) return;
+    setOpen((o) => !o);
+    if (open) return; // was open, now closing — nothing to fetch
+    setLoading(true);
+    setData(null);
+    void fetchData(sessionId).then((result) => {
+      setData(result);
+      setLoading(false);
+    });
+  }, [sessionId, open, fetchData]);
+
+  return { open, toggle, loading, data, panelRef };
 }
 
 export function App() {
@@ -1212,7 +1241,17 @@ export function App() {
 }
 
 function upsertAssistant(m: Msg[], turn: number, patch: (prev: string) => string): Msg[] {
-  const i = m.findIndex((x) => x.turn === turn && x.role === "assistant");
+  // Scanned back-to-front rather than with findIndex: this runs once per
+  // streamed token (assistant_delta), and the row being appended to is
+  // always among the newest — a forward scan would re-walk the whole loaded
+  // transcript (which grows with every loadOlderTurns page) per token.
+  let i = -1;
+  for (let j = m.length - 1; j >= 0; j--) {
+    if (m[j].turn === turn && m[j].role === "assistant") {
+      i = j;
+      break;
+    }
+  }
   if (i >= 0) {
     const copy = [...m];
     copy[i] = { ...copy[i], text: patch(copy[i].text) };
@@ -1636,22 +1675,13 @@ interface FeedbackTurn {
 // httpserver.sessionCompactionHandler). Fetches on open rather than
 // eagerly, since this is a debug affordance, not something shown by default.
 function CompactionInfo({ sessionId }: { sessionId: string | null }) {
-  const [open, setOpen] = useState(false);
-  const [info, setInfo] = useState<SessionCompaction | null>(null);
-  const [loading, setLoading] = useState(false);
-  const panelRef = useRef<HTMLDivElement>(null);
-  useDismiss(open, panelRef, () => setOpen(false));
-
-  const toggle = useCallback(() => {
-    if (!sessionId) return;
-    setOpen((o) => !o);
-    if (open) return; // was open, now closing — nothing to fetch
-    setLoading(true);
-    void fetchSessionCompaction(sessionId).then((result) => {
-      setInfo(result);
-      setLoading(false);
-    });
-  }, [sessionId, open]);
+  const {
+    open,
+    toggle,
+    loading,
+    data: info,
+    panelRef,
+  } = usePopoverFetch(sessionId, fetchSessionCompaction);
 
   if (!sessionId) return null;
 
@@ -1702,23 +1732,13 @@ function EndConversationControl({
   sessionId: string | null;
   onEnd: () => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const [summary, setSummary] = useState<StudySummary | null>(null);
-  const [loading, setLoading] = useState(false);
-  const panelRef = useRef<HTMLDivElement>(null);
-  useDismiss(open, panelRef, () => setOpen(false));
-
-  const toggle = useCallback(() => {
-    if (!sessionId) return;
-    setOpen((o) => !o);
-    if (open) return; // was open, now closing — nothing to fetch
-    setLoading(true);
-    setSummary(null);
-    void fetchStudySummary(sessionId).then((result) => {
-      setSummary(result);
-      setLoading(false);
-    });
-  }, [sessionId, open]);
+  const {
+    open,
+    toggle,
+    loading,
+    data: summary,
+    panelRef,
+  } = usePopoverFetch(sessionId, fetchStudySummary);
 
   if (!sessionId) return null;
 

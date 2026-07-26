@@ -125,26 +125,16 @@ func NewCorrectHook(pipe *pipeline.Pipeline, st store.Store, queue *asyncjob.Que
 			log.Printf("correct: reserve %s/%s#%d: %v", userID, sessionID, turn, err)
 		}
 		payload := correctionJobPayload{UserID: userID, SessionID: sessionID, Turn: turn, Text: text, ContextMsg: contextMsg}
-		job, ok, err := queue.Enqueue(context.Background(), asyncjob.KindCorrection, correctionDedupeKey(userID, sessionID, turn), payload)
-		if err != nil {
-			log.Printf("correct: enqueue %s/%s#%d: %v", userID, sessionID, turn, err)
-			onFailure()
-			return
-		}
-		if !ok {
-			return // already queued/in flight; its own attempt will persist the result
-		}
-		claimed, err := queue.TryClaimByID(context.Background(), job, CorrectionClaimTTL)
-		if err != nil {
-			log.Printf("correct: inline claim %s/%s#%d: %v", userID, sessionID, turn, err)
-			onFailure()
-			return
-		}
-		if !claimed {
-			return // a pooled Worker already has it
-		}
-		if err := queue.Execute(context.Background(), job, CorrectionJobHandler(pipe, st, onResult)); err != nil {
-			log.Printf("correct: inline execute %s/%s#%d: %v", userID, sessionID, turn, err)
+		logID := fmt.Sprintf("%s/%s#%d", userID, sessionID, turn)
+		handler := CorrectionJobHandler(pipe, st, onResult)
+		// A dedup or lost-race return (ran=false, err=nil) deliberately
+		// skips onFailure: another attempt already owns this job and will
+		// report its own outcome. An enqueue/claim/execute error (err != nil)
+		// always fires it, so a connection that's still open never just
+		// sees its grammar spinner hang — CorrectionJobHandler's own
+		// st.FailJob call is what makes the failure durable for a
+		// poller/reload; this is only about the live signal.
+		if _, err := queue.EnqueueAndTryRun(context.Background(), asyncjob.KindCorrection, correctionDedupeKey(userID, sessionID, turn), logID, payload, CorrectionClaimTTL, handler); err != nil {
 			onFailure()
 		}
 	}
@@ -196,25 +186,9 @@ func NewTranslateHook(pipe *pipeline.Pipeline, st store.Store, queue *asyncjob.Q
 	}
 	return func(ctx context.Context, userID, sessionID string, turn int, text string, onResult func(string)) {
 		payload := liveTranslationJobPayload{UserID: userID, SessionID: sessionID, Turn: turn, Role: "assistant", Text: text}
-		job, ok, err := queue.Enqueue(context.Background(), asyncjob.KindLiveTranslation, liveTranslationDedupeKey(userID, sessionID, turn, "assistant"), payload)
-		if err != nil {
-			log.Printf("translate: enqueue %s/%s#%d: %v", userID, sessionID, turn, err)
-			return
-		}
-		if !ok {
-			return
-		}
-		claimed, err := queue.TryClaimByID(context.Background(), job, LiveTranslationClaimTTL)
-		if err != nil {
-			log.Printf("translate: inline claim %s/%s#%d: %v", userID, sessionID, turn, err)
-			return
-		}
-		if !claimed {
-			return
-		}
-		if err := queue.Execute(context.Background(), job, TranslationJobHandler(pipe, st, onResult)); err != nil {
-			log.Printf("translate: inline execute %s/%s#%d: %v", userID, sessionID, turn, err)
-		}
+		logID := fmt.Sprintf("%s/%s#%d", userID, sessionID, turn)
+		dedupeKey := liveTranslationDedupeKey(userID, sessionID, turn, "assistant")
+		queue.EnqueueAndTryRun(context.Background(), asyncjob.KindLiveTranslation, dedupeKey, logID, payload, LiveTranslationClaimTTL, TranslationJobHandler(pipe, st, onResult))
 	}
 }
 

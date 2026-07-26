@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -408,25 +409,8 @@ func (h *Handler) generateTitle(userID, sessionID string, sess *session.Session,
 	// fact has no live-connection UX to serve, it just shows up next time
 	// the room list is fetched.
 	payload := titleJobPayload{UserID: userID, SessionID: sessionID, UserText: userText, AssistantText: assistantText}
-	job, ok, err := h.titleQueue.Enqueue(context.Background(), asyncjob.KindTitle, titleDedupeKey(userID, sessionID), payload)
-	if err != nil {
-		log.Printf("title: enqueue %s/%s: %v", userID, sessionID, err)
-		return
-	}
-	if !ok {
-		return // already queued/in flight
-	}
-	claimed, err := h.titleQueue.TryClaimByID(context.Background(), job, TitleClaimTTL)
-	if err != nil {
-		log.Printf("title: inline claim %s/%s: %v", userID, sessionID, err)
-		return
-	}
-	if !claimed {
-		return // a pooled Worker already has it
-	}
-	if err := h.titleQueue.Execute(context.Background(), job, TitleJobHandler(h.pipe, h.store)); err != nil {
-		log.Printf("title: inline execute %s/%s: %v", userID, sessionID, err)
-	}
+	logID := fmt.Sprintf("%s/%s", userID, sessionID)
+	h.titleQueue.EnqueueAndTryRun(context.Background(), asyncjob.KindTitle, titleDedupeKey(userID, sessionID), logID, payload, TitleClaimTTL, TitleJobHandler(h.pipe, h.store))
 }
 
 // generateTitleDirect is generateTitle's original direct-call behavior,

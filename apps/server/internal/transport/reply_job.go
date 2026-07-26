@@ -132,47 +132,22 @@ func NewReplyHook(pipe *pipeline.Pipeline, st store.Store, queue *asyncjob.Queue
 		if err := st.ReserveAssistantTurn(context.Background(), userID, sessionID, turn); err != nil {
 			log.Printf("reply: reserve %s/%s#%d: %v", userID, sessionID, turn, err)
 		}
-		job, ok, err := queue.Enqueue(context.Background(), asyncjob.KindReply, replyDedupeKey(userID, sessionID, turn), replyJobPayload{
-			UserID: userID, SessionID: sessionID, Turn: turn, Messages: msgs, Fallback: fallback,
-		})
-		if err != nil {
-			log.Printf("reply: enqueue %s/%s#%d: %v", userID, sessionID, turn, err)
-		}
-		if !ok {
-			// Deduped: a reply job for this exact turn is already queued or
-			// in flight (e.g. a reconnect racing the original connection's
-			// enqueue, or this same Enqueue call retried after a partial
-			// failure above). Poll for its result rather than starting a
-			// second LLM call for the same turn.
-			pollReplyUntilDone(ctx, st, userID, sessionID, turn, onDone)
-			return
-		}
-		// Fast path: try to run the job this connection just created
-		// inline, before any pooled Worker's blocking dequeue gets to it —
-		// identical latency to calling the chat model directly, but still
-		// durable: Execute leaves the job claimed for the reaper on any
-		// error, and the LLM call itself runs on context.Background(), so
+		payload := replyJobPayload{UserID: userID, SessionID: sessionID, Turn: turn, Messages: msgs, Fallback: fallback}
+		logID := fmt.Sprintf("%s/%s#%d", userID, sessionID, turn)
+		handler := ReplyJobHandler(pipe, st, onToken, onDone)
+		// EnqueueAndTryRun's ran/err cover every non-success case
+		// uniformly here (dedup, lost claim race, or an inline
+		// enqueue/claim/execute error): none of them deliver a result to
+		// this connection on their own, so all of them fall back to
+		// polling for it rather than starting a second LLM call. On an
+		// inline execute error the job is left claimed for the
+		// stale-claim reaper to retry (see asyncjob.Worker.run's matching
+		// behavior); the LLM call itself runs on context.Background(), so
 		// a disconnect right after this point can't cut it short.
-		claimed, err := queue.TryClaimByID(context.Background(), job, ReplyClaimTTL)
-		if err != nil {
-			log.Printf("reply: inline claim %s/%s#%d: %v", userID, sessionID, turn, err)
+		ran, err := queue.EnqueueAndTryRun(context.Background(), asyncjob.KindReply, replyDedupeKey(userID, sessionID, turn), logID, payload, ReplyClaimTTL, handler)
+		if !ran || err != nil {
+			pollReplyUntilDone(ctx, st, userID, sessionID, turn, onDone)
 		}
-		if claimed {
-			handler := ReplyJobHandler(pipe, st, onToken, onDone)
-			if err := queue.Execute(context.Background(), job, handler); err != nil {
-				log.Printf("reply: inline execute %s/%s#%d: %v", userID, sessionID, turn, err)
-				// The job is left claimed for the stale-claim reaper to
-				// retry (see asyncjob.Worker.run's matching behavior) —
-				// this connection still needs to learn the eventual result
-				// somehow, so fall back to polling for it.
-				pollReplyUntilDone(ctx, st, userID, sessionID, turn, onDone)
-			}
-			return
-		}
-		// Lost the race to a pooled Worker (already running this job on
-		// this or another replica) — poll until it's done rather than
-		// starting a second LLM call ourselves.
-		pollReplyUntilDone(ctx, st, userID, sessionID, turn, onDone)
 	}
 }
 
@@ -200,16 +175,18 @@ func pollReplyUntilDone(ctx context.Context, st store.Store, userID, sessionID s
 		if status != store.JobStatusDone {
 			continue
 		}
-		_, turns, err := st.SessionDetail(context.Background(), userID, sessionID)
+		text, err := st.AssistantTurnText(context.Background(), userID, sessionID, turn)
 		if err != nil {
-			log.Printf("reply: poll detail %s/%s#%d: %v", userID, sessionID, turn, err)
+			log.Printf("reply: poll text %s/%s#%d: %v", userID, sessionID, turn, err)
 			return
 		}
-		for _, t := range turns {
-			if t.Turn == turn && t.Role == "assistant" {
-				onDone(t.Text)
-				return
-			}
+		// "" means the assistant row is missing or still the placeholder
+		// ReserveAssistantTurn wrote — shouldn't happen once the job is
+		// done (ReplyJobHandler refuses to persist an empty reply), and
+		// firing onDone with it would render an empty bubble, so stop
+		// watching without delivering anything.
+		if text != "" {
+			onDone(text)
 		}
 		return
 	}
