@@ -625,7 +625,6 @@ func renderCompactionInput(prevSummary string, old []llm.Message) string {
 	return b.String()
 }
 
-
 // correct asks the analysis ensemble for grammar/vocabulary/context feedback
 // as strict JSON, synthesized down to one result by analyze(). contextMsg
 // (from renderCorrectionContext) is the conversation the sentence was said
@@ -937,6 +936,70 @@ func (p *Pipeline) TranslateWithContext(ctx context.Context, priorTurns []llm.Me
 // correction, not a second one).
 func (p *Pipeline) CorrectWithContext(ctx context.Context, priorTurns []llm.Message, text string) (corrected string, issues []protocol.Issue, translation string, err error) {
 	return p.AnalyzeCorrection(ctx, text, renderCorrectionContext("", priorTurns))
+}
+
+// StudyIssue pairs one flagged grammar/vocabulary/phrasing/context issue
+// with the learner's original sentence it came from — the raw material
+// GenerateStudySummary synthesizes into a session-wide "what to study next"
+// recommendation. Callers assemble this from a session's persisted
+// corrections (see httpserver.sessionStudySummaryHandler); Pipeline itself
+// tracks nothing session-wide.
+type StudyIssue struct {
+	Text  string
+	Issue protocol.Issue
+}
+
+// GenerateStudySummary synthesizes every grammar/vocabulary/phrasing/context
+// issue flagged across a session into one encouraging, native-language
+// wrap-up: the recurring PATTERNS a learner should focus on studying next,
+// rather than a re-listing of each individual correction (already visible
+// via the frontend's FeedbackSummary/GrammarControl). Meant to be called
+// once, when the learner explicitly ends a conversation — not on every
+// reload — so unlike GenerateTitle (a decorative, cost-sensitive single
+// call) this affords the full Analysis ensemble+Judge, the same
+// learning-facing quality bar as correct()/compact() use. Callers should
+// skip this call entirely when issues is empty (see
+// sessionStudySummaryHandler) rather than spend an LLM call being told
+// there's nothing to report.
+func (p *Pipeline) GenerateStudySummary(ctx context.Context, issues []StudyIssue) (string, error) {
+	raw, err := p.analyze(ctx, studySummarySystemPrompt(p.FeedbackLang), renderStudySummaryInput(issues), false)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(raw), nil
+}
+
+// studySummarySystemPrompt builds GenerateStudySummary's prompt, reusing the
+// same native-language config as correctionSystemPrompt/translationSystemPrompt.
+// Unlike those, the ENTIRE output is written in the learner's native
+// language: this is direct study advice, not English being taught, so it
+// should be maximally easy to understand rather than modeling correct
+// English.
+func studySummarySystemPrompt(lang string) string {
+	native := languageName(lang)
+	return fmt.Sprintf(`You are an encouraging English-conversation coach wrapping up one practice
+session with a %[1]s-speaking learner. You are given every grammar/vocabulary/
+phrasing/context issue flagged during the session, each paired with the
+learner's original sentence.
+Write a short wrap-up that helps the learner study on their own afterward:
+- Group individual issues into the recurring PATTERNS behind them (e.g.
+  repeated third-person -s omission, article misuse, a specific mistranslated
+  collocation) instead of re-listing each correction one by one.
+- Call out 2-4 concrete things to focus on next, roughly ordered by how often
+  they came up.
+- End on an encouraging note.
+Write the ENTIRE response in %[1]s, in plain prose (a few short paragraphs or
+a short list) — no JSON, no labels, no preamble.`, native)
+}
+
+func renderStudySummaryInput(issues []StudyIssue) string {
+	var b strings.Builder
+	b.WriteString("Issues flagged during this session:\n")
+	for _, si := range issues {
+		fmt.Fprintf(&b, "- sentence: %q | type: %s | %q -> %q | %s\n",
+			si.Text, si.Issue.Type, si.Issue.Span, si.Issue.Suggestion, si.Issue.Explanation)
+	}
+	return b.String()
 }
 
 // GenerateTitle asks the LLM for a short, descriptive chat-room title from

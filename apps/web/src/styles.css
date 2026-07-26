@@ -269,6 +269,24 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 .compaction-summary-header { font-size: 13px; color: var(--muted); }
 .compaction-summary-text { font-size: 13px; white-space: pre-wrap; padding: 2px 4px; }
 
+/* End-of-conversation study wrap-up, opened from the chat header — see
+   App.tsx EndConversationControl. Reuses .compaction-*'s loading/empty/
+   header/text classes (identical look), just adds its own confirm button. */
+.end-conversation { display: inline-flex; }
+.end-conversation-btn { width: 28px; height: 28px; min-height: 28px; font-size: 13px; }
+.end-conversation-panel {
+  right: 0;
+  left: auto;
+  width: min(85vw, 340px);
+  max-width: calc(100vw - 32px);
+  max-height: min(70vh, 480px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.end-conversation-confirm { width: 100%; margin-top: 4px; }
+
 .spinning { display: inline-block; animation: spin 1s linear infinite; }
 @keyframes spin {
   from { transform: rotate(0deg); }

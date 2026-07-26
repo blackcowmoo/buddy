@@ -63,6 +63,7 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux.HandleFunc("GET /api/sessions", sessionsListHandler(ident, st))
 	mux.HandleFunc("GET /api/sessions/{id}", sessionDetailHandler(ident, st, translateQueue, correctionQueue))
 	mux.HandleFunc("GET /api/sessions/{id}/compaction", sessionCompactionHandler(ident, st))
+	mux.HandleFunc("GET /api/sessions/{id}/study-summary", sessionStudySummaryHandler(ident, st, pipe))
 	mux.HandleFunc("DELETE /api/sessions/{id}", sessionDeleteHandler(ident, st, audio, recordings))
 	mux.HandleFunc("GET /api/settings", settingsGetHandler(ident, st))
 	mux.HandleFunc("PUT /api/settings", settingsSaveHandler(ident, st))
@@ -327,6 +328,58 @@ func sessionCompactionHandler(ident identity.Identifier, st store.Store) http.Ha
 			"recentMessages": len(profile.Recent),
 			"totalTurns":     lastTurn,
 		})
+	}
+}
+
+// sessionStudySummaryHandler synthesizes every grammar/vocabulary/phrasing/
+// context issue flagged across a session's full transcript into one
+// wrap-up "what to study next" recommendation (see
+// pipeline.Pipeline.GenerateStudySummary) — meant to be fetched once, when
+// the learner explicitly ends a conversation (see EndConversationControl in
+// apps/web/src/App.tsx), unlike sessionCompactionHandler's debug-info
+// neighbor which is cheap enough to refetch on every open. issueCount lets
+// the frontend show its own canned "no feedback yet" message without an
+// LLM call when there's nothing to synthesize, the same
+// client-side-empty-state convention FeedbackSummary already uses for the
+// identical case.
+func sessionStudySummaryHandler(ident identity.Identifier, st store.Store, pipe *pipeline.Pipeline) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := requireUser(w, r, ident)
+		if !ok {
+			return
+		}
+		sessionID := r.PathValue("id")
+
+		_, turns, err := st.SessionDetail(r.Context(), userID, sessionID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				http.NotFound(w, r)
+				return
+			}
+			serverError(w, "session detail", err)
+			return
+		}
+
+		var issues []pipeline.StudyIssue
+		for _, t := range turns {
+			if t.Role != "user" || t.Correction == nil {
+				continue
+			}
+			for _, iss := range t.Correction.Issues {
+				issues = append(issues, pipeline.StudyIssue{Text: t.Text, Issue: iss})
+			}
+		}
+		if len(issues) == 0 {
+			writeJSON(w, map[string]any{"summary": "", "issueCount": 0})
+			return
+		}
+
+		summary, err := pipe.GenerateStudySummary(r.Context(), issues)
+		if err != nil {
+			serverError(w, "generate study summary", err)
+			return
+		}
+		writeJSON(w, map[string]any{"summary": summary, "issueCount": len(issues)})
 	}
 }
 

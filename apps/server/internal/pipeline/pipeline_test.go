@@ -970,6 +970,64 @@ func TestGenerateTitlePropagatesLLMError(t *testing.T) {
 	}
 }
 
+// ---- GenerateStudySummary() -----------------------------------------------
+
+func TestGenerateStudySummarySendsIssueDetails(t *testing.T) {
+	var gotInput string
+	p := &Pipeline{
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			gotInput = msgs[len(msgs)-1].Content
+			return "  꾸준히 3인칭 단수 -s를 놓치고 있어요. 계속 연습해봐요!  ", nil
+		}}}},
+	}
+	issues := []StudyIssue{
+		{Text: "He go to school.", Issue: protocol.Issue{Type: "grammar", Span: "go", Suggestion: "goes", Explanation: "subject-verb agreement"}},
+	}
+	got, err := p.GenerateStudySummary(context.Background(), issues)
+	if err != nil {
+		t.Fatalf("GenerateStudySummary() error = %v", err)
+	}
+	if got != "꾸준히 3인칭 단수 -s를 놓치고 있어요. 계속 연습해봐요!" {
+		t.Fatalf("GenerateStudySummary() = %q, want trimmed summary", got)
+	}
+	if !strings.Contains(gotInput, "He go to school.") || !strings.Contains(gotInput, "subject-verb agreement") {
+		t.Fatalf("analyze input missing issue details: %q", gotInput)
+	}
+}
+
+// TestGenerateStudySummaryUsesAnalysisEnsembleNotChatModel guards a
+// deliberate choice: unlike GenerateTitle (decorative, one fast chat-model
+// call), the study wrap-up is learning-facing output fetched once per
+// conversation, so it should go through the full Analysis ensemble+Judge
+// like correct()/compact() do, never p.LLM/p.ChatModel directly.
+func TestGenerateStudySummaryUsesAnalysisEnsembleNotChatModel(t *testing.T) {
+	chatCalls := 0
+	p := &Pipeline{
+		LLM:       &fakeLLM{complete: func(msgs []llm.Message) (string, error) { chatCalls++; return "should not be used", nil }},
+		ChatModel: "chat",
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			return "summary", nil
+		}}}},
+	}
+	if _, err := p.GenerateStudySummary(context.Background(), []StudyIssue{{Text: "x", Issue: protocol.Issue{Type: "grammar"}}}); err != nil {
+		t.Fatalf("GenerateStudySummary() error = %v", err)
+	}
+	if chatCalls != 0 {
+		t.Fatalf("GenerateStudySummary should use the Analysis ensemble, not the chat model directly; got %d chat calls", chatCalls)
+	}
+}
+
+func TestGenerateStudySummaryPropagatesAnalyzeError(t *testing.T) {
+	p := &Pipeline{
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			return "", errors.New("down")
+		}}}},
+	}
+	if _, err := p.GenerateStudySummary(context.Background(), []StudyIssue{{Text: "x", Issue: protocol.Issue{Type: "grammar"}}}); err == nil {
+		t.Fatal("expected an error when every candidate fails")
+	}
+}
+
 func TestCorrectSendsBareSentenceWhenNoContext(t *testing.T) {
 	var gotInput string
 	fixture := func(msgs []llm.Message) (string, error) {

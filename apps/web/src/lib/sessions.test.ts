@@ -4,6 +4,7 @@ import {
   fetchSessionCompaction,
   fetchSessionDetail,
   fetchSessions,
+  fetchStudySummary,
 } from "./sessions";
 
 afterEach(() => {
@@ -106,6 +107,27 @@ describe("fetchSessionCompaction", () => {
   it("returns null when fetch rejects", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
     await expect(fetchSessionCompaction("s1")).resolves.toBeNull();
+  });
+});
+
+describe("fetchStudySummary", () => {
+  it("returns the study summary on a successful response and URL-encodes the id", async () => {
+    const summary = { summary: "focus on subject-verb agreement", issueCount: 3 };
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(summary) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchStudySummary("weird id/1")).resolves.toEqual(summary);
+    expect(fetchMock).toHaveBeenCalledWith("api/sessions/weird%20id%2F1/study-summary");
+  });
+
+  it("returns null on a non-ok response", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
+    await expect(fetchStudySummary("s1")).resolves.toBeNull();
+  });
+
+  it("returns null when fetch rejects", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
+    await expect(fetchStudySummary("s1")).resolves.toBeNull();
   });
 });
 

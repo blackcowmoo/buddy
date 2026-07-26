@@ -94,6 +94,26 @@ export async function fetchSessionCompaction(id: string): Promise<SessionCompact
   );
 }
 
+// Mirrors the JSON shape written by httpserver.sessionStudySummaryHandler.
+export interface StudySummary {
+  // Empty when issueCount is 0 — the server skips the LLM call entirely
+  // rather than being asked to summarize nothing (see EndConversationControl,
+  // which shows its own canned message for that case).
+  summary: string;
+  issueCount: number;
+}
+
+// Fetches a synthesized "what to study next" wrap-up from every
+// grammar/vocabulary issue flagged so far in a room — meant to be called
+// once, when the learner explicitly ends the conversation, not polled like
+// fetchSessionCompaction. Returns null on any failure.
+export async function fetchStudySummary(id: string): Promise<StudySummary | null> {
+  return fetchJSON<StudySummary | null>(
+    `api/sessions/${encodeURIComponent(id)}/study-summary`,
+    null,
+  );
+}
+
 // Deletes one chat room and its transcript (the server also cascades to any
 // recordings archived under it — see httpserver.sessionDeleteHandler).
 // Returns whether the request succeeded, so the caller can decide what to do
