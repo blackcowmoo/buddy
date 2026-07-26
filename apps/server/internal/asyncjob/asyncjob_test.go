@@ -285,6 +285,57 @@ type fakeErr string
 
 func (e fakeErr) Error() string { return string(e) }
 
+// TestHandlerErrorShortensClaimToBackoffNotClaimTTL guards the fix for a
+// real incident: claimTTL was loosened to 25h (see
+// transport.CorrectionClaimTTL) so a legitimately-slow local-model call
+// never gets reaped mid-flight, but that same 25h TTL used to be the ONLY
+// thing that requeued a job whose handler failed fast — so a genuine
+// grammar-check failure sat unretried for 25 hours despite the UI promising
+// an automatic retry. FailureRetryBackoff exists precisely to decouple the
+// two: a failed handler's claim should expire (and get reaped) on its own
+// short schedule, independent of how long claimTTL tolerates a still-running
+// call. This drives reapOnce directly (as the other reap tests do) rather
+// than waiting out the real reapLoop ticker.
+func TestHandlerErrorShortensClaimToBackoffNotClaimTTL(t *testing.T) {
+	rdb := requireRedis(t)
+	kind := testKind(t)
+	q := NewQueue(rdb)
+	ctx := context.Background()
+
+	old := FailureRetryBackoff
+	FailureRetryBackoff = 50 * time.Millisecond
+	defer func() { FailureRetryBackoff = old }()
+
+	// claimTTL is deliberately huge (as it is in production for slow local
+	// models) to prove the requeue comes from FailureRetryBackoff, not from
+	// claimTTL ever lapsing.
+	job, ok, err := q.Enqueue(ctx, kind, "d1", 1)
+	if err != nil || !ok {
+		t.Fatalf("enqueue: ok=%v err=%v", ok, err)
+	}
+	claimed, err := q.TryClaimByID(ctx, job, 25*time.Hour)
+	if err != nil || !claimed {
+		t.Fatalf("claim: claimed=%v err=%v", claimed, err)
+	}
+	if err := q.Execute(ctx, job, func(context.Context, Job) error { return errFake }); err == nil {
+		t.Fatalf("Execute should surface the handler error")
+	}
+
+	// Immediately after the failure, the claim is shortened but not yet
+	// expired, so a reap right now must leave it alone.
+	w := NewWorker(rdb, kind, 1, 25*time.Hour, nil)
+	w.reapOnce(ctx)
+	if n, _ := rdb.LLen(ctx, queueKey(kind)).Result(); n != 0 {
+		t.Fatalf("queue length = %d, want 0 (backoff not elapsed yet)", n)
+	}
+
+	time.Sleep(200 * time.Millisecond) // past FailureRetryBackoff, nowhere near claimTTL
+	w.reapOnce(ctx)
+	if n, _ := rdb.LLen(ctx, queueKey(kind)).Result(); n != 1 {
+		t.Fatalf("queue length = %d, want 1 (job should be requeued once FailureRetryBackoff elapses)", n)
+	}
+}
+
 // ---- Reap ---------------------------------------------------------------
 
 func TestReapRequeuesAbandonedClaim(t *testing.T) {
