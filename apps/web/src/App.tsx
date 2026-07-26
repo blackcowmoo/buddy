@@ -238,6 +238,20 @@ export function App() {
 
   const [mic, setMic] = useState(false);
   const [text, setText] = useState("");
+  // True while the composer's text is a still-unsent voice draft (an
+  // EvPendingTranscript guess the learner hasn't sent yet) rather than typed
+  // input — determines the "source" tag on the eventual send, and lets the
+  // UI show it's awaiting review instead of already part of the conversation.
+  const [voiceDraft, setVoiceDraft] = useState(false);
+  // The last text this component itself wrote into the composer from a
+  // pending_transcript event — compared against the live `text` state so a
+  // later (Judge-upgraded) pending_transcript never clobbers an edit the
+  // learner already started making. Reset (to null) whenever the draft is
+  // sent, discarded, or a new recording starts.
+  const voiceDraftAutoTextRef = useRef<string | null>(null);
+  // True while a spoken utterance has been sent to the server but no
+  // pending_transcript (or error) has come back for it yet.
+  const [transcribing, setTranscribing] = useState(false);
   const [tts, setTts] = useState<TtsState>("idle");
   const [ttsProgress, setTtsProgress] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -310,6 +324,28 @@ export function App() {
           }
         }
         break;
+      case "pending_transcript": {
+        // A still-editable STT guess for a spoken utterance — not yet part
+        // of the conversation. Drop it into the composer for the learner to
+        // review/edit and explicitly send (see submitText), instead of
+        // committing it automatically: STT can hallucinate words the
+        // learner never actually said, so nothing here spends a
+        // reply/correction call until they confirm it. Only apply a later
+        // (Judge-upgraded) guess if the learner hasn't started editing the
+        // draft themselves.
+        const incoming = e.text ?? "";
+        setTranscribing(false);
+        // Captured synchronously, before the ref is updated below — setText's
+        // updater runs later (deferred/batched), so it must not read the
+        // ref's live value at that point, only what it was when this event
+        // arrived.
+        const wasUntouched = voiceDraftAutoTextRef.current === null;
+        const priorAutoText = voiceDraftAutoTextRef.current;
+        voiceDraftAutoTextRef.current = incoming;
+        setText((prev) => (wasUntouched || prev === priorAutoText ? incoming : prev));
+        setVoiceDraft(true);
+        break;
+      }
       case "final_transcript":
         setMsgs((m) => [
           ...m,
@@ -363,6 +399,7 @@ export function App() {
         break;
       case "error":
         setAwaitingReply(false);
+        setTranscribing(false);
         console.error("server error:", e.text);
         break;
     }
@@ -758,6 +795,14 @@ export function App() {
     if (status === "closed" || status === "error") setAwaitingReply(false);
   }, [status]);
 
+  // Clears an unsent voice draft from the composer — called when a new
+  // recording starts (see toggleMic) or the learner explicitly discards one.
+  const discardVoiceDraft = useCallback(() => {
+    setText("");
+    setVoiceDraft(false);
+    voiceDraftAutoTextRef.current = null;
+  }, []);
+
   const toggleMic = useCallback(async () => {
     const rec = recorderRef.current;
     if (!rec) return;
@@ -766,9 +811,13 @@ export function App() {
       setMic(false);
       if (pcm.length > 0) {
         clientRef.current?.sendAudio(pcm);
-        setAwaitingReply(true);
+        // No reply is coming until the learner reviews and sends the
+        // resulting draft (see the "pending_transcript" case in onEvent) —
+        // just show that STT is working on it.
+        setTranscribing(true);
       }
     } else {
+      if (voiceDraft) discardVoiceDraft(); // starting over discards the unsent draft
       try {
         await rec.start();
         setMic(true);
@@ -776,7 +825,7 @@ export function App() {
         console.error("mic:", err);
       }
     }
-  }, []);
+  }, [voiceDraft, discardVoiceDraft]);
 
   const loadVoice = useCallback(async () => {
     const sp = speakerRef.current;
@@ -846,10 +895,12 @@ export function App() {
   const submitText = useCallback(() => {
     const t = text.trim();
     if (!t) return;
-    clientRef.current?.sendText(t);
+    clientRef.current?.sendText(t, voiceDraft ? "voice" : undefined);
     setAwaitingReply(true);
     setText("");
-  }, [text]);
+    setVoiceDraft(false);
+    voiceDraftAutoTextRef.current = null;
+  }, [text, voiceDraft]);
 
   const onComposerSubmit = useCallback(
     (e: React.FormEvent) => {
@@ -1016,7 +1067,8 @@ export function App() {
           <p className="hint">
             Tap <strong>Enable voice</strong> to load kokoro, tap the{" "}
             <strong>🎙</strong> button, speak a sentence, then tap it again to
-            send. Or just type below.
+            review what it heard — edit if needed, then hit <strong>Send</strong>.
+            Or just type below.
           </p>
         )}
         {msgs.map((m, i) => {
@@ -1116,11 +1168,21 @@ export function App() {
         >
           {mic ? "◼" : "🎙"}
         </button>
+        {transcribing && (
+          <p className="hint transcribing" role="status" aria-label="음성 인식 중">
+            <span className="spinning">⏳</span>
+          </p>
+        )}
         <form onSubmit={onComposerSubmit}>
           <textarea
             ref={textareaRef}
+            className={voiceDraft ? "voice-draft" : undefined}
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => {
+              const v = e.target.value;
+              setText(v);
+              if (voiceDraft && v === "") discardVoiceDraft(); // cleared by hand — treat as discarded
+            }}
             onKeyDown={onComposerKeyDown}
             placeholder="…or type in English"
             enterKeyHint="send"
@@ -1128,6 +1190,17 @@ export function App() {
             autoCorrect="on"
             rows={1}
           />
+          {voiceDraft && (
+            <button
+              type="button"
+              className="ghost icon-btn"
+              onClick={discardVoiceDraft}
+              aria-label="음성 초안 취소"
+              title="음성 초안 취소"
+            >
+              ✕
+            </button>
+          )}
           <button type="submit">Send</button>
         </form>
       </footer>

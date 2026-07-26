@@ -77,30 +77,6 @@ func TestExportReturnsCopyNotAlias(t *testing.T) {
 	}
 }
 
-func TestReplaceLastUserUpdatesMostRecentUserOnly(t *testing.T) {
-	s := New("sys")
-	s.AppendUser("first draft")
-	s.AppendAssistant("reply 1")
-	s.AppendUser("second draft")
-	s.ReplaceLastUser("second, corrected")
-
-	_, recent := s.Export()
-	if recent[0].Content != "first draft" {
-		t.Fatalf("earlier user turn changed: %+v", recent)
-	}
-	if recent[2].Content != "second, corrected" {
-		t.Fatalf("last user turn not replaced: %+v", recent)
-	}
-}
-
-func TestReplaceLastUserNoUserTurnIsNoop(t *testing.T) {
-	s := New("sys")
-	s.ReplaceLastUser("nothing to replace") // must not panic
-	_, recent := s.Export()
-	if len(recent) != 0 {
-		t.Fatalf("expected no history, got %+v", recent)
-	}
-}
 
 func TestNextTurnIncrements(t *testing.T) {
 	s := New("sys")

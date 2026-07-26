@@ -561,6 +561,10 @@ a.icon-btn.ghost {
 .composer button[type="submit"] {
   flex-shrink: 0;
 }
+/* Marks the composer text as a not-yet-sent voice draft awaiting review —
+   see the "pending_transcript" case in App.tsx's onEvent. */
+.composer textarea.voice-draft { border-left: 3px solid var(--accent); }
+.composer .hint.transcribing { margin: 0 2px; flex-shrink: 0; }
 
 /* Primary action: a thumb-reachable circular mic FAB. */
 .mic {

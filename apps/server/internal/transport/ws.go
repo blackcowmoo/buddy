@@ -285,7 +285,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			switch m.Type {
 			case "text":
-				go h.pipe.HandleText(tctx, userID, sessionID, sess, m.Text, emit)
+				go h.pipe.HandleText(tctx, userID, sessionID, sess, m.Text, m.Source, emit)
 			}
 		}
 	}

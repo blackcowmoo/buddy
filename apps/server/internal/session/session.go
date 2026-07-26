@@ -67,20 +67,6 @@ func (s *Session) AppendAssistant(text string) {
 	s.history = append(s.history, llm.Message{Role: llm.RoleAssistant, Content: text})
 }
 
-// ReplaceLastUser upgrades the last user message to the high-quality
-// transcription produced by the refine track, keeping the conversation
-// context accurate for subsequent turns.
-func (s *Session) ReplaceLastUser(text string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i := len(s.history) - 1; i >= 0; i-- {
-		if s.history[i].Role == llm.RoleUser {
-			s.history[i].Content = text
-			return
-		}
-	}
-}
-
 // Snapshot returns the full message list for a stateless LLM call: system
 // prompt, long-term summary (if any), then the verbatim recent window.
 func (s *Session) Snapshot() []llm.Message {

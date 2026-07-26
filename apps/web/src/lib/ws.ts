@@ -114,8 +114,13 @@ export class BuddyClient {
       this.ws.send(pcm.buffer as ArrayBuffer);
   }
 
-  sendText(text: string) {
-    this.send({ type: "text", text });
+  /**
+   * Send composer text. source: "voice" marks this as a learner-confirmed
+   * voice draft (see ServerEvent's "pending_transcript") rather than typed
+   * input — omit it for ordinary typed input.
+   */
+  sendText(text: string, source?: "voice") {
+    this.send({ type: "text", text, source });
   }
 
   close() {

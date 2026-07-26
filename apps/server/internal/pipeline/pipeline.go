@@ -175,34 +175,49 @@ func (p *Pipeline) STTNames() []string {
 	return names
 }
 
-// HandleUtterance runs one turn from raw audio. userID/sessionID identify
-// this turn for ReplyHook (see Pipeline.ReplyHook) — unused when it's nil.
+// HandleUtterance runs STT on one utterance and hands the learner an
+// editable draft (EvPendingTranscript) — it deliberately stops there. STT
+// (doubly so an ensemble reconciled by an LLM, see transcribe) can produce
+// text the learner never actually said; committing that straight into the
+// session used to spend a correction call, a chat reply, and a TTS playback
+// on every mis-hearing. Now nothing joins the conversation — no session
+// append, no correct(), no reply() — until the learner reviews the draft and
+// actually sends it, which comes back as an ordinary "text" ClientMsg with
+// Source set to SourceVoice and is handled by HandleText exactly like typed
+// input. userID/sessionID are accepted only to keep this signature parallel
+// with HandleText/ws.go's call site; this function itself no longer needs
+// them since it never reaches a hook that would.
 func (p *Pipeline) HandleUtterance(ctx context.Context, userID, sessionID string, sess *session.Session, pcm []byte, emit Emit) {
-	turn := sess.NextTurn()
-	// Context as of BEFORE this utterance — used for both the FAST and
-	// REFINE reconciliation passes below so they answer the exact same
-	// question (same inputs, different model/care level), and so the
-	// just-appended (possibly wrong) guess never contaminates its own
+	// Pre-utterance context: used for both STT reconciliation passes below so
+	// they answer the exact same question (same inputs, different model/care
+	// level), and so the unconfirmed guess never contaminates its own
 	// disambiguation context.
 	summary, recent := sess.Export()
 
 	// --- FAST STT ensemble -------------------------------------------------
 	userText, candidates, err := p.transcribe(ctx, summary, recent, pcm)
 	if err != nil {
-		emit(protocol.ServerEvent{Type: protocol.EvError, Turn: turn, Text: "stt: " + err.Error()})
+		emit(protocol.ServerEvent{Type: protocol.EvError, Text: "stt: " + err.Error()})
 		return
 	}
 	if userText == "" {
 		return
 	}
-	emit(protocol.ServerEvent{Type: protocol.EvFinal, Turn: turn, Text: userText, Source: protocol.SourceVoice})
-	sess.AppendUser(userText)
+	emit(protocol.ServerEvent{Type: protocol.EvPendingTranscript, Text: userText, Source: protocol.SourceVoice})
 
-	// --- REFINE track (background) --------------------------------------
-	go p.refine(ctx, userID, sessionID, sess, turn, summary, recent, candidates, userText, emit)
-
-	// --- FAST reply ------------------------------------------------------
-	p.reply(ctx, userID, sessionID, sess, turn, emit)
+	// --- REFINE track: a slower, more careful reconciliation pass that may
+	// upgrade the draft the learner is currently reviewing --------------
+	if p.Judge == nil {
+		return
+	}
+	refined, err := p.synthesizeTranscript(ctx, p.Judge, p.JudgeModel, summary, recent, candidates)
+	if err != nil {
+		log.Printf("refine: %v", err)
+		return
+	}
+	if refined = strings.TrimSpace(refined); refined != "" && refined != userText {
+		emit(protocol.ServerEvent{Type: protocol.EvPendingTranscript, Text: refined, Source: protocol.SourceVoice})
+	}
 }
 
 // fanOutOrdered runs call(0), call(1), ..., call(n-1) concurrently and
@@ -344,16 +359,24 @@ func renderTranscriptSynthesisInput(summary string, recent []llm.Message, candid
 	return b.String()
 }
 
-// HandleText runs one turn from typed input (skips STT). userID/sessionID
-// identify this turn for ReplyHook (see Pipeline.ReplyHook) — unused when
-// it's nil.
-func (p *Pipeline) HandleText(ctx context.Context, userID, sessionID string, sess *session.Session, text string, emit Emit) {
+// HandleText runs one turn from already-final text: typed input, or a voice
+// utterance the learner reviewed and confirmed via a still-editable
+// EvPendingTranscript draft (see HandleUtterance) — either way STT (if any)
+// already happened, so this is also the only path that ever commits a voice
+// turn/spends its correction+reply calls. userID/sessionID identify this
+// turn for ReplyHook (see Pipeline.ReplyHook) — unused when it's nil. source
+// should be protocol.SourceVoice or protocol.SourceText; anything else is
+// normalized to SourceText.
+func (p *Pipeline) HandleText(ctx context.Context, userID, sessionID string, sess *session.Session, text, source string, emit Emit) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return
 	}
+	if source != protocol.SourceVoice {
+		source = protocol.SourceText
+	}
 	turn := sess.NextTurn()
-	emit(protocol.ServerEvent{Type: protocol.EvFinal, Turn: turn, Text: text, Source: protocol.SourceText})
+	emit(protocol.ServerEvent{Type: protocol.EvFinal, Turn: turn, Text: text, Source: source})
 	// Capture the conversation as of BEFORE this turn, so the correction
 	// pass can judge whether the sentence fits without the sentence itself
 	// contaminating its own context (mirrors HandleUtterance).
@@ -602,40 +625,6 @@ func renderCompactionInput(prevSummary string, old []llm.Message) string {
 	return b.String()
 }
 
-// refine hands transcribe()'s STT candidates to Judge for a second, more
-// careful reconciliation pass — a stronger model, the exact same pre-turn
-// context — instead of re-running STT. This is the background pass that
-// keeps reducing transcription errors in the conversation: if Judge lands on
-// something different from the FAST track's quick pick, the session's user
-// turn is upgraded and refined_transcript is emitted; if it agrees (or
-// fails), nothing changes. Runs even with a single STT candidate — Judge can
-// still catch a mishearing FAST's quick pass didn't, using context alone.
-// A nil Judge (unconfigured) just skips reconciliation — correct() still runs.
-func (p *Pipeline) refine(ctx context.Context, userID, sessionID string, sess *session.Session, turn int, summary string, recent []llm.Message, candidates []string, fastText string, emit Emit) {
-	refined := fastText
-	if p.Judge != nil {
-		text, err := p.synthesizeTranscript(ctx, p.Judge, p.JudgeModel, summary, recent, candidates)
-		if err != nil {
-			log.Printf("refine: %v", err)
-		} else if text = strings.TrimSpace(text); text != "" {
-			refined = text
-		}
-	}
-	if refined != fastText {
-		emit(protocol.ServerEvent{Type: protocol.EvRefined, Turn: turn, Text: refined, Source: protocol.SourceVoice})
-		sess.ReplaceLastUser(refined) // keep future context accurate
-	}
-	// summary/recent are the pre-turn context captured in HandleUtterance
-	// before this utterance was appended — so it never includes the sentence
-	// under correction, regardless of how the concurrent reply() interleaves.
-	//
-	// context.WithoutCancel here (unlike the Judge call above, which stays on
-	// ctx since sess.ReplaceLastUser must respect turn ordering/barge-in):
-	// correct() only emits+persists a result for this fixed turn number and
-	// never touches sess, so there's no ordering hazard in letting it outlive
-	// a barge-in or disconnect — same reasoning as HandleText's correct call.
-	p.correct(context.WithoutCancel(ctx), userID, sessionID, turn, refined, renderCorrectionContext(summary, recent), emit)
-}
 
 // correct asks the analysis ensemble for grammar/vocabulary/context feedback
 // as strict JSON, synthesized down to one result by analyze(). contextMsg

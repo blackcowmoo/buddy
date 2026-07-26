@@ -16,11 +16,21 @@ package protocol
 type EventType string
 
 const (
-	EvReady                EventType = "ready"                 // handshake
-	EvFinal                EventType = "final_transcript"      // fast STT, locked
+	EvReady EventType = "ready" // handshake
+	// EvPendingTranscript carries a still-editable STT guess for one spoken
+	// utterance, before the learner has committed to sending it — see
+	// pipeline.HandleUtterance's doc comment for why voice input stops here
+	// instead of committing straight to the session. May fire more than once
+	// per utterance (an initial FAST guess, then a slower Judge-reconciled
+	// upgrade if it differs) — the frontend just keeps the latest. Never
+	// persisted: nothing here is part of the conversation until the learner
+	// actually sends it, which arrives back as an ordinary "text" ClientMsg
+	// (Source set to SourceVoice) and is handled exactly like typed input.
+	EvPendingTranscript    EventType = "pending_transcript"
+	EvFinal                EventType = "final_transcript"      // committed turn (typed, or a learner-confirmed voice draft)
 	EvAssistantDelta       EventType = "assistant_delta"       // streamed reply token
 	EvAssistantDone        EventType = "assistant_done"        // full reply (browser speaks this)
-	EvRefined              EventType = "refined_transcript"    // slow STT re-transcription
+	EvRefined              EventType = "refined_transcript"    // legacy: upgraded an already-committed turn's text; no longer emitted live, kept for hydrating turns saved before EvPendingTranscript existed
 	EvCorrection           EventType = "correction"            // grammar/vocab feedback
 	EvUserTranslation      EventType = "user_translation"      // native-language translation of the user's turn
 	EvAssistantTranslation EventType = "assistant_translation" // native-language translation of the assistant's reply
@@ -47,8 +57,10 @@ type ServerEvent struct {
 	Text string `json:"text,omitempty"`
 
 	// Source says how the learner produced this turn: "voice" (spoken,
-	// transcribed by STT) or "text" (typed). Only set on EvFinal/EvRefined —
-	// there's no ambiguity to record on any other event type.
+	// transcribed by STT) or "text" (typed). Set on EvFinal/EvRefined (a
+	// committed turn) and on EvPendingTranscript (a not-yet-committed voice
+	// draft, always SourceVoice) — there's no ambiguity to record on any
+	// other event type.
 	Source string `json:"source,omitempty"`
 
 	// Session carries the resolved session (chat room) ID. Only set on
@@ -86,6 +98,12 @@ type Issue struct {
 // ---- client -> server (TEXT control frames) ---------------------------------
 
 type ClientMsg struct {
-	Type string `json:"type"` // "text" (typed input)
+	Type string `json:"type"` // "text" (typed input, or a learner-confirmed voice draft)
 	Text string `json:"text,omitempty"`
+	// Source distinguishes a learner-confirmed EvPendingTranscript draft
+	// (SourceVoice) from ordinary typed input; empty (or any other value)
+	// means SourceText. The frontend sets it when the composer's text still
+	// came from a pending voice draft the learner reviewed and sent — see
+	// EvPendingTranscript's doc comment.
+	Source string `json:"source,omitempty"`
 }
