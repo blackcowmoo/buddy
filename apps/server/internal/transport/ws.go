@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"buddy/server/internal/asyncjob"
@@ -124,22 +125,43 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	profile, err := h.store.Load(ctx, userID, sessionID)
-	if err != nil {
-		log.Printf("store: load %s/%s: %v", userID, sessionID, err)
-	}
-	// A reconnect to an existing session must not restart turn numbering at
-	// 0 — that would collide with, and silently overwrite, turns the earlier
-	// connection already saved (see store.MySQLStore.SaveTurn's ON DUPLICATE
-	// KEY UPDATE). LastTurn resumes numbering from the persisted transcript.
-	lastTurn, err := h.store.LastTurn(ctx, userID, sessionID)
-	if err != nil {
-		log.Printf("store: last turn %s/%s: %v", userID, sessionID, err)
-	}
-	style, err := h.store.GetInterlocutorStyle(ctx, userID)
-	if err != nil {
-		log.Printf("store: get interlocutor style %s: %v", userID, err)
-	}
+	// Load, LastTurn, and GetInterlocutorStyle are three independent reads —
+	// fan them out concurrently (same reasoning as
+	// store.MySQLStore.SessionDetail) rather than paying three sequential
+	// round trips to what may be a network-hop-away replica before the
+	// handshake can complete.
+	var profile store.Profile
+	var lastTurn int
+	var style string
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		var err error
+		if profile, err = h.store.Load(ctx, userID, sessionID); err != nil {
+			log.Printf("store: load %s/%s: %v", userID, sessionID, err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		// A reconnect to an existing session must not restart turn
+		// numbering at 0 — that would collide with, and silently
+		// overwrite, turns the earlier connection already saved (see
+		// store.MySQLStore.SaveTurn's ON DUPLICATE KEY UPDATE). LastTurn
+		// resumes numbering from the persisted transcript.
+		var err error
+		if lastTurn, err = h.store.LastTurn(ctx, userID, sessionID); err != nil {
+			log.Printf("store: last turn %s/%s: %v", userID, sessionID, err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		var err error
+		if style, err = h.store.GetInterlocutorStyle(ctx, userID); err != nil {
+			log.Printf("store: get interlocutor style %s: %v", userID, err)
+		}
+	}()
+	wg.Wait()
 	sess := session.New(pipeline.BuildSystemPrompt(style))
 	sess.Seed(profile.Summary, profile.Recent, lastTurn)
 

@@ -72,9 +72,16 @@ func (q *Queue) Enqueue(ctx context.Context, userID, sessionID string) {
 	if q == nil {
 		return
 	}
+	enqueueSession(ctx, q.q, asyncjob.KindTranslation, userID, sessionID, "")
+}
+
+// enqueueSession is Queue.Enqueue/CorrectionQueue.Enqueue's shared body —
+// the two only differ in which asyncjob.Kind they enqueue onto and the log
+// label that identifies which one failed.
+func enqueueSession(ctx context.Context, q *asyncjob.Queue, kind asyncjob.Kind, userID, sessionID, logLabel string) {
 	j := job{UserID: userID, SessionID: sessionID}
-	if _, _, err := q.q.Enqueue(ctx, asyncjob.KindTranslation, j.dedupeKey(), j); err != nil {
-		log.Printf("backfill: enqueue %s: %v", j.dedupeKey(), err)
+	if _, _, err := q.Enqueue(ctx, kind, j.dedupeKey(), j); err != nil {
+		log.Printf("backfill: enqueue %s%s: %v", logLabel, j.dedupeKey(), err)
 	}
 }
 
@@ -92,16 +99,25 @@ type Worker struct {
 }
 
 func NewWorker(rdb redis.UniversalClient, st store.Store, pipe *pipeline.Pipeline) *Worker {
+	return &Worker{w: newSessionWorker(rdb, asyncjob.KindTranslation, st, pipe, "", translateSession)}
+}
+
+// newSessionWorker is Worker/CorrectionWorker's shared constructor body:
+// both drain a session-keyed queue one job at a time, unmarshal the same
+// job payload shape, and hand off to a per-session work function — they
+// only differ in which asyncjob.Kind they drain and which function does the
+// actual translating/correcting.
+func newSessionWorker(rdb redis.UniversalClient, kind asyncjob.Kind, st store.Store, pipe *pipeline.Pipeline, badPayloadLabel string, work func(ctx context.Context, st store.Store, pipe *pipeline.Pipeline, userID, sessionID string)) *asyncjob.Worker {
 	handler := func(ctx context.Context, j asyncjob.Job) error {
 		var payload job
 		if err := json.Unmarshal(j.Payload, &payload); err != nil {
-			log.Printf("backfill: bad job payload %q: %v", j.Payload, err)
+			log.Printf("backfill: bad %sjob payload %q: %v", badPayloadLabel, j.Payload, err)
 			return nil // unparseable; retrying it would never succeed
 		}
-		translateSession(ctx, st, pipe, payload.UserID, payload.SessionID)
+		work(ctx, st, pipe, payload.UserID, payload.SessionID)
 		return nil
 	}
-	return &Worker{w: asyncjob.NewWorker(rdb, asyncjob.KindTranslation, 1, claimTTL, handler)}
+	return asyncjob.NewWorker(rdb, kind, 1, claimTTL, handler)
 }
 
 // Run polls for work until ctx is canceled. Start it with `go worker.Run(ctx)`;
@@ -124,28 +140,50 @@ func (w *Worker) Run(ctx context.Context) {
 // picked up again the next time its session is viewed and re-queued (see
 // httpserver.sessionDetailHandler).
 func translateSession(ctx context.Context, st store.Store, pipe *pipeline.Pipeline, userID, sessionID string) {
+	turns, ok := loadSessionTurns(ctx, st, userID, sessionID)
+	if !ok {
+		return
+	}
+	forEachNonBlankTurn(turns, func(priorTurns []llm.Message, t store.Turn, text string) {
+		if strings.TrimSpace(t.Translation) != "" {
+			return
+		}
+		translation, err := pipe.TranslateWithContext(ctx, priorTurns, text)
+		if err != nil {
+			log.Printf("backfill: translate %s/%s turn %d/%s: %v", userID, sessionID, t.Turn, t.Role, err)
+		} else if translation != "" {
+			if err := st.SaveTranslation(ctx, userID, sessionID, t.Turn, t.Role, translation); err != nil {
+				log.Printf("backfill: save translation %s/%s turn %d/%s: %v", userID, sessionID, t.Turn, t.Role, err)
+			}
+		}
+	})
+}
+
+// loadSessionTurns fetches (userID, sessionID)'s transcript for a backfill
+// pass, logging and reporting !ok on failure — the shared first step of
+// translateSession and correctSession.
+func loadSessionTurns(ctx context.Context, st store.Store, userID, sessionID string) ([]store.Turn, bool) {
 	_, turns, err := st.SessionDetail(ctx, userID, sessionID)
 	if err != nil {
 		log.Printf("backfill: session detail %s/%s: %v", userID, sessionID, err)
-		return
+		return nil, false
 	}
+	return turns, true
+}
 
+// forEachNonBlankTurn walks turns in order, skipping blank ones, and calls
+// work with each turn's trimmed text plus every non-blank turn before it as
+// llm.Message context — the "conversation so far" shape both
+// translateSession and correctSession feed to their respective pipeline
+// call.
+func forEachNonBlankTurn(turns []store.Turn, work func(priorTurns []llm.Message, t store.Turn, text string)) {
 	var priorTurns []llm.Message
 	for _, t := range turns {
 		text := strings.TrimSpace(t.Text)
 		if text == "" {
 			continue
 		}
-		if strings.TrimSpace(t.Translation) == "" {
-			translation, err := pipe.TranslateWithContext(ctx, priorTurns, text)
-			if err != nil {
-				log.Printf("backfill: translate %s/%s turn %d/%s: %v", userID, sessionID, t.Turn, t.Role, err)
-			} else if translation != "" {
-				if err := st.SaveTranslation(ctx, userID, sessionID, t.Turn, t.Role, translation); err != nil {
-					log.Printf("backfill: save translation %s/%s turn %d/%s: %v", userID, sessionID, t.Turn, t.Role, err)
-				}
-			}
-		}
+		work(priorTurns, t, text)
 		priorTurns = append(priorTurns, llm.Message{Role: t.Role, Content: text})
 	}
 }
@@ -171,10 +209,7 @@ func (q *CorrectionQueue) Enqueue(ctx context.Context, userID, sessionID string)
 	if q == nil {
 		return
 	}
-	j := job{UserID: userID, SessionID: sessionID}
-	if _, _, err := q.q.Enqueue(ctx, asyncjob.KindCorrectionBackfill, j.dedupeKey(), j); err != nil {
-		log.Printf("backfill: enqueue correction %s: %v", j.dedupeKey(), err)
-	}
+	enqueueSession(ctx, q.q, asyncjob.KindCorrectionBackfill, userID, sessionID, "correction ")
 }
 
 // CorrectionWorker drains the correction-backfill queue, mirroring Worker's
@@ -187,16 +222,7 @@ type CorrectionWorker struct {
 }
 
 func NewCorrectionWorker(rdb redis.UniversalClient, st store.Store, pipe *pipeline.Pipeline) *CorrectionWorker {
-	handler := func(ctx context.Context, j asyncjob.Job) error {
-		var payload job
-		if err := json.Unmarshal(j.Payload, &payload); err != nil {
-			log.Printf("backfill: bad correction job payload %q: %v", j.Payload, err)
-			return nil // unparseable; retrying it would never succeed
-		}
-		correctSession(ctx, st, pipe, payload.UserID, payload.SessionID)
-		return nil
-	}
-	return &CorrectionWorker{w: asyncjob.NewWorker(rdb, asyncjob.KindCorrectionBackfill, 1, claimTTL, handler)}
+	return &CorrectionWorker{w: newSessionWorker(rdb, asyncjob.KindCorrectionBackfill, st, pipe, "correction ", correctSession)}
 }
 
 // Run mirrors Worker.Run — see that doc comment.
@@ -223,35 +249,28 @@ func (w *CorrectionWorker) Run(ctx context.Context) {
 // picked up again the next time its session is viewed and re-queued (see
 // httpserver.sessionDetailHandler).
 func correctSession(ctx context.Context, st store.Store, pipe *pipeline.Pipeline, userID, sessionID string) {
-	_, turns, err := st.SessionDetail(ctx, userID, sessionID)
-	if err != nil {
-		log.Printf("backfill: session detail %s/%s: %v", userID, sessionID, err)
+	turns, ok := loadSessionTurns(ctx, st, userID, sessionID)
+	if !ok {
 		return
 	}
-
-	var priorTurns []llm.Message
-	for _, t := range turns {
-		text := strings.TrimSpace(t.Text)
-		if text == "" {
-			continue
+	forEachNonBlankTurn(turns, func(priorTurns []llm.Message, t store.Turn, text string) {
+		if t.Role != "user" || t.Correction != nil || t.CorrectionStatus != "" {
+			return
 		}
-		if t.Role == "user" && t.Correction == nil && t.CorrectionStatus == "" {
-			corrected, issues, translation, err := pipe.CorrectWithContext(ctx, priorTurns, text)
-			if err != nil {
-				log.Printf("backfill: correct %s/%s turn %d: %v", userID, sessionID, t.Turn, err)
-			} else {
-				if err := st.SaveCorrection(ctx, userID, sessionID, t.Turn, protocol.Correction{
-					Original: text, Corrected: corrected, Issues: issues,
-				}); err != nil {
-					log.Printf("backfill: save correction %s/%s turn %d: %v", userID, sessionID, t.Turn, err)
-				}
-				if strings.TrimSpace(translation) != "" && strings.TrimSpace(t.Translation) == "" {
-					if err := st.SaveTranslation(ctx, userID, sessionID, t.Turn, "user", translation); err != nil {
-						log.Printf("backfill: save translation %s/%s turn %d: %v", userID, sessionID, t.Turn, err)
-					}
-				}
+		corrected, issues, translation, err := pipe.CorrectWithContext(ctx, priorTurns, text)
+		if err != nil {
+			log.Printf("backfill: correct %s/%s turn %d: %v", userID, sessionID, t.Turn, err)
+			return
+		}
+		if err := st.SaveCorrection(ctx, userID, sessionID, t.Turn, protocol.Correction{
+			Original: text, Corrected: corrected, Issues: issues,
+		}); err != nil {
+			log.Printf("backfill: save correction %s/%s turn %d: %v", userID, sessionID, t.Turn, err)
+		}
+		if strings.TrimSpace(translation) != "" && strings.TrimSpace(t.Translation) == "" {
+			if err := st.SaveTranslation(ctx, userID, sessionID, t.Turn, "user", translation); err != nil {
+				log.Printf("backfill: save translation %s/%s turn %d: %v", userID, sessionID, t.Turn, err)
 			}
 		}
-		priorTurns = append(priorTurns, llm.Message{Role: t.Role, Content: text})
-	}
+	})
 }

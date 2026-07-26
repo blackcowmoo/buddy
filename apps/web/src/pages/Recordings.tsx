@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
+import { confirmThenDelete } from "../lib/confirmDelete";
 import { deleteRecording, fetchRecordings, recordingAudioURL, type Recording } from "../lib/recordings";
+import { formatAbsoluteDateTime } from "../lib/time";
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -18,12 +20,7 @@ export function Recordings() {
     });
   }, []);
 
-  const handleDelete = async (id: string) => {
-    if (!window.confirm("이 녹음을 삭제할까요?")) return;
-    if (await deleteRecording(id)) {
-      setRecordings((list) => list.filter((r) => r.id !== id));
-    }
-  };
+  const handleDelete = (id: string) => confirmThenDelete("이 녹음을 삭제할까요?", deleteRecording, id, setRecordings);
 
   return (
     <div className="app">
@@ -55,7 +52,7 @@ export function Recordings() {
             <div key={r.id} className="recording-row">
               <div className="recording-header">
                 <div className="recording-meta">
-                  <span className="recording-time">{formatDate(r.createdAt)}</span>
+                  <span className="recording-time">{formatAbsoluteDateTime(r.createdAt)}</span>
                   <span className="recording-sub">
                     {formatDuration(r.durationMs)} · {formatSize(r.sizeBytes)}
                   </span>
@@ -76,10 +73,6 @@ export function Recordings() {
       </main>
     </div>
   );
-}
-
-function formatDate(unixSeconds: number): string {
-  return new Date(unixSeconds * 1000).toLocaleString();
 }
 
 function formatDuration(ms: number): string {

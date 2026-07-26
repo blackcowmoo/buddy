@@ -1002,6 +1002,29 @@ describe("compaction info", () => {
     expect(screen.getByText(/전체 20턴 중 최근 3개 메시지/)).toBeInTheDocument();
   });
 
+  it("does not re-fetch when closed, only when reopened", async () => {
+    openRoomS1();
+    vi.mocked(fetchSessionCompaction).mockResolvedValue({
+      summary: "summary",
+      recentMessages: 1,
+      totalTurns: 2,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+    await screen.findByText("hi");
+
+    const toggle = screen.getByRole("button", { name: "대화 압축 상태 보기" });
+    await user.click(toggle); // open: fetches
+    expect(fetchSessionCompaction).toHaveBeenCalledTimes(1);
+
+    await user.click(toggle); // close: must not fetch again
+    expect(fetchSessionCompaction).toHaveBeenCalledTimes(1);
+
+    await user.click(toggle); // reopen: fetches again
+    expect(fetchSessionCompaction).toHaveBeenCalledTimes(2);
+  });
+
   it("shows a fallback message when the fetch fails", async () => {
     openRoomS1();
     vi.mocked(fetchSessionCompaction).mockResolvedValue(null);

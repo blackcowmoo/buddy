@@ -24,9 +24,19 @@ export function setStoredTheme(theme: Theme): void {
 // against the current OS/browser preference.
 export type ResolvedTheme = "white" | "dark";
 
+const SYSTEM_THEME_QUERY = "(prefers-color-scheme: light)";
+
 export function resolveTheme(theme: Theme): ResolvedTheme {
   if (theme !== "system") return theme;
-  return window.matchMedia("(prefers-color-scheme: light)").matches ? "white" : "dark";
+  return window.matchMedia(SYSTEM_THEME_QUERY).matches ? "white" : "dark";
+}
+
+// Subscribes to OS/browser theme changes (relevant only while the stored
+// theme is "system"). Returns an unsubscribe function.
+export function onSystemThemeChange(handler: () => void): () => void {
+  const mql = window.matchMedia(SYSTEM_THEME_QUERY);
+  mql.addEventListener("change", handler);
+  return () => mql.removeEventListener("change", handler);
 }
 
 // Applies the resolved palette to the document so index.html's [data-theme]

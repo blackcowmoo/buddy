@@ -26,19 +26,23 @@ export class PCMRecorder {
     if (this.recording) return;
 
     this.ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
-    // Relative (not "/pcm-worklet.js"): resolves against the current page
-    // URL, so it still works when the app is mounted under a ROOT_PATH
-    // prefix like "/pr/14" instead of "/".
-    await this.ctx.audioWorklet.addModule("pcm-worklet.js");
-
-    this.stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        channelCount: 1,
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-    });
+    // Worklet-module load and mic-permission prompt are independent — run
+    // them concurrently rather than paying both waits back-to-back.
+    const [, stream] = await Promise.all([
+      // Relative (not "/pcm-worklet.js"): resolves against the current page
+      // URL, so it still works when the app is mounted under a ROOT_PATH
+      // prefix like "/pr/14" instead of "/".
+      this.ctx.audioWorklet.addModule("pcm-worklet.js"),
+      navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      }),
+    ]);
+    this.stream = stream;
 
     const src = this.ctx.createMediaStreamSource(this.stream);
     this.node = new AudioWorkletNode(this.ctx, "pcm-worklet");
