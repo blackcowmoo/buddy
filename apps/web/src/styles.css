@@ -233,8 +233,8 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 .feedback-panel {
   right: 0;
   left: auto;
-  width: min(85vw, 340px);
-  max-width: calc(100vw - 32px);
+  width: min(94vw, 420px);
+  max-width: calc(100vw - 16px);
   max-height: min(70vh, 480px);
   overflow-y: auto;
   display: flex;
