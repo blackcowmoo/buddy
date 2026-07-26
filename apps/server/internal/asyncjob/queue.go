@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -151,9 +152,9 @@ func (q *Queue) TryClaimByID(ctx context.Context, job Job, claimTTL time.Duratio
 // durably claimed (e.g. via TryClaimByID) — applying the same
 // completion/leave-for-reap semantics as a pooled Worker (see
 // Worker.run): on success, job is marked done (removed from processing,
-// claim released, dedupe entry cleared); on error, it's left claimed so
-// the stale-claim reaper retries it from scratch once its claim expires,
-// exactly as if a Worker's own handler had failed. This is what lets a
+// claim released, dedupe entry cleared); on error, its claim is shortened
+// to FailureRetryBackoff so the stale-claim reaper retries it from scratch
+// soon, exactly as if a Worker's own handler had failed. This is what lets a
 // caller run a job inline (e.g. transport's fast path, streaming tokens
 // straight to a connection that's still open) with the same durability
 // guarantees as the background Worker pool.
@@ -162,6 +163,9 @@ func (q *Queue) Execute(ctx context.Context, job Job, handler Handler) error {
 		return nil
 	}
 	if err := handler(ctx, job); err != nil {
+		if expireErr := q.rdb.PExpire(ctx, claimKey(job.Kind, job.ID), FailureRetryBackoff).Err(); expireErr != nil {
+			log.Printf("asyncjob: %s: shorten claim after failure %s: %v", job.Kind, job.ID, expireErr)
+		}
 		return err
 	}
 	raw, err := json.Marshal(job)
