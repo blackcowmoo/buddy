@@ -19,8 +19,10 @@ import {
   fetchSessionCompaction,
   fetchSessionDetail,
   fetchSessions,
+  fetchStudySummary,
   type SessionCompaction,
   type SessionSummary,
+  type StudySummary,
   type TurnRecord,
 } from "./lib/sessions";
 import { fetchSettings, saveSettings } from "./lib/settings";
@@ -1042,6 +1044,7 @@ export function App() {
           <>
             <CompactionInfo sessionId={activeSessionId} />
             <FeedbackSummary turns={feedbackTurns} />
+            <EndConversationControl sessionId={activeSessionId} onEnd={backToList} />
           </>
         }
         {...topBarProps}
@@ -1680,6 +1683,79 @@ function CompactionInfo({ sessionId }: { sessionId: string | null }) {
             </>
           )}
           {!loading && !info && <div className="compaction-empty">불러오지 못했어요.</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Learner-triggered wrap-up: synthesizes every grammar/vocabulary/phrasing/
+// context issue flagged so far into one "what to study next" recommendation
+// (see httpserver.sessionStudySummaryHandler), then lets the learner leave
+// the room from inside the same panel. Same on-demand-fetch popover shape as
+// CompactionInfo next to it, but paired with an explicit "end" action
+// (onEnd, wired to backToList) rather than being purely informational.
+function EndConversationControl({
+  sessionId,
+  onEnd,
+}: {
+  sessionId: string | null;
+  onEnd: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [summary, setSummary] = useState<StudySummary | null>(null);
+  const [loading, setLoading] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  useDismiss(open, panelRef, () => setOpen(false));
+
+  const toggle = useCallback(() => {
+    if (!sessionId) return;
+    setOpen((o) => !o);
+    if (open) return; // was open, now closing — nothing to fetch
+    setLoading(true);
+    setSummary(null);
+    void fetchStudySummary(sessionId).then((result) => {
+      setSummary(result);
+      setLoading(false);
+    });
+  }, [sessionId, open]);
+
+  if (!sessionId) return null;
+
+  return (
+    <div className="end-conversation" ref={panelRef}>
+      <button
+        type="button"
+        className="ghost icon-btn end-conversation-btn"
+        aria-haspopup="true"
+        aria-expanded={open}
+        aria-label="대화 종료"
+        title="대화 종료"
+        onClick={toggle}
+      >
+        🎓
+      </button>
+      {open && (
+        <div className="study-panel end-conversation-panel" role="menu">
+          {loading && <div className="compaction-loading">학습 피드백을 정리하는 중…</div>}
+          {!loading && summary && (
+            <>
+              <div className="compaction-summary-header">
+                {summary.issueCount > 0
+                  ? `이번 대화에서 나온 ${summary.issueCount}개의 피드백을 바탕으로 정리했어요.`
+                  : "이번 대화에서는 딱히 걸린 부분이 없었어요. 아주 잘했어요!"}
+              </div>
+              {summary.summary && (
+                <div className="compaction-summary-text">{summary.summary}</div>
+              )}
+              <button type="button" className="end-conversation-confirm" onClick={onEnd}>
+                대화 종료하고 목록으로
+              </button>
+            </>
+          )}
+          {!loading && !summary && (
+            <div className="compaction-empty">불러오지 못했어요.</div>
+          )}
         </div>
       )}
     </div>
