@@ -401,13 +401,21 @@ func (p *Pipeline) HandleText(ctx context.Context, userID, sessionID string, ses
 	// contaminating its own context (mirrors HandleUtterance).
 	contextMsg := renderCorrectionContext(sess.Export())
 	sess.AppendUser(text)
+	// Reply first: the assistant's answer is what the learner is waiting on,
+	// so it streams and fully completes before correction starts. correct()
+	// is a single quick, non-streaming call, so when it used to run
+	// concurrently with the streamed reply it routinely finished (and
+	// rendered its translation/feedback) before the answer did — dispatching
+	// it only once reply() returns keeps answer > (assistant) translation >
+	// correction (feedback + this turn's translation) in that priority
+	// order instead.
+	p.reply(ctx, userID, sessionID, sess, turn, emit)
 	// context.WithoutCancel: correction must finish and persist even if the
 	// learner closes the tab or the socket drops right after sending — same
 	// reasoning as backupAudio/compact using a context independent of ctx,
 	// just without a fixed deadline since the LLM client already caps itself
 	// (see llm.NewOpenAI's http.Client timeout).
 	go p.correct(context.WithoutCancel(ctx), userID, sessionID, turn, text, contextMsg, emit) // correction only; no slow STT needed
-	p.reply(ctx, userID, sessionID, sess, turn, emit)
 }
 
 // StartConversation generates the assistant's opening line for a brand-new
