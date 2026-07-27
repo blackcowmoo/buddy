@@ -152,6 +152,15 @@ type Pipeline struct {
 	// live-only event.
 	CorrectHook   CorrectHook
 	TranslateHook TranslateHook
+
+	// TitleHook, if set, replaces RunTitle's direct "call the LLM in this
+	// goroutine, then save" behavior with a durable, queue-backed one — see
+	// transport.NewTitleHook. Same nil-by-default/optional convention as
+	// ReplyHook. Unlike CorrectHook/TranslateHook there's no onResult: a
+	// title has no live-connection UX to update (no ServerEvent for it, see
+	// transport.persistEvent), so the hook is trusted to persist the result
+	// itself (see transport.TitleJobHandler) rather than reporting it back.
+	TitleHook TitleHook
 }
 
 // ReplyHook is Pipeline.ReplyHook's type — see that field's doc comment.
@@ -169,6 +178,9 @@ type CorrectHook func(ctx context.Context, userID, sessionID string, turn int, t
 // finished translation exactly once, however (and on whichever replica) it
 // was produced.
 type TranslateHook func(ctx context.Context, userID, sessionID string, turn int, text string, onResult func(translation string))
+
+// TitleHook is Pipeline.TitleHook's type — see that field's doc comment.
+type TitleHook func(ctx context.Context, userID, sessionID string, turn int, transcript []llm.Message)
 
 // STTNames returns the configured STT engines' Name()s, in registration
 // order. The ensemble is fixed once Pipeline is constructed, so callers that
@@ -1063,16 +1075,46 @@ func renderLearnerProfileInput(prevProfile, sessionSummary string) string {
 	return b.String()
 }
 
+// RunTitle asks for a chat-room title from transcript and saves it, either
+// via TitleHook (durable, queue-backed — see transport.NewTitleHook) or by
+// calling GenerateTitle and save directly in-process — same
+// hook-if-set/direct-otherwise shape as runReply/correct/translateAssistant.
+// Called by internal/transport on turn 1 and every TitleRegenerateEveryNTurns
+// turns after that (see Handler.generateTitle), not from Pipeline's own
+// turn-handling, since triggering it depends on transport's turn-counting
+// convention, not anything Pipeline itself tracks. save persists the
+// generated title (there's no ServerEvent for it — the frontend just
+// re-fetches the room list — so unlike the other hooks' onResult, this
+// exists purely for the direct/no-hook fallback; TitleHook is responsible
+// for persisting on its own path, see transport.TitleJobHandler).
+func (p *Pipeline) RunTitle(ctx context.Context, userID, sessionID string, turn int, transcript []llm.Message, save func(title string) error) {
+	if p.TitleHook != nil {
+		p.TitleHook(ctx, userID, sessionID, turn, transcript)
+		return
+	}
+	title, err := p.GenerateTitle(ctx, transcript)
+	if err != nil {
+		log.Printf("title: generate %s/%s: %v", userID, sessionID, err)
+		return
+	}
+	if title = strings.TrimSpace(title); title == "" {
+		return
+	}
+	if err := save(title); err != nil {
+		log.Printf("title: save %s/%s: %v", userID, sessionID, err)
+	}
+}
+
 // GenerateTitle asks the LLM for a short, descriptive chat-room title from
-// the conversation so far, for internal/transport to save on turn 1 (see
-// Handler.generateTitle there) — replacing the raw truncated-first-message
-// placeholder store.MySQLStore.SaveTurn sets — and again every
-// TitleRegenerateEveryNTurns turns after that, so the title keeps tracking
-// the conversation's actual topic rather than staying pinned to turn 1's. A
-// single fast call (p.LLM/p.ChatModel), not the Analysis ensemble+Judge like
-// analyze() uses: a room label is decorative, not something a learner's
-// grammar feedback depends on, so it isn't worth doubling the LLM cost of
-// every title (re)generation.
+// the conversation so far — called by RunTitle above (directly, or from
+// within transport.TitleJobHandler when TitleHook is set) — replacing the
+// raw truncated-first-message placeholder store.MySQLStore.SaveTurn sets on
+// turn 1, and again every TitleRegenerateEveryNTurns turns after that, so
+// the title keeps tracking the conversation's actual topic rather than
+// staying pinned to turn 1's. A single fast call (p.LLM/p.ChatModel), not
+// the Analysis ensemble+Judge like analyze() uses: a room label is
+// decorative, not something a learner's grammar feedback depends on, so it
+// isn't worth doubling the LLM cost of every title (re)generation.
 func (p *Pipeline) GenerateTitle(ctx context.Context, transcript []llm.Message) (string, error) {
 	msgs := []llm.Message{
 		{Role: llm.RoleSystem, Content: titleSystemPrompt},

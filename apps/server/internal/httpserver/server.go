@@ -17,7 +17,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/backfill"
 	"buddy/server/internal/config"
 	"buddy/server/internal/identity"
@@ -38,15 +37,15 @@ import (
 // isn't configured (see config.Config's RedisClusterHost) —
 // sessionDetailHandler simply stops queueing translation/correction
 // backfills, the same "optional feature, falls through to doing nothing"
-// convention as audio/recordings above. titleQueue is the same kind of
-// optional wiring for durable title generation — see
-// transport.Handler.SetTitleQueue.
-func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue, titleQueue *asyncjob.Queue) *http.Server {
+// convention as audio/recordings above. Durable title generation is wired
+// the same optional way, but directly onto pipe.TitleHook by the caller
+// (see cmd/server/main.go) rather than through a parameter here — same as
+// pipe.ReplyHook/CorrectHook/TranslateHook.
+func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue) *http.Server {
 	mux := http.NewServeMux()
 
 	// Realtime + API first (exact patterns win over the "/" catch-all).
 	wsHandler := transport.NewHandler(pipe, ident, st, audio, recordings)
-	wsHandler.SetTitleQueue(titleQueue)
 	mux.Handle("/ws", wsHandler)
 	// The STT ensemble is fixed once pipe is constructed, so its name list is
 	// computed once here rather than per health-check request.

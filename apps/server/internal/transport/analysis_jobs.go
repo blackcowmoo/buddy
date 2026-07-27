@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"strconv"
 	"strings"
 	"time"
 
@@ -60,10 +59,6 @@ type correctionJobPayload struct {
 	UserID, SessionID string
 	Turn              int
 	Text, ContextMsg  string
-}
-
-func correctionDedupeKey(userID, sessionID string, turn int) string {
-	return userID + ":" + sessionID + ":" + strconv.Itoa(turn)
 }
 
 // CorrectionJobHandler builds the asyncjob.Handler that runs one queued
@@ -134,7 +129,7 @@ func NewCorrectHook(pipe *pipeline.Pipeline, st store.Store, queue *asyncjob.Que
 			log.Printf("correct: reserve %s/%s#%d: %v", userID, sessionID, turn, err)
 		}
 		payload := correctionJobPayload{UserID: userID, SessionID: sessionID, Turn: turn, Text: text, ContextMsg: contextMsg}
-		logID := fmt.Sprintf("%s/%s#%d", userID, sessionID, turn)
+		logID := turnLogID(userID, sessionID, turn)
 		handler := CorrectionJobHandler(pipe, st, onResult)
 		// A dedup or lost-race return (ran=false, err=nil) deliberately
 		// skips onFailure: another attempt already owns this job and will
@@ -143,7 +138,7 @@ func NewCorrectHook(pipe *pipeline.Pipeline, st store.Store, queue *asyncjob.Que
 		// sees its grammar spinner hang — CorrectionJobHandler's own
 		// st.FailJob call is what makes the failure durable for a
 		// poller/reload; this is only about the live signal.
-		if _, err := queue.EnqueueAndTryRun(context.Background(), asyncjob.KindCorrection, correctionDedupeKey(userID, sessionID, turn), logID, payload, CorrectionClaimTTL, handler); err != nil {
+		if _, err := queue.EnqueueAndTryRun(context.Background(), asyncjob.KindCorrection, turnKey(userID, sessionID, turn), logID, payload, CorrectionClaimTTL, handler); err != nil {
 			onFailure()
 		}
 	}
@@ -159,7 +154,7 @@ type liveTranslationJobPayload struct {
 }
 
 func liveTranslationDedupeKey(userID, sessionID string, turn int, role string) string {
-	return userID + ":" + sessionID + ":" + strconv.Itoa(turn) + ":" + role
+	return turnKey(userID, sessionID, turn) + ":" + role
 }
 
 // TranslationJobHandler builds the asyncjob.Handler that runs one queued
@@ -195,7 +190,7 @@ func NewTranslateHook(pipe *pipeline.Pipeline, st store.Store, queue *asyncjob.Q
 	}
 	return func(ctx context.Context, userID, sessionID string, turn int, text string, onResult func(string)) {
 		payload := liveTranslationJobPayload{UserID: userID, SessionID: sessionID, Turn: turn, Role: "assistant", Text: text}
-		logID := fmt.Sprintf("%s/%s#%d", userID, sessionID, turn)
+		logID := turnLogID(userID, sessionID, turn)
 		dedupeKey := liveTranslationDedupeKey(userID, sessionID, turn, "assistant")
 		queue.EnqueueAndTryRun(context.Background(), asyncjob.KindLiveTranslation, dedupeKey, logID, payload, LiveTranslationClaimTTL, TranslationJobHandler(pipe, st, onResult))
 	}
@@ -207,15 +202,6 @@ type titleJobPayload struct {
 	UserID, SessionID string
 	Turn              int
 	Transcript        []llm.Message
-}
-
-// titleDedupeKey includes turn, unlike the userID:sessionID-only key this
-// used when a title was only ever generated once per room: without turn,
-// every regeneration attempt (see TitleRegenerateEveryNTurns) would collide
-// in the asyncjob dedupe/claim keyspace with the room's very first title
-// job, silently dropping every later regeneration.
-func titleDedupeKey(userID, sessionID string, turn int) string {
-	return userID + ":" + sessionID + ":" + strconv.Itoa(turn)
 }
 
 // TitleJobHandler builds the asyncjob.Handler that runs one queued
@@ -240,5 +226,31 @@ func TitleJobHandler(pipe *pipeline.Pipeline, st store.Store) asyncjob.Handler {
 			return fmt.Errorf("title job: save: %w", err)
 		}
 		return nil
+	}
+}
+
+// NewTitleHook builds the pipeline.TitleHook that makes title generation
+// durable — see NewCorrectHook's doc comment for why there's no
+// poll-fallback/onResult here either (a title landing after the fact has no
+// live-connection UX to serve, it just shows up next time the room list is
+// fetched — see TitleJobHandler, which persists on its own).
+func NewTitleHook(pipe *pipeline.Pipeline, st store.Store, queue *asyncjob.Queue) pipeline.TitleHook {
+	if queue == nil {
+		return nil
+	}
+	return func(ctx context.Context, userID, sessionID string, turn int, transcript []llm.Message) {
+		// context.Background(), not ctx, for the same reason as
+		// NewReplyHook/NewCorrectHook/NewTranslateHook: this must keep
+		// making progress even if the connection that triggered it
+		// disconnects right after this point.
+		payload := titleJobPayload{UserID: userID, SessionID: sessionID, Turn: turn, Transcript: transcript}
+		logID := turnLogID(userID, sessionID, turn)
+		// turnKey includes turn, unlike the userID:sessionID-only key this
+		// used when a title was only ever generated once per room: without
+		// turn, every regeneration attempt (see TitleRegenerateEveryNTurns)
+		// would collide in the asyncjob dedupe/claim keyspace with the
+		// room's very first title job, silently dropping every later
+		// regeneration.
+		queue.EnqueueAndTryRun(context.Background(), asyncjob.KindTitle, turnKey(userID, sessionID, turn), logID, payload, TitleClaimTTL, TitleJobHandler(pipe, st))
 	}
 }

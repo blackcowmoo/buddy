@@ -60,8 +60,17 @@ type replyJobPayload struct {
 	Fallback  string        `json:"fallback"`
 }
 
-func replyDedupeKey(userID, sessionID string, turn int) string {
+// turnKey formats the userID:sessionID:turn dedupe key shared by every job
+// kind in this package (reply, correction, live translation, title) — see
+// turnLogID for its log-line counterpart.
+func turnKey(userID, sessionID string, turn int) string {
 	return userID + ":" + sessionID + ":" + strconv.Itoa(turn)
+}
+
+// turnLogID formats the "user/session#turn" label asyncjob.Queue logs
+// job activity under — shared by every job kind in this package.
+func turnLogID(userID, sessionID string, turn int) string {
+	return fmt.Sprintf("%s/%s#%d", userID, sessionID, turn)
 }
 
 // ReplyJobHandler builds the asyncjob.Handler that actually runs a queued
@@ -133,7 +142,7 @@ func NewReplyHook(pipe *pipeline.Pipeline, st store.Store, queue *asyncjob.Queue
 			log.Printf("reply: reserve %s/%s#%d: %v", userID, sessionID, turn, err)
 		}
 		payload := replyJobPayload{UserID: userID, SessionID: sessionID, Turn: turn, Messages: msgs, Fallback: fallback}
-		logID := fmt.Sprintf("%s/%s#%d", userID, sessionID, turn)
+		logID := turnLogID(userID, sessionID, turn)
 		handler := ReplyJobHandler(pipe, st, onToken, onDone)
 		// EnqueueAndTryRun's ran/err cover every non-success case
 		// uniformly here (dedup, lost claim race, or an inline
@@ -144,7 +153,7 @@ func NewReplyHook(pipe *pipeline.Pipeline, st store.Store, queue *asyncjob.Queue
 		// stale-claim reaper to retry (see asyncjob.Worker.run's matching
 		// behavior); the LLM call itself runs on context.Background(), so
 		// a disconnect right after this point can't cut it short.
-		ran, err := queue.EnqueueAndTryRun(context.Background(), asyncjob.KindReply, replyDedupeKey(userID, sessionID, turn), logID, payload, ReplyClaimTTL, handler)
+		ran, err := queue.EnqueueAndTryRun(context.Background(), asyncjob.KindReply, turnKey(userID, sessionID, turn), logID, payload, ReplyClaimTTL, handler)
 		if !ran || err != nil {
 			pollReplyUntilDone(ctx, st, userID, sessionID, turn, onDone)
 		}
