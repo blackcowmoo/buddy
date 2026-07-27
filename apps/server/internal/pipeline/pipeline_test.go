@@ -1828,6 +1828,58 @@ func TestHandleTextEndToEnd(t *testing.T) {
 	}
 }
 
+// TestHandleTextRepliesBeforeCorrecting guards the priority order documented
+// on HandleText: the assistant's answer must fully stream and complete
+// before correct() (grammar feedback + this turn's translation) even starts,
+// so a learner never sees a correction/translation badge on their own
+// message land before the answer they're waiting on. Regression coverage
+// for a bug where correct() ran concurrently with (and often finished
+// before) the streamed reply, since correct() is a single non-streaming
+// call and therefore usually faster than a full streamed chat reply.
+func TestHandleTextRepliesBeforeCorrecting(t *testing.T) {
+	shared := &fakeLLM{
+		chatReply: "Nice to meet you!",
+		complete: func(msgs []llm.Message) (string, error) {
+			return `{"corrected":"Hello, my name is Alex.","issues":[{"type":"grammar","span":"name Alex","suggestion":"my name is Alex","explanation":"missing subject"}],"translation":"안녕, 내 이름은 알렉스야."}`, nil
+		},
+	}
+	p := &Pipeline{
+		LLM:          shared,
+		ChatModel:    "chat-model",
+		Analysis:     []Candidate{{Model: "correct-model", LLM: shared}},
+		FeedbackLang: "ko",
+	}
+	sess := session.New("sys")
+	events := make(chan protocol.ServerEvent, 16)
+	p.HandleText(context.Background(), "alex", "sess-1", sess, "Hello name Alex", protocol.SourceText, func(ev protocol.ServerEvent) { events <- ev })
+
+	got := collectUntilQuiet(t, events, 200*time.Millisecond, 2*time.Second)
+	doneIdx, correctionIdx, translationIdx := -1, -1, -1
+	for i, ev := range got {
+		switch ev.Type {
+		case protocol.EvAssistantDone:
+			doneIdx = i
+		case protocol.EvCorrection:
+			if correctionIdx == -1 {
+				correctionIdx = i
+			}
+		case protocol.EvUserTranslation:
+			if translationIdx == -1 {
+				translationIdx = i
+			}
+		}
+	}
+	if doneIdx == -1 || correctionIdx == -1 || translationIdx == -1 {
+		t.Fatalf("expected assistant_done, correction, and user_translation events, got %+v", got)
+	}
+	if doneIdx > correctionIdx {
+		t.Fatalf("assistant_done (index %d) must come before correction (index %d): %+v", doneIdx, correctionIdx, got)
+	}
+	if doneIdx > translationIdx {
+		t.Fatalf("assistant_done (index %d) must come before user_translation (index %d): %+v", doneIdx, translationIdx, got)
+	}
+}
+
 // TestHandleTextUnknownSourceNormalizedToText guards HandleText's source
 // normalization: anything other than protocol.SourceVoice must fall back to
 // protocol.SourceText, so a malformed/forged ClientMsg.Source never taints a
