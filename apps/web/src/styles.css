@@ -219,7 +219,12 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 }
 .row.user .study-panel { right: 0; }
 .row.assistant .study-panel { left: 0; }
-.grammar-panel { min-width: 220px; max-width: min(85vw, 360px); }
+.grammar-panel {
+  width: min(90vw, 400px);
+  max-width: calc(100vw - 16px);
+  max-height: min(70vh, 480px);
+  overflow-y: auto;
+}
 .grammar-clean { font-size: 13px; color: var(--muted); padding: 2px 4px; }
 
 /* Session-wide feedback list, opened from the chat header — see App.tsx
