@@ -276,7 +276,9 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 
 /* End-of-conversation study wrap-up, opened from the chat header — see
    App.tsx EndConversationControl. Reuses .compaction-*'s loading/empty/
-   header/text classes (identical look), just adds its own confirm button. */
+   header/text classes (identical look) for both the initial "end and
+   summarize?" ask step and the generated-summary step, plus its own
+   confirm button (reused for both steps' buttons). */
 .end-conversation { display: inline-flex; }
 .end-conversation-btn { width: 28px; height: 28px; min-height: 28px; font-size: 13px; }
 .end-conversation-panel {

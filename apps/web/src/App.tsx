@@ -183,15 +183,17 @@ function useDismiss(open: boolean, ref: React.RefObject<HTMLElement | null>, onC
   }, [open, ref, onClose]);
 }
 
-// usePopoverFetch is the shared state machine behind the header's
-// fetch-on-open popovers (CompactionInfo, EndConversationControl): a panel
-// that owns its open state, dismisses like every other one (useDismiss), and
-// only fetches when it's actually opened — these are on-demand affordances,
-// not something worth a request on every room entry. Data is cleared as the
-// fetch starts so a reopen can't flash the previous room's (or previous
-// point in this room's) result while the new one is in flight. Returns null
-// data until the first fetch resolves; a failed fetch resolves to null too,
-// which callers render as their own "couldn't load" message.
+// usePopoverFetch is the state machine behind the header's fetch-on-open
+// popovers: a panel that owns its open state, dismisses like every other one
+// (useDismiss), and only fetches when it's actually opened — an on-demand
+// affordance, not something worth a request on every room entry. Data is
+// cleared as the fetch starts so a reopen can't flash the previous room's
+// (or previous point in this room's) result while the new one is in flight.
+// Returns null data until the first fetch resolves; a failed fetch resolves
+// to null too, which callers render as their own "couldn't load" message.
+// EndConversationControl doesn't use this: its fetch also needs to wait on
+// an explicit "yes, end this" confirmation, not just on open, so it manages
+// that extra step with its own state instead of this one-shot-on-open hook.
 function usePopoverFetch<T>(sessionId: string | null, fetchData: (sessionId: string) => Promise<T | null>) {
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<T | null>(null);
@@ -1796,11 +1798,16 @@ function CompactionInfo({ sessionId }: { sessionId: string | null }) {
 // (see httpserver.sessionStudySummaryHandler), then lets the learner
 // permanently end the room from inside the same panel (see endSession) —
 // confirming freezes it read-only for good and folds the wrap-up into the
-// learner's cross-session profile server-side. Same on-demand-fetch popover
-// shape as CompactionInfo next to it. Once `ended` is already true (a
-// reopened room), the fetch is skipped entirely: studySummary was already
-// generated and persisted, never regenerated, and there's nothing left to
-// confirm.
+// learner's cross-session profile server-side.
+//
+// Unlike CompactionInfo, opening this panel must NOT by itself pay for the
+// summary — that LLM call only makes sense once the learner has actually
+// said they want to end, not on every tap/peek of the 🎓 icon. So the panel
+// opens into an "ask" step first (no fetch), and only starts generating
+// once the learner explicitly confirms intent to end there. Once `ended` is
+// already true (a reopened room), there's nothing left to ask or generate:
+// studySummary was already generated and persisted, so it's shown straight
+// away from the props, for free.
 function EndConversationControl({
   sessionId,
   ended,
@@ -1812,12 +1819,39 @@ function EndConversationControl({
   studySummary: string;
   onEnd: (summary: string) => void;
 }) {
-  const fetchData = useCallback(
-    (id: string): Promise<StudySummary | null> =>
-      ended ? Promise.resolve({ summary: studySummary, issueCount: 0 }) : fetchStudySummary(id),
-    [ended, studySummary],
-  );
-  const { open, toggle, loading, data: summary, panelRef } = usePopoverFetch(sessionId, fetchData);
+  const [open, setOpen] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [summary, setSummary] = useState<StudySummary | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  useDismiss(open, panelRef, () => setOpen(false));
+
+  const toggle = useCallback(() => {
+    if (!sessionId) return;
+    setOpen((o) => !o);
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!open || !sessionId) return;
+    if (ended) {
+      setSummary({ summary: studySummary, issueCount: 0 });
+      return;
+    }
+    if (!confirmed) return;
+    setLoading(true);
+    setSummary(null);
+    void fetchStudySummary(sessionId).then((result) => {
+      setSummary(result);
+      setLoading(false);
+    });
+  }, [open, sessionId, ended, studySummary, confirmed]);
+
+  useEffect(() => {
+    if (!open) {
+      setConfirmed(false);
+      setSummary(null);
+    }
+  }, [open]);
 
   if (!sessionId) return null;
 
@@ -1836,7 +1870,23 @@ function EndConversationControl({
       </button>
       {open && (
         <div className="study-panel end-conversation-panel" role="menu">
-          {loading && <div className="compaction-loading">학습 피드백을 정리하는 중…</div>}
+          {!ended && !confirmed && (
+            <>
+              <div className="compaction-summary-header">
+                대화를 종료할까요? 종료하면 지금까지의 대화를 바탕으로 학습 피드백을 정리해요.
+              </div>
+              <button
+                type="button"
+                className="end-conversation-confirm"
+                onClick={() => setConfirmed(true)}
+              >
+                예, 종료할래요
+              </button>
+            </>
+          )}
+          {(ended || confirmed) && loading && (
+            <div className="compaction-loading">학습 피드백을 정리하는 중…</div>
+          )}
           {!loading && summary && (
             <>
               <div className="compaction-summary-header">
@@ -1860,7 +1910,7 @@ function EndConversationControl({
               )}
             </>
           )}
-          {!loading && !summary && (
+          {!ended && confirmed && !loading && !summary && (
             <div className="compaction-empty">불러오지 못했어요.</div>
           )}
         </div>

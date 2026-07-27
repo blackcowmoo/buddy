@@ -309,9 +309,35 @@ describe("room list", () => {
     expect(endSession).not.toHaveBeenCalled();
   });
 
-  // Guards the other half: confirming "end this conversation" persists the
-  // already-generated wrap-up (not a fresh one) and leaves the room, the
-  // same way the plain back button does.
+  // Opening the panel must ask before paying for a summary: the LLM call
+  // behind fetchStudySummary should only fire once the learner explicitly
+  // confirms they want to end, not on every tap/peek of the 🎓 icon.
+  it("opening the end-conversation panel asks first and does not fetch a summary until confirmed", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: false },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
+      session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: false },
+      turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+    expect(await screen.findByText("hi")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "대화 종료" }));
+    expect(
+      await screen.findByText(
+        "대화를 종료할까요? 종료하면 지금까지의 대화를 바탕으로 학습 피드백을 정리해요.",
+      ),
+    ).toBeInTheDocument();
+    expect(fetchStudySummary).not.toHaveBeenCalled();
+  });
+
+  // Guards the other half: confirming intent to end fetches the wrap-up,
+  // then confirming again on the generated summary persists it (not a fresh
+  // one) and leaves the room, the same way the plain back button does.
   it("confirming end conversation calls endSession with the generated summary and returns to the list", async () => {
     vi.mocked(fetchSessions).mockResolvedValue([
       { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: false },
@@ -331,6 +357,7 @@ describe("room list", () => {
     expect(await screen.findByText("hi")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "대화 종료" }));
+    await user.click(screen.getByRole("button", { name: "예, 종료할래요" }));
     expect(await screen.findByText("focus on third-person -s")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "대화 종료하고 목록으로" }));
