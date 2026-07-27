@@ -64,6 +64,7 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux.HandleFunc("GET /api/sessions/{id}", sessionDetailHandler(ident, st, translateQueue, correctionQueue))
 	mux.HandleFunc("GET /api/sessions/{id}/compaction", sessionCompactionHandler(ident, st))
 	mux.HandleFunc("GET /api/sessions/{id}/study-summary", sessionStudySummaryHandler(ident, st, pipe))
+	mux.HandleFunc("POST /api/sessions/{id}/end", sessionEndHandler(ident, st, pipe))
 	mux.HandleFunc("DELETE /api/sessions/{id}", sessionDeleteHandler(ident, st, audio, recordings))
 	mux.HandleFunc("GET /api/settings", settingsGetHandler(ident, st))
 	mux.HandleFunc("PUT /api/settings", settingsSaveHandler(ident, st))
@@ -350,7 +351,7 @@ func sessionStudySummaryHandler(ident identity.Identifier, st store.Store, pipe 
 		}
 		sessionID := r.PathValue("id")
 
-		_, turns, err := st.SessionDetail(r.Context(), userID, sessionID)
+		meta, turns, err := st.SessionDetail(r.Context(), userID, sessionID)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				http.NotFound(w, r)
@@ -369,6 +370,14 @@ func sessionStudySummaryHandler(ident identity.Identifier, st store.Store, pipe 
 				issues = append(issues, pipeline.StudyIssue{Text: t.Text, Issue: iss})
 			}
 		}
+		// An ended session's wrap-up was already generated (and possibly
+		// edited by nothing since — it's exactly what EndSession persisted)
+		// — reopening it must show that same text, not spend another LLM
+		// call re-synthesizing it from the same issues.
+		if meta.Ended {
+			writeJSON(w, map[string]any{"summary": meta.StudySummary, "issueCount": len(issues)})
+			return
+		}
 		if len(issues) == 0 {
 			writeJSON(w, map[string]any{"summary": "", "issueCount": 0})
 			return
@@ -380,6 +389,57 @@ func sessionStudySummaryHandler(ident identity.Identifier, st store.Store, pipe 
 			return
 		}
 		writeJSON(w, map[string]any{"summary": summary, "issueCount": len(issues)})
+	}
+}
+
+// sessionEndHandler permanently marks one chat room read-only
+// (store.Store.EndSession) once the learner confirms "end this conversation"
+// (see EndConversationControl in apps/web/src/App.tsx) — the room's study
+// wrap-up, already generated for the popover by sessionStudySummaryHandler,
+// is passed in rather than recomputed here, so ending a conversation never
+// costs a second LLM call. Folding that wrap-up into the learner's
+// persistent cross-session profile (pipeline.UpdateLearnerProfile) is
+// best-effort: it enriches future conversations, but a transient failure
+// here must not stop this conversation from ending, same reasoning as
+// sessionDeleteHandler's audio/recording cascades.
+func sessionEndHandler(ident identity.Identifier, st store.Store, pipe *pipeline.Pipeline) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := requireUser(w, r, ident)
+		if !ok {
+			return
+		}
+		sessionID := r.PathValue("id")
+
+		var body struct {
+			Summary string `json:"summary"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		summary := strings.TrimSpace(body.Summary)
+
+		if err := st.EndSession(r.Context(), userID, sessionID, summary); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				http.NotFound(w, r)
+				return
+			}
+			serverError(w, "end session", err)
+			return
+		}
+
+		if summary != "" {
+			prevProfile, err := st.GetLearnerProfile(r.Context(), userID)
+			if err != nil {
+				log.Printf("end session: get learner profile %s: %v", userID, err)
+			} else if merged, err := pipe.UpdateLearnerProfile(r.Context(), prevProfile, summary); err != nil {
+				log.Printf("end session: update learner profile %s: %v", userID, err)
+			} else if err := st.SaveLearnerProfile(r.Context(), userID, merged); err != nil {
+				log.Printf("end session: save learner profile %s: %v", userID, err)
+			}
+		}
+
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 

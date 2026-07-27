@@ -7,6 +7,14 @@ export interface SessionSummary {
   title: string;
   createdAt: number;
   updatedAt: number;
+  // Permanently true once the learner has confirmed "end this conversation"
+  // (see endSession) — the room is read-only from then on. Optional (like
+  // studySummary below) only so hand-built test fixtures that predate this
+  // field don't all need updating — a real API response always sets it.
+  ended?: boolean;
+  // The persisted study wrap-up saved by endSession — "" / absent until the
+  // session is ended.
+  studySummary?: string;
 }
 
 export interface TurnRecord {
@@ -120,4 +128,18 @@ export async function fetchStudySummary(id: string): Promise<StudySummary | null
 // on failure (e.g. leave the room in the list) instead of assuming success.
 export async function deleteSession(id: string): Promise<boolean> {
   return requestOK(`api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+// Confirms "end this conversation": permanently marks the room read-only and
+// persists its already-generated study wrap-up (see httpserver
+// .sessionEndHandler), which also folds it into the learner's cross-session
+// profile server-side. summary is whatever fetchStudySummary already
+// returned for this room's popover — ending never re-synthesizes it.
+// Returns whether the request succeeded.
+export async function endSession(id: string, summary: string): Promise<boolean> {
+  return requestOK(`api/sessions/${encodeURIComponent(id)}/end`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ summary }),
+  });
 }

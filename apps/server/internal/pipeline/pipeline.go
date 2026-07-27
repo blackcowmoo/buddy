@@ -45,16 +45,23 @@ inline — corrections are handled separately. Never mention that you are an AI.
 // BuildSystemPrompt returns the chat persona's system prompt, layering the
 // learner's own free-text conversation-style preference (saved via
 // GET/PUT /api/settings, e.g. "ask interview-style questions", "respond like
-// a professional") on top of the base persona. An empty/blank style leaves
-// the persona unchanged. Called once per session, at creation
+// a professional") and their persistent cross-session learner profile (see
+// UpdateLearnerProfile — recurring mistakes/interests/proficiency, folded in
+// from every conversation the learner has ever ended, not just this one) on
+// top of the base persona. An empty/blank style or learnerProfile leaves the
+// corresponding paragraph out. Called once per session, at creation
 // (transport.Handler.ServeHTTP) — a session's system prompt doesn't change
-// mid-conversation even if the learner edits the setting elsewhere.
-func BuildSystemPrompt(style string) string {
-	style = strings.TrimSpace(style)
-	if style == "" {
-		return basePersonaPrompt
+// mid-conversation even if the learner edits the setting or ends another
+// session elsewhere.
+func BuildSystemPrompt(style, learnerProfile string) string {
+	prompt := basePersonaPrompt
+	if style = strings.TrimSpace(style); style != "" {
+		prompt += "\n\nThe learner has also asked you to follow this conversation style: " + style
 	}
-	return basePersonaPrompt + "\n\nThe learner has also asked you to follow this conversation style: " + style
+	if learnerProfile = strings.TrimSpace(learnerProfile); learnerProfile != "" {
+		prompt += "\n\nWhat you know about this learner from past conversations (for context only, never mention this explicitly): " + learnerProfile
+	}
+	return prompt
 }
 
 // Candidate is one ensemble member consulted during REFINE-track analysis
@@ -999,6 +1006,53 @@ func renderStudySummaryInput(issues []StudyIssue) string {
 		fmt.Fprintf(&b, "- sentence: %q | type: %s | %q -> %q | %s\n",
 			si.Text, si.Issue.Type, si.Issue.Span, si.Issue.Suggestion, si.Issue.Explanation)
 	}
+	return b.String()
+}
+
+// UpdateLearnerProfile folds one just-ended session's study wrap-up (see
+// GenerateStudySummary, written in the learner's native language) into
+// userID's persistent, cross-session profile (store.Store.GetLearnerProfile/
+// SaveLearnerProfile) — the same "roll the old summary and new material into
+// one updated summary" shape compact() uses for a single session's own
+// long-term memory, except this one spans every conversation the learner has
+// ever ended, not just turns within one room. Called once, from
+// httpserver.sessionEndHandler, when the learner confirms "end this
+// conversation" — never on every reload.
+func (p *Pipeline) UpdateLearnerProfile(ctx context.Context, prevProfile, sessionSummary string) (string, error) {
+	raw, err := p.analyze(ctx, learnerProfileSystemPrompt, renderLearnerProfileInput(prevProfile, sessionSummary), false)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(raw), nil
+}
+
+// learnerProfileSystemPrompt is written in English and asks for an
+// English-only result: unlike GenerateStudySummary's output (shown directly
+// to the learner, so it's in their native language), this profile is only
+// ever machine-consumed — folded into BuildSystemPrompt's system prompt for
+// a brand-new session — the same reasoning compactionSystemPrompt uses.
+const learnerProfileSystemPrompt = `You maintain a persistent, cross-conversation profile of an
+English-learning student, used as background context in future practice sessions.
+Given the previous profile (may be empty) and a new wrap-up note from a conversation
+that was just ended (written in the learner's native language), write ONE updated
+profile that:
+- Preserves and updates useful long-term facts: interests, goals, proficiency level,
+  and recurring grammar/vocabulary/phrasing patterns the learner should keep working on.
+- Stays concise (a few sentences to a short paragraph) — it is background context for
+  an LLM, not a report to show the learner.
+- Is written in English, regardless of what language the new note is in.
+Return ONLY the updated profile text. No labels, no JSON, no preamble.`
+
+func renderLearnerProfileInput(prevProfile, sessionSummary string) string {
+	var b strings.Builder
+	b.WriteString("Previous profile:\n")
+	if prevProfile == "" {
+		b.WriteString("(none)\n")
+	} else {
+		b.WriteString(prevProfile + "\n")
+	}
+	b.WriteString("\nNew session wrap-up to fold in:\n")
+	b.WriteString(sessionSummary)
 	return b.String()
 }
 

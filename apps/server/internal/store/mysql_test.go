@@ -1049,6 +1049,125 @@ func TestMySQLInterlocutorStylesAreIsolated(t *testing.T) {
 	}
 }
 
+func TestMySQLEndSessionSetsEndedAndStudySummary(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	// A dedicated userID, not the heavily-shared "alex" other tests in this
+	// file reuse — ListSessions below must see only this test's own room.
+	const userID = "end-session-user"
+	sessionID := "sess-end"
+	if err := st.SaveTurn(ctx, userID, sessionID, 1, "user", "first message", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn() error = %v", err)
+	}
+	if err := st.EndSession(ctx, userID, sessionID, "focus on third-person -s"); err != nil {
+		t.Fatalf("EndSession() error = %v", err)
+	}
+	meta, _, err := st.SessionDetail(ctx, userID, sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if !meta.Ended {
+		t.Fatalf("Ended = false, want true after EndSession")
+	}
+	if meta.StudySummary != "focus on third-person -s" {
+		t.Fatalf("StudySummary = %q, want the saved wrap-up", meta.StudySummary)
+	}
+
+	sessions, err := st.ListSessions(ctx, userID)
+	if err != nil {
+		t.Fatalf("ListSessions() error = %v", err)
+	}
+	if len(sessions) != 1 || !sessions[0].Ended || sessions[0].StudySummary != "focus on third-person -s" {
+		t.Fatalf("ListSessions() = %+v, want the ended session with its summary", sessions)
+	}
+}
+
+// TestMySQLEndSessionMissingSessionIsNoop mirrors Save's "no row to match" —
+// EndSession never creates a session row on its own, only the confirm button
+// flow from an already-open room does.
+func TestMySQLEndSessionMissingSessionIsNoop(t *testing.T) {
+	st := requireStore(t)
+	if err := st.EndSession(context.Background(), "alex", "no-such-session", "summary"); err != nil {
+		t.Fatalf("EndSession() error = %v, want nil (silent no-op)", err)
+	}
+}
+
+func TestMySQLGetLearnerProfileUnknownUserReturnsEmptyString(t *testing.T) {
+	st := requireStore(t)
+	got, err := st.GetLearnerProfile(context.Background(), "no-such-user")
+	if err != nil {
+		t.Fatalf("GetLearnerProfile() error = %v", err)
+	}
+	if got != "" {
+		t.Fatalf("GetLearnerProfile() = %q, want \"\" for a user with no saved profile", got)
+	}
+}
+
+func TestMySQLSaveLearnerProfileThenGetRoundTrips(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	const userID = "profile-user"
+	if err := st.SaveLearnerProfile(ctx, userID, "struggles with third-person -s"); err != nil {
+		t.Fatalf("SaveLearnerProfile() error = %v", err)
+	}
+	got, err := st.GetLearnerProfile(ctx, userID)
+	if err != nil {
+		t.Fatalf("GetLearnerProfile() error = %v", err)
+	}
+	if got != "struggles with third-person -s" {
+		t.Fatalf("GetLearnerProfile() = %q, want the saved value", got)
+	}
+}
+
+// TestMySQLSaveLearnerProfileTwiceOverwrites guards the upsert the same way
+// TestMySQLSaveInterlocutorStyleTwiceOverwrites does for its sibling column.
+func TestMySQLSaveLearnerProfileTwiceOverwrites(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	const userID = "profile-user-overwrite"
+	if err := st.SaveLearnerProfile(ctx, userID, "v1"); err != nil {
+		t.Fatalf("SaveLearnerProfile() #1 error = %v", err)
+	}
+	if err := st.SaveLearnerProfile(ctx, userID, "v2"); err != nil {
+		t.Fatalf("SaveLearnerProfile() #2 error = %v", err)
+	}
+	got, err := st.GetLearnerProfile(ctx, userID)
+	if err != nil {
+		t.Fatalf("GetLearnerProfile() error = %v", err)
+	}
+	if got != "v2" {
+		t.Fatalf("GetLearnerProfile() = %q, want v2 (overwrite)", got)
+	}
+	var n int
+	if err := st.rw.QueryRowContext(ctx, `SELECT count(*) FROM `+settingsTable+` WHERE user_id = ?`, userID).Scan(&n); err != nil {
+		t.Fatalf("count query: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected exactly 1 row, got %d", n)
+	}
+}
+
+// TestMySQLSaveLearnerProfileBeforeInterlocutorStyleDoesNotViolateNotNull
+// guards SaveLearnerProfile's explicit interlocutor_style = '' on first
+// insert: that column has no column-level default, so a learner ending a
+// conversation before ever visiting Settings must not trip a NOT NULL
+// violation under MySQL's strict mode.
+func TestMySQLSaveLearnerProfileBeforeInterlocutorStyleDoesNotViolateNotNull(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	const userID = "profile-before-style"
+	if err := st.SaveLearnerProfile(ctx, userID, "first profile"); err != nil {
+		t.Fatalf("SaveLearnerProfile() error = %v", err)
+	}
+	style, err := st.GetInterlocutorStyle(ctx, userID)
+	if err != nil {
+		t.Fatalf("GetInterlocutorStyle() error = %v", err)
+	}
+	if style != "" {
+		t.Fatalf("GetInterlocutorStyle() = %q, want \"\" (untouched)", style)
+	}
+}
+
 // TestMySQLSessionDetailNotFoundForWrongUser is the key security property of
 // the composite-key schema: a session ID guessed or leaked from another user
 // must not be readable, even though the ID itself exists in the table.

@@ -62,6 +62,7 @@ vi.mock("./lib/sessions", () => ({
   fetchSessionCompaction: vi.fn(),
   fetchStudySummary: vi.fn(),
   deleteSession: vi.fn(),
+  endSession: vi.fn(),
 }));
 
 vi.mock("./lib/roomHistory", () => ({
@@ -87,9 +88,11 @@ import {
 } from "./lib/roomHistory";
 import {
   deleteSession,
+  endSession,
   fetchSessionCompaction,
   fetchSessionDetail,
   fetchSessions,
+  fetchStudySummary,
 } from "./lib/sessions";
 import { KokoroSpeaker } from "./tts/kokoro";
 import { BuddyClient } from "./lib/ws";
@@ -261,6 +264,86 @@ describe("room list", () => {
     expect(await screen.findByText("hello!")).toBeInTheDocument();
     expect(fetchSessionDetail).toHaveBeenCalledWith("s1", { limit: 30 });
     expect(lastClientInstance().connect).toHaveBeenCalledWith("s1");
+  });
+
+  // Guards the permanent-freeze half of the end-conversation feature
+  // (see EndConversationControl/endSession in App.tsx): a room whose
+  // fetched detail reports it as already `ended` must render read-only —
+  // no live connection kept open, composer disabled — even though the WS
+  // handshake is fired eagerly (in parallel with the fetch) for every room.
+  it("reopening an ended session closes the live connection and disables the composer", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: true },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
+      session: {
+        id: "s1",
+        title: "hello there",
+        createdAt: 1,
+        updatedAt: 2,
+        ended: true,
+        studySummary: "focus on third-person -s",
+      },
+      turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+
+    expect(await screen.findByText("hi")).toBeInTheDocument();
+    expect(lastClientInstance().connect).toHaveBeenCalledWith("s1"); // fired eagerly...
+    expect(lastClientInstance().close).toHaveBeenCalled(); // ...then dropped once `ended` is known
+
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.getByRole("textbox")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Push to talk" })).toBeDisabled();
+
+    // A stray event arriving anyway (e.g. a slow in-flight job from before
+    // the close) must not resurrect the room as if it were live.
+    await act(async () => emit({ type: "assistant_delta", turn: 2, text: "should not appear" }));
+    expect(screen.queryByText("should not appear")).not.toBeInTheDocument();
+
+    // Merely viewing an already-ended room must never re-trigger the
+    // confirm-and-end flow on its own.
+    expect(endSession).not.toHaveBeenCalled();
+  });
+
+  // Guards the other half: confirming "end this conversation" persists the
+  // already-generated wrap-up (not a fresh one) and leaves the room, the
+  // same way the plain back button does.
+  it("confirming end conversation calls endSession with the generated summary and returns to the list", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: false },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
+      session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: false },
+      turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
+    });
+    vi.mocked(fetchStudySummary).mockResolvedValue({
+      summary: "focus on third-person -s",
+      issueCount: 2,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+    expect(await screen.findByText("hi")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "대화 종료" }));
+    expect(await screen.findByText("focus on third-person -s")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "대화 종료하고 목록으로" }));
+
+    expect(endSession).toHaveBeenCalledWith("s1", "focus on third-person -s");
+    // Leaving reuses the room's history entry (see goBack), same as the
+    // plain back button — a real browser resolves that asynchronously via
+    // popstate, which App's mount effect listens for.
+    expect(goBack).toHaveBeenCalled();
+    act(() => capturedPopStateHandler?.({ view: "list" }));
+
+    expect(await screen.findByRole("button", { name: "+ 새 대화" })).toBeInTheDocument();
+    expect(lastClientInstance().close).toHaveBeenCalled();
   });
 
   it("scrolls the transcript to the bottom when entering a room, so the latest turn is visible", async () => {

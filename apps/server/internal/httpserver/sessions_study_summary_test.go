@@ -118,6 +118,55 @@ func TestSessionStudySummaryCollectsIssuesAcrossTurns(t *testing.T) {
 	}
 }
 
+// TestSessionStudySummaryEndedSessionSkipsLLMAndReturnsPersistedSummary
+// guards the reason an ended session's popover never regenerates its
+// wrap-up: it was already synthesized once (by this same handler, before
+// EndSession persisted it) and permanently frozen — reopening it should show
+// exactly that text, at zero further LLM cost.
+func TestSessionStudySummaryEndedSessionSkipsLLMAndReturnsPersistedSummary(t *testing.T) {
+	calls := 0
+	pipe := &pipeline.Pipeline{
+		Analysis: []pipeline.Candidate{{Model: "m", LLM: &fakeStudySummaryLLM{complete: func(msgs []llm.Message) (string, error) {
+			calls++
+			return "should not be called", nil
+		}}}},
+	}
+	st := &fakeSessionStore{
+		detailMeta: store.SessionMeta{ID: "s1", Ended: true, StudySummary: "focus on third-person -s"},
+		detailTurns: []store.Turn{
+			{Turn: 1, Role: "user", Text: "He go to school.", Correction: &protocol.Correction{
+				Issues: []protocol.Issue{{Type: "grammar", Span: "go", Suggestion: "goes"}},
+			}},
+		},
+	}
+	h := sessionStudySummaryHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe)
+
+	req := httptest.NewRequest("GET", "/api/sessions/s1/study-summary", nil)
+	req.SetPathValue("id", "s1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if calls != 0 {
+		t.Fatalf("expected no LLM call for an already-ended session, got %d calls", calls)
+	}
+	var body struct {
+		Summary    string `json:"summary"`
+		IssueCount int    `json:"issueCount"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Summary != "focus on third-person -s" {
+		t.Fatalf("summary = %q, want the persisted study summary", body.Summary)
+	}
+	if body.IssueCount != 1 {
+		t.Fatalf("issueCount = %d, want 1 (still computed from turns)", body.IssueCount)
+	}
+}
+
 func TestSessionStudySummaryPropagatesGenerateError(t *testing.T) {
 	pipe := &pipeline.Pipeline{
 		Analysis: []pipeline.Candidate{{Model: "m", LLM: &fakeStudySummaryLLM{complete: func(msgs []llm.Message) (string, error) {

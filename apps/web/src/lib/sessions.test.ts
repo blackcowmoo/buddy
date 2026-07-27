@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   deleteSession,
+  endSession,
   fetchSessionCompaction,
   fetchSessionDetail,
   fetchSessions,
@@ -148,5 +149,29 @@ describe("deleteSession", () => {
   it("returns false when fetch rejects", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
     await expect(deleteSession("s1")).resolves.toBe(false);
+  });
+});
+
+describe("endSession", () => {
+  it("sends a POST request with the summary and returns true on success", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(endSession("weird id/1", "focus on third-person -s")).resolves.toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith("api/sessions/weird%20id%2F1/end", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ summary: "focus on third-person -s" }),
+    });
+  });
+
+  it("returns false on a non-ok response", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
+    await expect(endSession("s1", "summary")).resolves.toBe(false);
+  });
+
+  it("returns false when fetch rejects", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
+    await expect(endSession("s1", "summary")).resolves.toBe(false);
   });
 });

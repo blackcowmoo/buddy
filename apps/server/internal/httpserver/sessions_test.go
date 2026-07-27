@@ -50,6 +50,16 @@ type fakeSessionStore struct {
 	// either.
 	styles   map[string]string // userID -> interlocutorStyle
 	styleErr error
+
+	// endCalls/endErr back EndSession for sessions_end_test.go; left zero for
+	// tests in this file, which don't call it.
+	endCalls []struct{ userID, sessionID, studySummary string }
+	endErr   error
+
+	// learnerProfiles/learnerProfileErr back GetLearnerProfile/
+	// SaveLearnerProfile for sessions_end_test.go.
+	learnerProfiles   map[string]string // userID -> profile
+	learnerProfileErr error
 }
 
 func (f *fakeSessionStore) Load(ctx context.Context, userID, sessionID string) (store.Profile, error) {
@@ -160,6 +170,32 @@ func (f *fakeSessionStore) SaveInterlocutorStyle(ctx context.Context, userID, st
 		f.styles = make(map[string]string)
 	}
 	f.styles[userID] = style
+	return nil
+}
+
+func (f *fakeSessionStore) EndSession(ctx context.Context, userID, sessionID, studySummary string) error {
+	if f.endErr != nil {
+		return f.endErr
+	}
+	f.endCalls = append(f.endCalls, struct{ userID, sessionID, studySummary string }{userID, sessionID, studySummary})
+	return nil
+}
+
+func (f *fakeSessionStore) GetLearnerProfile(ctx context.Context, userID string) (string, error) {
+	if f.learnerProfileErr != nil {
+		return "", f.learnerProfileErr
+	}
+	return f.learnerProfiles[userID], nil
+}
+
+func (f *fakeSessionStore) SaveLearnerProfile(ctx context.Context, userID, profile string) error {
+	if f.learnerProfileErr != nil {
+		return f.learnerProfileErr
+	}
+	if f.learnerProfiles == nil {
+		f.learnerProfiles = make(map[string]string)
+	}
+	f.learnerProfiles[userID] = profile
 	return nil
 }
 
