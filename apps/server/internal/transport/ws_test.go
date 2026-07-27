@@ -116,6 +116,7 @@ type fakeStore struct {
 	mu       sync.Mutex
 	sessions map[string]*fakeSession // key: userID + "\x00" + sessionID
 	styles   map[string]string       // userID -> interlocutorStyle
+	profiles map[string]string       // userID -> learnerProfile
 }
 
 type fakeSession struct {
@@ -134,7 +135,11 @@ type fakeJob struct {
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{sessions: make(map[string]*fakeSession), styles: make(map[string]string)}
+	return &fakeStore{
+		sessions: make(map[string]*fakeSession),
+		styles:   make(map[string]string),
+		profiles: make(map[string]string),
+	}
 }
 
 func (f *fakeStore) GetInterlocutorStyle(ctx context.Context, userID string) (string, error) {
@@ -147,6 +152,19 @@ func (f *fakeStore) SaveInterlocutorStyle(ctx context.Context, userID, style str
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.styles[userID] = style
+	return nil
+}
+
+func (f *fakeStore) GetLearnerProfile(ctx context.Context, userID string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.profiles[userID], nil
+}
+
+func (f *fakeStore) SaveLearnerProfile(ctx context.Context, userID, profile string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.profiles[userID] = profile
 	return nil
 }
 
@@ -434,6 +452,18 @@ func (f *fakeStore) SessionDetail(ctx context.Context, userID, sessionID string)
 
 func (f *fakeStore) SessionDetailPage(ctx context.Context, userID, sessionID string, beforeTurn, limit int) (store.SessionMeta, []store.Turn, bool, error) {
 	return store.SessionMeta{}, nil, false, errors.New("not used by these tests")
+}
+
+func (f *fakeStore) EndSession(ctx context.Context, userID, sessionID, studySummary string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.sessions[fakeStoreKey(userID, sessionID)]
+	if d == nil {
+		return nil // no-op, same as Save
+	}
+	d.meta.Ended = true
+	d.meta.StudySummary = studySummary
+	return nil
 }
 
 func (f *fakeStore) DeleteSession(ctx context.Context, userID, sessionID string) error {
@@ -898,6 +928,38 @@ func TestWSSessionSystemPromptIncludesSavedInterlocutorStyle(t *testing.T) {
 	prompt := llmDouble.systemPrompt()
 	if !strings.Contains(prompt, "ask interview-style questions") {
 		t.Fatalf("system prompt sent to the LLM = %q, want it to include the saved style", prompt)
+	}
+}
+
+// TestWSSessionSystemPromptIncludesLearnerProfile guards the cross-session
+// half of the feature: a profile saved by an earlier, unrelated conversation
+// (see httpserver.sessionEndHandler -> pipeline.UpdateLearnerProfile) must
+// reach a brand-new session's system prompt too, not just the interlocutor
+// style — same wiring in ws.go's ServeHTTP, different store field.
+func TestWSSessionSystemPromptIncludesLearnerProfile(t *testing.T) {
+	st := newFakeStore()
+	if err := st.SaveLearnerProfile(context.Background(), "alex", "struggles with third-person -s"); err != nil {
+		t.Fatalf("SaveLearnerProfile() error = %v", err)
+	}
+	llmDouble := &capturingLLM{}
+	pipe := &pipeline.Pipeline{
+		STT:                []stt.Recognizer{fakeSTT{text: "hello there"}},
+		LLM:                llmDouble,
+		MaxHistoryMessages: 20,
+	}
+	h := NewHandler(pipe, identity.NewCookieIdentifier(), st, nil, nil)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	c, _ := dial(t, srv, "alex", "")
+	readEvent(t, c) // ready
+
+	sendText(t, c, "Hello Buddy")
+	readUntil(t, c, protocol.EvAssistantDone)
+
+	prompt := llmDouble.systemPrompt()
+	if !strings.Contains(prompt, "struggles with third-person -s") {
+		t.Fatalf("system prompt sent to the LLM = %q, want it to include the saved learner profile", prompt)
 	}
 }
 

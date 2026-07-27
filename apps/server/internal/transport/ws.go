@@ -130,16 +130,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	// Load, LastTurn, and GetInterlocutorStyle are three independent reads —
-	// fan them out concurrently (same reasoning as
-	// store.MySQLStore.SessionDetail) rather than paying three sequential
+	// Load, LastTurn, GetInterlocutorStyle, and GetLearnerProfile are four
+	// independent reads — fan them out concurrently (same reasoning as
+	// store.MySQLStore.SessionDetail) rather than paying four sequential
 	// round trips to what may be a network-hop-away replica before the
 	// handshake can complete.
 	var profile store.Profile
 	var lastTurn int
 	var style string
+	var learnerProfile string
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
 	go func() {
 		defer wg.Done()
 		var err error
@@ -166,8 +167,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			log.Printf("store: get interlocutor style %s: %v", userID, err)
 		}
 	}()
+	go func() {
+		defer wg.Done()
+		var err error
+		if learnerProfile, err = h.store.GetLearnerProfile(ctx, userID); err != nil {
+			log.Printf("store: get learner profile %s: %v", userID, err)
+		}
+	}()
 	wg.Wait()
-	sess := session.New(pipeline.BuildSystemPrompt(style))
+	sess := session.New(pipeline.BuildSystemPrompt(style, learnerProfile))
 	sess.Seed(profile.Summary, profile.Recent, lastTurn)
 
 	save := func() {

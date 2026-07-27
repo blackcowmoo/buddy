@@ -36,6 +36,14 @@ type SessionMeta struct {
 	Title     string `json:"title"`
 	CreatedAt int64  `json:"createdAt"`
 	UpdatedAt int64  `json:"updatedAt"`
+	// Ended is true once the learner has confirmed "end this conversation"
+	// (see EndSession) — the room is permanently read-only from then on, and
+	// StudySummary is its persisted wrap-up rather than something to
+	// regenerate.
+	Ended bool `json:"ended"`
+	// StudySummary is the wrap-up text saved by EndSession — "" until the
+	// session is Ended.
+	StudySummary string `json:"studySummary,omitempty"`
 }
 
 // Turn is one persisted message in a session's full transcript — the source
@@ -198,6 +206,26 @@ type Store interface {
 	// regenerated and flapping on every reconnect). Also a no-op if the
 	// session row doesn't exist yet.
 	SaveGeneratedTitle(ctx context.Context, userID, sessionID, title string) error
+
+	// EndSession permanently marks a session read-only and saves its
+	// wrap-up: SessionMeta.Ended becomes true and StudySummary becomes
+	// studySummary, from then on. Called once, when the learner confirms
+	// "end this conversation" (see httpserver.sessionEndHandler) — a no-op
+	// (nil error) if sessionID doesn't exist or belongs to a different user,
+	// same as Save.
+	EndSession(ctx context.Context, userID, sessionID, studySummary string) error
+
+	// GetLearnerProfile returns userID's persistent, LLM-maintained
+	// cross-session profile (recurring mistakes, interests, proficiency
+	// trend) — "" if never set. Unlike Profile (per-session, folded from
+	// verbatim turns), this is folded from each session's own StudySummary
+	// as it ends (see pipeline.UpdateLearnerProfile) and carries forward
+	// into every session's system prompt (pipeline.BuildSystemPrompt),
+	// including ones in a different chat room entirely.
+	GetLearnerProfile(ctx context.Context, userID string) (string, error)
+	// SaveLearnerProfile persists userID's cross-session profile, replacing
+	// any previous value.
+	SaveLearnerProfile(ctx context.Context, userID, profile string) error
 
 	// ListSessions returns userID's chat rooms, most recently active first.
 	// Only sessions with at least one saved turn appear (see SaveTurn).

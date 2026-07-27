@@ -424,6 +424,7 @@ a.icon-btn.ghost {
   min-width: 0;
 }
 .session-item .time { flex-shrink: 0; font-size: 12px; color: var(--muted); }
+.session-item .ended-badge { flex-shrink: 0; font-size: 13px; }
 .session-delete { width: 36px; height: 36px; min-height: 36px; font-size: 14px; flex-shrink: 0; }
 
 .convo {
@@ -583,6 +584,15 @@ a.icon-btn.ghost {
    see the "pending_transcript" case in App.tsx's onEvent. */
 .composer textarea.voice-draft { border-left: 3px solid var(--accent); }
 .composer .hint.transcribing { margin: 0 2px; flex-shrink: 0; }
+.composer .hint.ended { margin: 0 2px; flex-shrink: 0; }
+/* A permanently-ended room's composer (see App.tsx's `ended` state) — no
+   other button/textarea in the composer has a disabled state to share this
+   with. */
+.composer button:disabled,
+.composer textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
 /* Primary action: a thumb-reachable circular mic FAB. */
 .mic {

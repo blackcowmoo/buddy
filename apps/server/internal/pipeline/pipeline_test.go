@@ -1028,6 +1028,53 @@ func TestGenerateStudySummaryPropagatesAnalyzeError(t *testing.T) {
 	}
 }
 
+func TestUpdateLearnerProfileSendsPreviousProfileAndNewSummary(t *testing.T) {
+	var gotInput string
+	p := &Pipeline{
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			gotInput = msgs[len(msgs)-1].Content
+			return "  struggles with third-person -s; enjoys talking about hiking  ", nil
+		}}}},
+	}
+	got, err := p.UpdateLearnerProfile(context.Background(), "enjoys talking about hiking", "여전히 3인칭 단수 -s를 놓치고 있어요")
+	if err != nil {
+		t.Fatalf("UpdateLearnerProfile() error = %v", err)
+	}
+	if got != "struggles with third-person -s; enjoys talking about hiking" {
+		t.Fatalf("UpdateLearnerProfile() = %q, want trimmed profile", got)
+	}
+	if !strings.Contains(gotInput, "enjoys talking about hiking") || !strings.Contains(gotInput, "여전히 3인칭 단수 -s를 놓치고 있어요") {
+		t.Fatalf("analyze input missing previous profile or new summary: %q", gotInput)
+	}
+}
+
+func TestUpdateLearnerProfileHandlesEmptyPreviousProfile(t *testing.T) {
+	var gotInput string
+	p := &Pipeline{
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			gotInput = msgs[len(msgs)-1].Content
+			return "first profile", nil
+		}}}},
+	}
+	if _, err := p.UpdateLearnerProfile(context.Background(), "", "first session's wrap-up"); err != nil {
+		t.Fatalf("UpdateLearnerProfile() error = %v", err)
+	}
+	if !strings.Contains(gotInput, "(none)") {
+		t.Fatalf("analyze input should mark an empty previous profile as (none): %q", gotInput)
+	}
+}
+
+func TestUpdateLearnerProfilePropagatesAnalyzeError(t *testing.T) {
+	p := &Pipeline{
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			return "", errors.New("down")
+		}}}},
+	}
+	if _, err := p.UpdateLearnerProfile(context.Background(), "prev", "new"); err == nil {
+		t.Fatal("expected an error when every candidate fails")
+	}
+}
+
 func TestCorrectSendsBareSentenceWhenNoContext(t *testing.T) {
 	var gotInput string
 	fixture := func(msgs []llm.Message) (string, error) {
@@ -1618,22 +1665,39 @@ func TestTranslationSystemPromptNamesTargetLanguage(t *testing.T) {
 	}
 }
 
-func TestBuildSystemPromptWithoutStyleReturnsBasePersonaUnchanged(t *testing.T) {
-	if got := BuildSystemPrompt(""); got != basePersonaPrompt {
-		t.Fatalf("BuildSystemPrompt(\"\") = %q, want the base persona verbatim", got)
+func TestBuildSystemPromptWithoutStyleOrProfileReturnsBasePersonaUnchanged(t *testing.T) {
+	if got := BuildSystemPrompt("", ""); got != basePersonaPrompt {
+		t.Fatalf("BuildSystemPrompt(\"\", \"\") = %q, want the base persona verbatim", got)
 	}
-	if got := BuildSystemPrompt("   "); got != basePersonaPrompt {
-		t.Fatalf("BuildSystemPrompt(whitespace) = %q, want the base persona verbatim", got)
+	if got := BuildSystemPrompt("   ", "   "); got != basePersonaPrompt {
+		t.Fatalf("BuildSystemPrompt(whitespace, whitespace) = %q, want the base persona verbatim", got)
 	}
 }
 
 func TestBuildSystemPromptLayersLearnersStyleOntoBasePersona(t *testing.T) {
-	got := BuildSystemPrompt("  ask interview-style questions  ")
+	got := BuildSystemPrompt("  ask interview-style questions  ", "")
 	if !strings.Contains(got, basePersonaPrompt) {
 		t.Fatalf("prompt should still contain the base persona: %s", got)
 	}
 	if !strings.Contains(got, "ask interview-style questions") {
 		t.Fatalf("prompt should contain the (trimmed) learner style: %s", got)
+	}
+}
+
+func TestBuildSystemPromptLayersLearnerProfileOntoBasePersona(t *testing.T) {
+	got := BuildSystemPrompt("", "  struggles with third-person -s  ")
+	if !strings.Contains(got, basePersonaPrompt) {
+		t.Fatalf("prompt should still contain the base persona: %s", got)
+	}
+	if !strings.Contains(got, "struggles with third-person -s") {
+		t.Fatalf("prompt should contain the (trimmed) learner profile: %s", got)
+	}
+}
+
+func TestBuildSystemPromptLayersBothStyleAndProfile(t *testing.T) {
+	got := BuildSystemPrompt("ask interview-style questions", "struggles with third-person -s")
+	if !strings.Contains(got, "ask interview-style questions") || !strings.Contains(got, "struggles with third-person -s") {
+		t.Fatalf("prompt should contain both style and profile: %s", got)
 	}
 }
 

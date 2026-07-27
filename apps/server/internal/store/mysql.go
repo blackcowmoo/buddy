@@ -197,6 +197,43 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 		closeAll()
 		return nil, fmt.Errorf("store: schema: add title_generated column: %w", err)
 	}
+	// Additive, same reasoning as title_generated above: predates the
+	// permanent end-conversation feature. ended+study_summary together let a
+	// learner's confirmed "end this conversation" wrap-up survive a reload
+	// instead of being regenerated (or lost) — see EndSession.
+	if err := mysqlerr.ApplyAdditive(func() error {
+		_, err := rw.Exec(`ALTER TABLE ` + sessionsTable + ` ADD COLUMN ended TINYINT(1) NOT NULL DEFAULT 0`)
+		return err
+	}, mysqlerr.DupFieldName); err != nil {
+		closeAll()
+		return nil, fmt.Errorf("store: schema: add ended column: %w", err)
+	}
+	// No DEFAULT clause: MySQL rejects a literal default on a TEXT column
+	// (error 1101) — same reason summary/recent/interlocutor_style above
+	// never carry one either. ADD COLUMN still backfills existing rows with
+	// '' on its own; every INSERT that can create a new row from here on
+	// just has to list this column explicitly (see ensureSessionRow /
+	// SaveGeneratedTitle below).
+	if err := mysqlerr.ApplyAdditive(func() error {
+		_, err := rw.Exec(`ALTER TABLE ` + sessionsTable + ` ADD COLUMN study_summary TEXT NOT NULL`)
+		return err
+	}, mysqlerr.DupFieldName); err != nil {
+		closeAll()
+		return nil, fmt.Errorf("store: schema: add study_summary column: %w", err)
+	}
+	// Additive: predates the cross-session learner-profile feature. Unlike
+	// interlocutor_style (a learner-set preference), this is LLM-maintained —
+	// see Pipeline.UpdateLearnerProfile — and layered into BuildSystemPrompt
+	// alongside it so a brand-new conversation still carries forward what
+	// earlier, unrelated conversations revealed about this learner. Same
+	// no-DEFAULT reasoning as study_summary above.
+	if err := mysqlerr.ApplyAdditive(func() error {
+		_, err := rw.Exec(`ALTER TABLE ` + settingsTable + ` ADD COLUMN learner_profile TEXT NOT NULL`)
+		return err
+	}, mysqlerr.DupFieldName); err != nil {
+		closeAll()
+		return nil, fmt.Errorf("store: schema: add learner_profile column: %w", err)
+	}
 	return &MySQLStore{rw: rw, ro: ro}, nil
 }
 
@@ -313,8 +350,8 @@ type execer interface {
 // keeps it.
 func ensureSessionRow(ctx context.Context, exec execer, userID, sessionID, text string) error {
 	_, err := exec.ExecContext(ctx, `
-		INSERT INTO `+sessionsTable+` (user_id, id, title, summary, recent, created_at, updated_at)
-		VALUES (?, ?, ?, '', '[]', UNIX_TIMESTAMP(), UNIX_TIMESTAMP())
+		INSERT INTO `+sessionsTable+` (user_id, id, title, summary, recent, created_at, updated_at, study_summary)
+		VALUES (?, ?, ?, '', '[]', UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), '')
 		ON DUPLICATE KEY UPDATE
 			title = IF(title_generated = 0, VALUES(title), title),
 			updated_at = VALUES(updated_at)
@@ -444,8 +481,8 @@ func (s *MySQLStore) SaveTranslation(ctx context.Context, userID, sessionID stri
 // knows to leave this title alone.
 func (s *MySQLStore) SaveGeneratedTitle(ctx context.Context, userID, sessionID, title string) error {
 	if _, err := s.rw.ExecContext(ctx, `
-		INSERT INTO `+sessionsTable+` (user_id, id, title, summary, recent, created_at, updated_at, title_generated)
-		VALUES (?, ?, ?, '', '[]', UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), 1)
+		INSERT INTO `+sessionsTable+` (user_id, id, title, summary, recent, created_at, updated_at, title_generated, study_summary)
+		VALUES (?, ?, ?, '', '[]', UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), 1, '')
 		ON DUPLICATE KEY UPDATE
 			title = IF(title_generated = 0, VALUES(title), title),
 			title_generated = 1,
@@ -456,9 +493,24 @@ func (s *MySQLStore) SaveGeneratedTitle(ctx context.Context, userID, sessionID, 
 	return nil
 }
 
+// EndSession is a plain UPDATE, not an upsert: by the time a learner can
+// confirm "end this conversation", the session row already exists (it
+// carries at least one saved turn — see SaveTurn), so unlike
+// SaveGeneratedTitle there's no race with a row-creating write to guard
+// against.
+func (s *MySQLStore) EndSession(ctx context.Context, userID, sessionID, studySummary string) error {
+	if _, err := s.rw.ExecContext(ctx, `
+		UPDATE `+sessionsTable+` SET ended = 1, study_summary = ?, updated_at = UNIX_TIMESTAMP()
+		WHERE user_id = ? AND id = ?
+	`, studySummary, userID, sessionID); err != nil {
+		return fmt.Errorf("store: end session: %w", err)
+	}
+	return nil
+}
+
 func (s *MySQLStore) ListSessions(ctx context.Context, userID string) ([]SessionMeta, error) {
 	rows, err := s.ro.QueryContext(ctx, `
-		SELECT id, title, created_at, updated_at FROM `+sessionsTable+`
+		SELECT id, title, created_at, updated_at, ended, study_summary FROM `+sessionsTable+`
 		WHERE user_id = ? ORDER BY updated_at DESC
 	`, userID)
 	if err != nil {
@@ -469,9 +521,11 @@ func (s *MySQLStore) ListSessions(ctx context.Context, userID string) ([]Session
 	out := []SessionMeta{}
 	for rows.Next() {
 		var m SessionMeta
-		if err := rows.Scan(&m.ID, &m.Title, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		var ended int
+		if err := rows.Scan(&m.ID, &m.Title, &m.CreatedAt, &m.UpdatedAt, &ended, &m.StudySummary); err != nil {
 			return nil, fmt.Errorf("store: list sessions: %w", err)
 		}
+		m.Ended = ended != 0
 		out = append(out, m)
 	}
 	return out, rows.Err()
@@ -510,14 +564,15 @@ func (s *MySQLStore) sessionDetail(ctx context.Context, userID, sessionID string
 	var metaErr, turnsErr error
 	var turns []Turn
 	var hasMore bool
+	var ended int
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		metaErr = s.ro.QueryRowContext(ctx, `
-			SELECT title, created_at, updated_at FROM `+sessionsTable+` WHERE user_id = ? AND id = ?
-		`, userID, sessionID).Scan(&meta.Title, &meta.CreatedAt, &meta.UpdatedAt)
+			SELECT title, created_at, updated_at, ended, study_summary FROM `+sessionsTable+` WHERE user_id = ? AND id = ?
+		`, userID, sessionID).Scan(&meta.Title, &meta.CreatedAt, &meta.UpdatedAt, &ended, &meta.StudySummary)
 	}()
 	go func() {
 		defer wg.Done()
@@ -534,6 +589,7 @@ func (s *MySQLStore) sessionDetail(ctx context.Context, userID, sessionID string
 	if turnsErr != nil {
 		return SessionMeta{}, nil, false, fmt.Errorf("store: session detail: %w", turnsErr)
 	}
+	meta.Ended = ended != 0
 	return meta, turns, hasMore, nil
 }
 
@@ -837,12 +893,48 @@ func (s *MySQLStore) GetInterlocutorStyle(ctx context.Context, userID string) (s
 }
 
 func (s *MySQLStore) SaveInterlocutorStyle(ctx context.Context, userID, style string) error {
+	// learner_profile has no column-level default (it postdates
+	// interlocutor_style — see the schema above, and SaveLearnerProfile's
+	// matching comment for the reverse case), so a first-ever write to this
+	// user's settings row must supply it explicitly or MySQL's strict mode
+	// rejects the insert; ON DUPLICATE KEY leaves an existing value alone
+	// since it's absent from the UPDATE clause.
 	if _, err := s.rw.ExecContext(ctx, `
-		INSERT INTO `+settingsTable+` (user_id, interlocutor_style, updated_at)
-		VALUES (?, ?, UNIX_TIMESTAMP())
+		INSERT INTO `+settingsTable+` (user_id, interlocutor_style, learner_profile, updated_at)
+		VALUES (?, ?, '', UNIX_TIMESTAMP())
 		ON DUPLICATE KEY UPDATE interlocutor_style = VALUES(interlocutor_style), updated_at = VALUES(updated_at)
 	`, userID, style); err != nil {
 		return fmt.Errorf("store: save interlocutor style: %w", err)
+	}
+	return nil
+}
+
+func (s *MySQLStore) GetLearnerProfile(ctx context.Context, userID string) (string, error) {
+	var profile string
+	err := s.ro.QueryRowContext(ctx,
+		`SELECT learner_profile FROM `+settingsTable+` WHERE user_id = ?`, userID,
+	).Scan(&profile)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: get learner profile: %w", err)
+	}
+	return profile, nil
+}
+
+func (s *MySQLStore) SaveLearnerProfile(ctx context.Context, userID, profile string) error {
+	// interlocutor_style has no column-level default (predates
+	// learner_profile — see the schema above), so a first-ever write to this
+	// user's settings row must supply it explicitly or MySQL's strict mode
+	// rejects the insert; ON DUPLICATE KEY leaves an existing value alone
+	// since it's absent from the UPDATE clause.
+	if _, err := s.rw.ExecContext(ctx, `
+		INSERT INTO `+settingsTable+` (user_id, interlocutor_style, learner_profile, updated_at)
+		VALUES (?, '', ?, UNIX_TIMESTAMP())
+		ON DUPLICATE KEY UPDATE learner_profile = VALUES(learner_profile), updated_at = VALUES(updated_at)
+	`, userID, profile); err != nil {
+		return fmt.Errorf("store: save learner profile: %w", err)
 	}
 	return nil
 }

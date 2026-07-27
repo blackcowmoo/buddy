@@ -16,11 +16,13 @@ import {
 import { fetchMe } from "./lib/me";
 import {
   deleteSession,
+  endSession,
   fetchSessionCompaction,
   fetchSessionDetail,
   fetchSessions,
   fetchStudySummary,
   type SessionSummary,
+  type StudySummary,
   type TurnRecord,
 } from "./lib/sessions";
 import { fetchSettings, saveSettings } from "./lib/settings";
@@ -226,6 +228,22 @@ export function App() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [status, setStatus] = useState<Status>("connecting");
   const [msgs, setMsgs] = useState<Msg[]>([]);
+  // True once the open room's fetched detail reports it as permanently
+  // ended (see endSession) — no WS connection is kept for it, and the
+  // composer is disabled; the room is otherwise browsable read-only.
+  // Reset in both enterChat (about to load a possibly-different room) and
+  // resetToListView (leaving the room entirely), same lifecycle as
+  // resetTurnState.
+  const [ended, setEnded] = useState(false);
+  // Mirrors `ended` for onEvent (a useCallback whose identity/closure is
+  // captured once at the WS client's construction — see the effect that
+  // builds clientRef.current) to read synchronously without needing `ended`
+  // in its dependency array, same reasoning as stickToBottomRef below.
+  const endedRef = useRef(false);
+  // The persisted wrap-up EndConversationControl shows for an ended room —
+  // set alongside `ended` in enterChat, never regenerated (see endedSummary
+  // fetcher passed into EndConversationControl below).
+  const [endedSummary, setEndedSummary] = useState("");
   // Grammar/translation state per turn — pending flags are set the moment a
   // result is expected (final_transcript/assistant_done for a live turn, or
   // on hydration for a history turn still missing one, see enterChat/
@@ -341,6 +359,11 @@ export function App() {
   const hasPushedRoomEntryRef = useRef(false);
 
   const onEvent = useCallback((e: ServerEvent) => {
+    // A permanently-ended room closes its WS connection (see enterChat), but
+    // that close is asynchronous — anything already in flight (e.g. a
+    // background job's result) must still be ignored rather than reviving a
+    // room that's supposed to be a frozen, read-only snapshot.
+    if (endedRef.current) return;
     switch (e.type) {
       case "ready":
         // Upgrades a brand-new room's placeholder history entry to carry its
@@ -607,6 +630,9 @@ export function App() {
   const enterChat = useCallback(
     async (sessionId?: string, opts?: { push?: boolean }) => {
       resetTurnState();
+      setEnded(false);
+      endedRef.current = false;
+      setEndedSummary("");
       setAwaitingReply(false);
       // A fresh room entry always starts stuck to the bottom (the most
       // recent turns, loaded below) with no older page pending — cleared
@@ -644,6 +670,16 @@ export function App() {
         }
         hasMoreHistoryRef.current = detail.hasMore;
         setMsgs(turnsToMsgs(detail.turns));
+        if (detail.session.ended) {
+          // Read-only from here on: no live connection needed, so drop the
+          // one fired eagerly above — the composer disables itself once
+          // `ended` renders (see the footer below), and onEvent (guarded by
+          // endedRef) ignores anything that arrives anyway.
+          setEnded(true);
+          endedRef.current = true;
+          setEndedSummary(detail.session.studySummary ?? "");
+          clientRef.current?.close();
+        }
         // Whether this room saw activity recently enough that a user turn
         // with no correctionStatus at all is plausibly still in flight
         // (rather than a session from before correction-job tracking
@@ -729,6 +765,9 @@ export function App() {
     clientRef.current?.close();
     setMsgs([]);
     resetTurnState();
+    setEnded(false);
+    endedRef.current = false;
+    setEndedSummary("");
     setAwaitingReply(false);
     setMenuOpen(false);
     setView("list");
@@ -783,6 +822,20 @@ export function App() {
     replaceRoomState({ view: "list" });
     resetToListView();
   }, [resetToListView]);
+
+  // Confirms "end this conversation": persists the wrap-up already shown in
+  // the popover (see EndConversationControl) so the room permanently freezes
+  // read-only and its feedback survives a reload, then leaves the room the
+  // same way the plain back button does. Fire-and-forget on the network
+  // call — leaving feels instant, and folding it into the cross-session
+  // profile is best-effort server-side anyway (httpserver.sessionEndHandler).
+  const endConversation = useCallback(
+    (summary: string) => {
+      if (activeSessionId) void endSession(activeSessionId, summary);
+      backToList();
+    },
+    [activeSessionId, backToList],
+  );
 
   // Restores an open room from the URL on a fresh load (e.g. a refresh), and
   // keeps the view in sync with browser back/forward (incl. swipe) — neither
@@ -1036,6 +1089,11 @@ export function App() {
               {sessions.map((s) => (
                 <li key={s.id} className="session-row">
                   <button className="session-item" onClick={() => void enterChat(s.id)}>
+                    {s.ended && (
+                      <span className="ended-badge" title="종료된 대화 (읽기 전용)">
+                        🔒
+                      </span>
+                    )}
                     <span className="title">{s.title}</span>
                     <span className="time">{formatRelativeTime(s.updatedAt)}</span>
                   </button>
@@ -1073,7 +1131,12 @@ export function App() {
           <>
             <CompactionInfo sessionId={activeSessionId} />
             <FeedbackSummary turns={feedbackTurns} />
-            <EndConversationControl sessionId={activeSessionId} onEnd={backToList} />
+            <EndConversationControl
+              sessionId={activeSessionId}
+              ended={ended}
+              studySummary={endedSummary}
+              onEnd={endConversation}
+            />
           </>
         }
         {...topBarProps}
@@ -1194,6 +1257,7 @@ export function App() {
         <button
           className={`mic ${mic ? "on" : ""}`}
           onClick={toggleMic}
+          disabled={ended}
           aria-label={mic ? "Stop recording" : "Push to talk"}
           aria-pressed={mic}
           title="Push to talk"
@@ -1203,6 +1267,11 @@ export function App() {
         {transcribing && (
           <p className="hint transcribing" role="status" aria-label="음성 인식 중">
             <span className="spinning">⏳</span>
+          </p>
+        )}
+        {ended && (
+          <p className="hint ended" role="status">
+            이 대화는 종료되어 더 이상 메시지를 보낼 수 없어요.
           </p>
         )}
         <form onSubmit={onComposerSubmit}>
@@ -1220,6 +1289,7 @@ export function App() {
             enterKeyHint="send"
             autoComplete="off"
             autoCorrect="on"
+            disabled={ended}
             rows={1}
           />
           {voiceDraft && (
@@ -1233,7 +1303,9 @@ export function App() {
               ✕
             </button>
           )}
-          <button type="submit">Send</button>
+          <button type="submit" disabled={ended}>
+            Send
+          </button>
         </form>
       </footer>
     </div>
@@ -1721,24 +1793,31 @@ function CompactionInfo({ sessionId }: { sessionId: string | null }) {
 
 // Learner-triggered wrap-up: synthesizes every grammar/vocabulary/phrasing/
 // context issue flagged so far into one "what to study next" recommendation
-// (see httpserver.sessionStudySummaryHandler), then lets the learner leave
-// the room from inside the same panel. Same on-demand-fetch popover shape as
-// CompactionInfo next to it, but paired with an explicit "end" action
-// (onEnd, wired to backToList) rather than being purely informational.
+// (see httpserver.sessionStudySummaryHandler), then lets the learner
+// permanently end the room from inside the same panel (see endSession) —
+// confirming freezes it read-only for good and folds the wrap-up into the
+// learner's cross-session profile server-side. Same on-demand-fetch popover
+// shape as CompactionInfo next to it. Once `ended` is already true (a
+// reopened room), the fetch is skipped entirely: studySummary was already
+// generated and persisted, never regenerated, and there's nothing left to
+// confirm.
 function EndConversationControl({
   sessionId,
+  ended,
+  studySummary,
   onEnd,
 }: {
   sessionId: string | null;
-  onEnd: () => void;
+  ended: boolean;
+  studySummary: string;
+  onEnd: (summary: string) => void;
 }) {
-  const {
-    open,
-    toggle,
-    loading,
-    data: summary,
-    panelRef,
-  } = usePopoverFetch(sessionId, fetchStudySummary);
+  const fetchData = useCallback(
+    (id: string): Promise<StudySummary | null> =>
+      ended ? Promise.resolve({ summary: studySummary, issueCount: 0 }) : fetchStudySummary(id),
+    [ended, studySummary],
+  );
+  const { open, toggle, loading, data: summary, panelRef } = usePopoverFetch(sessionId, fetchData);
 
   if (!sessionId) return null;
 
@@ -1761,16 +1840,24 @@ function EndConversationControl({
           {!loading && summary && (
             <>
               <div className="compaction-summary-header">
-                {summary.issueCount > 0
-                  ? `이번 대화에서 나온 ${summary.issueCount}개의 피드백을 바탕으로 정리했어요.`
-                  : "이번 대화에서는 딱히 걸린 부분이 없었어요. 아주 잘했어요!"}
+                {ended
+                  ? "이 대화는 종료됐어요. 그때의 학습 피드백이에요."
+                  : summary.issueCount > 0
+                    ? `이번 대화에서 나온 ${summary.issueCount}개의 피드백을 바탕으로 정리했어요.`
+                    : "이번 대화에서는 딱히 걸린 부분이 없었어요. 아주 잘했어요!"}
               </div>
               {summary.summary && (
                 <div className="compaction-summary-text">{summary.summary}</div>
               )}
-              <button type="button" className="end-conversation-confirm" onClick={onEnd}>
-                대화 종료하고 목록으로
-              </button>
+              {!ended && (
+                <button
+                  type="button"
+                  className="end-conversation-confirm"
+                  onClick={() => onEnd(summary.summary)}
+                >
+                  대화 종료하고 목록으로
+                </button>
+              )}
             </>
           )}
           {!loading && !summary && (

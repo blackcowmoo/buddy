@@ -231,6 +231,18 @@ func (f *fakeStore) SaveInterlocutorStyle(ctx context.Context, userID, style str
 	return errors.New("not used by these tests")
 }
 
+func (f *fakeStore) EndSession(ctx context.Context, userID, sessionID, studySummary string) error {
+	return errors.New("not used by these tests")
+}
+
+func (f *fakeStore) GetLearnerProfile(ctx context.Context, userID string) (string, error) {
+	return "", errors.New("not used by these tests")
+}
+
+func (f *fakeStore) SaveLearnerProfile(ctx context.Context, userID, profile string) error {
+	return errors.New("not used by these tests")
+}
+
 func (f *fakeStore) Close() error { return nil }
 
 func newTestPipeline(complete func(msgs []llm.Message) (string, error)) *pipeline.Pipeline {
