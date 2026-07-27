@@ -44,6 +44,9 @@ type fakeLLM struct {
 	chatReply string
 	chatErr   error
 	complete  func(msgs []llm.Message) (string, error)
+	// onChat, if set, is called with the exact msgs ChatStream received —
+	// for tests asserting on prompt content, not just the reply.
+	onChat func(msgs []llm.Message)
 }
 
 func (f *fakeLLM) ChatStream(ctx context.Context, model string, msgs []llm.Message, onToken func(string)) (string, error) {
@@ -52,6 +55,9 @@ func (f *fakeLLM) ChatStream(ctx context.Context, model string, msgs []llm.Messa
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.onChat != nil {
+		f.onChat(msgs)
+	}
 	if f.chatErr != nil {
 		return "", f.chatErr
 	}
@@ -326,6 +332,50 @@ func TestStartConversationSkipsDoneAndAppendOnDisconnect(t *testing.T) {
 	_, recent := sess.Export()
 	if len(recent) != 0 {
 		t.Fatalf("greeting must not be appended after disconnect, got %+v", recent)
+	}
+}
+
+func TestOpeningSystemPromptPersonalizesFromLearnerProfileWithVariety(t *testing.T) {
+	if !strings.Contains(openingSystemPrompt, "learner profile") {
+		t.Fatalf("opening prompt should instruct drawing on the learner profile when available: %s", openingSystemPrompt)
+	}
+	if !strings.Contains(openingSystemPrompt, "Vary which detail you pick each time") {
+		t.Fatalf("opening prompt should instruct varying which profile detail is used, not defaulting to one: %s", openingSystemPrompt)
+	}
+	if !strings.Contains(openingSystemPrompt, "never say or imply that you're recalling stored notes") {
+		t.Fatalf("opening prompt should keep the personalization implicit, matching BuildSystemPrompt's 'never mention this explicitly' rule: %s", openingSystemPrompt)
+	}
+	if !strings.Contains(openingSystemPrompt, "avoid always asking the same question") {
+		t.Fatalf("opening prompt should still vary the fallback (no-profile) question: %s", openingSystemPrompt)
+	}
+}
+
+// TestStartConversationSendsLearnerProfileAlongsideOpeningPrompt guards that
+// StartConversation's msgs actually carry whatever learner-profile context
+// BuildSystemPrompt layered into the session — the opening prompt's
+// personalization instructions are useless if the profile text itself never
+// reaches the model.
+func TestStartConversationSendsLearnerProfileAlongsideOpeningPrompt(t *testing.T) {
+	sess := session.New(BuildSystemPrompt("", "loves hiking, preparing for a job interview"))
+	var got []llm.Message
+	p := &Pipeline{
+		LLM: &fakeLLM{chatReply: "Hey! How's the job interview prep going?", onChat: func(msgs []llm.Message) {
+			got = msgs
+		}},
+		ChatModel: "m",
+	}
+
+	p.StartConversation(context.Background(), "alex", "sess-1", sess, func(protocol.ServerEvent) {})
+
+	var combined strings.Builder
+	for _, m := range got {
+		combined.WriteString(m.Content)
+	}
+	if !strings.Contains(combined.String(), "loves hiking, preparing for a job interview") {
+		t.Fatalf("learner profile should reach the model alongside the opening prompt, got messages: %+v", got)
+	}
+	if !strings.Contains(combined.String(), "learner profile") {
+		t.Fatalf("opening system message should still be present, got messages: %+v", got)
 	}
 }
 
