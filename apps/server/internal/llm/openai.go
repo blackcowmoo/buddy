@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -80,27 +81,54 @@ var (
 	sseDone = []byte("[DONE]")
 )
 
+// overflowResetReason identifies a 503 whose body is an Envoy-style
+// connection-pool/circuit-breaker rejection ("upstream connect error or
+// disconnect/reset before headers. reset reason: overflow") rather than a
+// hard failure — the upstream LLM's gateway has no spare capacity for an
+// instant, not an outage. Unlike other errors, this one is worth a few short
+// retries before giving up to the caller's fallback (see overflowBackoff),
+// since the same request tried again a moment later usually succeeds.
+const overflowResetReason = "reset reason: overflow"
+
+// overflowBackoff bounds how many times, and how long, do() waits between
+// retries of an overflow 503 before surfacing it as a normal error. Kept
+// short and finite so a genuinely stuck upstream still fails fast enough for
+// the caller's fallback path (pipeline.fallbackReply) to kick in rather than
+// holding the learner's turn open indefinitely.
+var overflowBackoff = []time.Duration{500 * time.Millisecond, 1 * time.Second, 2 * time.Second}
+
 // do posts body to the chat-completions endpoint and returns the response
 // once its status has checked out OK — callers only need to decode the body
 // (streamed SSE or a single JSON payload) and close it when done.
 func (o *OpenAI) do(ctx context.Context, body []byte) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.BaseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if o.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+o.APIKey)
-	}
-	resp, err := o.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("llm unreachable: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.BaseURL+"/chat/completions", bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if o.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+o.APIKey)
+		}
+		resp, err := o.http.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("llm unreachable: %w", err)
+		}
+		if resp.StatusCode == http.StatusOK {
+			return resp, nil
+		}
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
-		return nil, fmt.Errorf("llm status %d", resp.StatusCode)
+		if resp.StatusCode == http.StatusServiceUnavailable && bytes.Contains(respBody, []byte(overflowResetReason)) && attempt < len(overflowBackoff) {
+			select {
+			case <-time.After(overflowBackoff[attempt]):
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		return nil, fmt.Errorf("llm status %d: %s", resp.StatusCode, bytes.TrimSpace(respBody))
 	}
-	return resp, nil
 }
 
 func (o *OpenAI) ChatStream(ctx context.Context, model string, msgs []Message, onToken func(string)) (string, error) {
