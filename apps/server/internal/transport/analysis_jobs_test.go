@@ -191,7 +191,10 @@ func TestTitleJobHandlerPersistsGeneratedTitle(t *testing.T) {
 	pipe := &pipeline.Pipeline{LLM: fixedCompleteLLM{reply: "Hiking Trip Plans"}, ChatModel: "m"}
 	handler := TitleJobHandler(pipe, st)
 
-	payload := titleJobPayload{UserID: "alex", SessionID: "sess-title", UserText: "I went hiking", AssistantText: "Nice!"}
+	payload := titleJobPayload{UserID: "alex", SessionID: "sess-title", Turn: 1, Transcript: []llm.Message{
+		{Role: llm.RoleUser, Content: "I went hiking"},
+		{Role: llm.RoleAssistant, Content: "Nice!"},
+	}}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
@@ -222,7 +225,7 @@ func TestHandlerGenerateTitleUsesQueueWhenConfigured(t *testing.T) {
 
 	sess := session.New("sys")
 	sess.AppendUser("first message")
-	h.generateTitle("alex", "sess-handler-title", sess, "assistant reply")
+	h.generateTitle("alex", "sess-handler-title", sess, 1, "assistant reply")
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {

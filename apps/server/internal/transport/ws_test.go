@@ -295,15 +295,16 @@ func (f *fakeStore) SaveTranslation(ctx context.Context, userID, sessionID strin
 	return nil
 }
 
-// SaveGeneratedTitle mirrors MySQLStore's write-once-then-pinned semantics:
-// only the first call for a session actually changes its title. It creates
-// the session row if it doesn't exist yet (hasRow false — e.g. the turn-1
-// SaveTurn call that would normally create it first hasn't landed, since
-// Handler.generateTitle fires independently and unsynchronized off the same
-// turn-1 event — see MySQLStore.SaveGeneratedTitle's matching doc comment),
-// same as the real store's upsert: a plain "no-op unless the row already
-// exists" would silently and permanently lose the generated title whenever
-// this call wins that race.
+// SaveGeneratedTitle mirrors MySQLStore's semantics: every call overwrites
+// the title (see MySQLStore.SaveGeneratedTitle's doc comment for why it
+// stopped gating on titleGenerated — the title is now refreshed
+// periodically, not just once). It creates the session row if it doesn't
+// exist yet (hasRow false — e.g. the turn-1 SaveTurn call that would
+// normally create it first hasn't landed, since Handler.generateTitle fires
+// independently and unsynchronized off the same turn-1 event), same as the
+// real store's upsert: a plain "no-op unless the row already exists" would
+// silently and permanently lose the generated title whenever this call wins
+// that race.
 func (f *fakeStore) SaveGeneratedTitle(ctx context.Context, userID, sessionID, title string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -312,9 +313,6 @@ func (f *fakeStore) SaveGeneratedTitle(ctx context.Context, userID, sessionID, t
 	if d == nil {
 		d = &fakeSession{userID: userID, turns: map[string]store.Turn{}}
 		f.sessions[key] = d
-	}
-	if d.titleGenerated {
-		return nil
 	}
 	d.hasRow = true
 	d.meta.ID = sessionID
@@ -1460,17 +1458,15 @@ func TestWSFirstReplyGeneratesTitle(t *testing.T) {
 	}
 }
 
-// TestWSReconnectDoesNotRegenerateTitle guards the reason
-// store.SaveGeneratedTitle gates on title_generated rather than the trigger
-// relying on turn==1 being session-unique: session.Session's turn counter now
-// resumes from store.Store.LastTurn on every connection (see
-// session.Session.Seed), so a reconnect's own first send lands on turn 2, not
-// turn 1 again, and the turn==1 title trigger normally doesn't refire at all.
-// It can still recur in principle (e.g. two connections racing to seed from
-// the same LastTurn before either saves turn 1 — see the comment on
-// Handler.generateTitle), so the title_generated guard remains the real
-// safety net; this test only confirms the title stays pinned across an
-// ordinary reconnect.
+// TestWSReconnectDoesNotRegenerateTitle guards that an ordinary reconnect
+// doesn't re-roll the title: session.Session's turn counter resumes from
+// store.Store.LastTurn on every connection (see session.Session.Seed), so a
+// reconnect's own first send lands on turn 2, not turn 1 again — and 2 isn't
+// a multiple of TitleRegenerateEveryNTurns either, so neither of the title
+// trigger's two conditions (see ws.go's emit) fires. Unlike before
+// store.SaveGeneratedTitle stopped gating on title_generated, there's no
+// second guard behind this one: a trigger that wrongly fired here would now
+// actually overwrite the title, so this test is the real safety net.
 func TestWSReconnectDoesNotRegenerateTitle(t *testing.T) {
 	st := newTestStore(t)
 	titleN := 0
@@ -1513,6 +1509,57 @@ func TestWSReconnectDoesNotRegenerateTitle(t *testing.T) {
 	}
 	if meta.Title != "Title 1" {
 		t.Fatalf("title = %q after reconnect, want it to stay pinned to %q", meta.Title, "Title 1")
+	}
+}
+
+// TestWSTitleRegeneratesEveryFiveTurns checks the periodic half of the title
+// trigger in ws.go's emit: after turn 1's placeholder-replacing title, the
+// title is left untouched through turns 2-4, then regenerated once turn 5's
+// reply lands (see TitleRegenerateEveryNTurns).
+func TestWSTitleRegeneratesEveryFiveTurns(t *testing.T) {
+	st := newTestStore(t)
+	titleN := 0
+	srv := newTestServerWithTitleLLM(t, st, func(msgs []llm.Message) (string, error) {
+		// Same filter as TestWSReconnectDoesNotRegenerateTitle: only count
+		// calls that are really the title prompt, not the FAST-track
+		// grammar-correction/translation pre-pass sharing this fake.
+		if len(msgs) == 0 || !strings.Contains(msgs[0].Content, "descriptive title") {
+			return "", nil
+		}
+		titleN++
+		return fmt.Sprintf("Title %d", titleN), nil
+	})
+	cookie := "regen-title-user"
+
+	c, _ := dial(t, srv, cookie, "")
+	ready := readEvent(t, c)
+
+	sendText(t, c, "message 1")
+	readUntilTurn(t, c, protocol.EvAssistantDone, 1)
+	first := waitForTitle(t, st, cookie, ready.Session, "message 1")
+	if first != "Title 1" {
+		t.Fatalf("title after turn 1 = %q, want %q", first, "Title 1")
+	}
+
+	for i, text := range []string{"message 2", "message 3", "message 4"} {
+		sendText(t, c, text)
+		readUntilTurn(t, c, protocol.EvAssistantDone, i+2)
+	}
+	time.Sleep(200 * time.Millisecond) // give a wrongly-firing regeneration time to land
+	meta, _, err := st.SessionDetail(context.Background(), cookie, ready.Session)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if meta.Title != "Title 1" {
+		t.Fatalf("title = %q after turns 2-4, want it unchanged at %q", meta.Title, "Title 1")
+	}
+
+	sendText(t, c, "message 5")
+	readUntilTurn(t, c, protocol.EvAssistantDone, 5)
+
+	second := waitForTitle(t, st, cookie, ready.Session, "Title 1")
+	if second != "Title 2" {
+		t.Fatalf("title after turn 5 = %q, want %q", second, "Title 2")
 	}
 }
 

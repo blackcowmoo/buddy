@@ -1064,17 +1064,19 @@ func renderLearnerProfileInput(prevProfile, sessionSummary string) string {
 }
 
 // GenerateTitle asks the LLM for a short, descriptive chat-room title from
-// its opening exchange, for internal/transport to save once the first reply
-// completes (see Handler.generateTitle there) — replacing the raw
-// truncated-first-message placeholder store.MySQLStore.SaveTurn sets on
-// turn 1. A single fast call (p.LLM/p.ChatModel), not the Analysis
-// ensemble+Judge like analyze() uses: a room label is decorative, not
-// something a learner's grammar feedback depends on, so it isn't worth
-// doubling the LLM cost of every new conversation.
-func (p *Pipeline) GenerateTitle(ctx context.Context, userText, assistantText string) (string, error) {
+// the conversation so far, for internal/transport to save on turn 1 (see
+// Handler.generateTitle there) — replacing the raw truncated-first-message
+// placeholder store.MySQLStore.SaveTurn sets — and again every
+// TitleRegenerateEveryNTurns turns after that, so the title keeps tracking
+// the conversation's actual topic rather than staying pinned to turn 1's. A
+// single fast call (p.LLM/p.ChatModel), not the Analysis ensemble+Judge like
+// analyze() uses: a room label is decorative, not something a learner's
+// grammar feedback depends on, so it isn't worth doubling the LLM cost of
+// every title (re)generation.
+func (p *Pipeline) GenerateTitle(ctx context.Context, transcript []llm.Message) (string, error) {
 	msgs := []llm.Message{
 		{Role: llm.RoleSystem, Content: titleSystemPrompt},
-		{Role: llm.RoleUser, Content: renderTitleInput(userText, assistantText)},
+		{Role: llm.RoleUser, Content: renderTitleInput(transcript)},
 	}
 	title, err := p.LLM.Complete(ctx, p.ChatModel, msgs, false)
 	if err != nil {
@@ -1085,8 +1087,9 @@ func (p *Pipeline) GenerateTitle(ctx context.Context, userText, assistantText st
 	return strings.Trim(strings.TrimSpace(title), `"“”`), nil
 }
 
-const titleSystemPrompt = `Give a short, descriptive title for a chat conversation, based on its
-opening exchange. The title summarizes the TOPIC being discussed, not the
+const titleSystemPrompt = `Give a short, descriptive title for a chat conversation, based on
+the conversation so far (it may be just the opening exchange, or many turns
+in). The title summarizes the current TOPIC being discussed, not the
 learner's exact words.
 Rules:
 - 2-6 words.
@@ -1094,12 +1097,9 @@ Rules:
 - Write it in the same language the learner used.
 - Return ONLY the title, nothing else.`
 
-func renderTitleInput(userText, assistantText string) string {
+func renderTitleInput(transcript []llm.Message) string {
 	var b strings.Builder
-	b.WriteString("Learner: " + userText + "\n")
-	if assistantText != "" {
-		b.WriteString("Assistant: " + assistantText + "\n")
-	}
+	writeTranscript(&b, transcript)
 	return b.String()
 }
 

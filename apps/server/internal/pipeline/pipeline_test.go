@@ -980,13 +980,23 @@ func TestAcquireTranslationSlotRespectsContextCancellation(t *testing.T) {
 
 // ---- GenerateTitle() -----------------------------------------------------------
 
+// titleTranscript is a small helper building the []llm.Message shape
+// GenerateTitle now takes (a conversation window), so title tests read the
+// same as they did with the old (userText, assistantText string) signature.
+func titleTranscript(userText, assistantText string) []llm.Message {
+	return []llm.Message{
+		{Role: llm.RoleUser, Content: userText},
+		{Role: llm.RoleAssistant, Content: assistantText},
+	}
+}
+
 func TestGenerateTitleSendsUserAndAssistantText(t *testing.T) {
 	var gotInput string
 	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 		gotInput = msgs[len(msgs)-1].Content
 		return "Hiking Trip Plans", nil
 	}}, ChatModel: "m"}
-	got, err := p.GenerateTitle(context.Background(), "I went hiking last weekend.", "That sounds fun! Where did you go?")
+	got, err := p.GenerateTitle(context.Background(), titleTranscript("I went hiking last weekend.", "That sounds fun! Where did you go?"))
 	if err != nil {
 		t.Fatalf("GenerateTitle() error = %v", err)
 	}
@@ -1002,7 +1012,7 @@ func TestGenerateTitleTrimsQuotesAndWhitespace(t *testing.T) {
 	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 		return `  "Weekend Hiking Trip"  `, nil
 	}}, ChatModel: "m"}
-	got, err := p.GenerateTitle(context.Background(), "hi", "hello")
+	got, err := p.GenerateTitle(context.Background(), titleTranscript("hi", "hello"))
 	if err != nil {
 		t.Fatalf("GenerateTitle() error = %v", err)
 	}
@@ -1015,7 +1025,7 @@ func TestGenerateTitlePropagatesLLMError(t *testing.T) {
 	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 		return "", errors.New("down")
 	}}, ChatModel: "m"}
-	if _, err := p.GenerateTitle(context.Background(), "hi", "hello"); err == nil {
+	if _, err := p.GenerateTitle(context.Background(), titleTranscript("hi", "hello")); err == nil {
 		t.Fatal("expected an error when the LLM call fails")
 	}
 }
