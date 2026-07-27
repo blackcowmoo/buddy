@@ -205,12 +205,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	emit := func(ev protocol.ServerEvent) {
 		persistEvent(h.store, userID, sessionID, ev)
 		// Turn 1's assistant reply is the first full exchange this room has
-		// — enough context to title it. Fired here (not off persistEvent,
-		// which has no pipeline access) so it never delays the reply the
-		// learner is watching; see Handler.generateTitle for why a
-		// reconnect firing this again is still safe.
-		if ev.Type == protocol.EvAssistantDone && ev.Turn == 1 {
-			go h.generateTitle(userID, sessionID, sess, ev.Text)
+		// — enough context to title it. Every TitleRegenerateEveryNTurns
+		// turns after that re-titles the room too, so the title keeps
+		// tracking the conversation's actual topic instead of staying
+		// pinned to whatever turn 1 happened to be about. Fired here (not
+		// off persistEvent, which has no pipeline access) so it never
+		// delays the reply the learner is watching; see Handler.generateTitle
+		// for why a reconnect firing this again is still safe.
+		if ev.Type == protocol.EvAssistantDone && (ev.Turn == 1 || ev.Turn%TitleRegenerateEveryNTurns == 0) {
+			go h.generateTitle(userID, sessionID, sess, ev.Turn, ev.Text)
 		}
 		select {
 		case events <- ev:
@@ -380,35 +383,48 @@ func saveTranslation(st store.Store, userID, sessionID string, turn int, role, t
 }
 
 // generateTitle asks the pipeline's LLM for a proper chat-room title from
-// the room's first exchange, replacing the raw-text-truncation placeholder
-// store.MySQLStore.SaveTurn sets on turn 1. Runs entirely off the live
-// turn: emit fires this via `go` so the learner's reply is never delayed,
-// and it uses context.Background() (bounded by titleTimeout, not the
-// connection's ctx) so a disconnect right after the first reply doesn't cut
-// it short — same reasoning as backupAudio below.
+// the conversation so far — on turn 1 this replaces the raw-text-truncation
+// placeholder store.MySQLStore.SaveTurn sets, and every
+// TitleRegenerateEveryNTurns turns after that it re-titles the room from the
+// fuller transcript. Runs entirely off the live turn: emit fires this via
+// `go` so the learner's reply is never delayed, and it uses
+// context.Background() (bounded by titleTimeout, not the connection's ctx)
+// so a disconnect right after the reply doesn't cut it short — same
+// reasoning as backupAudio below.
+//
+// sess.Export()'s recent window reliably includes every turn up to and
+// including this turn's user message (session.Session.AppendUser runs
+// synchronously before the pipeline's async work starts), but NOT this
+// turn's assistant reply — pipeline.HandleText/HandleUtterance only calls
+// sess.AppendAssistant right after emit() returns, racing this goroutine.
+// That's why assistantText is passed in explicitly (as ev.Text) and appended
+// here rather than re-read from sess.
 //
 // ev.Turn == 1 normally happens once per session's lifetime — session.New's
 // turn counter is seeded from store.Store.LastTurn on every connect (see
 // session.Session.Seed), so a reconnect resumes numbering rather than
 // restarting at 0. It can still recur (e.g. a race between two connections
 // both seeing the same LastTurn before either has saved turn 1), so this
-// isn't relied on for correctness: store.SaveGeneratedTitle only ever applies
-// the first successful write for a given session, making a repeat call a
-// harmless no-op rather than a flapping title.
-func (h *Handler) generateTitle(userID, sessionID string, sess *session.Session, assistantText string) {
+// isn't relied on for correctness: titleDedupeKey includes the turn number,
+// so a repeat call for the same turn just regenerates an equivalent title
+// rather than flapping between two different ones.
+func (h *Handler) generateTitle(userID, sessionID string, sess *session.Session, turn int, assistantText string) {
 	_, recent := sess.Export()
-	var userText string
-	for _, m := range recent {
+	transcript := make([]llm.Message, 0, len(recent)+1)
+	transcript = append(transcript, recent...)
+	transcript = append(transcript, llm.Message{Role: llm.RoleAssistant, Content: assistantText})
+	hasUserTurn := false
+	for _, m := range transcript {
 		if m.Role == llm.RoleUser {
-			userText = m.Content
+			hasUserTurn = true
 			break
 		}
 	}
-	if userText == "" {
+	if !hasUserTurn {
 		return
 	}
 	if h.titleQueue == nil {
-		h.generateTitleDirect(userID, sessionID, userText, assistantText)
+		h.generateTitleDirect(userID, sessionID, transcript)
 		return
 	}
 	// Durable path: queued in Redis and persisted independent of this
@@ -416,19 +432,19 @@ func (h *Handler) generateTitle(userID, sessionID string, sess *session.Session,
 	// needed here (unlike reply generation): a title landing after the
 	// fact has no live-connection UX to serve, it just shows up next time
 	// the room list is fetched.
-	payload := titleJobPayload{UserID: userID, SessionID: sessionID, UserText: userText, AssistantText: assistantText}
-	logID := fmt.Sprintf("%s/%s", userID, sessionID)
-	h.titleQueue.EnqueueAndTryRun(context.Background(), asyncjob.KindTitle, titleDedupeKey(userID, sessionID), logID, payload, TitleClaimTTL, TitleJobHandler(h.pipe, h.store))
+	payload := titleJobPayload{UserID: userID, SessionID: sessionID, Turn: turn, Transcript: transcript}
+	logID := fmt.Sprintf("%s/%s#%d", userID, sessionID, turn)
+	h.titleQueue.EnqueueAndTryRun(context.Background(), asyncjob.KindTitle, titleDedupeKey(userID, sessionID, turn), logID, payload, TitleClaimTTL, TitleJobHandler(h.pipe, h.store))
 }
 
 // generateTitleDirect is generateTitle's original direct-call behavior,
 // used when titleQueue is nil (Redis unconfigured) — same "optional
 // feature, zero setup by default" convention as every other Redis-backed
 // feature in this codebase.
-func (h *Handler) generateTitleDirect(userID, sessionID, userText, assistantText string) {
+func (h *Handler) generateTitleDirect(userID, sessionID string, transcript []llm.Message) {
 	ctx, cancel := context.WithTimeout(context.Background(), titleTimeout)
 	defer cancel()
-	title, err := h.pipe.GenerateTitle(ctx, userText, assistantText)
+	title, err := h.pipe.GenerateTitle(ctx, transcript)
 	if err != nil {
 		log.Printf("title: generate %s/%s: %v", userID, sessionID, err)
 		return

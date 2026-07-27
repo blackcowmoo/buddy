@@ -444,15 +444,16 @@ func TestMySQLSaveGeneratedTitleOverwritesPlaceholder(t *testing.T) {
 	}
 }
 
-// TestMySQLSaveGeneratedTitleIsWriteOnce guards the reason
-// SaveGeneratedTitle gates on title_generated instead of unconditionally
-// overwriting: internal/transport's trigger fires once per WS *connection*
-// (turn 1), not once per session, so a reconnect calling this a second time
-// must not flap an already-set title back and forth.
-func TestMySQLSaveGeneratedTitleIsWriteOnce(t *testing.T) {
+// TestMySQLSaveGeneratedTitleOverwritesOnRegeneration guards the reason
+// SaveGeneratedTitle unconditionally overwrites title rather than gating on
+// title_generated the way it used to: internal/transport now calls this
+// periodically as a conversation continues (see TitleRegenerateEveryNTurns),
+// not just once on turn 1, and each call is expected to actually update the
+// title to track the conversation's current topic.
+func TestMySQLSaveGeneratedTitleOverwritesOnRegeneration(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
-	sessionID := "sess-generated-title-once"
+	sessionID := "sess-generated-title-regen"
 	if err := st.SaveTurn(ctx, "alex", sessionID, 1, "user", "first message", false, protocol.SourceText); err != nil {
 		t.Fatalf("SaveTurn() error = %v", err)
 	}
@@ -466,8 +467,8 @@ func TestMySQLSaveGeneratedTitleIsWriteOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
-	if meta.Title != "First Title" {
-		t.Fatalf("Title = %q, want it pinned to the first generated title", meta.Title)
+	if meta.Title != "Second Title" {
+		t.Fatalf("Title = %q, want the later regenerated title to win", meta.Title)
 	}
 }
 

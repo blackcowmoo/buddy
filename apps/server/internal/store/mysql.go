@@ -343,11 +343,12 @@ type execer interface {
 // ensureSessionRow creates the session row on first sight (either the
 // opening greeting or the learner's own first message — see SaveTurn and
 // CompleteAssistantTurn) and otherwise refreshes updated_at, only ever
-// overwriting title while title_generated is still 0. That guard is the
-// same one SaveGeneratedTitle relies on to pin a title for good, so a
+// overwriting title while title_generated is still 0. That guard means a
 // session that already has a real (possibly LLM-generated) title — e.g.
 // after a "reset" that cleared buddy_turns but left buddy_sessions alone —
-// keeps it.
+// keeps it instead of being clobbered back to a raw-text placeholder.
+// SaveGeneratedTitle itself no longer relies on this flag to guard its own
+// writes (see its doc comment) — title_generated now only feeds this check.
 func ensureSessionRow(ctx context.Context, exec execer, userID, sessionID, text string) error {
 	_, err := exec.ExecContext(ctx, `
 		INSERT INTO `+sessionsTable+` (user_id, id, title, summary, recent, created_at, updated_at, study_summary)
@@ -459,14 +460,16 @@ func (s *MySQLStore) SaveTranslation(ctx context.Context, userID, sessionID stri
 	return nil
 }
 
-// SaveGeneratedTitle overwrites a session's title with an LLM-generated one,
-// but only the first time it's called for that session: the
-// `title_generated = 0` guard makes every later call a no-op, the same
-// write-once-then-pinned semantics SaveTurn already gives the
-// truncated-first-message title. See internal/transport for why that
-// matters — the trigger condition alone (WS turn 1) fires once per
-// *connection*, not once per session, so this guard is what actually
-// prevents a reconnect from re-rolling the title.
+// SaveGeneratedTitle overwrites a session's title with an LLM-generated one.
+// Unlike SaveTurn's truncated-first-message placeholder (which is guarded by
+// title_generated so a real title, once set, is never clobbered back to a
+// placeholder — see ensureSessionRow), this call always takes effect: it's
+// invoked not just once per session but periodically as the conversation
+// continues (see internal/transport's TitleRegenerateEveryNTurns), and each
+// call is meant to actually update the title to match the current topic.
+// title_generated is still set to 1 on every call — that flag's only
+// remaining job is telling ensureSessionRow a real title is in place, not
+// gating this method's own writes.
 //
 // This must be an upsert, not a plain UPDATE: Handler.generateTitle (see
 // ws.go) is fired off `go`, independently and unsynchronized, from the same
@@ -484,7 +487,7 @@ func (s *MySQLStore) SaveGeneratedTitle(ctx context.Context, userID, sessionID, 
 		INSERT INTO `+sessionsTable+` (user_id, id, title, summary, recent, created_at, updated_at, title_generated, study_summary)
 		VALUES (?, ?, ?, '', '[]', UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), 1, '')
 		ON DUPLICATE KEY UPDATE
-			title = IF(title_generated = 0, VALUES(title), title),
+			title = VALUES(title),
 			title_generated = 1,
 			updated_at = VALUES(updated_at)
 	`, userID, sessionID, truncateTitle(title)); err != nil {

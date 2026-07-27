@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"buddy/server/internal/asyncjob"
+	"buddy/server/internal/llm"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/protocol"
 	"buddy/server/internal/store"
@@ -40,9 +41,17 @@ const (
 	// hosted API, but no faster than any other call against a slow local
 	// model, so TitleClaimTTL needs the same margin above llm.OpenAI's
 	// request timeout as the other job kinds. Concurrency stays modest since
-	// there's still only ever one title per room.
+	// there's still only ever one title job in flight per room at a time.
 	TitleClaimTTL          = 25 * time.Hour
 	TitleWorkerConcurrency = 4
+
+	// TitleRegenerateEveryNTurns bounds how often a room's title is
+	// refreshed as the conversation keeps going, beyond the initial turn-1
+	// generation (see ws.go's emit trigger) — frequent enough that a topic
+	// shift shows up before long, infrequent enough that a long
+	// conversation doesn't spend one extra LLM call per turn on something
+	// decorative.
+	TitleRegenerateEveryNTurns = 5
 )
 
 // ---- correction ---------------------------------------------------------
@@ -195,25 +204,32 @@ func NewTranslateHook(pipe *pipeline.Pipeline, st store.Store, queue *asyncjob.Q
 // ---- title generation -----------------------------------------------------
 
 type titleJobPayload struct {
-	UserID, SessionID       string
-	UserText, AssistantText string
+	UserID, SessionID string
+	Turn              int
+	Transcript        []llm.Message
 }
 
-func titleDedupeKey(userID, sessionID string) string {
-	return userID + ":" + sessionID
+// titleDedupeKey includes turn, unlike the userID:sessionID-only key this
+// used when a title was only ever generated once per room: without turn,
+// every regeneration attempt (see TitleRegenerateEveryNTurns) would collide
+// in the asyncjob dedupe/claim keyspace with the room's very first title
+// job, silently dropping every later regeneration.
+func titleDedupeKey(userID, sessionID string, turn int) string {
+	return userID + ":" + sessionID + ":" + strconv.Itoa(turn)
 }
 
 // TitleJobHandler builds the asyncjob.Handler that runs one queued
-// title-generation job — idempotent via store.SaveGeneratedTitle's own
-// title_generated guard (a repeat call, e.g. from a reap-retry, is a
-// harmless no-op), same as it already was for the direct call path.
+// title-generation job. store.SaveGeneratedTitle now overwrites on every
+// call (see its doc comment), so a repeat call for the same turn — e.g. from
+// a reap-retry — just regenerates an equivalent title rather than being a
+// no-op; that's fine, same idempotency reasoning as CorrectionJobHandler.
 func TitleJobHandler(pipe *pipeline.Pipeline, st store.Store) asyncjob.Handler {
 	return func(ctx context.Context, job asyncjob.Job) error {
 		var payload titleJobPayload
 		if err := json.Unmarshal(job.Payload, &payload); err != nil {
 			return fmt.Errorf("title job: bad payload: %w", err)
 		}
-		title, err := pipe.GenerateTitle(ctx, payload.UserText, payload.AssistantText)
+		title, err := pipe.GenerateTitle(ctx, payload.Transcript)
 		if err != nil {
 			return fmt.Errorf("title job: generate: %w", err)
 		}
