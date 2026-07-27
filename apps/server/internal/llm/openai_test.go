@@ -3,12 +3,15 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestChatStreamParsesSSEAndConcatenates(t *testing.T) {
@@ -59,6 +62,105 @@ func TestChatStreamNonOKStatus(t *testing.T) {
 	_, err := c.ChatStream(context.Background(), "model", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "500") {
 		t.Fatalf("err = %v, want it to mention status 500", err)
+	}
+}
+
+// withShortOverflowBackoff swaps overflowBackoff for near-instant delays so
+// retry tests don't actually wait out the real backoff, restoring it after
+// the test so other tests keep exercising the real timing.
+func withShortOverflowBackoff(t *testing.T) {
+	t.Helper()
+	orig := overflowBackoff
+	overflowBackoff = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+	t.Cleanup(func() { overflowBackoff = orig })
+}
+
+func TestChatStreamRetriesOverflow503ThenSucceeds(t *testing.T) {
+	withShortOverflowBackoff(t)
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) <= 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			io.WriteString(w, "upstream connect error or disconnect/reset before headers. reset reason: overflow")
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	c := NewOpenAI(srv.URL, "")
+	full, err := c.ChatStream(context.Background(), "model", []Message{{Role: RoleUser, Content: "hi"}}, nil)
+	if err != nil {
+		t.Fatalf("ChatStream() error = %v, want it to succeed after retrying past the overflow", err)
+	}
+	if full != "ok" {
+		t.Fatalf("full = %q, want %q", full, "ok")
+	}
+	if got := atomic.LoadInt32(&calls); got != 3 {
+		t.Fatalf("calls = %d, want exactly 3 (2 overflow retries + 1 success)", got)
+	}
+}
+
+func TestChatStreamGivesUpAfterOverflowRetriesExhausted(t *testing.T) {
+	withShortOverflowBackoff(t)
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		io.WriteString(w, "upstream connect error or disconnect/reset before headers. reset reason: overflow")
+	}))
+	defer srv.Close()
+
+	c := NewOpenAI(srv.URL, "")
+	_, err := c.ChatStream(context.Background(), "model", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("err = %v, want it to mention status 503 once retries are exhausted", err)
+	}
+	if want := int32(len(overflowBackoff)) + 1; atomic.LoadInt32(&calls) != want {
+		t.Fatalf("calls = %d, want %d (initial attempt + one per backoff slot)", calls, want)
+	}
+}
+
+func TestChatStreamDoesNotRetryPlain503(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		io.WriteString(w, "rate limit exceeded")
+	}))
+	defer srv.Close()
+
+	c := NewOpenAI(srv.URL, "")
+	_, err := c.ChatStream(context.Background(), "model", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("err = %v, want it to mention status 503", err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want exactly 1 (a plain 503 without the overflow reason must not retry)", calls)
+	}
+}
+
+func TestChatStreamOverflowRetryRespectsContextCancellation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		io.WriteString(w, "upstream connect error or disconnect/reset before headers. reset reason: overflow")
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c := NewOpenAI(srv.URL, "")
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+	start := time.Now()
+	_, err := c.ChatStream(ctx, "model", nil, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(start); elapsed >= overflowBackoff[0]+overflowBackoff[1] {
+		t.Fatalf("ChatStream took %v, want it to return promptly once ctx is cancelled mid-backoff", elapsed)
 	}
 }
 
