@@ -4,15 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
-	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/identity"
 	"buddy/server/internal/llm"
 	"buddy/server/internal/pipeline"
@@ -71,20 +68,10 @@ type Handler struct {
 	store      store.Store
 	audio      AudioSaver
 	recordings recording.Store // nil disables recording archival (see config.Config's S3Bucket)
-	titleQueue *asyncjob.Queue // nil disables durable title generation — see SetTitleQueue
 }
 
 func NewHandler(p *pipeline.Pipeline, ident identity.Identifier, st store.Store, audio AudioSaver, recordings recording.Store) *Handler {
 	return &Handler{pipe: p, ident: ident, store: st, audio: audio, recordings: recordings}
-}
-
-// SetTitleQueue wires durable, queue-backed title generation (see
-// TitleJobHandler) — a separate setter, not a NewHandler parameter, so
-// every existing call site (production and tests) keeps working unchanged
-// when title generation stays on its original direct-call path (queue nil,
-// i.e. Redis unconfigured — see cmd/server/main.go).
-func (h *Handler) SetTitleQueue(q *asyncjob.Queue) {
-	h.titleQueue = q
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -423,38 +410,18 @@ func (h *Handler) generateTitle(userID, sessionID string, sess *session.Session,
 	if !hasUserTurn {
 		return
 	}
-	if h.titleQueue == nil {
-		h.generateTitleDirect(userID, sessionID, transcript)
-		return
-	}
-	// Durable path: queued in Redis and persisted independent of this
-	// connection or replica — see TitleJobHandler. No poll-fallback is
-	// needed here (unlike reply generation): a title landing after the
-	// fact has no live-connection UX to serve, it just shows up next time
-	// the room list is fetched.
-	payload := titleJobPayload{UserID: userID, SessionID: sessionID, Turn: turn, Transcript: transcript}
-	logID := fmt.Sprintf("%s/%s#%d", userID, sessionID, turn)
-	h.titleQueue.EnqueueAndTryRun(context.Background(), asyncjob.KindTitle, titleDedupeKey(userID, sessionID, turn), logID, payload, TitleClaimTTL, TitleJobHandler(h.pipe, h.store))
-}
-
-// generateTitleDirect is generateTitle's original direct-call behavior,
-// used when titleQueue is nil (Redis unconfigured) — same "optional
-// feature, zero setup by default" convention as every other Redis-backed
-// feature in this codebase.
-func (h *Handler) generateTitleDirect(userID, sessionID string, transcript []llm.Message) {
+	// ctx is titleTimeout-bounded (its own budget, not the connection's —
+	// see that const's doc comment); RunTitle's queue-backed TitleHook path
+	// ignores it and uses context.Background() internally instead (see
+	// NewTitleHook), the same "hook always keeps making progress past a
+	// disconnect" convention as NewReplyHook/NewCorrectHook. save is only
+	// consulted on the direct (no-hook) fallback — see RunTitle's doc
+	// comment for why the hook path persists on its own.
 	ctx, cancel := context.WithTimeout(context.Background(), titleTimeout)
 	defer cancel()
-	title, err := h.pipe.GenerateTitle(ctx, transcript)
-	if err != nil {
-		log.Printf("title: generate %s/%s: %v", userID, sessionID, err)
-		return
-	}
-	if title = strings.TrimSpace(title); title == "" {
-		return
-	}
-	if err := h.store.SaveGeneratedTitle(context.Background(), userID, sessionID, title); err != nil {
-		log.Printf("title: save %s/%s: %v", userID, sessionID, err)
-	}
+	h.pipe.RunTitle(ctx, userID, sessionID, turn, transcript, func(title string) error {
+		return h.store.SaveGeneratedTitle(context.Background(), userID, sessionID, title)
+	})
 }
 
 // backupAudio streams one utterance's raw PCM to the configured temporary

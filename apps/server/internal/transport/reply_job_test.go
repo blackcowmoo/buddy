@@ -247,7 +247,7 @@ func TestReplyJobHandlerCompletesViaBackgroundWorkerPool(t *testing.T) {
 	// not just isolation from other tests) so it can never race another
 	// run's job for the same queue.
 	kind := asyncjob.Kind(t.Name() + "-" + uuid.New().String())
-	if _, ok, err := queue.Enqueue(context.Background(), kind, replyDedupeKey("alex", "sess-crash", 1), payload); err != nil || !ok {
+	if _, ok, err := queue.Enqueue(context.Background(), kind, turnKey("alex", "sess-crash", 1), payload); err != nil || !ok {
 		t.Fatalf("Enqueue: ok=%v err=%v", ok, err)
 	}
 

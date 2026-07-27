@@ -133,7 +133,6 @@ func main() {
 	// next turn once history grows past the window again.
 	jobsCtx, jobsCancel := context.WithCancel(context.Background())
 	defer jobsCancel()
-	var titleQueue *asyncjob.Queue
 	if rdb != nil {
 		replyQueue := asyncjob.NewQueue(rdb)
 		pipe.ReplyHook = transport.NewReplyHook(pipe, st, replyQueue)
@@ -150,7 +149,8 @@ func main() {
 		go asyncjob.NewWorker(rdb, asyncjob.KindLiveTranslation, transport.LiveTranslationWorkerConcurrency, transport.LiveTranslationClaimTTL,
 			transport.TranslationJobHandler(pipe, st, nil)).Run(jobsCtx)
 
-		titleQueue = asyncjob.NewQueue(rdb)
+		titleQueue := asyncjob.NewQueue(rdb)
+		pipe.TitleHook = transport.NewTitleHook(pipe, st, titleQueue)
 		go asyncjob.NewWorker(rdb, asyncjob.KindTitle, transport.TitleWorkerConcurrency, transport.TitleClaimTTL,
 			transport.TitleJobHandler(pipe, st)).Run(jobsCtx)
 	}
@@ -185,7 +185,7 @@ func main() {
 		defer recordings.Close()
 	}
 
-	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, translateQueue, correctionBackfillQueue, titleQueue)
+	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, translateQueue, correctionBackfillQueue)
 
 	go func() {
 		log.Printf("buddy up on %s  env=%s  stt=%v  feedback=%s",

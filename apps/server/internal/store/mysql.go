@@ -165,48 +165,40 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 			return nil, fmt.Errorf("store: schema: %w", err)
 		}
 	}
-	// Additive: buddy_turns predates the translation feature, so existing
-	// deployments need this column added on top of their already-created
-	// table — the CREATE TABLE IF NOT EXISTS above only helps fresh ones.
-	// See internal/mysqlerr's doc for why ER_DUP_FIELDNAME is swallowed here
-	// as the "already applied" case.
-	if err := mysqlerr.ApplyAdditive(func() error {
-		_, err := rw.Exec(`ALTER TABLE ` + turnsTable + ` ADD COLUMN translation TEXT NULL`)
-		return err
-	}, mysqlerr.DupFieldName); err != nil {
-		closeAll()
-		return nil, fmt.Errorf("store: schema: add translation column: %w", err)
+	// addColumn runs one additive ALTER TABLE ... ADD COLUMN, swallowing
+	// ER_DUP_FIELDNAME as the "already applied on this deployment" case (see
+	// internal/mysqlerr's doc) — shared by every additive migration below,
+	// each of which predates the feature/table it's adding a column for; the
+	// CREATE TABLE IF NOT EXISTS block above only covers fresh deployments.
+	addColumn := func(table, ddl, label string) error {
+		if err := mysqlerr.ApplyAdditive(func() error {
+			_, err := rw.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + ddl)
+			return err
+		}, mysqlerr.DupFieldName); err != nil {
+			closeAll()
+			return fmt.Errorf("store: schema: add %s column: %w", label, err)
+		}
+		return nil
 	}
-	// Additive, same reasoning as the translation column above: buddy_turns
-	// predates input-source tracking.
-	if err := mysqlerr.ApplyAdditive(func() error {
-		_, err := rw.Exec(`ALTER TABLE ` + turnsTable + ` ADD COLUMN source VARCHAR(8) NOT NULL DEFAULT ''`)
-		return err
-	}, mysqlerr.DupFieldName); err != nil {
-		closeAll()
-		return nil, fmt.Errorf("store: schema: add source column: %w", err)
+	// buddy_turns predates input-source tracking, same as translation above.
+	if err := addColumn(turnsTable, "translation TEXT NULL", "translation"); err != nil {
+		return nil, err
 	}
-	// Additive, same reasoning as the translation column above: predates the
-	// auto-title feature. Tracks whether a session's title has already been
-	// LLM-generated (see SaveGeneratedTitle) so a reconnect can never
-	// re-trigger and flap it.
-	if err := mysqlerr.ApplyAdditive(func() error {
-		_, err := rw.Exec(`ALTER TABLE ` + sessionsTable + ` ADD COLUMN title_generated TINYINT(1) NOT NULL DEFAULT 0`)
-		return err
-	}, mysqlerr.DupFieldName); err != nil {
-		closeAll()
-		return nil, fmt.Errorf("store: schema: add title_generated column: %w", err)
+	if err := addColumn(turnsTable, "source VARCHAR(8) NOT NULL DEFAULT ''", "source"); err != nil {
+		return nil, err
 	}
-	// Additive, same reasoning as title_generated above: predates the
-	// permanent end-conversation feature. ended+study_summary together let a
-	// learner's confirmed "end this conversation" wrap-up survive a reload
-	// instead of being regenerated (or lost) — see EndSession.
-	if err := mysqlerr.ApplyAdditive(func() error {
-		_, err := rw.Exec(`ALTER TABLE ` + sessionsTable + ` ADD COLUMN ended TINYINT(1) NOT NULL DEFAULT 0`)
-		return err
-	}, mysqlerr.DupFieldName); err != nil {
-		closeAll()
-		return nil, fmt.Errorf("store: schema: add ended column: %w", err)
+	// Predates the auto-title feature. Tracks whether a session's title has
+	// already been LLM-generated (see SaveGeneratedTitle) so a reconnect can
+	// never re-trigger and flap it.
+	if err := addColumn(sessionsTable, "title_generated TINYINT(1) NOT NULL DEFAULT 0", "title_generated"); err != nil {
+		return nil, err
+	}
+	// Predates the permanent end-conversation feature. ended+study_summary
+	// together let a learner's confirmed "end this conversation" wrap-up
+	// survive a reload instead of being regenerated (or lost) — see
+	// EndSession.
+	if err := addColumn(sessionsTable, "ended TINYINT(1) NOT NULL DEFAULT 0", "ended"); err != nil {
+		return nil, err
 	}
 	// No DEFAULT clause: MySQL rejects a literal default on a TEXT column
 	// (error 1101) — same reason summary/recent/interlocutor_style above
@@ -214,25 +206,17 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 	// '' on its own; every INSERT that can create a new row from here on
 	// just has to list this column explicitly (see ensureSessionRow /
 	// SaveGeneratedTitle below).
-	if err := mysqlerr.ApplyAdditive(func() error {
-		_, err := rw.Exec(`ALTER TABLE ` + sessionsTable + ` ADD COLUMN study_summary TEXT NOT NULL`)
-		return err
-	}, mysqlerr.DupFieldName); err != nil {
-		closeAll()
-		return nil, fmt.Errorf("store: schema: add study_summary column: %w", err)
+	if err := addColumn(sessionsTable, "study_summary TEXT NOT NULL", "study_summary"); err != nil {
+		return nil, err
 	}
-	// Additive: predates the cross-session learner-profile feature. Unlike
+	// Predates the cross-session learner-profile feature. Unlike
 	// interlocutor_style (a learner-set preference), this is LLM-maintained —
 	// see Pipeline.UpdateLearnerProfile — and layered into BuildSystemPrompt
 	// alongside it so a brand-new conversation still carries forward what
 	// earlier, unrelated conversations revealed about this learner. Same
 	// no-DEFAULT reasoning as study_summary above.
-	if err := mysqlerr.ApplyAdditive(func() error {
-		_, err := rw.Exec(`ALTER TABLE ` + settingsTable + ` ADD COLUMN learner_profile TEXT NOT NULL`)
-		return err
-	}, mysqlerr.DupFieldName); err != nil {
-		closeAll()
-		return nil, fmt.Errorf("store: schema: add learner_profile column: %w", err)
+	if err := addColumn(settingsTable, "learner_profile TEXT NOT NULL", "learner_profile"); err != nil {
+		return nil, err
 	}
 	return &MySQLStore{rw: rw, ro: ro}, nil
 }

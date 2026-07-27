@@ -220,8 +220,8 @@ func TestHandlerGenerateTitleUsesQueueWhenConfigured(t *testing.T) {
 		t.Fatalf("SaveTurn(user) error = %v", err)
 	}
 	pipe := &pipeline.Pipeline{LLM: fixedCompleteLLM{reply: "Queued Title"}, ChatModel: "m"}
+	pipe.TitleHook = NewTitleHook(pipe, st, queue)
 	h := NewHandler(pipe, nil, st, nil, nil)
-	h.SetTitleQueue(queue)
 
 	sess := session.New("sys")
 	sess.AppendUser("first message")
