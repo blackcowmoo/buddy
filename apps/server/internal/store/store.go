@@ -244,6 +244,17 @@ type Store interface {
 	// this only records the most recent attempt's outcome for a poller in
 	// the meantime, same reasoning as FailJob.
 	FailStudySummary(ctx context.Context, userID, sessionID string) error
+	// RestartStudySummary resets an already-terminal (JobStatusDone or
+	// JobStatusFailed) wrap-up back to JobStatusPending and clears any stored
+	// StudySummary, so asyncjob.KindStudySummary regenerates it from scratch
+	// — the manual counterpart to needsStudySummaryBackfill's automatic
+	// retrigger, for exactly the case that one doesn't cover: a session that
+	// landed as JobStatusDone with an empty summary (see
+	// httpserver.sessionRestudyHandler, the "다시 확인하기" button in
+	// EndConversationControl) rather than one still JobStatusPending. A
+	// no-op if sessionID doesn't exist or belongs to a different user, same
+	// as Save.
+	RestartStudySummary(ctx context.Context, userID, sessionID string) error
 
 	// GetLearnerProfile returns userID's persistent, LLM-maintained
 	// cross-session profile (recurring mistakes, interests, proficiency

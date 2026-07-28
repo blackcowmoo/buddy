@@ -1221,6 +1221,50 @@ func TestMySQLFailStudySummaryMarksFailedWithoutTouchingText(t *testing.T) {
 	}
 }
 
+// TestMySQLRestartStudySummaryResetsDoneToPendingAndClearsSummary guards the
+// manual "다시 확인하기" recovery path (see httpserver.sessionRestudyHandler):
+// a wrap-up already landed as JobStatusDone — including one carrying real
+// content — must go back to JobStatusPending with StudySummary cleared, so
+// asyncjob.KindStudySummary regenerates it from scratch instead of the
+// handler's guard (checked before this is ever called) being the only thing
+// standing between a learner and silently wiping a good wrap-up.
+func TestMySQLRestartStudySummaryResetsDoneToPendingAndClearsSummary(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	const userID = "restart-summary-user"
+	sessionID := "sess-restart"
+	if err := st.SaveTurn(ctx, userID, sessionID, 1, "user", "first message", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn() error = %v", err)
+	}
+	if err := st.EndSession(ctx, userID, sessionID); err != nil {
+		t.Fatalf("EndSession() error = %v", err)
+	}
+	if err := st.CompleteStudySummary(ctx, userID, sessionID, nil); err != nil {
+		t.Fatalf("CompleteStudySummary() error = %v", err)
+	}
+
+	if err := st.RestartStudySummary(ctx, userID, sessionID); err != nil {
+		t.Fatalf("RestartStudySummary() error = %v", err)
+	}
+	meta, _, err := st.SessionDetail(ctx, userID, sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if meta.StudySummaryStatus != JobStatusPending || len(meta.StudySummary) != 0 {
+		t.Fatalf("meta = %+v, want JobStatusPending with an empty summary", meta)
+	}
+}
+
+// TestMySQLRestartStudySummaryMissingSessionIsNoop mirrors EndSession's "no
+// row to match" behavior — RestartStudySummary never creates a session row
+// on its own.
+func TestMySQLRestartStudySummaryMissingSessionIsNoop(t *testing.T) {
+	st := requireStore(t)
+	if err := st.RestartStudySummary(context.Background(), "alex", "no-such-session"); err != nil {
+		t.Fatalf("RestartStudySummary() error = %v, want nil (silent no-op)", err)
+	}
+}
+
 func TestMySQLGetLearnerProfileUnknownUserReturnsEmptyString(t *testing.T) {
 	st := requireStore(t)
 	got, err := st.GetLearnerProfile(context.Background(), "no-such-user")

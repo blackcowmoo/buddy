@@ -133,6 +133,47 @@ func TestRunStudySummaryGenerateErrorMarksFailed(t *testing.T) {
 	}
 }
 
+// TestRunStudySummaryEmptyResultDespiteIssuesMarksFailed guards against the
+// exact bug httpserver.sessionRestudyHandler's "다시 확인하기" button exists to
+// recover from: GenerateStudySummary can return syntactically valid JSON
+// with an empty "sentences" array even when real issues were flagged. That
+// must not land as JobStatusDone — indistinguishable from a genuinely clean
+// session (see CompleteStudySummary's doc comment) with no automatic way
+// back, since needsStudySummaryBackfill only re-triggers a JobStatusPending
+// row — so it has to be treated as a failure instead, letting the reaper
+// retry it like any other transient error.
+func TestRunStudySummaryEmptyResultDespiteIssuesMarksFailed(t *testing.T) {
+	pipe := &pipeline.Pipeline{
+		Analysis: []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{complete: `{"sentences":[]}`}}},
+	}
+	st := newFakeStore()
+	if err := st.SaveTurn(context.Background(), "alex", "sess-empty", 1, "user", "He go to school.", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn() error = %v", err)
+	}
+	if err := st.SaveCorrection(context.Background(), "alex", "sess-empty", 1, protocol.Correction{
+		Issues: []protocol.Issue{{Type: "grammar", Span: "go", Suggestion: "goes"}},
+	}); err != nil {
+		t.Fatalf("SaveCorrection() error = %v", err)
+	}
+	if err := st.EndSession(context.Background(), "alex", "sess-empty"); err != nil {
+		t.Fatalf("EndSession() error = %v", err)
+	}
+
+	if err := RunStudySummaryInline(context.Background(), pipe, st, "alex", "sess-empty"); err == nil {
+		t.Fatalf("RunStudySummaryInline() error = nil, want an error for an empty result despite flagged issues")
+	}
+	meta, _, err := st.SessionDetail(context.Background(), "alex", "sess-empty")
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if meta.StudySummaryStatus != store.JobStatusFailed {
+		t.Fatalf("StudySummaryStatus = %q, want JobStatusFailed, not JobStatusDone-with-nothing-to-show", meta.StudySummaryStatus)
+	}
+	if len(meta.StudySummary) != 0 {
+		t.Fatalf("StudySummary = %+v, want still empty after a rejected empty result", meta.StudySummary)
+	}
+}
+
 // TestRunStudySummaryProfileMergeFailureStillCompletes guards the
 // best-effort contract carried over from the old sessionEndHandler: a
 // transient failure enriching the learner's cross-session profile must not

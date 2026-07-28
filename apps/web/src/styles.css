@@ -303,6 +303,9 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
   gap: 8px;
 }
 .end-conversation-confirm { width: 100%; margin-top: 4px; }
+/* Force-regenerates a wrap-up stuck reading "no issues found" — see
+   EndConversationControl's onRestudy, shown only alongside that message. */
+.restudy-btn { width: 100%; margin-top: 4px; }
 
 /* Fill-in-the-blank practice quiz, opened via "퀴즈 풀기" in place of the
    study summary — see App.tsx QuizPanel. Reuses .study-summary-en/-ko for

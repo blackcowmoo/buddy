@@ -63,6 +63,7 @@ vi.mock("./lib/sessions", () => ({
   fetchSessionQuiz: vi.fn(),
   deleteSession: vi.fn(),
   endSession: vi.fn(),
+  restudySession: vi.fn(),
 }));
 
 vi.mock("./lib/roomHistory", () => ({
@@ -93,6 +94,7 @@ import {
   fetchSessionDetail,
   fetchSessionQuiz,
   fetchSessions,
+  restudySession,
 } from "./lib/sessions";
 import { KokoroSpeaker } from "./tts/kokoro";
 import { BuddyClient } from "./lib/ws";
@@ -106,6 +108,7 @@ beforeEach(() => {
   vi.mocked(fetchSessionDetail).mockResolvedValue(null);
   vi.mocked(fetchSessionCompaction).mockResolvedValue(null);
   vi.mocked(fetchSessionQuiz).mockResolvedValue(null);
+  vi.mocked(restudySession).mockResolvedValue(true);
   vi.mocked(parseRoomHash).mockReturnValue({ view: "list" });
   vi.mocked(currentRoomHistoryState).mockReturnValue({ view: "list" });
   vi.stubGlobal("location", {
@@ -530,6 +533,96 @@ describe("room list", () => {
     await user.click(await screen.findByText("퀴즈 풀기"));
 
     expect(await screen.findByText("퀴즈를 만들 만한 내용이 없어요.")).toBeInTheDocument();
+  });
+
+  // Guards the "다시 확인하기" force-recheck button (see
+  // httpserver.sessionRestudyHandler): it must only appear alongside the "no
+  // issues found" message, never alongside a wrap-up that already has real
+  // content — that state already has "퀴즈 풀기" instead, and a stuck-empty
+  // summary should never be silently overwritable by both buttons at once.
+  it("shows the force-recheck button only when the study summary is empty", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: true, studySummaryStatus: "done" },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
+      session: {
+        id: "s1",
+        title: "hello there",
+        createdAt: 1,
+        updatedAt: 2,
+        ended: true,
+        studySummary: [{ english: "Focus on third-person -s.", translation: "3인칭 단수 -s에 집중하세요." }],
+        studySummaryStatus: "done",
+      },
+      turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+    await screen.findByText("hi");
+    await user.click(screen.getByRole("button", { name: "대화 종료" }));
+
+    await screen.findByText("Focus on third-person -s.");
+    expect(screen.queryByText("다시 확인하기")).not.toBeInTheDocument();
+  });
+
+  // Guards the recovery flow itself: clicking "다시 확인하기" while a wrap-up
+  // is stuck reading "no issues found" must call restudySession (see
+  // lib/sessions.ts), switch straight to the "정리 중" loading state, and
+  // pick up the regenerated summary once a later poll sees it land — the
+  // same pollStudySummary machinery a freshly-ended room already uses.
+  it("다시 확인하기 forces the stuck wrap-up to regenerate and shows the result once it lands", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(fetchSessions).mockResolvedValue([
+        { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: true, studySummaryStatus: "done" },
+      ]);
+      vi.mocked(fetchSessionDetail).mockResolvedValue({
+        hasMore: false,
+        session: {
+          id: "s1",
+          title: "hello there",
+          createdAt: 1,
+          updatedAt: 2,
+          ended: true,
+          studySummary: [],
+          studySummaryStatus: "done",
+        },
+        turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
+      });
+      render(<App />);
+      await flushUntil(() => screen.queryByText("hello there") !== null);
+      fireEvent.click(screen.getByText("hello there"));
+      await flushUntil(() => screen.queryByText("hi") !== null);
+
+      fireEvent.click(screen.getByRole("button", { name: "대화 종료" }));
+      await flushUntil(
+        () => screen.queryByText("이번 대화에서는 딱히 걸린 부분이 없었어요. 아주 잘했어요!") !== null,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "다시 확인하기" }));
+      await flushUntil(() => screen.queryByText("학습 피드백을 정리하는 중…") !== null);
+      expect(restudySession).toHaveBeenCalledWith("s1");
+
+      vi.mocked(fetchSessionDetail).mockResolvedValue({
+        hasMore: false,
+        session: {
+          id: "s1",
+          title: "hello there",
+          createdAt: 1,
+          updatedAt: 2,
+          ended: true,
+          studySummary: [{ english: "Focus on third-person -s.", translation: "3인칭 단수 -s에 집중하세요." }],
+          studySummaryStatus: "done",
+        },
+        turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
+      });
+      await act(() => vi.advanceTimersByTimeAsync(4000));
+      await flushUntil(() => screen.queryByText("Focus on third-person -s.") !== null);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("scrolls the transcript to the bottom when entering a room, so the latest turn is visible", async () => {
