@@ -487,6 +487,18 @@ func (f *fakeStore) FailStudySummary(ctx context.Context, userID, sessionID stri
 	return nil
 }
 
+func (f *fakeStore) RestartStudySummary(ctx context.Context, userID, sessionID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.sessions[fakeStoreKey(userID, sessionID)]
+	if d == nil {
+		return nil // no-op, same as Save
+	}
+	d.meta.StudySummary = nil
+	d.meta.StudySummaryStatus = store.JobStatusPending
+	return nil
+}
+
 func (f *fakeStore) DeleteSession(ctx context.Context, userID, sessionID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

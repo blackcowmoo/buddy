@@ -68,6 +68,7 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux.HandleFunc("GET /api/sessions/{id}", sessionDetailHandler(ident, st, translateQueue, correctionQueue, pipe, studySummaryQueue))
 	mux.HandleFunc("GET /api/sessions/{id}/compaction", sessionCompactionHandler(ident, st))
 	mux.HandleFunc("POST /api/sessions/{id}/end", sessionEndHandler(ident, st, pipe, studySummaryQueue))
+	mux.HandleFunc("POST /api/sessions/{id}/restudy", sessionRestudyHandler(ident, st, pipe, studySummaryQueue))
 	mux.HandleFunc("GET /api/sessions/{id}/quiz", sessionQuizHandler(ident, st, pipe))
 	mux.HandleFunc("DELETE /api/sessions/{id}", sessionDeleteHandler(ident, st, audio, recordings))
 	mux.HandleFunc("GET /api/settings", settingsGetHandler(ident, st))
@@ -409,6 +410,62 @@ func sessionEndHandler(ident identity.Identifier, st store.Store, pipe *pipeline
 			go func() {
 				if err := transport.RunStudySummaryInline(context.Background(), pipe, st, userID, sessionID); err != nil {
 					log.Printf("end session: study summary %s/%s: %v", userID, sessionID, err)
+				}
+			}()
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// sessionRestudyHandler lets a learner force-regenerate an ended session's
+// study-summary wrap-up when it landed as JobStatusDone with an empty
+// result — the "다시 확인하기" button EndConversationControl (apps/web/src/
+// App.tsx) shows only in that exact state. That combination should be rare
+// now that runStudySummary itself treats an empty result as a failure
+// (see its doc comment), but a session that already landed there before
+// that fix — or hit some other still-unknown gap — has no other way back:
+// needsStudySummaryBackfill only re-triggers a JobStatusPending row, and
+// this one reads as done. Gated server-side on the same state the button is
+// shown for (not just trusting the client) so this can only ever regenerate
+// an empty wrap-up, never clobber one that already has real content.
+func sessionRestudyHandler(ident identity.Identifier, st store.Store, pipe *pipeline.Pipeline, studySummaryQueue *asyncjob.Queue) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := requireUser(w, r, ident)
+		if !ok {
+			return
+		}
+		sessionID := r.PathValue("id")
+
+		meta, _, err := st.SessionDetail(r.Context(), userID, sessionID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				http.NotFound(w, r)
+				return
+			}
+			serverError(w, "session detail", err)
+			return
+		}
+		if !meta.Ended || meta.StudySummaryStatus != store.JobStatusDone || len(meta.StudySummary) != 0 {
+			http.Error(w, "study summary is not in a re-checkable state", http.StatusConflict)
+			return
+		}
+
+		if err := st.RestartStudySummary(r.Context(), userID, sessionID); err != nil {
+			serverError(w, "restart study summary", err)
+			return
+		}
+
+		if studySummaryQueue != nil {
+			if err := transport.EnqueueStudySummaryJob(r.Context(), studySummaryQueue, pipe, st, userID, sessionID); err != nil {
+				log.Printf("restudy session: enqueue study summary %s/%s: %v", userID, sessionID, err)
+			}
+		} else {
+			// No Redis configured — same detached-goroutine fallback
+			// sessionEndHandler uses.
+			go func() {
+				if err := transport.RunStudySummaryInline(context.Background(), pipe, st, userID, sessionID); err != nil {
+					log.Printf("restudy session: study summary %s/%s: %v", userID, sessionID, err)
 				}
 			}()
 		}

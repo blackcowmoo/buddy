@@ -149,3 +149,17 @@ export async function deleteSession(id: string): Promise<boolean> {
 export async function endSession(id: string): Promise<boolean> {
   return requestOK(`api/sessions/${encodeURIComponent(id)}/end`, { method: "POST" });
 }
+
+// Forces an ended session's study-summary wrap-up to regenerate when it
+// landed showing "no issues" (see httpserver.sessionRestudyHandler) — the
+// "다시 확인하기" button in EndConversationControl, shown only in that exact
+// state, since the server itself refuses this call unless studySummaryStatus
+// is already "done" with an empty summary: GenerateStudySummary occasionally
+// returns a valid-but-empty result despite real issues in the transcript, and
+// that state has no automatic way back on its own. Returns whether the
+// restart request itself succeeded, not whether the regenerated summary has
+// landed yet — callers still poll studySummaryStatus for that, same as
+// endSession.
+export async function restudySession(id: string): Promise<boolean> {
+  return requestOK(`api/sessions/${encodeURIComponent(id)}/restudy`, { method: "POST" });
+}

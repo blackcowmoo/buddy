@@ -70,9 +70,15 @@ type fakeSessionStore struct {
 		userID, sessionID string
 		summary           []protocol.StudySummarySentence
 	}
-	completeSummaryErr   error
-	failSummaryCalls     []struct{ userID, sessionID string }
-	failSummaryErr       error
+	completeSummaryErr error
+	failSummaryCalls   []struct{ userID, sessionID string }
+	failSummaryErr     error
+
+	// restartSummaryCalls/restartSummaryErr back RestartStudySummary for
+	// sessions_restudy_test.go; left zero for tests in this file, which
+	// don't call it.
+	restartSummaryCalls []struct{ userID, sessionID string }
+	restartSummaryErr   error
 
 	// learnerProfiles/learnerProfileErr back GetLearnerProfile/
 	// SaveLearnerProfile for sessions_end_test.go.
@@ -224,6 +230,16 @@ func (f *fakeSessionStore) FailStudySummary(ctx context.Context, userID, session
 	return nil
 }
 
+func (f *fakeSessionStore) RestartStudySummary(ctx context.Context, userID, sessionID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.restartSummaryErr != nil {
+		return f.restartSummaryErr
+	}
+	f.restartSummaryCalls = append(f.restartSummaryCalls, struct{ userID, sessionID string }{userID, sessionID})
+	return nil
+}
+
 func (f *fakeSessionStore) GetLearnerProfile(ctx context.Context, userID string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -268,6 +284,12 @@ func (f *fakeSessionStore) snapshotFailSummaryCalls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.failSummaryCalls)
+}
+
+func (f *fakeSessionStore) snapshotRestartSummaryCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.restartSummaryCalls)
 }
 
 func (f *fakeSessionStore) snapshotLearnerProfile(userID string) string {

@@ -80,6 +80,21 @@ func runStudySummary(ctx context.Context, pipe *pipeline.Pipeline, st store.Stor
 			}
 			return fmt.Errorf("study summary: generate: %w", err)
 		}
+		if len(summary) == 0 {
+			// GenerateStudySummary returned syntactically valid but empty
+			// JSON despite real issues to report — an LLM hiccup, not a
+			// genuinely clean session. Completing this as JobStatusDone
+			// would be indistinguishable from "nothing to flag" (see
+			// CompleteStudySummary's doc comment) and, since
+			// needsStudySummaryBackfill only re-triggers a JobStatusPending
+			// row, would leave the learner stuck with no automatic way
+			// back — treating it as a failure instead lets the reaper retry
+			// it like any other transient error.
+			if failErr := st.FailStudySummary(context.Background(), userID, sessionID); failErr != nil {
+				log.Printf("study summary: fail %s/%s: %v", userID, sessionID, failErr)
+			}
+			return fmt.Errorf("study summary: generated empty summary for %d flagged issue(s)", len(issues))
+		}
 	}
 
 	if err := st.CompleteStudySummary(ctx, userID, sessionID, summary); err != nil {

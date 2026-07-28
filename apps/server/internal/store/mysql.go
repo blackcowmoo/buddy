@@ -590,6 +590,21 @@ func (s *MySQLStore) FailStudySummary(ctx context.Context, userID, sessionID str
 	return nil
 }
 
+// RestartStudySummary resets a wrap-up back to JobStatusPending with an
+// empty study_summary — see the Store interface doc comment. Unlike
+// EndSession (which only ever moves a session pending the first time), this
+// is meant to be called on an already-terminal row, so it clears
+// study_summary explicitly rather than relying on it already being empty.
+func (s *MySQLStore) RestartStudySummary(ctx context.Context, userID, sessionID string) error {
+	if _, err := s.rw.ExecContext(ctx, `
+		UPDATE `+sessionsTable+` SET study_summary = '', study_summary_status = ?
+		WHERE user_id = ? AND id = ?
+	`, JobStatusPending, userID, sessionID); err != nil {
+		return fmt.Errorf("store: restart study summary: %w", err)
+	}
+	return nil
+}
+
 func (s *MySQLStore) ListSessions(ctx context.Context, userID string) ([]SessionMeta, error) {
 	rows, err := s.ro.QueryContext(ctx, `
 		SELECT id, title, created_at, updated_at, ended, study_summary, study_summary_status FROM `+sessionsTable+`

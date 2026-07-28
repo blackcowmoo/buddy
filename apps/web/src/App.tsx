@@ -21,6 +21,7 @@ import {
   fetchSessionDetail,
   fetchSessionQuiz,
   fetchSessions,
+  restudySession,
   type SessionSummary,
   type TurnRecord,
 } from "./lib/sessions";
@@ -895,6 +896,27 @@ export function App() {
     backToList();
   }, [activeSessionId, backToList]);
 
+  // Forces a stuck "no issues found" wrap-up to regenerate — see
+  // httpserver.sessionRestudyHandler, which only accepts this while
+  // studySummaryStatus is "done" with an empty summary (the same state
+  // EndConversationControl gates showing its "다시 확인하기" button on): an
+  // occasional case where GenerateStudySummary's LLM call returned a
+  // valid-but-empty result despite real issues in the transcript, with no
+  // automatic way back to pending. Switches straight to the "정리 중" view
+  // and reuses pollStudySummary the same way reopening a still-generating
+  // room does, since the background job runs the identical path either way.
+  const restudyConversation = useCallback(async () => {
+    if (!activeSessionId) return;
+    const token = pollTokenRef.current;
+    setEndedSummaryStatus("pending");
+    const ok = await restudySession(activeSessionId);
+    if (!ok) {
+      setEndedSummaryStatus("failed");
+      return;
+    }
+    if (token) pollStudySummary(activeSessionId, token);
+  }, [activeSessionId, pollStudySummary]);
+
   // Restores an open room from the URL on a fresh load (e.g. a refresh), and
   // keeps the view in sync with browser back/forward (incl. swipe) — neither
   // enterChat nor backToList touch React state directly for that path, since
@@ -1200,6 +1222,7 @@ export function App() {
               studySummary={endedSummary}
               studySummaryStatus={endedSummaryStatus}
               onEnd={endConversation}
+              onRestudy={restudyConversation}
             />
           </>
         }
@@ -1870,12 +1893,14 @@ function EndConversationControl({
   studySummary,
   studySummaryStatus,
   onEnd,
+  onRestudy,
 }: {
   sessionId: string | null;
   ended: boolean;
   studySummary: StudySummarySentence[];
   studySummaryStatus: "pending" | "done" | "failed";
   onEnd: () => void;
+  onRestudy: () => void;
 }) {
   const [open, setOpen] = useState(false);
   // Quiz state lives here (not inside QuizPanel) only so it can be reset
@@ -1973,6 +1998,11 @@ function EndConversationControl({
               {studySummary.length > 0 && (
                 <button type="button" className="quiz-start-btn" onClick={startQuiz}>
                   퀴즈 풀기
+                </button>
+              )}
+              {studySummary.length === 0 && (
+                <button type="button" className="restudy-btn" onClick={onRestudy}>
+                  다시 확인하기
                 </button>
               )}
             </>
