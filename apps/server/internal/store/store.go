@@ -41,9 +41,11 @@ type SessionMeta struct {
 	// EndSession freezes it immediately; StudySummary/StudySummaryStatus
 	// below fill in afterward, once the background wrap-up job finishes.
 	Ended bool `json:"ended"`
-	// StudySummary is the wrap-up text saved by CompleteStudySummary — ""
-	// until StudySummaryStatus reaches JobStatusDone.
-	StudySummary string `json:"studySummary,omitempty"`
+	// StudySummary is the wrap-up saved by CompleteStudySummary — nil until
+	// StudySummaryStatus reaches JobStatusDone. Each sentence is written in
+	// English with a paired native-language translation (see
+	// protocol.StudySummarySentence and pipeline.GenerateStudySummary).
+	StudySummary []protocol.StudySummarySentence `json:"studySummary,omitempty"`
 	// StudySummaryStatus is the end-of-conversation wrap-up job's status
 	// (JobStatusPending/JobStatusDone/JobStatusFailed), set to
 	// JobStatusPending the instant EndSession freezes the room and updated
@@ -230,12 +232,12 @@ type Store interface {
 	// outcome once that background job finishes. A no-op (nil error) if
 	// sessionID doesn't exist or belongs to a different user, same as Save.
 	EndSession(ctx context.Context, userID, sessionID string) error
-	// CompleteStudySummary saves the wrap-up text an asyncjob.KindStudySummary
+	// CompleteStudySummary saves the wrap-up an asyncjob.KindStudySummary
 	// job generated for an already-ended session — StudySummary becomes
 	// summary and StudySummaryStatus becomes JobStatusDone, the terminal
 	// state a reopened room (or the room list) polls for. A no-op if
 	// sessionID doesn't exist or belongs to a different user.
-	CompleteStudySummary(ctx context.Context, userID, sessionID, summary string) error
+	CompleteStudySummary(ctx context.Context, userID, sessionID string, summary []protocol.StudySummarySentence) error
 	// FailStudySummary marks StudySummaryStatus JobStatusFailed after an
 	// asyncjob.KindStudySummary job's LLM call errored — the reaper still
 	// retries the job from scratch regardless (see asyncjob.Queue.Execute),

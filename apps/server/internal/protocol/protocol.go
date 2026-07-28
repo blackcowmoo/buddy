@@ -95,6 +95,29 @@ type Issue struct {
 	ExplanationTranslation string `json:"explanationTranslation"` // native-language translation of Explanation
 }
 
+// StudySummarySentence pairs one English sentence of the end-of-conversation
+// study wrap-up (see pipeline.GenerateStudySummary) with its native-language
+// translation — the same English-first, translation-second shape as
+// Issue.Explanation/ExplanationTranslation, applied to a whole sentence
+// instead of one issue's explanation.
+type StudySummarySentence struct {
+	English     string `json:"english"`
+	Translation string `json:"translation"`
+}
+
+// QuizQuestion is one fill-in-the-blank practice item synthesized from a
+// session's flagged issues (see pipeline.GenerateStudyQuiz) — generated only
+// when a learner explicitly asks to practice, as a way to test whether
+// GenerateStudySummary's prose wrap-up actually landed, rather than just
+// re-reading it.
+type QuizQuestion struct {
+	Prompt                 string `json:"prompt"`                 // English sentence with exactly one blank ("___") to fill in
+	Answer                 string `json:"answer"`                 // the word/phrase that correctly fills the blank, in English
+	Translation            string `json:"translation"`            // native-language translation of the full, correctly-filled sentence
+	Explanation            string `json:"explanation"`            // why this is the answer, in English, short and kind
+	ExplanationTranslation string `json:"explanationTranslation"` // native-language translation of Explanation
+}
+
 // ---- client -> server (TEXT control frames) ---------------------------------
 
 type ClientMsg struct {

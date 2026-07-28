@@ -45,7 +45,7 @@ func TestSessionEndHandlerFreezesImmediately(t *testing.T) {
 	pipe := &pipeline.Pipeline{
 		Analysis: []pipeline.Candidate{{Model: "m", LLM: &fakeStudySummaryLLM{complete: func(msgs []llm.Message) (string, error) {
 			<-release // never released during this test — proves ServeHTTP doesn't wait for it
-			return "unused", nil
+			return `{"sentences":[{"english":"unused","translation":"unused"}]}`, nil
 		}}}},
 	}
 	st := &fakeSessionStore{
@@ -82,7 +82,7 @@ func TestSessionEndHandlerFreezesImmediately(t *testing.T) {
 func TestSessionEndHandlerNoQueueEventuallyCompletesStudySummary(t *testing.T) {
 	pipe := &pipeline.Pipeline{
 		Analysis: []pipeline.Candidate{{Model: "m", LLM: &fakeStudySummaryLLM{complete: func(msgs []llm.Message) (string, error) {
-			return "focus on third-person -s", nil
+			return `{"sentences":[{"english":"Focus on third-person -s.","translation":"3인칭 단수 -s에 집중하세요."}]}`, nil
 		}}}},
 	}
 	st := &fakeSessionStore{
@@ -114,7 +114,7 @@ func TestSessionEndHandlerWithQueueEnqueuesDurableJob(t *testing.T) {
 	queue := asyncjob.NewQueue(rdb)
 	pipe := &pipeline.Pipeline{
 		Analysis: []pipeline.Candidate{{Model: "m", LLM: &fakeStudySummaryLLM{complete: func(msgs []llm.Message) (string, error) {
-			return "focus on third-person -s", nil
+			return `{"sentences":[{"english":"Focus on third-person -s.","translation":"3인칭 단수 -s에 집중하세요."}]}`, nil
 		}}}},
 	}
 	st := &fakeSessionStore{

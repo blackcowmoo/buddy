@@ -66,7 +66,10 @@ type fakeSessionStore struct {
 
 	// completeSummaryCalls/failSummaryCalls back CompleteStudySummary/
 	// FailStudySummary for sessions_end_test.go and study_summary_job_test.go.
-	completeSummaryCalls []struct{ userID, sessionID, summary string }
+	completeSummaryCalls []struct {
+		userID, sessionID string
+		summary           []protocol.StudySummarySentence
+	}
 	completeSummaryErr   error
 	failSummaryCalls     []struct{ userID, sessionID string }
 	failSummaryErr       error
@@ -198,13 +201,16 @@ func (f *fakeSessionStore) EndSession(ctx context.Context, userID, sessionID str
 	return nil
 }
 
-func (f *fakeSessionStore) CompleteStudySummary(ctx context.Context, userID, sessionID, summary string) error {
+func (f *fakeSessionStore) CompleteStudySummary(ctx context.Context, userID, sessionID string, summary []protocol.StudySummarySentence) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.completeSummaryErr != nil {
 		return f.completeSummaryErr
 	}
-	f.completeSummaryCalls = append(f.completeSummaryCalls, struct{ userID, sessionID, summary string }{userID, sessionID, summary})
+	f.completeSummaryCalls = append(f.completeSummaryCalls, struct {
+		userID, sessionID string
+		summary           []protocol.StudySummarySentence
+	}{userID, sessionID, summary})
 	return nil
 }
 

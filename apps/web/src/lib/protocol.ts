@@ -26,6 +26,26 @@ export interface Correction {
   issues: Issue[];
 }
 
+// One sentence of the end-of-conversation study wrap-up (see
+// SessionSummary.studySummary in lib/sessions.ts), paired with its
+// native-language translation — same English-first, translation-second
+// shape as Issue.explanation/explanationTranslation.
+export interface StudySummarySentence {
+  english: string;
+  translation: string;
+}
+
+// One fill-in-the-blank practice question, generated on demand from a
+// session's flagged issues (see fetchSessionQuiz in lib/sessions.ts) —
+// mirrors protocol.QuizQuestion server-side.
+export interface QuizQuestion {
+  prompt: string; // English sentence with exactly one "___" blank
+  answer: string; // the word/phrase that correctly fills the blank
+  translation: string; // native-language translation of the full, correct sentence
+  explanation: string; // why this is the answer, in English
+  explanationTranslation: string; // native-language translation of explanation
+}
+
 // How the learner produced a turn — spoken (transcribed by STT) or typed.
 export type InputSource = "voice" | "text";
 

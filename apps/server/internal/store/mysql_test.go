@@ -140,6 +140,63 @@ func TestMySQLNewMySQLIsIdempotent(t *testing.T) {
 	_ = st.Close()
 }
 
+// TestMySQLNewMySQLResetsLegacyPlainTextStudySummaries guards the migration
+// that protects decodeStudySummary from a real hazard: a "done" study_summary
+// row written before GenerateStudySummary switched to the bilingual JSON
+// shape is plain native-language prose, not JSON — silently undecodable, not
+// silently upgradable. A row already in the new JSON-array shape (starts
+// with '[') must survive a re-migration untouched; only genuinely legacy
+// plain-text rows get reset back to "not generated".
+func TestMySQLNewMySQLResetsLegacyPlainTextStudySummaries(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	const userID = "legacy-summary-user"
+	legacySession, jsonSession := "sess-legacy", "sess-json"
+
+	if err := st.SaveTurn(ctx, userID, legacySession, 1, "user", "first message", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(legacy) error = %v", err)
+	}
+	if err := st.SaveTurn(ctx, userID, jsonSession, 1, "user", "first message", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(json) error = %v", err)
+	}
+	// legacySession gets the old plain-text shape written directly (as if by
+	// a pre-migration CompleteStudySummary); jsonSession gets the real thing.
+	if _, err := st.rw.ExecContext(ctx, `
+		UPDATE `+sessionsTable+` SET study_summary = ?, study_summary_status = 'done' WHERE user_id = ? AND id = ?
+	`, "그동안 3인칭 단수 -s를 자주 빠뜨렸어요.", userID, legacySession); err != nil {
+		t.Fatalf("seed legacy study_summary: %v", err)
+	}
+	if err := st.EndSession(ctx, userID, jsonSession); err != nil {
+		t.Fatalf("EndSession(json) error = %v", err)
+	}
+	wantJSON := []protocol.StudySummarySentence{{English: "Focus on third-person -s.", Translation: "3인칭 단수 -s에 집중하세요."}}
+	if err := st.CompleteStudySummary(ctx, userID, jsonSession, wantJSON); err != nil {
+		t.Fatalf("CompleteStudySummary(json) error = %v", err)
+	}
+
+	reopened, err := NewMySQL(sharedStoreConfig)
+	if err != nil {
+		t.Fatalf("NewMySQL() error = %v", err)
+	}
+	defer reopened.Close()
+
+	legacyMeta, _, err := reopened.SessionDetail(ctx, userID, legacySession)
+	if err != nil {
+		t.Fatalf("SessionDetail(legacy) error = %v", err)
+	}
+	if legacyMeta.StudySummaryStatus != "" || len(legacyMeta.StudySummary) != 0 {
+		t.Fatalf("legacy meta = %+v, want the plain-text summary reset to empty/pending-regeneration", legacyMeta)
+	}
+
+	jsonMeta, _, err := reopened.SessionDetail(ctx, userID, jsonSession)
+	if err != nil {
+		t.Fatalf("SessionDetail(json) error = %v", err)
+	}
+	if jsonMeta.StudySummaryStatus != JobStatusDone || len(jsonMeta.StudySummary) != 1 || jsonMeta.StudySummary[0] != wantJSON[0] {
+		t.Fatalf("json meta = %+v, want the bilingual summary left untouched by the legacy-reset migration", jsonMeta)
+	}
+}
+
 func TestMySQLLoadUnknownUserReturnsZeroProfile(t *testing.T) {
 	st := requireStore(t)
 	got, err := st.Load(context.Background(), "nobody", "no-such-session")
@@ -1078,8 +1135,8 @@ func TestMySQLEndSessionFreezesImmediatelyWithoutTheSummary(t *testing.T) {
 	if meta.StudySummaryStatus != JobStatusPending {
 		t.Fatalf("StudySummaryStatus = %q, want JobStatusPending immediately after EndSession", meta.StudySummaryStatus)
 	}
-	if meta.StudySummary != "" {
-		t.Fatalf("StudySummary = %q, want empty until CompleteStudySummary runs", meta.StudySummary)
+	if len(meta.StudySummary) != 0 {
+		t.Fatalf("StudySummary = %+v, want empty until CompleteStudySummary runs", meta.StudySummary)
 	}
 
 	sessions, err := st.ListSessions(ctx, userID)
@@ -1116,7 +1173,8 @@ func TestMySQLCompleteStudySummarySavesTextAndMarksDone(t *testing.T) {
 	if err := st.EndSession(ctx, userID, sessionID); err != nil {
 		t.Fatalf("EndSession() error = %v", err)
 	}
-	if err := st.CompleteStudySummary(ctx, userID, sessionID, "focus on third-person -s"); err != nil {
+	wantSummary := []protocol.StudySummarySentence{{English: "Focus on third-person -s.", Translation: "3인칭 단수 -s에 집중하세요."}}
+	if err := st.CompleteStudySummary(ctx, userID, sessionID, wantSummary); err != nil {
 		t.Fatalf("CompleteStudySummary() error = %v", err)
 	}
 	meta, _, err := st.SessionDetail(ctx, userID, sessionID)
@@ -1126,8 +1184,8 @@ func TestMySQLCompleteStudySummarySavesTextAndMarksDone(t *testing.T) {
 	if meta.StudySummaryStatus != JobStatusDone {
 		t.Fatalf("StudySummaryStatus = %q, want JobStatusDone", meta.StudySummaryStatus)
 	}
-	if meta.StudySummary != "focus on third-person -s" {
-		t.Fatalf("StudySummary = %q, want the completed wrap-up", meta.StudySummary)
+	if len(meta.StudySummary) != 1 || meta.StudySummary[0] != wantSummary[0] {
+		t.Fatalf("StudySummary = %+v, want %+v", meta.StudySummary, wantSummary)
 	}
 }
 
@@ -1155,8 +1213,8 @@ func TestMySQLFailStudySummaryMarksFailedWithoutTouchingText(t *testing.T) {
 	if meta.StudySummaryStatus != JobStatusFailed {
 		t.Fatalf("StudySummaryStatus = %q, want JobStatusFailed", meta.StudySummaryStatus)
 	}
-	if meta.StudySummary != "" {
-		t.Fatalf("StudySummary = %q, want still empty after a failed attempt", meta.StudySummary)
+	if len(meta.StudySummary) != 0 {
+		t.Fatalf("StudySummary = %+v, want still empty after a failed attempt", meta.StudySummary)
 	}
 }
 

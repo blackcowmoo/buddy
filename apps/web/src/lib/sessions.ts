@@ -1,5 +1,5 @@
 import { fetchJSON, requestOK } from "./fetchJSON";
-import type { Correction, InputSource } from "./protocol";
+import type { Correction, InputSource, QuizQuestion, StudySummarySentence } from "./protocol";
 
 // Mirrors store.SessionMeta / store.Turn (apps/server/internal/store/store.go).
 export interface SessionSummary {
@@ -15,8 +15,10 @@ export interface SessionSummary {
   // updating — a real API response always sets it.
   ended?: boolean;
   // The persisted study wrap-up, saved once studySummaryStatus reaches
-  // "done" (see EndConversationControl in App.tsx) — "" until then.
-  studySummary?: string;
+  // "done" (see EndConversationControl in App.tsx) — each sentence in
+  // English with a paired native-language translation; absent/empty until
+  // then.
+  studySummary?: StudySummarySentence[];
   // The end-of-conversation wrap-up job's status ("pending" | "done" |
   // "failed"), set the instant endSession freezes the room and updated by
   // the background job that actually generates studySummary (see
@@ -112,6 +114,21 @@ export async function fetchSessionCompaction(id: string): Promise<SessionCompact
     `api/sessions/${encodeURIComponent(id)}/compaction`,
     null,
   );
+}
+
+// Generates a short fill-in-the-blank practice quiz on demand from an ended
+// session's flagged issues (see httpserver.sessionQuizHandler) — unlike
+// studySummary (generated once, automatically, right when the conversation
+// ends), this fires only when the learner opens the quiz (see the "퀴즈 풀기"
+// button in EndConversationControl), so a fresh LLM call happens per
+// request rather than something persisted on the session. Returns null on
+// any failure.
+export async function fetchSessionQuiz(id: string): Promise<QuizQuestion[] | null> {
+  const result = await fetchJSON<{ questions: QuizQuestion[] } | null>(
+    `api/sessions/${encodeURIComponent(id)}/quiz`,
+    null,
+  );
+  return result?.questions ?? null;
 }
 
 // Deletes one chat room and its transcript (the server also cascades to any

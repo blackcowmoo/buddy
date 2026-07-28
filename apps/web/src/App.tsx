@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { BuddyClient, type Status } from "./lib/ws";
-import type { Correction, InputSource, ServerEvent } from "./lib/protocol";
+import type { Correction, InputSource, QuizQuestion, ServerEvent, StudySummarySentence } from "./lib/protocol";
 import { PCMRecorder } from "./audio/recorder";
 import { KokoroSpeaker } from "./tts/kokoro";
 import { prPath } from "./lib/rootPath";
@@ -19,6 +19,7 @@ import {
   endSession,
   fetchSessionCompaction,
   fetchSessionDetail,
+  fetchSessionQuiz,
   fetchSessions,
   type SessionSummary,
   type TurnRecord,
@@ -245,7 +246,7 @@ export function App() {
   // set alongside `ended` in enterChat from whatever SessionDetail already
   // reports, and refreshed by pollStudySummary below while it's still being
   // generated.
-  const [endedSummary, setEndedSummary] = useState("");
+  const [endedSummary, setEndedSummary] = useState<StudySummarySentence[]>([]);
   // Mirrors store.SessionMeta.StudySummaryStatus for the open room — "done"
   // is the resting state (nothing left to poll for, including a room ended
   // before this became an async job, whose summary was already generated
@@ -667,7 +668,7 @@ export function App() {
       const detail = await fetchSessionDetail(sessionId, { limit: 0 });
       if (pollTokenRef.current !== token || !detail) return;
       const status = detail.session.studySummaryStatus || "done";
-      setEndedSummary(detail.session.studySummary ?? "");
+      setEndedSummary(detail.session.studySummary ?? []);
       setEndedSummaryStatus(status);
       if (status !== "done" && attempt < maxAttempts) setTimeout(tick, intervalMs);
     };
@@ -684,7 +685,7 @@ export function App() {
       resetTurnState();
       setEnded(false);
       endedRef.current = false;
-      setEndedSummary("");
+      setEndedSummary([]);
       setEndedSummaryStatus("done");
       setAwaitingReply(false);
       // A fresh room entry always starts stuck to the bottom (the most
@@ -730,7 +731,7 @@ export function App() {
           // endedRef) ignores anything that arrives anyway.
           setEnded(true);
           endedRef.current = true;
-          setEndedSummary(detail.session.studySummary ?? "");
+          setEndedSummary(detail.session.studySummary ?? []);
           const summaryStatus = detail.session.studySummaryStatus || "done";
           setEndedSummaryStatus(summaryStatus);
           clientRef.current?.close();
@@ -826,7 +827,7 @@ export function App() {
     resetTurnState();
     setEnded(false);
     endedRef.current = false;
-    setEndedSummary("");
+    setEndedSummary([]);
     setEndedSummaryStatus("done");
     setAwaitingReply(false);
     setMenuOpen(false);
@@ -1873,18 +1874,48 @@ function EndConversationControl({
 }: {
   sessionId: string | null;
   ended: boolean;
-  studySummary: string;
+  studySummary: StudySummarySentence[];
   studySummaryStatus: "pending" | "done" | "failed";
   onEnd: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  // Quiz state lives here (not inside QuizPanel) only so it can be reset
+  // whenever the popover itself closes — reopening always lands back on the
+  // summary, never mid-quiz from a previous visit.
+  const [quizMode, setQuizMode] = useState(false);
+  const [quiz, setQuiz] = useState<QuizQuestion[] | null>(null);
+  const [quizLoading, setQuizLoading] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
-  useDismiss(open, panelRef, () => setOpen(false));
+
+  const close = useCallback(() => {
+    setOpen(false);
+    setQuizMode(false);
+    setQuiz(null);
+  }, []);
+  useDismiss(open, panelRef, close);
 
   const toggle = useCallback(() => {
     if (!sessionId) return;
-    setOpen((o) => !o);
+    if (open) {
+      close();
+    } else {
+      setOpen(true);
+    }
+  }, [sessionId, open, close]);
+
+  const startQuiz = useCallback(async () => {
+    if (!sessionId) return;
+    setQuizMode(true);
+    setQuizLoading(true);
+    const questions = await fetchSessionQuiz(sessionId);
+    setQuiz(questions ?? []);
+    setQuizLoading(false);
   }, [sessionId]);
+
+  const backToSummary = useCallback(() => {
+    setQuizMode(false);
+    setQuiz(null);
+  }, []);
 
   if (!sessionId) return null;
 
@@ -1923,14 +1954,146 @@ function EndConversationControl({
               학습 피드백을 정리하지 못했어요. 잠시 후 다시 확인해주세요.
             </div>
           )}
-          {ended && studySummaryStatus === "done" && (
+          {ended && studySummaryStatus === "done" && !quizMode && (
             <>
               <div className="compaction-summary-header">
-                {studySummary
+                {studySummary.length > 0
                   ? "이 대화는 종료됐어요. 그때의 학습 피드백이에요."
                   : "이번 대화에서는 딱히 걸린 부분이 없었어요. 아주 잘했어요!"}
               </div>
-              {studySummary && <div className="compaction-summary-text">{studySummary}</div>}
+              {studySummary.length > 0 && (
+                <div className="compaction-summary-text">
+                  {studySummary.map((s, i) => (
+                    <p key={i} className="study-summary-sentence">
+                      <span className="study-summary-en">{s.english}</span>
+                      <span className="study-summary-ko">{s.translation}</span>
+                    </p>
+                  ))}
+                </div>
+              )}
+              {studySummary.length > 0 && (
+                <button type="button" className="quiz-start-btn" onClick={startQuiz}>
+                  퀴즈 풀기
+                </button>
+              )}
+            </>
+          )}
+          {ended && studySummaryStatus === "done" && quizMode && (
+            <QuizPanel loading={quizLoading} questions={quiz} onBack={backToSummary} />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// normalizeQuizAnswer loosely-matches a learner's typed answer against
+// QuizQuestion.answer for QuizPanel's grading: case/whitespace differences
+// and trailing punctuation shouldn't count as wrong, but this is still just
+// a string comparison, not an LLM judgment call — a correct answer phrased
+// very differently from QuizQuestion.answer (a synonym, a different verb
+// tense) will be marked wrong. Acceptable for a quick self-check quiz; not
+// worth an extra per-answer LLM call to fix.
+function normalizeQuizAnswer(s: string): string {
+  return s.trim().toLowerCase().replace(/[.,!?;:'"]+$/g, "");
+}
+
+// The fill-in-the-blank practice quiz shown in place of the study summary
+// once a learner taps "퀴즈 풀기" (see EndConversationControl, which owns
+// questions/loading state so it can reset them the instant the popover
+// closes). One question at a time; typing an answer and confirming reveals
+// whether it matched (see normalizeQuizAnswer) plus the explanation/
+// translation, then advances — ending on a plain right/total score.
+function QuizPanel({
+  loading,
+  questions,
+  onBack,
+}: {
+  loading: boolean;
+  questions: QuizQuestion[] | null;
+  onBack: () => void;
+}) {
+  const [index, setIndex] = useState(0);
+  const [answer, setAnswer] = useState("");
+  const [checked, setChecked] = useState(false);
+  const [correctCount, setCorrectCount] = useState(0);
+
+  const question = questions?.[index];
+  const isCorrect = checked && question ? normalizeQuizAnswer(answer) === normalizeQuizAnswer(question.answer) : false;
+
+  const check = useCallback(() => {
+    if (!question || checked || !answer.trim()) return;
+    setChecked(true);
+    if (normalizeQuizAnswer(answer) === normalizeQuizAnswer(question.answer)) {
+      setCorrectCount((c) => c + 1);
+    }
+  }, [answer, checked, question]);
+
+  const next = useCallback(() => {
+    setIndex((i) => i + 1);
+    setAnswer("");
+    setChecked(false);
+  }, []);
+
+  return (
+    <div className="quiz-panel">
+      <button type="button" className="ghost quiz-back-btn" onClick={onBack}>
+        ← 요약으로
+      </button>
+      {loading && (
+        <div className="compaction-loading" role="status">
+          퀴즈를 만드는 중…
+        </div>
+      )}
+      {!loading && questions && questions.length === 0 && (
+        <div className="compaction-empty" role="status">
+          퀴즈를 만들 만한 내용이 없어요.
+        </div>
+      )}
+      {!loading && question && (
+        <div className="quiz-question">
+          <div className="quiz-progress">
+            {index + 1} / {questions!.length}
+          </div>
+          <div className="quiz-prompt">{question.prompt}</div>
+          <input
+            type="text"
+            className="quiz-answer-input"
+            value={answer}
+            onChange={(e) => setAnswer(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key !== "Enter") return;
+              if (checked) next();
+              else check();
+            }}
+            disabled={checked}
+            placeholder="빈칸에 들어갈 단어를 입력하세요"
+            aria-label="정답 입력"
+          />
+          {!checked && (
+            <button type="button" className="quiz-check-btn" onClick={check} disabled={!answer.trim()}>
+              확인
+            </button>
+          )}
+          {checked && (
+            <>
+              <div className={`quiz-result ${isCorrect ? "correct" : "incorrect"}`} role="status">
+                {isCorrect ? "정답이에요!" : `아쉬워요. 정답: ${question.answer}`}
+              </div>
+              <p className="study-summary-sentence">
+                <span className="study-summary-en">{question.explanation}</span>
+                <span className="study-summary-ko">{question.explanationTranslation}</span>
+              </p>
+              <div className="study-summary-ko quiz-translation">{question.translation}</div>
+              {index + 1 < questions!.length ? (
+                <button type="button" className="quiz-next-btn" onClick={next}>
+                  다음 문제
+                </button>
+              ) : (
+                <div className="quiz-score" role="status">
+                  {questions!.length}문제 중 {correctCount}개 맞혔어요!
+                </div>
+              )}
             </>
           )}
         </div>

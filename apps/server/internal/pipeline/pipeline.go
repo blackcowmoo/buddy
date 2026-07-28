@@ -984,31 +984,41 @@ type StudyIssue struct {
 }
 
 // GenerateStudySummary synthesizes every grammar/vocabulary/phrasing/context
-// issue flagged across a session into one encouraging, native-language
-// wrap-up: the recurring PATTERNS a learner should focus on studying next,
-// rather than a re-listing of each individual correction (already visible
-// via the frontend's FeedbackSummary/GrammarControl). Meant to be called
-// once, when the learner explicitly ends a conversation — not on every
-// reload — so unlike GenerateTitle (a decorative, cost-sensitive single
-// call) this affords the full Analysis ensemble+Judge, the same
+// issue flagged across a session into one encouraging wrap-up: the recurring
+// PATTERNS a learner should focus on studying next, rather than a re-listing
+// of each individual correction (already visible via the frontend's
+// FeedbackSummary/GrammarControl). Written in English — the language being
+// learned — sentence by sentence, each paired with a native-language
+// translation, the same teach-in-English-then-translate shape
+// correctionSystemPrompt uses for "explanation"/"explanationTranslation".
+// Meant to be called once, when the learner explicitly ends a conversation —
+// not on every reload — so unlike GenerateTitle (a decorative, cost-sensitive
+// single call) this affords the full Analysis ensemble+Judge, the same
 // learning-facing quality bar as correct()/compact() use. Callers should
 // skip this call entirely when issues is empty (see
 // sessionStudySummaryHandler) rather than spend an LLM call being told
 // there's nothing to report.
-func (p *Pipeline) GenerateStudySummary(ctx context.Context, issues []StudyIssue) (string, error) {
-	raw, err := p.analyze(ctx, studySummarySystemPrompt(p.FeedbackLang), renderStudySummaryInput(issues), false)
+func (p *Pipeline) GenerateStudySummary(ctx context.Context, issues []StudyIssue) ([]protocol.StudySummarySentence, error) {
+	raw, err := p.analyze(ctx, studySummarySystemPrompt(p.FeedbackLang), renderStudySummaryInput(issues), true)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return strings.TrimSpace(raw), nil
+	var parsed struct {
+		Sentences []protocol.StudySummarySentence `json:"sentences"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return nil, fmt.Errorf("study summary: bad json: %w", err)
+	}
+	return parsed.Sentences, nil
 }
 
 // studySummarySystemPrompt builds GenerateStudySummary's prompt, reusing the
 // same native-language config as correctionSystemPrompt/translationSystemPrompt.
-// Unlike those, the ENTIRE output is written in the learner's native
-// language: this is direct study advice, not English being taught, so it
-// should be maximally easy to understand rather than modeling correct
-// English.
+// The wrap-up itself is authored in English, sentence by sentence, each
+// immediately paired with its native-language translation — same reasoning
+// as correctionSystemPrompt's explanation/explanationTranslation split: the
+// learner reads real English first, with the translation there only to make
+// sure the meaning actually lands.
 func studySummarySystemPrompt(lang string) string {
 	native := languageName(lang)
 	return fmt.Sprintf(`You are an encouraging English-conversation coach wrapping up one practice
@@ -1022,8 +1032,16 @@ Write a short wrap-up that helps the learner study on their own afterward:
 - Call out 2-4 concrete things to focus on next, roughly ordered by how often
   they came up.
 - End on an encouraging note.
-Write the ENTIRE response in %[1]s, in plain prose (a few short paragraphs or
-a short list) — no JSON, no labels, no preamble.`, native)
+Write the wrap-up in English, as a sequence of short, complete sentences (a
+few short paragraphs or a short list is fine, but split it into individual
+sentences rather than one long block) — natural, encouraging coaching
+language, not a dry report.
+Return STRICT JSON only, no prose, in exactly this shape:
+{"sentences":[{"english":"<one sentence of the wrap-up, in English>","translation":"<natural %[1]s translation of that same sentence>"}]}
+Rules:
+- "english" MUST stay in English.
+- "translation" MUST be a translation of "english", not new or different content.
+- Every sentence of the wrap-up must appear as its own array entry, in reading order.`, native)
 }
 
 func renderStudySummaryInput(issues []StudyIssue) string {
@@ -1034,6 +1052,63 @@ func renderStudySummaryInput(issues []StudyIssue) string {
 			si.Text, si.Issue.Type, si.Issue.Span, si.Issue.Suggestion, si.Issue.Explanation)
 	}
 	return b.String()
+}
+
+// GenerateStudyQuiz synthesizes a short fill-in-the-blank practice quiz from
+// every grammar/vocabulary/phrasing/context issue flagged across a session —
+// a way to test whether a learner actually absorbed GenerateStudySummary's
+// prose wrap-up, not just read it. Each question blanks out the word/phrase
+// one recurring pattern is about, in a fresh example sentence rather than
+// the learner's own original wording, so answering it requires applying the
+// rule instead of recalling a specific sentence. Same Analysis ensemble+Judge
+// quality bar as GenerateStudySummary — a wrong "correct" answer here would
+// actively mislead a learner practicing on their own. Generated on demand,
+// only when a learner opens the quiz (see httpserver.sessionQuizHandler),
+// not automatically alongside the wrap-up — callers should skip this call
+// entirely when issues is empty, same reasoning as GenerateStudySummary.
+func (p *Pipeline) GenerateStudyQuiz(ctx context.Context, issues []StudyIssue) ([]protocol.QuizQuestion, error) {
+	raw, err := p.analyze(ctx, quizSystemPrompt(p.FeedbackLang), renderStudySummaryInput(issues), true)
+	if err != nil {
+		return nil, err
+	}
+	var parsed struct {
+		Questions []protocol.QuizQuestion `json:"questions"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return nil, fmt.Errorf("study quiz: bad json: %w", err)
+	}
+	return parsed.Questions, nil
+}
+
+// quizSystemPrompt builds GenerateStudyQuiz's prompt, reusing the same
+// native-language config and issue-listing input (renderStudySummaryInput)
+// as studySummarySystemPrompt.
+func quizSystemPrompt(lang string) string {
+	native := languageName(lang)
+	return fmt.Sprintf(`You are an English-conversation coach building a short practice quiz from
+every grammar/vocabulary/phrasing/context issue flagged during one learner's
+practice session, each paired with the learner's original sentence.
+Write 3-5 fill-in-the-blank questions that test the recurring PATTERNS behind
+those issues (e.g. repeated third-person -s omission, article misuse, a
+specific mistranslated collocation) — write a FRESH example sentence for
+each pattern rather than reusing the learner's original sentence verbatim,
+so answering requires applying the rule, not recalling a specific sentence.
+For each question:
+- "prompt" is a natural English sentence with exactly one blank, written as
+  "___", where the tested word or phrase belongs.
+- "answer" is the exact word or phrase that correctly fills that blank.
+- "translation" is a natural %[1]s translation of the FULL sentence with the
+  blank correctly filled in, so the learner can check they understood the
+  meaning even if they get the blank wrong.
+- "explanation" briefly says, in English, why that's the answer.
+- "explanationTranslation" is a natural %[1]s translation of "explanation".
+Return STRICT JSON only, no prose, in exactly this shape:
+{"questions":[{"prompt":"<sentence with one ___ blank>","answer":"<the word/phrase that fills it>","translation":"<%[1]s translation of the full correct sentence>","explanation":"<why, in English>","explanationTranslation":"<%[1]s translation of explanation>"}]}
+Rules:
+- "prompt", "answer", and "explanation" MUST stay in English.
+- "translation" and "explanationTranslation" MUST be written in %[1]s.
+- Every "prompt" must contain exactly one "___".
+- Prefer variety: don't test the same single pattern more than twice.`, native)
 }
 
 // UpdateLearnerProfile folds one just-ended session's study wrap-up (see

@@ -230,6 +230,28 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 	if err := addColumn(sessionsTable, "study_summary_status VARCHAR(16) NOT NULL DEFAULT ''", "study_summary_status"); err != nil {
 		return nil, err
 	}
+	// One-time reset for rows written before GenerateStudySummary switched to
+	// the bilingual (English + native-translation, sentence-by-sentence) JSON
+	// shape decodeStudySummary now expects: a pre-existing "done" summary is
+	// plain native-language prose, not JSON, so leaving it in place would
+	// make it silently vanish (decodeStudySummary treats anything that
+	// doesn't parse as nil) with no way for the learner to tell a wrap-up
+	// once existed. Wiping it back to JobStatusPending's pre-completion
+	// state instead surfaces as "not generated" rather than "lost", and
+	// there's no re-trigger path to regenerate it in the new format (the
+	// learner already ended that conversation) — the reset itself is the
+	// deliberate behavior here, not a stopgap. Guarded by the LEFT(...) <>
+	// '[' check so it only ever touches legacy plain-text rows: a summary
+	// already in the new JSON-array shape (from a session ended after this
+	// migration first ran) always starts with '[' and is left untouched, so
+	// this is safe to run unconditionally on every startup.
+	if _, err := rw.Exec(`
+		UPDATE ` + sessionsTable + ` SET study_summary = '', study_summary_status = ''
+		WHERE study_summary_status = 'done' AND study_summary <> '' AND LEFT(study_summary, 1) <> '['
+	`); err != nil {
+		closeAll()
+		return nil, fmt.Errorf("store: schema: reset legacy study summaries: %w", err)
+	}
 	return &MySQLStore{rw: rw, ro: ro}, nil
 }
 
@@ -511,15 +533,46 @@ func (s *MySQLStore) EndSession(ctx context.Context, userID, sessionID string) e
 }
 
 // CompleteStudySummary persists an asyncjob.KindStudySummary job's finished
-// wrap-up and marks it done — see the Store interface doc comment.
-func (s *MySQLStore) CompleteStudySummary(ctx context.Context, userID, sessionID, summary string) error {
+// wrap-up and marks it done — see the Store interface doc comment. Encoded
+// as JSON into the same study_summary TEXT column the pre-bilingual feature
+// stored plain native-language text in (see the legacy-reset migration in
+// NewMySQL) — an empty summary (no issues flagged) still stores as '', not
+// "[]", so it round-trips through decodeStudySummary the same way a
+// never-completed one does.
+func (s *MySQLStore) CompleteStudySummary(ctx context.Context, userID, sessionID string, summary []protocol.StudySummarySentence) error {
+	var encoded string
+	if len(summary) > 0 {
+		b, err := json.Marshal(summary)
+		if err != nil {
+			return fmt.Errorf("store: encode study summary: %w", err)
+		}
+		encoded = string(b)
+	}
 	if _, err := s.rw.ExecContext(ctx, `
 		UPDATE `+sessionsTable+` SET study_summary = ?, study_summary_status = ?
 		WHERE user_id = ? AND id = ?
-	`, summary, JobStatusDone, userID, sessionID); err != nil {
+	`, encoded, JobStatusDone, userID, sessionID); err != nil {
 		return fmt.Errorf("store: complete study summary: %w", err)
 	}
 	return nil
+}
+
+// decodeStudySummary parses the study_summary column's JSON-encoded
+// []protocol.StudySummarySentence — "" (never completed, or no issues were
+// flagged) decodes to nil. A row left over from before this bilingual format
+// existed would fail to parse as JSON (it's plain native-language prose); the
+// legacy-reset migration in NewMySQL clears those back to "" on startup, but
+// this still falls back to nil defensively rather than surfacing a decode
+// error to the caller, since a missing wrap-up on old data is harmless.
+func decodeStudySummary(raw string) []protocol.StudySummarySentence {
+	if raw == "" {
+		return nil
+	}
+	var sentences []protocol.StudySummarySentence
+	if err := json.Unmarshal([]byte(raw), &sentences); err != nil {
+		return nil
+	}
+	return sentences
 }
 
 // FailStudySummary records that an asyncjob.KindStudySummary job's LLM call
@@ -548,10 +601,12 @@ func (s *MySQLStore) ListSessions(ctx context.Context, userID string) ([]Session
 	for rows.Next() {
 		var m SessionMeta
 		var ended int
-		if err := rows.Scan(&m.ID, &m.Title, &m.CreatedAt, &m.UpdatedAt, &ended, &m.StudySummary, &m.StudySummaryStatus); err != nil {
+		var studySummaryJSON string
+		if err := rows.Scan(&m.ID, &m.Title, &m.CreatedAt, &m.UpdatedAt, &ended, &studySummaryJSON, &m.StudySummaryStatus); err != nil {
 			return nil, fmt.Errorf("store: list sessions: %w", err)
 		}
 		m.Ended = ended != 0
+		m.StudySummary = decodeStudySummary(studySummaryJSON)
 		out = append(out, m)
 	}
 	return out, rows.Err()
@@ -591,6 +646,7 @@ func (s *MySQLStore) sessionDetail(ctx context.Context, userID, sessionID string
 	var turns []Turn
 	var hasMore bool
 	var ended int
+	var studySummaryJSON string
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -598,7 +654,7 @@ func (s *MySQLStore) sessionDetail(ctx context.Context, userID, sessionID string
 		defer wg.Done()
 		metaErr = s.ro.QueryRowContext(ctx, `
 			SELECT title, created_at, updated_at, ended, study_summary, study_summary_status FROM `+sessionsTable+` WHERE user_id = ? AND id = ?
-		`, userID, sessionID).Scan(&meta.Title, &meta.CreatedAt, &meta.UpdatedAt, &ended, &meta.StudySummary, &meta.StudySummaryStatus)
+		`, userID, sessionID).Scan(&meta.Title, &meta.CreatedAt, &meta.UpdatedAt, &ended, &studySummaryJSON, &meta.StudySummaryStatus)
 	}()
 	go func() {
 		defer wg.Done()
@@ -616,6 +672,7 @@ func (s *MySQLStore) sessionDetail(ctx context.Context, userID, sessionID string
 		return SessionMeta{}, nil, false, fmt.Errorf("store: session detail: %w", turnsErr)
 	}
 	meta.Ended = ended != 0
+	meta.StudySummary = decodeStudySummary(studySummaryJSON)
 	return meta, turns, hasMore, nil
 }
 
