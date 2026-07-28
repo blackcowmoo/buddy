@@ -65,7 +65,7 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	})
 	mux.HandleFunc("/api/me", meHandler(cfg.IdentityMode, ident))
 	mux.HandleFunc("GET /api/sessions", sessionsListHandler(ident, st))
-	mux.HandleFunc("GET /api/sessions/{id}", sessionDetailHandler(ident, st, translateQueue, correctionQueue))
+	mux.HandleFunc("GET /api/sessions/{id}", sessionDetailHandler(ident, st, translateQueue, correctionQueue, pipe, studySummaryQueue))
 	mux.HandleFunc("GET /api/sessions/{id}/compaction", sessionCompactionHandler(ident, st))
 	mux.HandleFunc("POST /api/sessions/{id}/end", sessionEndHandler(ident, st, pipe, studySummaryQueue))
 	mux.HandleFunc("GET /api/sessions/{id}/quiz", sessionQuizHandler(ident, st, pipe))
@@ -204,15 +204,20 @@ const defaultSessionPageLimit = 30
 // turn is missing a grammar-correction result entirely — CorrectionStatus ==
 // "" (see store.Turn's doc comment) — it's queued for background
 // re-correction via asyncjob.KindCorrectionBackfill, since (unlike a
-// CorrectionStatus == "failed" turn) nothing else would ever retry it. Either
-// way this never delays the response: Enqueue is a couple of fast Redis
-// calls, but it's still fired via `go` so a slow/unavailable Redis can never
-// make opening a conversation wait on it, and the actual work happens
-// entirely out-of-band in internal/backfill's Workers, over the session's
-// whole transcript regardless of which page triggered it — the learner sees
-// today's (possibly still-missing) results immediately and gets the
-// filled-in ones on their next visit.
-func sessionDetailHandler(ident identity.Identifier, st store.Store, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue) http.HandlerFunc {
+// CorrectionStatus == "failed" turn) nothing else would ever retry it. The
+// same goes for a study-summary wrap-up left in JobStatusPending with no
+// StudySummary yet — see needsStudySummaryBackfill — which is how the
+// legacy-reset migration in store.NewMySQL gets its rows regenerated rather
+// than left permanently blank. Either way this never delays the response:
+// Enqueue is a couple of fast Redis calls, but it's still fired via `go` so a
+// slow/unavailable Redis can never make opening a conversation wait on it,
+// and the actual work happens entirely out-of-band in internal/backfill's
+// Workers (or the pooled asyncjob.KindStudySummary Worker — see
+// cmd/server/main.go), over the session's whole transcript regardless of
+// which page triggered it — the learner sees today's (possibly
+// still-missing) results immediately and gets the filled-in ones on their
+// next visit.
+func sessionDetailHandler(ident identity.Identifier, st store.Store, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue, pipe *pipeline.Pipeline, studySummaryQueue *asyncjob.Queue) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)
 		if !ok {
@@ -255,6 +260,13 @@ func sessionDetailHandler(ident identity.Identifier, st store.Store, translateQu
 		if needsCorrectionBackfill(turns) {
 			go correctionQueue.Enqueue(context.Background(), userID, sessionID)
 		}
+		if needsStudySummaryBackfill(meta, turns) {
+			go func() {
+				if err := transport.EnqueueStudySummaryJob(context.Background(), studySummaryQueue, pipe, st, userID, sessionID); err != nil {
+					log.Printf("session detail: enqueue study summary backfill %s/%s: %v", userID, sessionID, err)
+				}
+			}()
+		}
 		writeJSON(w, map[string]any{"session": meta, "turns": turns, "hasMore": hasMore})
 	}
 }
@@ -284,6 +296,25 @@ func needsCorrectionBackfill(turns []store.Turn) bool {
 		}
 	}
 	return false
+}
+
+// needsStudySummaryBackfill reports whether an ended session's wrap-up needs
+// (re)generating: StudySummaryStatus == JobStatusPending with no
+// StudySummary yet, but real flagged issues still sitting in the transcript's
+// per-turn corrections. That combination only arises from the legacy-reset
+// migration in store.NewMySQL, which resets a pre-bilingual "done" wrap-up
+// back to pending rather than leaving it stuck — a freshly-ended session
+// that's still actually being generated has the exact same status, but
+// hasn't had a chance to accumulate a transcript worth flagging issues in
+// yet, so gating on CollectStudyIssues here doesn't fight the live job (and
+// even if it did, EnqueueStudySummaryJob's dedupe makes a redundant enqueue
+// harmless). A session with genuinely nothing to flag never reaches this
+// check: len(issues) == 0 short-circuits it.
+func needsStudySummaryBackfill(meta store.SessionMeta, turns []store.Turn) bool {
+	if !meta.Ended || meta.StudySummaryStatus != store.JobStatusPending || len(meta.StudySummary) != 0 {
+		return false
+	}
+	return len(transport.CollectStudyIssues(turns)) > 0
 }
 
 // sessionCompactionHandler exposes a session's current LLM-context state —

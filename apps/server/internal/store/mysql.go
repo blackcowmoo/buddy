@@ -236,19 +236,22 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 	// plain native-language prose, not JSON, so leaving it in place would
 	// make it silently vanish (decodeStudySummary treats anything that
 	// doesn't parse as nil) with no way for the learner to tell a wrap-up
-	// once existed. Wiping it back to JobStatusPending's pre-completion
-	// state instead surfaces as "not generated" rather than "lost", and
-	// there's no re-trigger path to regenerate it in the new format (the
-	// learner already ended that conversation) — the reset itself is the
-	// deliberate behavior here, not a stopgap. Guarded by the LEFT(...) <>
-	// '[' check so it only ever touches legacy plain-text rows: a summary
-	// already in the new JSON-array shape (from a session ended after this
-	// migration first ran) always starts with '[' and is left untouched, so
-	// this is safe to run unconditionally on every startup.
+	// once existed. Reset back to JobStatusPending — not "" — so it reads as
+	// "regenerating", not "done, nothing to show": httpserver.sessionDetailHandler's
+	// needsStudySummaryBackfill re-enqueues asyncjob.KindStudySummary for
+	// exactly this state (Ended, StudySummaryStatus == JobStatusPending, no
+	// StudySummary yet) the next time the learner opens the session, and
+	// regenerates it from each turn's still-intact store.Turn.Correction —
+	// the underlying issues were never touched by this migration, only the
+	// old free-text wrap-up column was. Guarded by the LEFT(...) <> '[' check
+	// so it only ever touches legacy plain-text rows: a summary already in
+	// the new JSON-array shape (from a session ended after this migration
+	// first ran) always starts with '[' and is left untouched, so this is
+	// safe to run unconditionally on every startup.
 	if _, err := rw.Exec(`
-		UPDATE ` + sessionsTable + ` SET study_summary = '', study_summary_status = ''
+		UPDATE `+sessionsTable+` SET study_summary = '', study_summary_status = ?
 		WHERE study_summary_status = 'done' AND study_summary <> '' AND LEFT(study_summary, 1) <> '['
-	`); err != nil {
+	`, JobStatusPending); err != nil {
 		closeAll()
 		return nil, fmt.Errorf("store: schema: reset legacy study summaries: %w", err)
 	}
