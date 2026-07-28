@@ -146,7 +146,10 @@ func TestMySQLNewMySQLIsIdempotent(t *testing.T) {
 // shape is plain native-language prose, not JSON — silently undecodable, not
 // silently upgradable. A row already in the new JSON-array shape (starts
 // with '[') must survive a re-migration untouched; only genuinely legacy
-// plain-text rows get reset back to "not generated".
+// plain-text rows get reset back to JobStatusPending — not "" — so
+// httpserver.sessionDetailHandler's needsStudySummaryBackfill re-enqueues a
+// regeneration job for it (see that function's doc comment) instead of the
+// learner's real feedback just staying gone.
 func TestMySQLNewMySQLResetsLegacyPlainTextStudySummaries(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
@@ -184,8 +187,8 @@ func TestMySQLNewMySQLResetsLegacyPlainTextStudySummaries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SessionDetail(legacy) error = %v", err)
 	}
-	if legacyMeta.StudySummaryStatus != "" || len(legacyMeta.StudySummary) != 0 {
-		t.Fatalf("legacy meta = %+v, want the plain-text summary reset to empty/pending-regeneration", legacyMeta)
+	if legacyMeta.StudySummaryStatus != JobStatusPending || len(legacyMeta.StudySummary) != 0 {
+		t.Fatalf("legacy meta = %+v, want the plain-text summary reset to empty with status pending-regeneration", legacyMeta)
 	}
 
 	jsonMeta, _, err := reopened.SessionDetail(ctx, userID, jsonSession)

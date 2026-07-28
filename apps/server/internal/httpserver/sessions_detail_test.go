@@ -12,7 +12,10 @@ import (
 	"github.com/redis/go-redis/v9"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 
+	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/backfill"
+	"buddy/server/internal/llm"
+	"buddy/server/internal/pipeline"
 	"buddy/server/internal/protocol"
 	"buddy/server/internal/store"
 )
@@ -105,7 +108,7 @@ func TestSessionDetailEnqueuesBackfillWhenATurnIsMissingTranslation(t *testing.T
 			{Turn: 1, Role: "assistant", Text: "hi there"}, // missing translation
 		},
 	}
-	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, q, nil)
+	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, q, nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")
@@ -129,7 +132,7 @@ func TestSessionDetailDoesNotEnqueueWhenEveryTurnIsTranslated(t *testing.T) {
 			{Turn: 1, Role: "assistant", Text: "hi there", Translation: "안녕하세요!"},
 		},
 	}
-	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, q, nil)
+	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, q, nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")
@@ -168,7 +171,7 @@ func TestSessionDetailEnqueuesCorrectionBackfillWhenAUserTurnHasNoCorrectionStat
 			{Turn: 1, Role: "assistant", Text: "Nice!"},
 		},
 	}
-	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, q)
+	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, q, nil, nil)
 
 	req := httptest.NewRequest("GET", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")
@@ -198,7 +201,7 @@ func TestSessionDetailDoesNotEnqueueCorrectionBackfillWhenAlreadyTrackedOrDone(t
 			{Turn: 3, Role: "user", Text: "errored, reaper owns it", CorrectionStatus: "failed"},
 		},
 	}
-	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, q)
+	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, q, nil, nil)
 
 	req := httptest.NewRequest("GET", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")
@@ -218,6 +221,74 @@ func TestSessionDetailDoesNotEnqueueCorrectionBackfillWhenAlreadyTrackedOrDone(t
 	}
 }
 
+// TestSessionDetailEnqueuesStudySummaryBackfillWhenLegacyResetLeftIssuesUnrecovered
+// covers the case the legacy-reset migration in store.NewMySQL creates: an
+// ended session whose old free-text wrap-up got reset to
+// StudySummaryStatus == JobStatusPending with no StudySummary yet, but whose
+// per-turn corrections (never touched by that migration) still carry real
+// flagged issues. Viewing the session must re-enqueue asyncjob.KindStudySummary
+// so it actually gets regenerated instead of silently reading as "nothing to
+// flag" forever.
+func TestSessionDetailEnqueuesStudySummaryBackfillWhenLegacyResetLeftIssuesUnrecovered(t *testing.T) {
+	rdb := requireRedis(t)
+	queue := asyncjob.NewQueue(rdb)
+	pipe := &pipeline.Pipeline{
+		Analysis: []pipeline.Candidate{{Model: "m", LLM: &fakeStudySummaryLLM{complete: func(msgs []llm.Message) (string, error) {
+			return `{"sentences":[{"english":"Focus on third-person -s.","translation":"3인칭 단수 -s에 집중하세요."}]}`, nil
+		}}}},
+	}
+	st := &fakeSessionStore{
+		detailMeta: store.SessionMeta{ID: "s1", Ended: true, StudySummaryStatus: store.JobStatusPending},
+		detailTurns: []store.Turn{
+			{Turn: 1, Role: "user", Text: "He go to school.", Correction: &protocol.Correction{Issues: []protocol.Issue{{Type: "grammar"}}}},
+		},
+	}
+	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil, pipe, queue)
+
+	req := httptest.NewRequest("GET", "/api/sessions/s1", nil)
+	req.SetPathValue("id", "s1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	waitForCondition(t, 2*time.Second, func() bool { return st.snapshotCompleteSummaryCalls() == 1 })
+}
+
+// TestSessionDetailDoesNotEnqueueStudySummaryBackfillWhenNoIssuesFlagged
+// guards against fighting a freshly-ended session's own in-flight job: a
+// session can legitimately sit in StudySummaryStatus == JobStatusPending
+// with no StudySummary yet just because EndSession froze it moments ago and
+// the real job hasn't finished — that must not be mistaken for the legacy-reset
+// case. Gating on CollectStudyIssues (empty here) is what tells them apart.
+func TestSessionDetailDoesNotEnqueueStudySummaryBackfillWhenNoIssuesFlagged(t *testing.T) {
+	rdb := requireRedis(t)
+	queue := asyncjob.NewQueue(rdb)
+	st := &fakeSessionStore{
+		detailMeta:  store.SessionMeta{ID: "s1", Ended: true, StudySummaryStatus: store.JobStatusPending},
+		detailTurns: []store.Turn{{Turn: 1, Role: "user", Text: "Hello, nice to meet you."}},
+	}
+	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil, nil, queue)
+
+	req := httptest.NewRequest("GET", "/api/sessions/s1", nil)
+	req.SetPathValue("id", "s1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	time.Sleep(200 * time.Millisecond)
+	n, err := rdb.LLen(context.Background(), "buddy:job:{study-summary}:queue").Result()
+	if err != nil {
+		t.Fatalf("LLen: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("queue length = %d, want 0 (no issues to recover)", n)
+	}
+}
+
 func TestSessionDetailWithNilCorrectionQueueDoesNotPanic(t *testing.T) {
 	st := &fakeSessionStore{
 		detailMeta: store.SessionMeta{ID: "s1"},
@@ -225,7 +296,7 @@ func TestSessionDetailWithNilCorrectionQueueDoesNotPanic(t *testing.T) {
 			{Turn: 1, Role: "user", Text: "hello"}, // no correction status, but queue is nil (Redis unconfigured)
 		},
 	}
-	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil)
+	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")
@@ -244,7 +315,7 @@ func TestSessionDetailWithNilTranslateQueueDoesNotPanic(t *testing.T) {
 			{Turn: 1, Role: "user", Text: "hello"}, // missing translation, but queue is nil (Redis unconfigured)
 		},
 	}
-	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil)
+	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")
@@ -257,7 +328,7 @@ func TestSessionDetailWithNilTranslateQueueDoesNotPanic(t *testing.T) {
 }
 
 func TestSessionDetailUnauthorizedWhenIdentifyFails(t *testing.T) {
-	h := sessionDetailHandler(fakeIdentifier{ok: false}, &fakeSessionStore{}, nil, nil)
+	h := sessionDetailHandler(fakeIdentifier{ok: false}, &fakeSessionStore{}, nil, nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")
@@ -271,7 +342,7 @@ func TestSessionDetailUnauthorizedWhenIdentifyFails(t *testing.T) {
 
 func TestSessionDetailNotFoundPropagatesStoreErrNotFound(t *testing.T) {
 	st := &fakeSessionStore{detailErr: store.ErrNotFound}
-	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil)
+	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")
@@ -293,7 +364,7 @@ func TestSessionDetailDefaultsLimitWhenQueryParamsAreAbsent(t *testing.T) {
 		detailMeta:  store.SessionMeta{ID: "s1"},
 		detailTurns: []store.Turn{{Turn: 1, Role: "user", Text: "hi", Translation: "안녕"}},
 	}
-	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil)
+	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")
@@ -316,7 +387,7 @@ func TestSessionDetailForwardsBeforeAndLimitQueryParams(t *testing.T) {
 		detailMeta:  store.SessionMeta{ID: "s1"},
 		detailTurns: []store.Turn{{Turn: 1, Role: "user", Text: "hi", Translation: "안녕"}},
 	}
-	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil)
+	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/api/sessions/s1?before=42&limit=10", nil)
 	req.SetPathValue("id", "s1")
@@ -342,7 +413,7 @@ func TestSessionDetailExplicitZeroLimitRequestsWholeTranscript(t *testing.T) {
 		detailMeta:  store.SessionMeta{ID: "s1"},
 		detailTurns: []store.Turn{{Turn: 1, Role: "user", Text: "hi", Translation: "안녕"}},
 	}
-	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil)
+	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/api/sessions/s1?limit=0", nil)
 	req.SetPathValue("id", "s1")
@@ -366,7 +437,7 @@ func TestSessionDetailResponseIncludesHasMore(t *testing.T) {
 		detailTurns:   []store.Turn{{Turn: 5, Role: "user", Text: "hi", Translation: "안녕"}},
 		detailHasMore: true,
 	}
-	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil)
+	h := sessionDetailHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")
