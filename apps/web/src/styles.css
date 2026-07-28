@@ -62,6 +62,12 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
   margin: 0 auto;
   height: 100dvh;
   display: grid;
+  /* minmax(0, 1fr): a bare implicit `auto` column can grow past the grid
+     container's own width to fit a row's content (e.g. .composer's ended
+     hint) instead of making that row shrink/wrap to fit — this clamps it to
+     .app's actual width so overflow is each row's problem to handle, not
+     something that stretches the whole layout past the viewport. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto 1fr auto;
   background: var(--bg);
 }
@@ -561,6 +567,9 @@ a.icon-btn.ghost {
 
 .composer {
   display: flex;
+  /* Wrap so .hint.ended (flex-basis: 100%, below) can drop to its own line
+     instead of being squeezed onto the mic/form line — see that rule. */
+  flex-wrap: wrap;
   gap: 10px;
   padding: 12px 16px;
   padding-bottom: calc(12px + var(--sab));
@@ -599,7 +608,12 @@ a.icon-btn.ghost {
    see the "pending_transcript" case in App.tsx's onEvent. */
 .composer textarea.voice-draft { border-left: 3px solid var(--accent); }
 .composer .hint.transcribing { margin: 0 2px; flex-shrink: 0; }
-.composer .hint.ended { margin: 0 2px; flex-shrink: 0; }
+/* Not flex-shrink: 0 like .hint.transcribing's one-glyph spinner — this is a
+   full sentence competing for the same row as the (still-rendered, disabled)
+   form. flex-basis: 100% plus .composer's flex-wrap gives it a full line of
+   its own instead of being squeezed to a sliver that starves the form's
+   fixed-size submit button, which used to overflow off the row's edge. */
+.composer .hint.ended { margin: 0 2px; flex: 1 1 100%; min-width: 0; }
 /* A permanently-ended room's composer (see App.tsx's `ended` state) — no
    other button/textarea in the composer has a disabled state to share this
    with. */
