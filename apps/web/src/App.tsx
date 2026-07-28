@@ -1317,61 +1317,60 @@ export function App() {
         )}
       </main>
 
-      <footer className="composer">
-        <button
-          className={`mic ${mic ? "on" : ""}`}
-          onClick={toggleMic}
-          disabled={ended}
-          aria-label={mic ? "Stop recording" : "Push to talk"}
-          aria-pressed={mic}
-          title="Push to talk"
-        >
-          {mic ? "◼" : "🎙"}
-        </button>
-        {transcribing && (
-          <p className="hint transcribing" role="status" aria-label="음성 인식 중">
-            <span className="spinning">⏳</span>
-          </p>
-        )}
-        {ended && (
+      {ended ? (
+        <footer className="composer composer-ended">
           <p className="hint ended" role="status">
             이 대화는 종료되어 더 이상 메시지를 보낼 수 없어요.
           </p>
-        )}
-        <form onSubmit={onComposerSubmit}>
-          <textarea
-            ref={textareaRef}
-            className={voiceDraft ? "voice-draft" : undefined}
-            value={text}
-            onChange={(e) => {
-              const v = e.target.value;
-              setText(v);
-              if (voiceDraft && v === "") discardVoiceDraft(); // cleared by hand — treat as discarded
-            }}
-            onKeyDown={onComposerKeyDown}
-            placeholder="…or type in English"
-            enterKeyHint="send"
-            autoComplete="off"
-            autoCorrect="on"
-            disabled={ended}
-            rows={1}
-          />
-          {voiceDraft && (
-            <button
-              type="button"
-              className="ghost icon-btn"
-              onClick={discardVoiceDraft}
-              aria-label="음성 초안 취소"
-              title="음성 초안 취소"
-            >
-              ✕
-            </button>
-          )}
-          <button type="submit" disabled={ended}>
-            Send
+        </footer>
+      ) : (
+        <footer className="composer">
+          <button
+            className={`mic ${mic ? "on" : ""}`}
+            onClick={toggleMic}
+            aria-label={mic ? "Stop recording" : "Push to talk"}
+            aria-pressed={mic}
+            title="Push to talk"
+          >
+            {mic ? "◼" : "🎙"}
           </button>
-        </form>
-      </footer>
+          {transcribing && (
+            <p className="hint transcribing" role="status" aria-label="음성 인식 중">
+              <span className="spinning">⏳</span>
+            </p>
+          )}
+          <form onSubmit={onComposerSubmit}>
+            <textarea
+              ref={textareaRef}
+              className={voiceDraft ? "voice-draft" : undefined}
+              value={text}
+              onChange={(e) => {
+                const v = e.target.value;
+                setText(v);
+                if (voiceDraft && v === "") discardVoiceDraft(); // cleared by hand — treat as discarded
+              }}
+              onKeyDown={onComposerKeyDown}
+              placeholder="…or type in English"
+              enterKeyHint="send"
+              autoComplete="off"
+              autoCorrect="on"
+              rows={1}
+            />
+            {voiceDraft && (
+              <button
+                type="button"
+                className="ghost icon-btn"
+                onClick={discardVoiceDraft}
+                aria-label="음성 초안 취소"
+                title="음성 초안 취소"
+              >
+                ✕
+              </button>
+            )}
+            <button type="submit">Send</button>
+          </form>
+        </footer>
+      )}
     </div>
   );
 }

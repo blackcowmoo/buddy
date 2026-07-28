@@ -286,9 +286,10 @@ describe("room list", () => {
   // Guards the permanent-freeze half of the end-conversation feature
   // (see EndConversationControl/endSession in App.tsx): a room whose
   // fetched detail reports it as already `ended` must render read-only —
-  // no live connection kept open, composer disabled — even though the WS
-  // handshake is fired eagerly (in parallel with the fetch) for every room.
-  it("reopening an ended session closes the live connection and disables the composer", async () => {
+  // no live connection kept open, composer removed (not just disabled) —
+  // even though the WS handshake is fired eagerly (in parallel with the
+  // fetch) for every room.
+  it("reopening an ended session closes the live connection and removes the composer", async () => {
     vi.mocked(fetchSessions).mockResolvedValue([
       { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: true },
     ]);
@@ -312,9 +313,10 @@ describe("room list", () => {
     expect(lastClientInstance().connect).toHaveBeenCalledWith("s1"); // fired eagerly...
     expect(lastClientInstance().close).toHaveBeenCalled(); // ...then dropped once `ended` is known
 
-    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
-    expect(screen.getByRole("textbox")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Push to talk" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Push to talk" })).not.toBeInTheDocument();
+    expect(screen.getByText("이 대화는 종료되어 더 이상 메시지를 보낼 수 없어요.")).toBeInTheDocument();
 
     // A stray event arriving anyway (e.g. a slow in-flight job from before
     // the close) must not resurrect the room as if it were live.
