@@ -231,7 +231,15 @@ func (f *fakeStore) SaveInterlocutorStyle(ctx context.Context, userID, style str
 	return errors.New("not used by these tests")
 }
 
-func (f *fakeStore) EndSession(ctx context.Context, userID, sessionID, studySummary string) error {
+func (f *fakeStore) EndSession(ctx context.Context, userID, sessionID string) error {
+	return errors.New("not used by these tests")
+}
+
+func (f *fakeStore) CompleteStudySummary(ctx context.Context, userID, sessionID, summary string) error {
+	return errors.New("not used by these tests")
+}
+
+func (f *fakeStore) FailStudySummary(ctx context.Context, userID, sessionID string) error {
 	return errors.New("not used by these tests")
 }
 

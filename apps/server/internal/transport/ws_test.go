@@ -452,7 +452,7 @@ func (f *fakeStore) SessionDetailPage(ctx context.Context, userID, sessionID str
 	return store.SessionMeta{}, nil, false, errors.New("not used by these tests")
 }
 
-func (f *fakeStore) EndSession(ctx context.Context, userID, sessionID, studySummary string) error {
+func (f *fakeStore) EndSession(ctx context.Context, userID, sessionID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	d := f.sessions[fakeStoreKey(userID, sessionID)]
@@ -460,7 +460,30 @@ func (f *fakeStore) EndSession(ctx context.Context, userID, sessionID, studySumm
 		return nil // no-op, same as Save
 	}
 	d.meta.Ended = true
-	d.meta.StudySummary = studySummary
+	d.meta.StudySummaryStatus = store.JobStatusPending
+	return nil
+}
+
+func (f *fakeStore) CompleteStudySummary(ctx context.Context, userID, sessionID, summary string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.sessions[fakeStoreKey(userID, sessionID)]
+	if d == nil {
+		return nil // no-op, same as Save
+	}
+	d.meta.StudySummary = summary
+	d.meta.StudySummaryStatus = store.JobStatusDone
+	return nil
+}
+
+func (f *fakeStore) FailStudySummary(ctx context.Context, userID, sessionID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.sessions[fakeStoreKey(userID, sessionID)]
+	if d == nil {
+		return nil // no-op, same as Save
+	}
+	d.meta.StudySummaryStatus = store.JobStatusFailed
 	return nil
 }
 

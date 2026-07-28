@@ -20,9 +20,7 @@ import {
   fetchSessionCompaction,
   fetchSessionDetail,
   fetchSessions,
-  fetchStudySummary,
   type SessionSummary,
-  type StudySummary,
   type TurnRecord,
 } from "./lib/sessions";
 import { fetchSettings, saveSettings } from "./lib/settings";
@@ -191,9 +189,10 @@ function useDismiss(open: boolean, ref: React.RefObject<HTMLElement | null>, onC
 // (or previous point in this room's) result while the new one is in flight.
 // Returns null data until the first fetch resolves; a failed fetch resolves
 // to null too, which callers render as their own "couldn't load" message.
-// EndConversationControl doesn't use this: its fetch also needs to wait on
-// an explicit "yes, end this" confirmation, not just on open, so it manages
-// that extra step with its own state instead of this one-shot-on-open hook.
+// EndConversationControl doesn't use this: it has nothing of its own to
+// fetch on open — it just renders whatever the room's own SessionDetail
+// already carries (ended/studySummary/studySummaryStatus), the same data
+// enterChat already fetched to open the room in the first place.
 function usePopoverFetch<T>(sessionId: string | null, fetchData: (sessionId: string) => Promise<T | null>) {
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<T | null>(null);
@@ -243,9 +242,19 @@ export function App() {
   // in its dependency array, same reasoning as stickToBottomRef below.
   const endedRef = useRef(false);
   // The persisted wrap-up EndConversationControl shows for an ended room —
-  // set alongside `ended` in enterChat, never regenerated (see endedSummary
-  // fetcher passed into EndConversationControl below).
+  // set alongside `ended` in enterChat from whatever SessionDetail already
+  // reports, and refreshed by pollStudySummary below while it's still being
+  // generated.
   const [endedSummary, setEndedSummary] = useState("");
+  // Mirrors store.SessionMeta.StudySummaryStatus for the open room — "done"
+  // is the resting state (nothing left to poll for, including a room ended
+  // before this became an async job, whose summary was already generated
+  // synchronously — see SessionSummary.studySummaryStatus's doc comment).
+  // Sampled fresh in enterChat, then kept current by pollStudySummary while
+  // "pending"/"failed" so the room shows its wrap-up as soon as the
+  // background job finishes, even if that's well after this room was
+  // opened.
+  const [endedSummaryStatus, setEndedSummaryStatus] = useState<"pending" | "done" | "failed">("done");
   // Grammar/translation state per turn — pending flags are set the moment a
   // result is expected (final_transcript/assistant_done for a live turn, or
   // on hydration for a history turn still missing one, see enterChat/
@@ -521,6 +530,22 @@ export function App() {
     refreshSessions();
   }, [refreshSessions]);
 
+  // Keeps the "정리 중" badge (see the room-list render below) honest while
+  // sitting on the list: a room's study-summary job (see
+  // asyncjob.KindStudySummary) keeps running in the background regardless of
+  // whether the learner is watching, so without this the badge would only
+  // ever update on the next full list load. Re-runs whenever `sessions`
+  // changes (including from this refresh itself), and naturally stops
+  // scheduling once nothing is left pending — no separate cancellation
+  // token needed, since the effect's own cleanup clears a still-pending
+  // timer if the learner leaves the list before it fires.
+  useEffect(() => {
+    if (view !== "list") return;
+    if (!sessions.some((s) => s.studySummaryStatus === "pending")) return;
+    const t = setTimeout(refreshSessions, 4000);
+    return () => clearTimeout(t);
+  }, [view, sessions, refreshSessions]);
+
   // Deletes a chat room from the list without opening it. The server also
   // cascades to any recordings archived under that room (see
   // httpserver.sessionDeleteHandler), so this is the one action that clears
@@ -624,6 +649,31 @@ export function App() {
     setTimeout(tick, intervalMs);
   }, [patchTurns]);
 
+  // Polls an ended room's background study-summary job (see
+  // asyncjob.KindStudySummary) until it lands — the same "no push channel to
+  // an already-open client" gap pollMissingFeedback fills for turn-level
+  // jobs, just for the session-level wrap-up instead. Reuses pollTokenRef
+  // (set by enterChat, cleared by resetToListView) so leaving the room stops
+  // this the same way it stops pollMissingFeedback. "failed" keeps polling
+  // rather than giving up: the reaper (see internal/asyncjob) retries a
+  // failed attempt on its own, so a later attempt may still land.
+  const pollStudySummary = useCallback((sessionId: string, token: object) => {
+    const maxAttempts = 30;
+    const intervalMs = 4000;
+    let attempt = 0;
+    const tick = async () => {
+      if (pollTokenRef.current !== token) return; // left this room, or opened another
+      attempt++;
+      const detail = await fetchSessionDetail(sessionId, { limit: 0 });
+      if (pollTokenRef.current !== token || !detail) return;
+      const status = detail.session.studySummaryStatus || "done";
+      setEndedSummary(detail.session.studySummary ?? "");
+      setEndedSummaryStatus(status);
+      if (status !== "done" && attempt < maxAttempts) setTimeout(tick, intervalMs);
+    };
+    setTimeout(tick, intervalMs);
+  }, []);
+
   // Opens a room and enters chat view. sessionId omitted starts a brand-new
   // room (server mints the ID, delivered on the "ready" event); given an
   // existing ID, this hydrates the visible transcript from its persisted
@@ -635,6 +685,7 @@ export function App() {
       setEnded(false);
       endedRef.current = false;
       setEndedSummary("");
+      setEndedSummaryStatus("done");
       setAwaitingReply(false);
       // A fresh room entry always starts stuck to the bottom (the most
       // recent turns, loaded below) with no older page pending — cleared
@@ -680,7 +731,13 @@ export function App() {
           setEnded(true);
           endedRef.current = true;
           setEndedSummary(detail.session.studySummary ?? "");
+          const summaryStatus = detail.session.studySummaryStatus || "done";
+          setEndedSummaryStatus(summaryStatus);
           clientRef.current?.close();
+          // The wrap-up is still generating (or the last attempt failed —
+          // see pollStudySummary's doc comment) — keep checking until it
+          // lands, since nothing pushes it to an already-open client.
+          if (summaryStatus !== "done") pollStudySummary(sessionId, token);
         }
         // Whether this room saw activity recently enough that a user turn
         // with no correctionStatus at all is plausibly still in flight
@@ -721,7 +778,7 @@ export function App() {
       setMenuOpen(false);
       setView("chat");
     },
-    [resetTurnState, pollMissingFeedback],
+    [resetTurnState, pollMissingFeedback, pollStudySummary],
   );
 
   // Fetches the page of turns older than whatever's currently loaded —
@@ -770,6 +827,7 @@ export function App() {
     setEnded(false);
     endedRef.current = false;
     setEndedSummary("");
+    setEndedSummaryStatus("done");
     setAwaitingReply(false);
     setMenuOpen(false);
     setView("list");
@@ -825,19 +883,16 @@ export function App() {
     resetToListView();
   }, [resetToListView]);
 
-  // Confirms "end this conversation": persists the wrap-up already shown in
-  // the popover (see EndConversationControl) so the room permanently freezes
-  // read-only and its feedback survives a reload, then leaves the room the
-  // same way the plain back button does. Fire-and-forget on the network
-  // call — leaving feels instant, and folding it into the cross-session
-  // profile is best-effort server-side anyway (httpserver.sessionEndHandler).
-  const endConversation = useCallback(
-    (summary: string) => {
-      if (activeSessionId) void endSession(activeSessionId, summary);
-      backToList();
-    },
-    [activeSessionId, backToList],
-  );
+  // Confirms "end this conversation": freezes the room read-only immediately
+  // server-side (see httpserver.sessionEndHandler), which kicks off the
+  // study wrap-up as a background job from there — not something this call
+  // waits on — then leaves the room the same way the plain back button
+  // does. Fire-and-forget on the network call — leaving feels instant, and
+  // the freeze itself is a fast plain UPDATE regardless.
+  const endConversation = useCallback(() => {
+    if (activeSessionId) void endSession(activeSessionId);
+    backToList();
+  }, [activeSessionId, backToList]);
 
   // Restores an open room from the URL on a fresh load (e.g. a refresh), and
   // keeps the view in sync with browser back/forward (incl. swipe) — neither
@@ -1096,6 +1151,11 @@ export function App() {
                         🔒
                       </span>
                     )}
+                    {s.ended && s.studySummaryStatus === "pending" && (
+                      <span className="study-summary-pending-badge" title="학습 피드백을 정리하는 중">
+                        <span className="spinning">⏳</span> 정리 중
+                      </span>
+                    )}
                     <span className="title">{s.title}</span>
                     <span className="time">{formatRelativeTime(s.updatedAt)}</span>
                   </button>
@@ -1137,6 +1197,7 @@ export function App() {
               sessionId={activeSessionId}
               ended={ended}
               studySummary={endedSummary}
+              studySummaryStatus={endedSummaryStatus}
               onEnd={endConversation}
             />
           </>
@@ -1793,36 +1854,30 @@ function CompactionInfo({ sessionId }: { sessionId: string | null }) {
   );
 }
 
-// Learner-triggered wrap-up: synthesizes every grammar/vocabulary/phrasing/
-// context issue flagged so far into one "what to study next" recommendation
-// (see httpserver.sessionStudySummaryHandler), then lets the learner
-// permanently end the room from inside the same panel (see endSession) —
-// confirming freezes it read-only for good and folds the wrap-up into the
-// learner's cross-session profile server-side.
-//
-// Unlike CompactionInfo, opening this panel must NOT by itself pay for the
-// summary — that LLM call only makes sense once the learner has actually
-// said they want to end, not on every tap/peek of the 🎓 icon. So the panel
-// opens into an "ask" step first (no fetch), and only starts generating
-// once the learner explicitly confirms intent to end there. Once `ended` is
-// already true (a reopened room), there's nothing left to ask or generate:
-// studySummary was already generated and persisted, so it's shown straight
-// away from the props, for free.
+// Learner-triggered wrap-up. Confirming "end this conversation" freezes the
+// room read-only immediately (see endSession/httpserver.sessionEndHandler) —
+// the study-summary synthesis (every grammar/vocabulary/phrasing/context
+// issue flagged so far, folded into one "what to study next" recommendation)
+// happens as a background job from there, not something this panel waits
+// on: onEnd fires, and the learner is back on the list, before that LLM call
+// has even started. Reopening an ended room shows whatever the room's own
+// SessionDetail already carries — ended/studySummary/studySummaryStatus —
+// with "pending"/"failed" kept fresh by pollStudySummary (see enterChat)
+// while the background job is still working.
 function EndConversationControl({
   sessionId,
   ended,
   studySummary,
+  studySummaryStatus,
   onEnd,
 }: {
   sessionId: string | null;
   ended: boolean;
   studySummary: string;
-  onEnd: (summary: string) => void;
+  studySummaryStatus: "pending" | "done" | "failed";
+  onEnd: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [confirmed, setConfirmed] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [summary, setSummary] = useState<StudySummary | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   useDismiss(open, panelRef, () => setOpen(false));
 
@@ -1830,28 +1885,6 @@ function EndConversationControl({
     if (!sessionId) return;
     setOpen((o) => !o);
   }, [sessionId]);
-
-  useEffect(() => {
-    if (!open || !sessionId) return;
-    if (ended) {
-      setSummary({ summary: studySummary, issueCount: 0 });
-      return;
-    }
-    if (!confirmed) return;
-    setLoading(true);
-    setSummary(null);
-    void fetchStudySummary(sessionId).then((result) => {
-      setSummary(result);
-      setLoading(false);
-    });
-  }, [open, sessionId, ended, studySummary, confirmed]);
-
-  useEffect(() => {
-    if (!open) {
-      setConfirmed(false);
-      setSummary(null);
-    }
-  }, [open]);
 
   if (!sessionId) return null;
 
@@ -1870,48 +1903,35 @@ function EndConversationControl({
       </button>
       {open && (
         <div className="study-panel end-conversation-panel" role="menu">
-          {!ended && !confirmed && (
+          {!ended && (
             <>
               <div className="compaction-summary-header">
                 대화를 종료할까요? 종료하면 지금까지의 대화를 바탕으로 학습 피드백을 정리해요.
               </div>
-              <button
-                type="button"
-                className="end-conversation-confirm"
-                onClick={() => setConfirmed(true)}
-              >
+              <button type="button" className="end-conversation-confirm" onClick={onEnd}>
                 예, 종료할래요
               </button>
             </>
           )}
-          {(ended || confirmed) && loading && (
-            <div className="compaction-loading">학습 피드백을 정리하는 중…</div>
+          {ended && studySummaryStatus === "pending" && (
+            <div className="compaction-loading" role="status">
+              학습 피드백을 정리하는 중…
+            </div>
           )}
-          {!loading && summary && (
+          {ended && studySummaryStatus === "failed" && (
+            <div className="compaction-empty" role="status">
+              학습 피드백을 정리하지 못했어요. 잠시 후 다시 확인해주세요.
+            </div>
+          )}
+          {ended && studySummaryStatus === "done" && (
             <>
               <div className="compaction-summary-header">
-                {ended
+                {studySummary
                   ? "이 대화는 종료됐어요. 그때의 학습 피드백이에요."
-                  : summary.issueCount > 0
-                    ? `이번 대화에서 나온 ${summary.issueCount}개의 피드백을 바탕으로 정리했어요.`
-                    : "이번 대화에서는 딱히 걸린 부분이 없었어요. 아주 잘했어요!"}
+                  : "이번 대화에서는 딱히 걸린 부분이 없었어요. 아주 잘했어요!"}
               </div>
-              {summary.summary && (
-                <div className="compaction-summary-text">{summary.summary}</div>
-              )}
-              {!ended && (
-                <button
-                  type="button"
-                  className="end-conversation-confirm"
-                  onClick={() => onEnd(summary.summary)}
-                >
-                  대화 종료하고 목록으로
-                </button>
-              )}
+              {studySummary && <div className="compaction-summary-text">{studySummary}</div>}
             </>
-          )}
-          {!ended && confirmed && !loading && !summary && (
-            <div className="compaction-empty">불러오지 못했어요.</div>
           )}
         </div>
       )}

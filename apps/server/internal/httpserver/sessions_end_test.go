@@ -1,122 +1,143 @@
 package httpserver
 
 import (
-	"bytes"
-	"encoding/json"
-	"errors"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/llm"
 	"buddy/server/internal/pipeline"
+	"buddy/server/internal/protocol"
 	"buddy/server/internal/store"
 )
 
-func postEndRequest(t *testing.T, summary string) *http.Request {
+// fakeStudySummaryLLM is a minimal llm.Client double for exercising
+// pipeline.Pipeline.GenerateStudySummary (called from the background
+// study-summary job, not this handler directly) without a real model.
+type fakeStudySummaryLLM struct {
+	complete func(msgs []llm.Message) (string, error)
+}
+
+func (f *fakeStudySummaryLLM) ChatStream(ctx context.Context, model string, msgs []llm.Message, onToken func(string)) (string, error) {
+	return "", nil
+}
+
+func (f *fakeStudySummaryLLM) Complete(ctx context.Context, model string, msgs []llm.Message, jsonMode bool) (string, error) {
+	return f.complete(msgs)
+}
+
+func postEndRequest(t *testing.T) *http.Request {
 	t.Helper()
-	body, err := json.Marshal(map[string]string{"summary": summary})
-	if err != nil {
-		t.Fatalf("marshal body: %v", err)
-	}
-	req := httptest.NewRequest("POST", "/api/sessions/s1/end", bytes.NewReader(body))
+	req := httptest.NewRequest("POST", "/api/sessions/s1/end", nil)
 	req.SetPathValue("id", "s1")
 	return req
 }
 
-// TestSessionEndHandlerEndsSessionAndMergesProfile guards the primary flow:
-// confirming "end this conversation" persists the wrap-up via EndSession AND
-// folds it into the learner's persistent cross-session profile (see
-// pipeline.UpdateLearnerProfile), not just one or the other.
-func TestSessionEndHandlerEndsSessionAndMergesProfile(t *testing.T) {
+// TestSessionEndHandlerFreezesImmediately guards the core fix: EndSession
+// (the freeze) must complete, and the response must come back, without
+// waiting on the wrap-up LLM call — a gated fake LLM that blocks until
+// released proves the response isn't stuck behind it.
+func TestSessionEndHandlerFreezesImmediately(t *testing.T) {
+	release := make(chan struct{})
 	pipe := &pipeline.Pipeline{
 		Analysis: []pipeline.Candidate{{Model: "m", LLM: &fakeStudySummaryLLM{complete: func(msgs []llm.Message) (string, error) {
-			return "merged profile", nil
+			<-release // never released during this test — proves ServeHTTP doesn't wait for it
+			return "unused", nil
 		}}}},
 	}
-	st := &fakeSessionStore{learnerProfiles: map[string]string{"alex": "old profile"}}
-	h := sessionEndHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe)
+	st := &fakeSessionStore{
+		detailMeta:  store.SessionMeta{ID: "s1"},
+		detailTurns: []store.Turn{{Turn: 1, Role: "user", Text: "He go to school.", Correction: &protocol.Correction{Issues: []protocol.Issue{{Type: "grammar"}}}}},
+	}
+	h := sessionEndHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, nil)
+
+	done := make(chan struct{})
+	go func() {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, postEndRequest(t))
+		if rec.Code != http.StatusNoContent {
+			t.Errorf("status = %d, want 204", rec.Code)
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("ServeHTTP blocked on the study-summary LLM call instead of returning once EndSession froze the room")
+	}
+	if st.snapshotEndCalls() != 1 {
+		t.Fatalf("EndSession calls = %d, want 1", st.snapshotEndCalls())
+	}
+	close(release)
+}
+
+// TestSessionEndHandlerNoQueueEventuallyCompletesStudySummary guards the
+// no-Redis fallback (studySummaryQueue == nil): the wrap-up still gets
+// generated and persisted, and folded into the learner's cross-session
+// profile, on a detached goroutine — see RunStudySummaryInline.
+func TestSessionEndHandlerNoQueueEventuallyCompletesStudySummary(t *testing.T) {
+	pipe := &pipeline.Pipeline{
+		Analysis: []pipeline.Candidate{{Model: "m", LLM: &fakeStudySummaryLLM{complete: func(msgs []llm.Message) (string, error) {
+			return "focus on third-person -s", nil
+		}}}},
+	}
+	st := &fakeSessionStore{
+		detailMeta:      store.SessionMeta{ID: "s1"},
+		detailTurns:     []store.Turn{{Turn: 1, Role: "user", Text: "He go to school.", Correction: &protocol.Correction{Issues: []protocol.Issue{{Type: "grammar"}}}}},
+		learnerProfiles: map[string]string{"alex": "old profile"},
+	}
+	h := sessionEndHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, nil)
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, postEndRequest(t, "  focus on third-person -s  "))
-
+	h.ServeHTTP(rec, postEndRequest(t))
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", rec.Code)
 	}
-	if len(st.endCalls) != 1 {
-		t.Fatalf("EndSession calls = %d, want 1", len(st.endCalls))
-	}
-	call := st.endCalls[0]
-	if call.userID != "alex" || call.sessionID != "s1" || call.studySummary != "focus on third-person -s" {
-		t.Fatalf("EndSession call = %+v, want trimmed summary for alex/s1", call)
-	}
-	if got := st.learnerProfiles["alex"]; got != "merged profile" {
-		t.Fatalf("learner profile = %q, want the merged result saved", got)
+
+	waitForCondition(t, 2*time.Second, func() bool { return st.snapshotCompleteSummaryCalls() == 1 })
+	if got := st.snapshotLearnerProfile("alex"); got == "old profile" || got == "" {
+		t.Fatalf("learner profile = %q, want it merged with the wrap-up", got)
 	}
 }
 
-// TestSessionEndHandlerEmptySummarySkipsProfileMerge guards the "no issues
-// flagged" case (EndConversationControl's own canned message) from spending
-// an LLM call merging nothing into the profile.
-func TestSessionEndHandlerEmptySummarySkipsProfileMerge(t *testing.T) {
-	calls := 0
+// TestSessionEndHandlerWithQueueEnqueuesDurableJob guards the Redis-backed
+// path against the exact regression this feature fixes: the wrap-up must be
+// enqueued onto asyncjob.KindStudySummary (context.Background()-scoped, not
+// tied to this request), not generated inline — so it survives the learner
+// navigating away right after this response.
+func TestSessionEndHandlerWithQueueEnqueuesDurableJob(t *testing.T) {
+	rdb := requireRedis(t)
+	queue := asyncjob.NewQueue(rdb)
 	pipe := &pipeline.Pipeline{
 		Analysis: []pipeline.Candidate{{Model: "m", LLM: &fakeStudySummaryLLM{complete: func(msgs []llm.Message) (string, error) {
-			calls++
-			return "should not be called", nil
+			return "focus on third-person -s", nil
 		}}}},
 	}
-	st := &fakeSessionStore{}
-	h := sessionEndHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe)
+	st := &fakeSessionStore{
+		detailMeta:  store.SessionMeta{ID: "s1"},
+		detailTurns: []store.Turn{{Turn: 1, Role: "user", Text: "He go to school.", Correction: &protocol.Correction{Issues: []protocol.Issue{{Type: "grammar"}}}}},
+	}
+	h := sessionEndHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, queue)
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, postEndRequest(t, "   "))
-
+	h.ServeHTTP(rec, postEndRequest(t))
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", rec.Code)
 	}
-	if len(st.endCalls) != 1 || st.endCalls[0].studySummary != "" {
-		t.Fatalf("EndSession calls = %+v, want one call with an empty summary", st.endCalls)
-	}
-	if calls != 0 {
-		t.Fatalf("expected no LLM call when summary is empty, got %d calls", calls)
-	}
-	if len(st.learnerProfiles) != 0 {
-		t.Fatalf("learner profile should be untouched, got %+v", st.learnerProfiles)
-	}
-}
 
-// TestSessionEndHandlerProfileMergeFailureStillEndsSession guards the
-// best-effort contract: a transient failure enriching the cross-session
-// profile must not stop the conversation itself from ending, the same
-// "side-effect independent of the primary action" convention
-// sessionDeleteHandler's audio/recording cascades use.
-func TestSessionEndHandlerProfileMergeFailureStillEndsSession(t *testing.T) {
-	pipe := &pipeline.Pipeline{
-		Analysis: []pipeline.Candidate{{Model: "m", LLM: &fakeStudySummaryLLM{complete: func(msgs []llm.Message) (string, error) {
-			return "", errors.New("down")
-		}}}},
-	}
-	st := &fakeSessionStore{}
-	h := sessionEndHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe)
-
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, postEndRequest(t, "focus on third-person -s"))
-
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204 even when the profile merge fails", rec.Code)
-	}
-	if len(st.endCalls) != 1 {
-		t.Fatalf("EndSession calls = %d, want 1", len(st.endCalls))
-	}
+	waitForCondition(t, 2*time.Second, func() bool { return st.snapshotCompleteSummaryCalls() == 1 })
 }
 
 func TestSessionEndHandlerNotFoundPropagatesStoreErrNotFound(t *testing.T) {
 	st := &fakeSessionStore{endErr: store.ErrNotFound}
-	h := sessionEndHandler(fakeIdentifier{id: "alex", ok: true}, st, &pipeline.Pipeline{})
+	h := sessionEndHandler(fakeIdentifier{id: "alex", ok: true}, st, &pipeline.Pipeline{}, nil)
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, postEndRequest(t, "summary"))
+	h.ServeHTTP(rec, postEndRequest(t))
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
@@ -124,25 +145,12 @@ func TestSessionEndHandlerNotFoundPropagatesStoreErrNotFound(t *testing.T) {
 }
 
 func TestSessionEndHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
-	h := sessionEndHandler(fakeIdentifier{ok: false}, &fakeSessionStore{}, &pipeline.Pipeline{})
+	h := sessionEndHandler(fakeIdentifier{ok: false}, &fakeSessionStore{}, &pipeline.Pipeline{}, nil)
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, postEndRequest(t, "summary"))
+	h.ServeHTTP(rec, postEndRequest(t))
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
-	}
-}
-
-func TestSessionEndHandlerBadRequestOnInvalidJSON(t *testing.T) {
-	h := sessionEndHandler(fakeIdentifier{id: "alex", ok: true}, &fakeSessionStore{}, &pipeline.Pipeline{})
-
-	req := httptest.NewRequest("POST", "/api/sessions/s1/end", bytes.NewReader([]byte("not json")))
-	req.SetPathValue("id", "s1")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
 	}
 }

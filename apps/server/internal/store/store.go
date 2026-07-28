@@ -37,13 +37,26 @@ type SessionMeta struct {
 	CreatedAt int64  `json:"createdAt"`
 	UpdatedAt int64  `json:"updatedAt"`
 	// Ended is true once the learner has confirmed "end this conversation"
-	// (see EndSession) — the room is permanently read-only from then on, and
-	// StudySummary is its persisted wrap-up rather than something to
-	// regenerate.
+	// (see EndSession) — the room is permanently read-only from then on.
+	// EndSession freezes it immediately; StudySummary/StudySummaryStatus
+	// below fill in afterward, once the background wrap-up job finishes.
 	Ended bool `json:"ended"`
-	// StudySummary is the wrap-up text saved by EndSession — "" until the
-	// session is Ended.
+	// StudySummary is the wrap-up text saved by CompleteStudySummary — ""
+	// until StudySummaryStatus reaches JobStatusDone.
 	StudySummary string `json:"studySummary,omitempty"`
+	// StudySummaryStatus is the end-of-conversation wrap-up job's status
+	// (JobStatusPending/JobStatusDone/JobStatusFailed), set to
+	// JobStatusPending the instant EndSession freezes the room and updated
+	// by whichever replica's asyncjob.KindStudySummary worker actually runs
+	// it (see transport.StudySummaryJobHandler) — independent of the
+	// connection that confirmed "end this conversation", so it keeps
+	// progressing (and this field keeps reflecting that) even if the
+	// learner has already navigated away. "" for a session that hasn't been
+	// ended, or one ended before this became an async job — its
+	// StudySummary was already generated synchronously, so there's nothing
+	// left to poll for (see EndConversationControl in apps/web/src/App.tsx,
+	// which treats "" the same as JobStatusDone for that reason).
+	StudySummaryStatus string `json:"studySummaryStatus,omitempty"`
 }
 
 // Turn is one persisted message in a session's full transcript — the source
@@ -207,13 +220,28 @@ type Store interface {
 	// session row doesn't exist yet.
 	SaveGeneratedTitle(ctx context.Context, userID, sessionID, title string) error
 
-	// EndSession permanently marks a session read-only and saves its
-	// wrap-up: SessionMeta.Ended becomes true and StudySummary becomes
-	// studySummary, from then on. Called once, when the learner confirms
-	// "end this conversation" (see httpserver.sessionEndHandler) — a no-op
-	// (nil error) if sessionID doesn't exist or belongs to a different user,
-	// same as Save.
-	EndSession(ctx context.Context, userID, sessionID, studySummary string) error
+	// EndSession permanently marks a session read-only: SessionMeta.Ended
+	// becomes true and StudySummaryStatus becomes JobStatusPending, both
+	// immediately — freezing the room never waits on the wrap-up LLM call
+	// (see asyncjob.KindStudySummary, enqueued right after this by
+	// httpserver.sessionEndHandler so the room stays frozen, and its
+	// summary keeps generating, even if the learner's connection is already
+	// gone). CompleteStudySummary/FailStudySummary fill in the actual
+	// outcome once that background job finishes. A no-op (nil error) if
+	// sessionID doesn't exist or belongs to a different user, same as Save.
+	EndSession(ctx context.Context, userID, sessionID string) error
+	// CompleteStudySummary saves the wrap-up text an asyncjob.KindStudySummary
+	// job generated for an already-ended session — StudySummary becomes
+	// summary and StudySummaryStatus becomes JobStatusDone, the terminal
+	// state a reopened room (or the room list) polls for. A no-op if
+	// sessionID doesn't exist or belongs to a different user.
+	CompleteStudySummary(ctx context.Context, userID, sessionID, summary string) error
+	// FailStudySummary marks StudySummaryStatus JobStatusFailed after an
+	// asyncjob.KindStudySummary job's LLM call errored — the reaper still
+	// retries the job from scratch regardless (see asyncjob.Queue.Execute),
+	// this only records the most recent attempt's outcome for a poller in
+	// the meantime, same reasoning as FailJob.
+	FailStudySummary(ctx context.Context, userID, sessionID string) error
 
 	// GetLearnerProfile returns userID's persistent, LLM-maintained
 	// cross-session profile (recurring mistakes, interests, proficiency

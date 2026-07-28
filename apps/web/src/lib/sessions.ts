@@ -8,13 +8,25 @@ export interface SessionSummary {
   createdAt: number;
   updatedAt: number;
   // Permanently true once the learner has confirmed "end this conversation"
-  // (see endSession) — the room is read-only from then on. Optional (like
-  // studySummary below) only so hand-built test fixtures that predate this
-  // field don't all need updating — a real API response always sets it.
+  // (see endSession) — the room is read-only from then on, immediately:
+  // ended flips before the wrap-up below even starts generating (see
+  // studySummaryStatus). Optional (like the fields below) only so
+  // hand-built test fixtures that predate this field don't all need
+  // updating — a real API response always sets it.
   ended?: boolean;
-  // The persisted study wrap-up saved by endSession — "" / absent until the
-  // session is ended.
+  // The persisted study wrap-up, saved once studySummaryStatus reaches
+  // "done" (see EndConversationControl in App.tsx) — "" until then.
   studySummary?: string;
+  // The end-of-conversation wrap-up job's status ("pending" | "done" |
+  // "failed"), set the instant endSession freezes the room and updated by
+  // the background job that actually generates studySummary (see
+  // store.SessionMeta.StudySummaryStatus) — independent of whether this
+  // client is even still around to see it land. Absent for a session that
+  // hasn't been ended, or one ended before this became an async job (its
+  // studySummary was already generated synchronously, so there's nothing
+  // left to poll for) — EndConversationControl treats both the same as
+  // "done".
+  studySummaryStatus?: "pending" | "done" | "failed";
 }
 
 export interface TurnRecord {
@@ -102,26 +114,6 @@ export async function fetchSessionCompaction(id: string): Promise<SessionCompact
   );
 }
 
-// Mirrors the JSON shape written by httpserver.sessionStudySummaryHandler.
-export interface StudySummary {
-  // Empty when issueCount is 0 — the server skips the LLM call entirely
-  // rather than being asked to summarize nothing (see EndConversationControl,
-  // which shows its own canned message for that case).
-  summary: string;
-  issueCount: number;
-}
-
-// Fetches a synthesized "what to study next" wrap-up from every
-// grammar/vocabulary issue flagged so far in a room — meant to be called
-// once, when the learner explicitly ends the conversation, not polled like
-// fetchSessionCompaction. Returns null on any failure.
-export async function fetchStudySummary(id: string): Promise<StudySummary | null> {
-  return fetchJSON<StudySummary | null>(
-    `api/sessions/${encodeURIComponent(id)}/study-summary`,
-    null,
-  );
-}
-
 // Deletes one chat room and its transcript (the server also cascades to any
 // recordings archived under it — see httpserver.sessionDeleteHandler).
 // Returns whether the request succeeded, so the caller can decide what to do
@@ -130,16 +122,13 @@ export async function deleteSession(id: string): Promise<boolean> {
   return requestOK(`api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
-// Confirms "end this conversation": permanently marks the room read-only and
-// persists its already-generated study wrap-up (see httpserver
-// .sessionEndHandler), which also folds it into the learner's cross-session
-// profile server-side. summary is whatever fetchStudySummary already
-// returned for this room's popover — ending never re-synthesizes it.
-// Returns whether the request succeeded.
-export async function endSession(id: string, summary: string): Promise<boolean> {
-  return requestOK(`api/sessions/${encodeURIComponent(id)}/end`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ summary }),
-  });
+// Confirms "end this conversation": freezes the room read-only immediately
+// (see httpserver.sessionEndHandler) and kicks off the study wrap-up as a
+// background job from there — this call returns as soon as the room is
+// frozen, not once the wrap-up (or its fold into the learner's
+// cross-session profile) is actually done; see studySummaryStatus on the
+// session, which the frontend polls to show that separately. Returns
+// whether the freeze itself succeeded.
+export async function endSession(id: string): Promise<boolean> {
+  return requestOK(`api/sessions/${encodeURIComponent(id)}/end`, { method: "POST" });
 }

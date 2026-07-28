@@ -60,7 +60,6 @@ vi.mock("./lib/sessions", () => ({
   fetchSessions: vi.fn(),
   fetchSessionDetail: vi.fn(),
   fetchSessionCompaction: vi.fn(),
-  fetchStudySummary: vi.fn(),
   deleteSession: vi.fn(),
   endSession: vi.fn(),
 }));
@@ -92,7 +91,6 @@ import {
   fetchSessionCompaction,
   fetchSessionDetail,
   fetchSessions,
-  fetchStudySummary,
 } from "./lib/sessions";
 import { KokoroSpeaker } from "./tts/kokoro";
 import { BuddyClient } from "./lib/ws";
@@ -237,6 +235,22 @@ describe("room list", () => {
     expect(await screen.findByText("hello there")).toBeInTheDocument();
   });
 
+  // Guards the "still in progress" indicator this feature adds: a room
+  // whose background study-summary job hasn't finished yet (see
+  // asyncjob.KindStudySummary) must show that in the list itself, not just
+  // once the room is reopened — the whole point is that leaving and coming
+  // back should let the learner tell whether it's still working.
+  it("shows a pending badge for an ended session whose study summary is still generating", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: true, studySummaryStatus: "pending" },
+      { id: "s2", title: "already done", createdAt: 1, updatedAt: 2, ended: true, studySummaryStatus: "done" },
+    ]);
+    render(<App />);
+    expect(await screen.findByText("정리 중")).toBeInTheDocument();
+    expect(screen.queryByText("정리 중")?.closest("li")?.textContent).toContain("hello there");
+    expect(screen.getByText("already done").closest("li")?.textContent).not.toContain("정리 중");
+  });
+
   it("starting a new chat opens the WS with no session id", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -309,10 +323,10 @@ describe("room list", () => {
     expect(endSession).not.toHaveBeenCalled();
   });
 
-  // Opening the panel must ask before paying for a summary: the LLM call
-  // behind fetchStudySummary should only fire once the learner explicitly
-  // confirms they want to end, not on every tap/peek of the 🎓 icon.
-  it("opening the end-conversation panel asks first and does not fetch a summary until confirmed", async () => {
+  // Opening the panel must ask before ending: the freeze/background wrap-up
+  // job should only kick off once the learner explicitly confirms, not on
+  // every tap/peek of the 🎓 icon.
+  it("opening the end-conversation panel asks first and does not end the session until confirmed", async () => {
     vi.mocked(fetchSessions).mockResolvedValue([
       { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: false },
     ]);
@@ -332,13 +346,16 @@ describe("room list", () => {
         "대화를 종료할까요? 종료하면 지금까지의 대화를 바탕으로 학습 피드백을 정리해요.",
       ),
     ).toBeInTheDocument();
-    expect(fetchStudySummary).not.toHaveBeenCalled();
+    expect(endSession).not.toHaveBeenCalled();
   });
 
-  // Guards the other half: confirming intent to end fetches the wrap-up,
-  // then confirming again on the generated summary persists it (not a fresh
-  // one) and leaves the room, the same way the plain back button does.
-  it("confirming end conversation calls endSession with the generated summary and returns to the list", async () => {
+  // Guards the core fix this feature is about: confirming "end this
+  // conversation" freezes the room and returns to the list immediately —
+  // it must not wait on the study-summary wrap-up (that's a background job
+  // from here on, see EnqueueStudySummaryJob/RunStudySummaryInline
+  // server-side), so nothing here is lost if the learner navigates away
+  // right after confirming.
+  it("confirming end conversation freezes the session and returns to the list immediately", async () => {
     vi.mocked(fetchSessions).mockResolvedValue([
       { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: false },
     ]);
@@ -347,10 +364,6 @@ describe("room list", () => {
       session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: false },
       turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
     });
-    vi.mocked(fetchStudySummary).mockResolvedValue({
-      summary: "focus on third-person -s",
-      issueCount: 2,
-    });
     const user = userEvent.setup();
     render(<App />);
     await user.click(await screen.findByText("hello there"));
@@ -358,11 +371,8 @@ describe("room list", () => {
 
     await user.click(screen.getByRole("button", { name: "대화 종료" }));
     await user.click(screen.getByRole("button", { name: "예, 종료할래요" }));
-    expect(await screen.findByText("focus on third-person -s")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "대화 종료하고 목록으로" }));
-
-    expect(endSession).toHaveBeenCalledWith("s1", "focus on third-person -s");
+    expect(endSession).toHaveBeenCalledWith("s1");
     // Leaving reuses the room's history entry (see goBack), same as the
     // plain back button — a real browser resolves that asynchronously via
     // popstate, which App's mount effect listens for.
@@ -371,6 +381,50 @@ describe("room list", () => {
 
     expect(await screen.findByRole("button", { name: "+ 새 대화" })).toBeInTheDocument();
     expect(lastClientInstance().close).toHaveBeenCalled();
+  });
+
+  // Guards the "still generating" indicator: reopening a room that's
+  // ended but whose background wrap-up job hasn't finished yet must show a
+  // loading state, not a blank/stuck panel — and must pick up the finished
+  // summary once a later poll (see pollStudySummary) sees it land, without
+  // needing to leave and reopen the room.
+  it("reopening a room whose study summary is still pending shows a loading state, then the summary once it lands", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(fetchSessions).mockResolvedValue([
+        { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: true, studySummaryStatus: "pending" },
+      ]);
+      vi.mocked(fetchSessionDetail).mockResolvedValueOnce({
+        hasMore: false,
+        session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: true, studySummaryStatus: "pending" },
+        turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
+      });
+      render(<App />);
+      await flushUntil(() => screen.queryByText("hello there") !== null);
+      fireEvent.click(screen.getByText("hello there"));
+      await flushUntil(() => screen.queryByText("hi") !== null);
+
+      fireEvent.click(screen.getByRole("button", { name: "대화 종료" }));
+      await flushUntil(() => screen.queryByText("학습 피드백을 정리하는 중…") !== null);
+
+      vi.mocked(fetchSessionDetail).mockResolvedValue({
+        hasMore: false,
+        session: {
+          id: "s1",
+          title: "hello there",
+          createdAt: 1,
+          updatedAt: 2,
+          ended: true,
+          studySummary: "focus on third-person -s",
+          studySummaryStatus: "done",
+        },
+        turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
+      });
+      await act(() => vi.advanceTimersByTimeAsync(4000));
+      await flushUntil(() => screen.queryByText("focus on third-person -s") !== null);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("scrolls the transcript to the bottom when entering a room, so the latest turn is visible", async () => {

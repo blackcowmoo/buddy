@@ -5,7 +5,6 @@ import {
   fetchSessionCompaction,
   fetchSessionDetail,
   fetchSessions,
-  fetchStudySummary,
 } from "./sessions";
 
 afterEach(() => {
@@ -111,27 +110,6 @@ describe("fetchSessionCompaction", () => {
   });
 });
 
-describe("fetchStudySummary", () => {
-  it("returns the study summary on a successful response and URL-encodes the id", async () => {
-    const summary = { summary: "focus on subject-verb agreement", issueCount: 3 };
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(summary) });
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(fetchStudySummary("weird id/1")).resolves.toEqual(summary);
-    expect(fetchMock).toHaveBeenCalledWith("api/sessions/weird%20id%2F1/study-summary");
-  });
-
-  it("returns null on a non-ok response", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
-    await expect(fetchStudySummary("s1")).resolves.toBeNull();
-  });
-
-  it("returns null when fetch rejects", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
-    await expect(fetchStudySummary("s1")).resolves.toBeNull();
-  });
-});
-
 describe("deleteSession", () => {
   it("sends a DELETE request and returns true on success", async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true });
@@ -153,25 +131,21 @@ describe("deleteSession", () => {
 });
 
 describe("endSession", () => {
-  it("sends a POST request with the summary and returns true on success", async () => {
+  it("sends a bare POST request and returns true on success", async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(endSession("weird id/1", "focus on third-person -s")).resolves.toBe(true);
-    expect(fetchMock).toHaveBeenCalledWith("api/sessions/weird%20id%2F1/end", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ summary: "focus on third-person -s" }),
-    });
+    await expect(endSession("weird id/1")).resolves.toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith("api/sessions/weird%20id%2F1/end", { method: "POST" });
   });
 
   it("returns false on a non-ok response", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
-    await expect(endSession("s1", "summary")).resolves.toBe(false);
+    await expect(endSession("s1")).resolves.toBe(false);
   });
 
   it("returns false when fetch rejects", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
-    await expect(endSession("s1", "summary")).resolves.toBe(false);
+    await expect(endSession("s1")).resolves.toBe(false);
   });
 });
