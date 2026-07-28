@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/backfill"
 	"buddy/server/internal/config"
 	"buddy/server/internal/identity"
@@ -40,8 +41,11 @@ import (
 // convention as audio/recordings above. Durable title generation is wired
 // the same optional way, but directly onto pipe.TitleHook by the caller
 // (see cmd/server/main.go) rather than through a parameter here — same as
-// pipe.ReplyHook/CorrectHook/TranslateHook.
-func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue) *http.Server {
+// pipe.ReplyHook/CorrectHook/TranslateHook. studySummaryQueue is nil the same
+// optional way — sessionEndHandler falls back to running the wrap-up inline,
+// on a detached goroutine, instead of durably queuing it (see
+// transport.EnqueueStudySummaryJob).
+func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue, studySummaryQueue *asyncjob.Queue) *http.Server {
 	mux := http.NewServeMux()
 
 	// Realtime + API first (exact patterns win over the "/" catch-all).
@@ -62,8 +66,7 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux.HandleFunc("GET /api/sessions", sessionsListHandler(ident, st))
 	mux.HandleFunc("GET /api/sessions/{id}", sessionDetailHandler(ident, st, translateQueue, correctionQueue))
 	mux.HandleFunc("GET /api/sessions/{id}/compaction", sessionCompactionHandler(ident, st))
-	mux.HandleFunc("GET /api/sessions/{id}/study-summary", sessionStudySummaryHandler(ident, st, pipe))
-	mux.HandleFunc("POST /api/sessions/{id}/end", sessionEndHandler(ident, st, pipe))
+	mux.HandleFunc("POST /api/sessions/{id}/end", sessionEndHandler(ident, st, pipe, studySummaryQueue))
 	mux.HandleFunc("DELETE /api/sessions/{id}", sessionDeleteHandler(ident, st, audio, recordings))
 	mux.HandleFunc("GET /api/settings", settingsGetHandler(ident, st))
 	mux.HandleFunc("PUT /api/settings", settingsSaveHandler(ident, st))
@@ -331,77 +334,19 @@ func sessionCompactionHandler(ident identity.Identifier, st store.Store) http.Ha
 	}
 }
 
-// sessionStudySummaryHandler synthesizes every grammar/vocabulary/phrasing/
-// context issue flagged across a session's full transcript into one
-// wrap-up "what to study next" recommendation (see
-// pipeline.Pipeline.GenerateStudySummary) — meant to be fetched once, when
-// the learner explicitly ends a conversation (see EndConversationControl in
-// apps/web/src/App.tsx), unlike sessionCompactionHandler's debug-info
-// neighbor which is cheap enough to refetch on every open. issueCount lets
-// the frontend show its own canned "no feedback yet" message without an
-// LLM call when there's nothing to synthesize, the same
-// client-side-empty-state convention FeedbackSummary already uses for the
-// identical case.
-func sessionStudySummaryHandler(ident identity.Identifier, st store.Store, pipe *pipeline.Pipeline) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		userID, ok := requireUser(w, r, ident)
-		if !ok {
-			return
-		}
-		sessionID := r.PathValue("id")
-
-		meta, turns, err := st.SessionDetail(r.Context(), userID, sessionID)
-		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				http.NotFound(w, r)
-				return
-			}
-			serverError(w, "session detail", err)
-			return
-		}
-
-		var issues []pipeline.StudyIssue
-		for _, t := range turns {
-			if t.Role != "user" || t.Correction == nil {
-				continue
-			}
-			for _, iss := range t.Correction.Issues {
-				issues = append(issues, pipeline.StudyIssue{Text: t.Text, Issue: iss})
-			}
-		}
-		// An ended session's wrap-up was already generated (and possibly
-		// edited by nothing since — it's exactly what EndSession persisted)
-		// — reopening it must show that same text, not spend another LLM
-		// call re-synthesizing it from the same issues.
-		if meta.Ended {
-			writeJSON(w, map[string]any{"summary": meta.StudySummary, "issueCount": len(issues)})
-			return
-		}
-		if len(issues) == 0 {
-			writeJSON(w, map[string]any{"summary": "", "issueCount": 0})
-			return
-		}
-
-		summary, err := pipe.GenerateStudySummary(r.Context(), issues)
-		if err != nil {
-			serverError(w, "generate study summary", err)
-			return
-		}
-		writeJSON(w, map[string]any{"summary": summary, "issueCount": len(issues)})
-	}
-}
-
 // sessionEndHandler permanently marks one chat room read-only
-// (store.Store.EndSession) once the learner confirms "end this conversation"
-// (see EndConversationControl in apps/web/src/App.tsx) — the room's study
-// wrap-up, already generated for the popover by sessionStudySummaryHandler,
-// is passed in rather than recomputed here, so ending a conversation never
-// costs a second LLM call. Folding that wrap-up into the learner's
-// persistent cross-session profile (pipeline.UpdateLearnerProfile) is
-// best-effort: it enriches future conversations, but a transient failure
-// here must not stop this conversation from ending, same reasoning as
-// sessionDeleteHandler's audio/recording cascades.
-func sessionEndHandler(ident identity.Identifier, st store.Store, pipe *pipeline.Pipeline) http.HandlerFunc {
+// (store.Store.EndSession) the instant the learner confirms "end this
+// conversation" (see EndConversationControl in apps/web/src/App.tsx) —
+// freezing never waits on the wrap-up LLM call, which this kicks off
+// separately right after (transport.EnqueueStudySummaryJob), so the room is
+// safely read-only, and the response comes back, before that call has even
+// started. The wrap-up itself — and folding it into the learner's
+// persistent cross-session profile — happens in the background from there
+// (see transport.StudySummaryJobHandler/runStudySummary): both survive the
+// learner navigating away right after this returns, which is the entire
+// point of routing it through asyncjob rather than generating it inline in
+// this request as a previous version of this handler did.
+func sessionEndHandler(ident identity.Identifier, st store.Store, pipe *pipeline.Pipeline, studySummaryQueue *asyncjob.Queue) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)
 		if !ok {
@@ -409,16 +354,7 @@ func sessionEndHandler(ident identity.Identifier, st store.Store, pipe *pipeline
 		}
 		sessionID := r.PathValue("id")
 
-		var body struct {
-			Summary string `json:"summary"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, "bad request", http.StatusBadRequest)
-			return
-		}
-		summary := strings.TrimSpace(body.Summary)
-
-		if err := st.EndSession(r.Context(), userID, sessionID, summary); err != nil {
+		if err := st.EndSession(r.Context(), userID, sessionID); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				http.NotFound(w, r)
 				return
@@ -427,15 +363,21 @@ func sessionEndHandler(ident identity.Identifier, st store.Store, pipe *pipeline
 			return
 		}
 
-		if summary != "" {
-			prevProfile, err := st.GetLearnerProfile(r.Context(), userID)
-			if err != nil {
-				log.Printf("end session: get learner profile %s: %v", userID, err)
-			} else if merged, err := pipe.UpdateLearnerProfile(r.Context(), prevProfile, summary); err != nil {
-				log.Printf("end session: update learner profile %s: %v", userID, err)
-			} else if err := st.SaveLearnerProfile(r.Context(), userID, merged); err != nil {
-				log.Printf("end session: save learner profile %s: %v", userID, err)
+		if studySummaryQueue != nil {
+			if err := transport.EnqueueStudySummaryJob(r.Context(), studySummaryQueue, pipe, st, userID, sessionID); err != nil {
+				log.Printf("end session: enqueue study summary %s/%s: %v", userID, sessionID, err)
 			}
+		} else {
+			// No Redis configured, so no durable queue to hand this to —
+			// still run it on a detached context.Background() goroutine
+			// rather than inline in this request, for the same "outlives
+			// this response" behavior EnqueueStudySummaryJob's background
+			// claim/execute gets from Redis.
+			go func() {
+				if err := transport.RunStudySummaryInline(context.Background(), pipe, st, userID, sessionID); err != nil {
+					log.Printf("end session: study summary %s/%s: %v", userID, sessionID, err)
+				}
+			}()
 		}
 
 		w.WriteHeader(http.StatusNoContent)

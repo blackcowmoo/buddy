@@ -155,6 +155,20 @@ func main() {
 			transport.TitleJobHandler(pipe, st)).Run(jobsCtx)
 	}
 
+	// End-of-conversation wrap-up: unlike the hooks above, this isn't wired
+	// onto pipe (nothing mid-conversation triggers it) — httpserver's
+	// sessionEndHandler calls transport.EnqueueStudySummaryJob directly once
+	// EndSession freezes a room. studySummaryQueue stays nil, same
+	// "optional feature, zero setup by default" convention, when Redis
+	// isn't configured; sessionEndHandler falls back to running it inline
+	// on its own detached goroutine in that case.
+	var studySummaryQueue *asyncjob.Queue
+	if rdb != nil {
+		studySummaryQueue = asyncjob.NewQueue(rdb)
+		go asyncjob.NewWorker(rdb, asyncjob.KindStudySummary, transport.StudySummaryWorkerConcurrency, transport.StudySummaryClaimTTL,
+			transport.StudySummaryJobHandler(pipe, st)).Run(jobsCtx)
+	}
+
 	// Temporary audio backup: only enabled once an endpoint is configured, so
 	// the server still boots with zero setup by default (see internal/audiostore).
 	// A second, independent feature (the recording archive below) archives
@@ -185,7 +199,7 @@ func main() {
 		defer recordings.Close()
 	}
 
-	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, translateQueue, correctionBackfillQueue)
+	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, translateQueue, correctionBackfillQueue, studySummaryQueue)
 
 	go func() {
 		log.Printf("buddy up on %s  env=%s  stt=%v  feedback=%s",

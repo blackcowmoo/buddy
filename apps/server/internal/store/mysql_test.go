@@ -1050,7 +1050,12 @@ func TestMySQLInterlocutorStylesAreIsolated(t *testing.T) {
 	}
 }
 
-func TestMySQLEndSessionSetsEndedAndStudySummary(t *testing.T) {
+// TestMySQLEndSessionFreezesImmediatelyWithoutTheSummary guards the async
+// wrap-up flow: EndSession alone must mark the room Ended and its
+// StudySummaryStatus JobStatusPending, with StudySummary still empty — the
+// LLM call hasn't run yet at this point, only CompleteStudySummary (below)
+// fills it in, from the background asyncjob.KindStudySummary job.
+func TestMySQLEndSessionFreezesImmediatelyWithoutTheSummary(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
 	// A dedicated userID, not the heavily-shared "alex" other tests in this
@@ -1060,7 +1065,7 @@ func TestMySQLEndSessionSetsEndedAndStudySummary(t *testing.T) {
 	if err := st.SaveTurn(ctx, userID, sessionID, 1, "user", "first message", false, protocol.SourceText); err != nil {
 		t.Fatalf("SaveTurn() error = %v", err)
 	}
-	if err := st.EndSession(ctx, userID, sessionID, "focus on third-person -s"); err != nil {
+	if err := st.EndSession(ctx, userID, sessionID); err != nil {
 		t.Fatalf("EndSession() error = %v", err)
 	}
 	meta, _, err := st.SessionDetail(ctx, userID, sessionID)
@@ -1070,16 +1075,19 @@ func TestMySQLEndSessionSetsEndedAndStudySummary(t *testing.T) {
 	if !meta.Ended {
 		t.Fatalf("Ended = false, want true after EndSession")
 	}
-	if meta.StudySummary != "focus on third-person -s" {
-		t.Fatalf("StudySummary = %q, want the saved wrap-up", meta.StudySummary)
+	if meta.StudySummaryStatus != JobStatusPending {
+		t.Fatalf("StudySummaryStatus = %q, want JobStatusPending immediately after EndSession", meta.StudySummaryStatus)
+	}
+	if meta.StudySummary != "" {
+		t.Fatalf("StudySummary = %q, want empty until CompleteStudySummary runs", meta.StudySummary)
 	}
 
 	sessions, err := st.ListSessions(ctx, userID)
 	if err != nil {
 		t.Fatalf("ListSessions() error = %v", err)
 	}
-	if len(sessions) != 1 || !sessions[0].Ended || sessions[0].StudySummary != "focus on third-person -s" {
-		t.Fatalf("ListSessions() = %+v, want the ended session with its summary", sessions)
+	if len(sessions) != 1 || !sessions[0].Ended || sessions[0].StudySummaryStatus != JobStatusPending {
+		t.Fatalf("ListSessions() = %+v, want the ended session pending its wrap-up", sessions)
 	}
 }
 
@@ -1088,8 +1096,67 @@ func TestMySQLEndSessionSetsEndedAndStudySummary(t *testing.T) {
 // flow from an already-open room does.
 func TestMySQLEndSessionMissingSessionIsNoop(t *testing.T) {
 	st := requireStore(t)
-	if err := st.EndSession(context.Background(), "alex", "no-such-session", "summary"); err != nil {
+	if err := st.EndSession(context.Background(), "alex", "no-such-session"); err != nil {
 		t.Fatalf("EndSession() error = %v, want nil (silent no-op)", err)
+	}
+}
+
+// TestMySQLCompleteStudySummarySavesTextAndMarksDone guards the background
+// job's terminal write: once the asyncjob.KindStudySummary job finishes, its
+// text lands in StudySummary and StudySummaryStatus flips to JobStatusDone —
+// the state a reopened room stops polling on.
+func TestMySQLCompleteStudySummarySavesTextAndMarksDone(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	const userID = "complete-summary-user"
+	sessionID := "sess-complete"
+	if err := st.SaveTurn(ctx, userID, sessionID, 1, "user", "first message", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn() error = %v", err)
+	}
+	if err := st.EndSession(ctx, userID, sessionID); err != nil {
+		t.Fatalf("EndSession() error = %v", err)
+	}
+	if err := st.CompleteStudySummary(ctx, userID, sessionID, "focus on third-person -s"); err != nil {
+		t.Fatalf("CompleteStudySummary() error = %v", err)
+	}
+	meta, _, err := st.SessionDetail(ctx, userID, sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if meta.StudySummaryStatus != JobStatusDone {
+		t.Fatalf("StudySummaryStatus = %q, want JobStatusDone", meta.StudySummaryStatus)
+	}
+	if meta.StudySummary != "focus on third-person -s" {
+		t.Fatalf("StudySummary = %q, want the completed wrap-up", meta.StudySummary)
+	}
+}
+
+// TestMySQLFailStudySummaryMarksFailedWithoutTouchingText guards the error
+// path: a failed generation attempt must record JobStatusFailed for a
+// poller to show, without inventing any StudySummary text.
+func TestMySQLFailStudySummaryMarksFailedWithoutTouchingText(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	const userID = "fail-summary-user"
+	sessionID := "sess-fail"
+	if err := st.SaveTurn(ctx, userID, sessionID, 1, "user", "first message", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn() error = %v", err)
+	}
+	if err := st.EndSession(ctx, userID, sessionID); err != nil {
+		t.Fatalf("EndSession() error = %v", err)
+	}
+	if err := st.FailStudySummary(ctx, userID, sessionID); err != nil {
+		t.Fatalf("FailStudySummary() error = %v", err)
+	}
+	meta, _, err := st.SessionDetail(ctx, userID, sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if meta.StudySummaryStatus != JobStatusFailed {
+		t.Fatalf("StudySummaryStatus = %q, want JobStatusFailed", meta.StudySummaryStatus)
+	}
+	if meta.StudySummary != "" {
+		t.Fatalf("StudySummary = %q, want still empty after a failed attempt", meta.StudySummary)
 	}
 }
 

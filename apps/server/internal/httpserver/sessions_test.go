@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"buddy/server/internal/protocol"
 	"buddy/server/internal/recording"
@@ -17,7 +19,13 @@ import (
 // fakeSessionStore is an in-memory store.Store for sessionDeleteHandler
 // tests — real SQL correctness (transactional two-table delete, per-user
 // scoping) is covered by internal/store's own container-backed tests.
+// mu guards every field sessionEndHandler's background goroutine (see
+// EnqueueStudySummaryJob/RunStudySummaryInline) can write concurrently with
+// a test's own polling reads — everything else here only ever runs
+// synchronously within ServeHTTP.
 type fakeSessionStore struct {
+	mu sync.Mutex
+
 	deleted []struct{ userID, sessionID string }
 	err     error
 
@@ -53,8 +61,15 @@ type fakeSessionStore struct {
 
 	// endCalls/endErr back EndSession for sessions_end_test.go; left zero for
 	// tests in this file, which don't call it.
-	endCalls []struct{ userID, sessionID, studySummary string }
+	endCalls []struct{ userID, sessionID string }
 	endErr   error
+
+	// completeSummaryCalls/failSummaryCalls back CompleteStudySummary/
+	// FailStudySummary for sessions_end_test.go and study_summary_job_test.go.
+	completeSummaryCalls []struct{ userID, sessionID, summary string }
+	completeSummaryErr   error
+	failSummaryCalls     []struct{ userID, sessionID string }
+	failSummaryErr       error
 
 	// learnerProfiles/learnerProfileErr back GetLearnerProfile/
 	// SaveLearnerProfile for sessions_end_test.go.
@@ -173,15 +188,39 @@ func (f *fakeSessionStore) SaveInterlocutorStyle(ctx context.Context, userID, st
 	return nil
 }
 
-func (f *fakeSessionStore) EndSession(ctx context.Context, userID, sessionID, studySummary string) error {
+func (f *fakeSessionStore) EndSession(ctx context.Context, userID, sessionID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.endErr != nil {
 		return f.endErr
 	}
-	f.endCalls = append(f.endCalls, struct{ userID, sessionID, studySummary string }{userID, sessionID, studySummary})
+	f.endCalls = append(f.endCalls, struct{ userID, sessionID string }{userID, sessionID})
+	return nil
+}
+
+func (f *fakeSessionStore) CompleteStudySummary(ctx context.Context, userID, sessionID, summary string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.completeSummaryErr != nil {
+		return f.completeSummaryErr
+	}
+	f.completeSummaryCalls = append(f.completeSummaryCalls, struct{ userID, sessionID, summary string }{userID, sessionID, summary})
+	return nil
+}
+
+func (f *fakeSessionStore) FailStudySummary(ctx context.Context, userID, sessionID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failSummaryErr != nil {
+		return f.failSummaryErr
+	}
+	f.failSummaryCalls = append(f.failSummaryCalls, struct{ userID, sessionID string }{userID, sessionID})
 	return nil
 }
 
 func (f *fakeSessionStore) GetLearnerProfile(ctx context.Context, userID string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.learnerProfileErr != nil {
 		return "", f.learnerProfileErr
 	}
@@ -189,6 +228,8 @@ func (f *fakeSessionStore) GetLearnerProfile(ctx context.Context, userID string)
 }
 
 func (f *fakeSessionStore) SaveLearnerProfile(ctx context.Context, userID, profile string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.learnerProfileErr != nil {
 		return f.learnerProfileErr
 	}
@@ -200,6 +241,52 @@ func (f *fakeSessionStore) SaveLearnerProfile(ctx context.Context, userID, profi
 }
 
 func (f *fakeSessionStore) Close() error { return nil }
+
+// snapshotEndCalls/snapshotCompleteSummaryCalls/snapshotLearnerProfile give
+// tests a lock-protected read of state sessionEndHandler's background
+// goroutine (see EnqueueStudySummaryJob/RunStudySummaryInline) may still be
+// writing to concurrently — see waitForCondition.
+func (f *fakeSessionStore) snapshotEndCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.endCalls)
+}
+
+func (f *fakeSessionStore) snapshotCompleteSummaryCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.completeSummaryCalls)
+}
+
+func (f *fakeSessionStore) snapshotFailSummaryCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.failSummaryCalls)
+}
+
+func (f *fakeSessionStore) snapshotLearnerProfile(userID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.learnerProfiles[userID]
+}
+
+// waitForCondition polls cond until it's true or timeout elapses — needed
+// because sessionEndHandler's study-summary work runs on a background
+// goroutine (see EnqueueStudySummaryJob/RunStudySummaryInline), so a test
+// can't just check state synchronously after ServeHTTP returns.
+func waitForCondition(t *testing.T, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !cond() {
+		t.Fatalf("condition not met within %s", timeout)
+	}
+}
 
 // fakeAudioBackupStore is an in-memory transport.AudioSaver for
 // sessionDeleteHandler tests — real S3 behavior is covered by

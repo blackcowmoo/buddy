@@ -55,6 +55,18 @@ const (
 	KindCorrectionBackfill Kind = "correction-backfill"
 	KindTitle              Kind = "title"
 	KindCompaction         Kind = "compaction"
+	// KindStudySummary is the session-level end-of-conversation wrap-up job
+	// (payload: {UserID, SessionID} — see transport.EnqueueStudySummaryJob),
+	// enqueued once the learner confirms "end this conversation" freezes the
+	// room (store.Store.EndSession). Deliberately queued rather than run
+	// inline in that HTTP request: an LLM call tied to the request's own
+	// context would be lost if the connection dropped before it finished
+	// (e.g. the learner navigating away right after confirming), whereas
+	// this Kind's context.Background()-scoped job keeps generating the
+	// wrap-up regardless — see store.SessionMeta.StudySummaryStatus, the
+	// persisted state a reopened room (or the room list) polls to show
+	// whether it's still in progress.
+	KindStudySummary Kind = "study-summary"
 )
 
 // Job is the durable Redis envelope for one unit of background work.

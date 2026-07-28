@@ -218,6 +218,18 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 	if err := addColumn(settingsTable, "learner_profile TEXT NOT NULL", "learner_profile"); err != nil {
 		return nil, err
 	}
+	// Predates asyncjob.KindStudySummary: lets EndSession freeze a room and
+	// return immediately, before the wrap-up LLM call even starts, with this
+	// column tracking that background job's progress (JobStatusPending/Done/
+	// Failed) for a reopened room or the room list to poll — see
+	// CompleteStudySummary/FailStudySummary. A VARCHAR, unlike study_summary
+	// above, so it can carry a DEFAULT: existing ended rows (frozen back when
+	// the wrap-up was generated synchronously, before this column existed)
+	// backfill to '' automatically, which SessionMeta.StudySummaryStatus's
+	// doc comment treats the same as JobStatusDone.
+	if err := addColumn(sessionsTable, "study_summary_status VARCHAR(16) NOT NULL DEFAULT ''", "study_summary_status"); err != nil {
+		return nil, err
+	}
 	return &MySQLStore{rw: rw, ro: ro}, nil
 }
 
@@ -484,20 +496,47 @@ func (s *MySQLStore) SaveGeneratedTitle(ctx context.Context, userID, sessionID, 
 // confirm "end this conversation", the session row already exists (it
 // carries at least one saved turn — see SaveTurn), so unlike
 // SaveGeneratedTitle there's no race with a row-creating write to guard
-// against.
-func (s *MySQLStore) EndSession(ctx context.Context, userID, sessionID, studySummary string) error {
+// against. study_summary itself is untouched here — it's still whatever it
+// was (normally empty) until CompleteStudySummary fills it in — only
+// study_summary_status flips to JobStatusPending, immediately, so freezing
+// the room never waits on the wrap-up LLM call.
+func (s *MySQLStore) EndSession(ctx context.Context, userID, sessionID string) error {
 	if _, err := s.rw.ExecContext(ctx, `
-		UPDATE `+sessionsTable+` SET ended = 1, study_summary = ?, updated_at = UNIX_TIMESTAMP()
+		UPDATE `+sessionsTable+` SET ended = 1, study_summary_status = ?, updated_at = UNIX_TIMESTAMP()
 		WHERE user_id = ? AND id = ?
-	`, studySummary, userID, sessionID); err != nil {
+	`, JobStatusPending, userID, sessionID); err != nil {
 		return fmt.Errorf("store: end session: %w", err)
+	}
+	return nil
+}
+
+// CompleteStudySummary persists an asyncjob.KindStudySummary job's finished
+// wrap-up and marks it done — see the Store interface doc comment.
+func (s *MySQLStore) CompleteStudySummary(ctx context.Context, userID, sessionID, summary string) error {
+	if _, err := s.rw.ExecContext(ctx, `
+		UPDATE `+sessionsTable+` SET study_summary = ?, study_summary_status = ?
+		WHERE user_id = ? AND id = ?
+	`, summary, JobStatusDone, userID, sessionID); err != nil {
+		return fmt.Errorf("store: complete study summary: %w", err)
+	}
+	return nil
+}
+
+// FailStudySummary records that an asyncjob.KindStudySummary job's LLM call
+// errored — see the Store interface doc comment.
+func (s *MySQLStore) FailStudySummary(ctx context.Context, userID, sessionID string) error {
+	if _, err := s.rw.ExecContext(ctx, `
+		UPDATE `+sessionsTable+` SET study_summary_status = ?
+		WHERE user_id = ? AND id = ?
+	`, JobStatusFailed, userID, sessionID); err != nil {
+		return fmt.Errorf("store: fail study summary: %w", err)
 	}
 	return nil
 }
 
 func (s *MySQLStore) ListSessions(ctx context.Context, userID string) ([]SessionMeta, error) {
 	rows, err := s.ro.QueryContext(ctx, `
-		SELECT id, title, created_at, updated_at, ended, study_summary FROM `+sessionsTable+`
+		SELECT id, title, created_at, updated_at, ended, study_summary, study_summary_status FROM `+sessionsTable+`
 		WHERE user_id = ? ORDER BY updated_at DESC
 	`, userID)
 	if err != nil {
@@ -509,7 +548,7 @@ func (s *MySQLStore) ListSessions(ctx context.Context, userID string) ([]Session
 	for rows.Next() {
 		var m SessionMeta
 		var ended int
-		if err := rows.Scan(&m.ID, &m.Title, &m.CreatedAt, &m.UpdatedAt, &ended, &m.StudySummary); err != nil {
+		if err := rows.Scan(&m.ID, &m.Title, &m.CreatedAt, &m.UpdatedAt, &ended, &m.StudySummary, &m.StudySummaryStatus); err != nil {
 			return nil, fmt.Errorf("store: list sessions: %w", err)
 		}
 		m.Ended = ended != 0
@@ -558,8 +597,8 @@ func (s *MySQLStore) sessionDetail(ctx context.Context, userID, sessionID string
 	go func() {
 		defer wg.Done()
 		metaErr = s.ro.QueryRowContext(ctx, `
-			SELECT title, created_at, updated_at, ended, study_summary FROM `+sessionsTable+` WHERE user_id = ? AND id = ?
-		`, userID, sessionID).Scan(&meta.Title, &meta.CreatedAt, &meta.UpdatedAt, &ended, &meta.StudySummary)
+			SELECT title, created_at, updated_at, ended, study_summary, study_summary_status FROM `+sessionsTable+` WHERE user_id = ? AND id = ?
+		`, userID, sessionID).Scan(&meta.Title, &meta.CreatedAt, &meta.UpdatedAt, &ended, &meta.StudySummary, &meta.StudySummaryStatus)
 	}()
 	go func() {
 		defer wg.Done()
