@@ -60,6 +60,7 @@ vi.mock("./lib/sessions", () => ({
   fetchSessions: vi.fn(),
   fetchSessionDetail: vi.fn(),
   fetchSessionCompaction: vi.fn(),
+  fetchSessionQuiz: vi.fn(),
   deleteSession: vi.fn(),
   endSession: vi.fn(),
 }));
@@ -90,6 +91,7 @@ import {
   endSession,
   fetchSessionCompaction,
   fetchSessionDetail,
+  fetchSessionQuiz,
   fetchSessions,
 } from "./lib/sessions";
 import { KokoroSpeaker } from "./tts/kokoro";
@@ -103,6 +105,7 @@ beforeEach(() => {
   vi.mocked(fetchSessions).mockResolvedValue([]);
   vi.mocked(fetchSessionDetail).mockResolvedValue(null);
   vi.mocked(fetchSessionCompaction).mockResolvedValue(null);
+  vi.mocked(fetchSessionQuiz).mockResolvedValue(null);
   vi.mocked(parseRoomHash).mockReturnValue({ view: "list" });
   vi.mocked(currentRoomHistoryState).mockReturnValue({ view: "list" });
   vi.stubGlobal("location", {
@@ -297,7 +300,7 @@ describe("room list", () => {
         createdAt: 1,
         updatedAt: 2,
         ended: true,
-        studySummary: "focus on third-person -s",
+        studySummary: [{ english: "Focus on third-person -s.", translation: "3인칭 단수 -s에 집중하세요." }],
       },
       turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
     });
@@ -415,16 +418,116 @@ describe("room list", () => {
           createdAt: 1,
           updatedAt: 2,
           ended: true,
-          studySummary: "focus on third-person -s",
+          studySummary: [{ english: "Focus on third-person -s.", translation: "3인칭 단수 -s에 집중하세요." }],
           studySummaryStatus: "done",
         },
         turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
       });
       await act(() => vi.advanceTimersByTimeAsync(4000));
-      await flushUntil(() => screen.queryByText("focus on third-person -s") !== null);
+      await flushUntil(() => screen.queryByText("Focus on third-person -s.") !== null);
+      // The Korean translation must render alongside the English sentence,
+      // not just the English half of the pair.
+      expect(screen.getByText("3인칭 단수 -s에 집중하세요.")).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // Guards the on-demand quiz flow (see EndConversationControl/QuizPanel):
+  // "퀴즈 풀기" must fetch fresh questions (not something already carried by
+  // studySummary), grade a wrong answer as wrong while still surfacing the
+  // correct one, grade a matching answer as right even with different
+  // casing/whitespace (see normalizeQuizAnswer), advance across questions,
+  // and land on a final score once the last one is answered.
+  it("opens the quiz from the study feedback panel, grades answers, and shows a final score", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: true, studySummaryStatus: "done" },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
+      session: {
+        id: "s1",
+        title: "hello there",
+        createdAt: 1,
+        updatedAt: 2,
+        ended: true,
+        studySummary: [{ english: "Focus on third-person -s.", translation: "3인칭 단수 -s에 집중하세요." }],
+        studySummaryStatus: "done",
+      },
+      turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
+    });
+    vi.mocked(fetchSessionQuiz).mockResolvedValue([
+      {
+        prompt: "He ___ to school every day.",
+        answer: "goes",
+        translation: "그는 매일 학교에 가요.",
+        explanation: "Third person singular needs -s.",
+        explanationTranslation: "3인칭 단수는 -s가 필요해요.",
+      },
+      {
+        prompt: "She likes ___ books.",
+        answer: "reading",
+        translation: "그녀는 책 읽는 것을 좋아해요.",
+        explanation: "The verb after \"likes\" takes the -ing form here.",
+        explanationTranslation: "\"likes\" 다음에는 -ing 형태가 와요.",
+      },
+    ]);
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+    await screen.findByText("hi");
+
+    await user.click(screen.getByRole("button", { name: "대화 종료" }));
+    await user.click(await screen.findByText("퀴즈 풀기"));
+    expect(fetchSessionQuiz).toHaveBeenCalledWith("s1");
+
+    // Question 1: a wrong answer still names the correct one.
+    expect(await screen.findByText("He ___ to school every day.")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "go");
+    await user.click(screen.getByRole("button", { name: "확인" }));
+    expect(await screen.findByText("아쉬워요. 정답: goes")).toBeInTheDocument();
+    expect(screen.getByText("Third person singular needs -s.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "다음 문제" }));
+
+    // Question 2: matches despite different casing/trailing punctuation/whitespace.
+    expect(await screen.findByText("She likes ___ books.")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "  READING. ");
+    await user.click(screen.getByRole("button", { name: "확인" }));
+    expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
+
+    expect(screen.getByText("2문제 중 1개 맞혔어요!")).toBeInTheDocument();
+  });
+
+  // Guards the empty-quiz case: no issues to build a quiz from must show an
+  // explanatory empty state, not a stuck loading spinner or a crash.
+  it("shows an empty state when the quiz has nothing to ask about", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: true, studySummaryStatus: "done" },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
+      session: {
+        id: "s1",
+        title: "hello there",
+        createdAt: 1,
+        updatedAt: 2,
+        ended: true,
+        studySummary: [{ english: "Nice work, nothing to flag.", translation: "잘했어요, 지적할 부분이 없어요." }],
+        studySummaryStatus: "done",
+      },
+      turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
+    });
+    vi.mocked(fetchSessionQuiz).mockResolvedValue([]);
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+    await screen.findByText("hi");
+
+    await user.click(screen.getByRole("button", { name: "대화 종료" }));
+    await user.click(await screen.findByText("퀴즈 풀기"));
+
+    expect(await screen.findByText("퀴즈를 만들 만한 내용이 없어요.")).toBeInTheDocument();
   });
 
   it("scrolls the transcript to the bottom when entering a room, so the latest turn is visible", async () => {

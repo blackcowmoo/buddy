@@ -464,7 +464,7 @@ func (f *fakeStore) EndSession(ctx context.Context, userID, sessionID string) er
 	return nil
 }
 
-func (f *fakeStore) CompleteStudySummary(ctx context.Context, userID, sessionID, summary string) error {
+func (f *fakeStore) CompleteStudySummary(ctx context.Context, userID, sessionID string, summary []protocol.StudySummarySentence) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	d := f.sessions[fakeStoreKey(userID, sessionID)]

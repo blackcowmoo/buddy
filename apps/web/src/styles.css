@@ -273,6 +273,10 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 .compaction-loading, .compaction-empty { font-size: 13px; color: var(--muted); padding: 2px 4px; }
 .compaction-summary-header { font-size: 13px; color: var(--muted); }
 .compaction-summary-text { font-size: 13px; white-space: pre-wrap; padding: 2px 4px; }
+.study-summary-sentence { margin: 0 0 8px; }
+.study-summary-sentence:last-child { margin-bottom: 0; }
+.study-summary-en { display: block; }
+.study-summary-ko { display: block; color: var(--muted); font-style: italic; margin-top: 2px; }
 
 /* End-of-conversation study wrap-up, opened from the chat header — see
    App.tsx EndConversationControl. Reuses .compaction-*'s loading/empty/
@@ -293,6 +297,33 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
   gap: 8px;
 }
 .end-conversation-confirm { width: 100%; margin-top: 4px; }
+
+/* Fill-in-the-blank practice quiz, opened via "퀴즈 풀기" in place of the
+   study summary — see App.tsx QuizPanel. Reuses .study-summary-en/-ko for
+   the explanation pairing (identical look). */
+.quiz-start-btn { width: 100%; margin-top: 4px; }
+.quiz-panel { display: flex; flex-direction: column; gap: 8px; }
+.quiz-back-btn { align-self: flex-start; padding: 2px 4px; font-size: 12px; }
+.quiz-question { display: flex; flex-direction: column; gap: 8px; }
+.quiz-progress { font-size: 12px; color: var(--muted); }
+.quiz-prompt { font-size: 13px; }
+.quiz-answer-input {
+  font: inherit;
+  font-size: 16px; /* iOS Safari zoom threshold, same as .composer input */
+  background: var(--panel-2);
+  border: 1px solid var(--border-2);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 8px 10px;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.quiz-result { font-size: 13px; font-weight: 600; }
+.quiz-result.correct { color: var(--ok); }
+.quiz-result.incorrect { color: var(--err); }
+.quiz-translation { margin-top: -4px; }
+.quiz-next-btn, .quiz-check-btn { width: 100%; }
+.quiz-score { font-size: 13px; font-weight: 600; text-align: center; padding: 4px 0; }
 
 .spinning { display: inline-block; animation: spin 1s linear infinite; }
 @keyframes spin {

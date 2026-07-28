@@ -235,7 +235,7 @@ func (f *fakeStore) EndSession(ctx context.Context, userID, sessionID string) er
 	return errors.New("not used by these tests")
 }
 
-func (f *fakeStore) CompleteStudySummary(ctx context.Context, userID, sessionID, summary string) error {
+func (f *fakeStore) CompleteStudySummary(ctx context.Context, userID, sessionID string, summary []protocol.StudySummarySentence) error {
 	return errors.New("not used by these tests")
 }
 

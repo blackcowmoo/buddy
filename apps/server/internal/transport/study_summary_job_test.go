@@ -44,7 +44,7 @@ func TestRunStudySummarySkipsLLMWhenNoIssuesFlagged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
-	if meta.StudySummaryStatus != store.JobStatusDone || meta.StudySummary != "" {
+	if meta.StudySummaryStatus != store.JobStatusDone || len(meta.StudySummary) != 0 {
 		t.Fatalf("meta = %+v, want JobStatusDone with an empty summary", meta)
 	}
 	if got, _ := st.GetLearnerProfile(context.Background(), "alex"); got != "" {
@@ -58,7 +58,7 @@ func TestRunStudySummarySkipsLLMWhenNoIssuesFlagged(t *testing.T) {
 // folded into the learner's cross-session profile.
 func TestRunStudySummaryCollectsIssuesAndMergesProfile(t *testing.T) {
 	pipe := &pipeline.Pipeline{
-		Analysis: []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{complete: "focus on subject-verb agreement"}}},
+		Analysis: []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{complete: `{"sentences":[{"english":"Focus on subject-verb agreement.","translation":"주어-동사 일치에 집중하세요."}]}`}}},
 	}
 	st := newFakeStore()
 	if err := st.SaveTurn(context.Background(), "alex", "sess-2", 1, "user", "He go to school.", false, protocol.SourceText); err != nil {
@@ -89,8 +89,8 @@ func TestRunStudySummaryCollectsIssuesAndMergesProfile(t *testing.T) {
 	if meta.StudySummaryStatus != store.JobStatusDone {
 		t.Fatalf("StudySummaryStatus = %q, want JobStatusDone", meta.StudySummaryStatus)
 	}
-	if meta.StudySummary != "focus on subject-verb agreement" {
-		t.Fatalf("StudySummary = %q", meta.StudySummary)
+	if len(meta.StudySummary) != 1 || meta.StudySummary[0].English != "Focus on subject-verb agreement." {
+		t.Fatalf("StudySummary = %+v", meta.StudySummary)
 	}
 	if got, _ := st.GetLearnerProfile(context.Background(), "alex"); got == "old profile" || got == "" {
 		t.Fatalf("learner profile = %q, want it merged with the new wrap-up", got)
@@ -128,8 +128,8 @@ func TestRunStudySummaryGenerateErrorMarksFailed(t *testing.T) {
 	if meta.StudySummaryStatus != store.JobStatusFailed {
 		t.Fatalf("StudySummaryStatus = %q, want JobStatusFailed", meta.StudySummaryStatus)
 	}
-	if meta.StudySummary != "" {
-		t.Fatalf("StudySummary = %q, want still empty after a failed attempt", meta.StudySummary)
+	if len(meta.StudySummary) != 0 {
+		t.Fatalf("StudySummary = %+v, want still empty after a failed attempt", meta.StudySummary)
 	}
 }
 
@@ -139,7 +139,7 @@ func TestRunStudySummaryGenerateErrorMarksFailed(t *testing.T) {
 // stop this session's own wrap-up from landing as done.
 func TestRunStudySummaryProfileMergeFailureStillCompletes(t *testing.T) {
 	pipe := &pipeline.Pipeline{
-		Analysis: []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{complete: "focus on subject-verb agreement"}}},
+		Analysis: []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{complete: `{"sentences":[{"english":"Focus on subject-verb agreement.","translation":"주어-동사 일치에 집중하세요."}]}`}}},
 	}
 	st := &erroringProfileStore{fakeStore: newFakeStore()}
 	if err := st.SaveTurn(context.Background(), "alex", "sess-4", 1, "user", "He go to school.", false, protocol.SourceText); err != nil {
@@ -161,7 +161,7 @@ func TestRunStudySummaryProfileMergeFailureStillCompletes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
-	if meta.StudySummaryStatus != store.JobStatusDone || meta.StudySummary != "focus on subject-verb agreement" {
+	if meta.StudySummaryStatus != store.JobStatusDone || len(meta.StudySummary) != 1 || meta.StudySummary[0].English != "Focus on subject-verb agreement." {
 		t.Fatalf("meta = %+v, want the summary still persisted as done", meta)
 	}
 }
@@ -184,7 +184,7 @@ func TestEnqueueStudySummaryJobRunsInBackgroundAndPersists(t *testing.T) {
 	rdb := requireReplyRedis(t)
 	queue := asyncjob.NewQueue(rdb)
 	pipe := &pipeline.Pipeline{
-		Analysis: []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{complete: "focus on subject-verb agreement"}}},
+		Analysis: []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{complete: `{"sentences":[{"english":"Focus on subject-verb agreement.","translation":"주어-동사 일치에 집중하세요."}]}`}}},
 	}
 	st := newFakeStore()
 	if err := st.SaveTurn(context.Background(), "alex", "sess-enqueue", 1, "user", "He go to school.", false, protocol.SourceText); err != nil {
@@ -211,8 +211,8 @@ func TestEnqueueStudySummaryJobRunsInBackgroundAndPersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SessionDetail() error = %v", err)
 	}
-	if meta.StudySummary != "focus on subject-verb agreement" {
-		t.Fatalf("StudySummary = %q", meta.StudySummary)
+	if len(meta.StudySummary) != 1 || meta.StudySummary[0].English != "Focus on subject-verb agreement." {
+		t.Fatalf("StudySummary = %+v", meta.StudySummary)
 	}
 }
 

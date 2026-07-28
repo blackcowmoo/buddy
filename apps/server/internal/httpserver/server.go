@@ -22,6 +22,7 @@ import (
 	"buddy/server/internal/config"
 	"buddy/server/internal/identity"
 	"buddy/server/internal/pipeline"
+	"buddy/server/internal/protocol"
 	"buddy/server/internal/recording"
 	"buddy/server/internal/store"
 	"buddy/server/internal/transport"
@@ -67,6 +68,7 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux.HandleFunc("GET /api/sessions/{id}", sessionDetailHandler(ident, st, translateQueue, correctionQueue))
 	mux.HandleFunc("GET /api/sessions/{id}/compaction", sessionCompactionHandler(ident, st))
 	mux.HandleFunc("POST /api/sessions/{id}/end", sessionEndHandler(ident, st, pipe, studySummaryQueue))
+	mux.HandleFunc("GET /api/sessions/{id}/quiz", sessionQuizHandler(ident, st, pipe))
 	mux.HandleFunc("DELETE /api/sessions/{id}", sessionDeleteHandler(ident, st, audio, recordings))
 	mux.HandleFunc("GET /api/settings", settingsGetHandler(ident, st))
 	mux.HandleFunc("PUT /api/settings", settingsSaveHandler(ident, st))
@@ -381,6 +383,47 @@ func sessionEndHandler(ident identity.Identifier, st store.Store, pipe *pipeline
 		}
 
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// sessionQuizHandler synthesizes a short fill-in-the-blank practice quiz on
+// demand from an ended session's flagged issues (see
+// pipeline.Pipeline.GenerateStudyQuiz and transport.CollectStudyIssues) —
+// unlike the study-summary wrap-up (generated once, automatically, in the
+// background right after the learner ends the conversation), this only runs
+// when the learner explicitly opens the quiz (see the "퀴즈 풀기" button in
+// EndConversationControl): not every learner wants one, and it's an extra
+// LLM call per request rather than something worth persisting, so nothing
+// here is written back to the store.
+func sessionQuizHandler(ident identity.Identifier, st store.Store, pipe *pipeline.Pipeline) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := requireUser(w, r, ident)
+		if !ok {
+			return
+		}
+		sessionID := r.PathValue("id")
+
+		_, turns, err := st.SessionDetail(r.Context(), userID, sessionID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				http.NotFound(w, r)
+				return
+			}
+			serverError(w, "session detail", err)
+			return
+		}
+
+		issues := transport.CollectStudyIssues(turns)
+		if len(issues) == 0 {
+			writeJSON(w, map[string]any{"questions": []protocol.QuizQuestion{}})
+			return
+		}
+		questions, err := pipe.GenerateStudyQuiz(r.Context(), issues)
+		if err != nil {
+			serverError(w, "generate quiz", err)
+			return
+		}
+		writeJSON(w, map[string]any{"questions": questions})
 	}
 }
 

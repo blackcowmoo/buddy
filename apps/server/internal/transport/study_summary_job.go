@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/pipeline"
+	"buddy/server/internal/protocol"
 	"buddy/server/internal/store"
 )
 
@@ -32,6 +34,26 @@ type studySummaryJobPayload struct {
 	SessionID string
 }
 
+// CollectStudyIssues gathers every grammar/vocabulary/phrasing/context issue
+// flagged across a session's transcript (from each user turn's persisted
+// correction, not an assistant turn's) into the raw material
+// pipeline.GenerateStudySummary/GenerateStudyQuiz both synthesize from.
+// Exported so httpserver.sessionQuizHandler's on-demand quiz draws from
+// exactly the same issue set runStudySummary already used for the session's
+// wrap-up, without duplicating the aggregation logic.
+func CollectStudyIssues(turns []store.Turn) []pipeline.StudyIssue {
+	var issues []pipeline.StudyIssue
+	for _, t := range turns {
+		if t.Role != "user" || t.Correction == nil {
+			continue
+		}
+		for _, iss := range t.Correction.Issues {
+			issues = append(issues, pipeline.StudyIssue{Text: t.Text, Issue: iss})
+		}
+	}
+	return issues
+}
+
 // runStudySummary is the actual work behind asyncjob.KindStudySummary:
 // gather every grammar/vocabulary/phrasing/context issue flagged across the
 // session's transcript (same aggregation the old, synchronous
@@ -47,17 +69,9 @@ func runStudySummary(ctx context.Context, pipe *pipeline.Pipeline, st store.Stor
 		return fmt.Errorf("study summary: session detail: %w", err)
 	}
 
-	var issues []pipeline.StudyIssue
-	for _, t := range turns {
-		if t.Role != "user" || t.Correction == nil {
-			continue
-		}
-		for _, iss := range t.Correction.Issues {
-			issues = append(issues, pipeline.StudyIssue{Text: t.Text, Issue: iss})
-		}
-	}
+	issues := CollectStudyIssues(turns)
 
-	var summary string
+	var summary []protocol.StudySummarySentence
 	if len(issues) > 0 {
 		summary, err = pipe.GenerateStudySummary(ctx, issues)
 		if err != nil {
@@ -75,12 +89,20 @@ func runStudySummary(ctx context.Context, pipe *pipeline.Pipeline, st store.Stor
 	// Folding into the cross-session profile is best-effort, same reasoning
 	// as the old sessionEndHandler: it enriches future conversations, but a
 	// transient failure here must not leave this session's own wrap-up
-	// stuck — CompleteStudySummary above already landed regardless.
-	if summary != "" {
+	// stuck — CompleteStudySummary above already landed regardless. Only the
+	// English sentences are folded in: UpdateLearnerProfile's output is
+	// English-only regardless of its input, and the English sentences alone
+	// already carry the full substance of the wrap-up.
+	if len(summary) > 0 {
+		var english strings.Builder
+		for _, sentence := range summary {
+			english.WriteString(sentence.English)
+			english.WriteString(" ")
+		}
 		prevProfile, err := st.GetLearnerProfile(ctx, userID)
 		if err != nil {
 			log.Printf("study summary: get learner profile %s: %v", userID, err)
-		} else if merged, err := pipe.UpdateLearnerProfile(ctx, prevProfile, summary); err != nil {
+		} else if merged, err := pipe.UpdateLearnerProfile(ctx, prevProfile, strings.TrimSpace(english.String())); err != nil {
 			log.Printf("study summary: update learner profile %s: %v", userID, err)
 		} else if err := st.SaveLearnerProfile(ctx, userID, merged); err != nil {
 			log.Printf("study summary: save learner profile %s: %v", userID, err)
