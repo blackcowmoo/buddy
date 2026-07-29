@@ -134,7 +134,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // cleanup() first, while any fake timers a test installed are still in
+  // place: unmounting is what cancels App's in-flight polls (see "stops
+  // polling once the app unmounts"), and it has to clear the same timer
+  // implementation that scheduled them.
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
 });
@@ -1854,6 +1859,47 @@ describe("hydrated reply status", () => {
 
       expect(screen.getByText("recovered on another replica")).toBeInTheDocument();
       expect(screen.queryByRole("status", { name: "답변 생성 중" })).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The poll above keeps rescheduling itself every 4s for as long as work is
+  // outstanding (up to maxAttempts), and a scheduled tick is not tied to the
+  // component in any way — so unmounting has to cancel it explicitly. This
+  // is also what made the test above flake in CI: with real timers, the
+  // previous test's still-armed tick would fire in the middle of a later
+  // test, fetch, and eat that test's mockResolvedValueOnce — leaving the
+  // real enterChat fetch to fall through to the beforeEach default (null),
+  // which sends the app straight back to the room list, so the transcript
+  // it was waiting on never rendered. Only reproduced under CI's slower
+  // scheduling, where a whole test can take longer than the 4s interval.
+  it("stops polling once the app unmounts", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(fetchSessions).mockResolvedValue([
+        { id: "s1", title: "hello there", createdAt: 1, updatedAt: Date.now() / 1000 },
+      ]);
+      vi.mocked(fetchSessionDetail).mockResolvedValue({
+        hasMore: false,
+        session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: Date.now() / 1000 },
+        turns: [
+          { turn: 1, role: "user", text: "hi", refined: false },
+          { turn: 1, role: "assistant", text: "", refined: false, replyStatus: "pending" },
+        ],
+      });
+      render(<App />);
+      await flushUntil(() => screen.queryByText("hello there") !== null);
+      fireEvent.click(screen.getByText("hello there"));
+      await flushUntil(() => screen.queryByText("hi") !== null);
+
+      const callsAtUnmount = vi.mocked(fetchSessionDetail).mock.calls.length;
+      cleanup();
+      // Several poll intervals' worth — one tick alone could be missed by
+      // luck, and the reschedule is as much of a leak as the first timer.
+      await act(() => vi.advanceTimersByTimeAsync(20000));
+
+      expect(vi.mocked(fetchSessionDetail).mock.calls.length).toBe(callsAtUnmount);
     } finally {
       vi.useRealTimers();
     }

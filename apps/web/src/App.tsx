@@ -364,6 +364,13 @@ export function App() {
   // already left the room, or opened a different one, doesn't apply its
   // (now stale) result to the wrong room's state.
   const pollTokenRef = useRef<object | null>(null);
+  // Every not-yet-fired poll tick (see pollMissingFeedback/pollStudySummary),
+  // so unmounting can cancel them. The token above only stops a tick that
+  // actually runs from *applying* its result; the tick itself still fires,
+  // and each one that finds work outstanding schedules the next — so without
+  // this a poll chain outlives the component that started it, keeping up to
+  // maxAttempts × intervalMs worth of fetches going after the app is gone.
+  const pollTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
   // True once the open room's history entry sits on top of a "list" entry
   // this app itself pushed — set on every list->chat transition (enterChat's
   // push, or popping forward into a room) and cleared back on the list, so
@@ -556,6 +563,30 @@ export function App() {
     await confirmThenDelete("이 대화를 삭제할까요? 저장된 녹음도 함께 삭제됩니다.", deleteSession, id, setSessions);
   }, []);
 
+  // setTimeout for a poll tick, tracked in pollTimersRef so the unmount
+  // cleanup below can cancel it. Every poll tick in this component must go
+  // through this rather than calling setTimeout directly, otherwise its
+  // chain keeps running past unmount.
+  const schedulePoll = useCallback((tick: () => void, ms: number) => {
+    const id = setTimeout(() => {
+      pollTimersRef.current.delete(id);
+      tick();
+    }, ms);
+    pollTimersRef.current.add(id);
+  }, []);
+
+  useEffect(() => {
+    const timers = pollTimersRef.current;
+    return () => {
+      for (const id of timers) clearTimeout(id);
+      timers.clear();
+      // A tick already awaiting its fetch can't be cancelled, only ignored —
+      // dropping the token makes it bail on the way out (see the guards in
+      // the pollers below) instead of setting state on a gone component.
+      pollTokenRef.current = null;
+    };
+  }, []);
+
   // Polls a room's transcript for translations, grammar corrections, and
   // assistant replies the server is still working on in the background —
   // backfilling a translation (see internal/backfill), still running
@@ -646,10 +677,10 @@ export function App() {
         }
       }
       if (Object.keys(patches).length > 0) patchTurns(patches);
-      if (stillMissing && attempt < maxAttempts) setTimeout(tick, intervalMs);
+      if (stillMissing && attempt < maxAttempts) schedulePoll(tick, intervalMs);
     };
-    setTimeout(tick, intervalMs);
-  }, [patchTurns]);
+    schedulePoll(tick, intervalMs);
+  }, [patchTurns, schedulePoll]);
 
   // Polls an ended room's background study-summary job (see
   // asyncjob.KindStudySummary) until it lands — the same "no push channel to
@@ -671,10 +702,10 @@ export function App() {
       const status = detail.session.studySummaryStatus || "done";
       setEndedSummary(detail.session.studySummary ?? []);
       setEndedSummaryStatus(status);
-      if (status !== "done" && attempt < maxAttempts) setTimeout(tick, intervalMs);
+      if (status !== "done" && attempt < maxAttempts) schedulePoll(tick, intervalMs);
     };
-    setTimeout(tick, intervalMs);
-  }, []);
+    schedulePoll(tick, intervalMs);
+  }, [schedulePoll]);
 
   // Opens a room and enters chat view. sessionId omitted starts a brand-new
   // room (server mints the ID, delivered on the "ready" event); given an
