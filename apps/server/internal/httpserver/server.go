@@ -428,7 +428,13 @@ func sessionEndHandler(ident identity.Identifier, st store.Store, pipe *pipeline
 // needsStudySummaryBackfill only re-triggers a JobStatusPending row, and
 // this one reads as done. Gated server-side on the same state the button is
 // shown for (not just trusting the client) so this can only ever regenerate
-// an empty wrap-up, never clobber one that already has real content.
+// an empty wrap-up, never clobber one that already has real content. A
+// session ended before the wrap-up became an async job reads
+// StudySummaryStatus as "" rather than JobStatusDone (see the
+// store.SessionMeta.StudySummaryStatus doc comment) — the button's own
+// gating (and EndConversationControl's rendering) already treats "" the
+// same as done, so this check must too, or every one of those legacy
+// sessions 409s the instant a learner taps the button.
 func sessionRestudyHandler(ident identity.Identifier, st store.Store, pipe *pipeline.Pipeline, studySummaryQueue *asyncjob.Queue) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)
@@ -446,7 +452,8 @@ func sessionRestudyHandler(ident identity.Identifier, st store.Store, pipe *pipe
 			serverError(w, "session detail", err)
 			return
 		}
-		if !meta.Ended || meta.StudySummaryStatus != store.JobStatusDone || len(meta.StudySummary) != 0 {
+		done := meta.StudySummaryStatus == store.JobStatusDone || meta.StudySummaryStatus == ""
+		if !meta.Ended || !done || len(meta.StudySummary) != 0 {
 			http.Error(w, "study summary is not in a re-checkable state", http.StatusConflict)
 			return
 		}
