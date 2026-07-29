@@ -104,6 +104,35 @@ func TestSessionRestudyHandlerRejectsWhenSummaryAlreadyHasContent(t *testing.T) 
 	}
 }
 
+// TestSessionRestudyHandlerAcceptsLegacyEmptyStatus guards a session ended
+// before the wrap-up became an async job, which reads StudySummaryStatus as
+// "" rather than JobStatusDone (see the store.SessionMeta.StudySummaryStatus
+// doc comment). EndConversationControl treats "" the same as done and shows
+// the button for it, so the handler must accept it too instead of 409ing
+// every legacy session the instant a learner taps "다시 확인하기".
+func TestSessionRestudyHandlerAcceptsLegacyEmptyStatus(t *testing.T) {
+	turns, meta := doneEmptySummaryFixture()
+	meta.StudySummaryStatus = ""
+	pipe := &pipeline.Pipeline{
+		Analysis: []pipeline.Candidate{{Model: "m", LLM: &fakeStudySummaryLLM{complete: func(msgs []llm.Message) (string, error) {
+			return `{"sentences":[{"english":"Focus on third-person -s.","translation":"3인칭 단수 -s에 집중하세요."}]}`, nil
+		}}}},
+	}
+	st := &fakeSessionStore{detailMeta: meta, detailTurns: turns}
+	h := sessionRestudyHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, nil)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, postRestudyRequest(t))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+	if st.snapshotRestartSummaryCalls() != 1 {
+		t.Fatalf("RestartStudySummary calls = %d, want 1", st.snapshotRestartSummaryCalls())
+	}
+
+	waitForCondition(t, 2*time.Second, func() bool { return st.snapshotCompleteSummaryCalls() == 1 })
+}
+
 // TestSessionRestudyHandlerRejectsWhenStillPending guards against
 // double-triggering a regeneration that's already in flight.
 func TestSessionRestudyHandlerRejectsWhenStillPending(t *testing.T) {
