@@ -329,6 +329,7 @@ export function App() {
   const [styleInput, setStyleInput] = useState("");
   const [styleSaving, setStyleSaving] = useState(false);
   const [styleSaved, setStyleSaved] = useState(false);
+  const [styleLoadError, setStyleLoadError] = useState(false);
   const [loadingMoreHistory, setLoadingMoreHistory] = useState(false);
 
   const clientRef = useRef<BuddyClient | null>(null);
@@ -496,16 +497,23 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    fetchSettings().then((s) => setStyleInput(s.interlocutorStyle));
+    fetchSettings().then((s) => {
+      if (s) setStyleInput(s.interlocutorStyle);
+      else setStyleLoadError(true);
+    });
   }, []);
 
   // Saves the learner's conversation-style preference (e.g. "면접관처럼 질문해줘").
   // It's layered onto the AI's system prompt for sessions created from now
   // on (see pipeline.BuildSystemPrompt) — an already-open chat keeps talking
-  // in whatever style it started with.
+  // in whatever style it started with. Refuses to run while the initial load
+  // failed: the field would otherwise show a false-empty value (see
+  // fetchSettings), and submitting it would overwrite a real saved style
+  // with that empty string.
   const submitStyle = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
+      if (styleLoadError) return;
       setStyleSaving(true);
       setStyleSaved(false);
       const trimmed = styleInput.trim();
@@ -516,7 +524,7 @@ export function App() {
         setStyleSaved(true);
       }
     },
-    [styleInput],
+    [styleInput, styleLoadError],
   );
 
   const handleStyleInputChange = useCallback((v: string) => {
@@ -1150,6 +1158,7 @@ export function App() {
     onStyleInputChange: handleStyleInputChange,
     styleSaving,
     styleSaved,
+    styleLoadError,
     onSubmitStyle: submitStyle,
   };
 
@@ -1673,6 +1682,7 @@ function MenuPanel({
   onStyleInputChange,
   styleSaving,
   styleSaved,
+  styleLoadError,
   onSubmitStyle,
   chat,
 }: {
@@ -1688,6 +1698,7 @@ function MenuPanel({
   onStyleInputChange: (v: string) => void;
   styleSaving: boolean;
   styleSaved: boolean;
+  styleLoadError: boolean;
   onSubmitStyle: (e: React.FormEvent) => void;
   chat?: ChatMenuProps;
 }) {
@@ -1751,12 +1762,16 @@ function MenuPanel({
           onChange={(e) => onStyleInputChange(e.target.value)}
           placeholder="예: 면접관처럼 질문해줘 / 전문가처럼 답변해줘"
           rows={2}
+          disabled={styleLoadError}
         />
         <div className="style-form-row">
-          <button type="submit" disabled={styleSaving}>
+          <button type="submit" disabled={styleSaving || styleLoadError}>
             {styleSaving ? "저장 중…" : "저장"}
           </button>
           {styleSaved && <span className="style-saved">저장됨</span>}
+          {styleLoadError && (
+            <span className="style-load-error">불러오지 못했습니다. 새로고침 후 다시 시도해주세요.</span>
+          )}
         </div>
       </form>
       <div className="menu-divider" />

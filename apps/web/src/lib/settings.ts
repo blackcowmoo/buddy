@@ -1,4 +1,4 @@
-import { fetchJSON, requestOK } from "./fetchJSON";
+import { requestOK } from "./fetchJSON";
 
 // Mirrors httpserver.settingsGetHandler/settingsSaveHandler's response shape
 // (apps/server/internal/httpserver/server.go). Global to the user (not
@@ -8,11 +8,20 @@ export interface Settings {
   interlocutorStyle: string;
 }
 
-// Fetches the caller's saved conversation-style preference. Returns ""
-// on any failure so the settings UI can render an empty field instead of
-// throwing.
-export async function fetchSettings(): Promise<Settings> {
-  return fetchJSON<Settings>("api/settings", { interlocutorStyle: "" });
+// Fetches the caller's saved conversation-style preference. Returns null on
+// any failure (network error, non-200, bad JSON) rather than falling back to
+// an empty style: a transient load failure and "never set one" must stay
+// distinguishable, since the caller wires this into a form whose submit
+// button would otherwise happily persist that fallback empty string over a
+// real saved value.
+export async function fetchSettings(): Promise<Settings | null> {
+  try {
+    const res = await fetch("api/settings");
+    if (!res.ok) return null;
+    return (await res.json()) as Settings;
+  } catch {
+    return null;
+  }
 }
 
 // Saves the caller's conversation-style preference. Takes effect on chat
