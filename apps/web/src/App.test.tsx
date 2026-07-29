@@ -66,6 +66,11 @@ vi.mock("./lib/sessions", () => ({
   restudySession: vi.fn(),
 }));
 
+vi.mock("./lib/settings", () => ({
+  fetchSettings: vi.fn(),
+  saveSettings: vi.fn(),
+}));
+
 vi.mock("./lib/roomHistory", () => ({
   parseRoomHash: vi.fn(() => ({ view: "list" })),
   currentRoomHistoryState: vi.fn(() => ({ view: "list" })),
@@ -96,6 +101,7 @@ import {
   fetchSessions,
   restudySession,
 } from "./lib/sessions";
+import { fetchSettings, saveSettings } from "./lib/settings";
 import { KokoroSpeaker } from "./tts/kokoro";
 import { BuddyClient } from "./lib/ws";
 
@@ -109,6 +115,8 @@ beforeEach(() => {
   vi.mocked(fetchSessionCompaction).mockResolvedValue(null);
   vi.mocked(fetchSessionQuiz).mockResolvedValue(null);
   vi.mocked(restudySession).mockResolvedValue(true);
+  vi.mocked(fetchSettings).mockResolvedValue({ interlocutorStyle: "" });
+  vi.mocked(saveSettings).mockResolvedValue(true);
   vi.mocked(parseRoomHash).mockReturnValue({ view: "list" });
   vi.mocked(currentRoomHistoryState).mockReturnValue({ view: "list" });
   vi.stubGlobal("location", {
@@ -985,6 +993,43 @@ describe("hamburger menu", () => {
     await openMenu(user);
     await user.click(screen.getByRole("menuitem", { name: /녹음 목록/ }));
     expect(location.assign).toHaveBeenCalledWith("recordings");
+  });
+});
+
+describe("conversation style", () => {
+  it("populates the field with the saved style once loaded", async () => {
+    vi.mocked(fetchSettings).mockResolvedValue({ interlocutorStyle: "면접관처럼 질문해줘" });
+    const user = userEvent.setup();
+    render(<App />);
+    await openMenu(user);
+    expect(await screen.findByLabelText("대화 상대 스타일")).toHaveValue("면접관처럼 질문해줘");
+  });
+
+  it("saves the edited style and shows a confirmation", async () => {
+    vi.mocked(fetchSettings).mockResolvedValue({ interlocutorStyle: "" });
+    const user = userEvent.setup();
+    render(<App />);
+    await openMenu(user);
+    await user.type(screen.getByLabelText("대화 상대 스타일"), "전문가처럼 답변해줘");
+    await user.click(screen.getByRole("button", { name: "저장" }));
+    expect(saveSettings).toHaveBeenCalledWith("전문가처럼 답변해줘");
+    expect(await screen.findByText("저장됨")).toBeInTheDocument();
+  });
+
+  // Regression: fetchSettings used to fall back to an empty style on any
+  // load failure, indistinguishable from a learner who never set one — a
+  // blank field looked "reset" even though the real value was still saved
+  // server-side, and submitting over it would have actually erased it. A
+  // failed load must now disable the form instead of silently showing blank.
+  it("disables the form instead of showing a false-empty style on load failure", async () => {
+    vi.mocked(fetchSettings).mockResolvedValue(null);
+    const user = userEvent.setup();
+    render(<App />);
+    await openMenu(user);
+    expect(await screen.findByText(/불러오지 못했습니다/)).toBeInTheDocument();
+    expect(screen.getByLabelText("대화 상대 스타일")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "저장" })).toBeDisabled();
+    expect(saveSettings).not.toHaveBeenCalled();
   });
 });
 

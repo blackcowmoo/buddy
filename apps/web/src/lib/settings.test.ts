@@ -15,14 +15,14 @@ describe("fetchSettings", () => {
     await expect(fetchSettings()).resolves.toEqual(settings);
   });
 
-  it("returns an empty style on a non-ok response", async () => {
+  it("returns null on a non-ok response, distinct from a genuinely empty style", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
-    await expect(fetchSettings()).resolves.toEqual({ interlocutorStyle: "" });
+    await expect(fetchSettings()).resolves.toBeNull();
   });
 
-  it("returns an empty style when fetch rejects", async () => {
+  it("returns null when fetch rejects", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
-    await expect(fetchSettings()).resolves.toEqual({ interlocutorStyle: "" });
+    await expect(fetchSettings()).resolves.toBeNull();
   });
 });
 
