@@ -393,6 +393,16 @@ func (s *MySQLStore) SaveTurn(ctx context.Context, userID, sessionID string, tur
 		if err := ensureSessionRow(ctx, s.rw, userID, sessionID, text); err != nil {
 			return fmt.Errorf("store: ensure session: %w", err)
 		}
+	} else if _, err := s.rw.ExecContext(ctx, `
+		UPDATE `+sessionsTable+` SET updated_at = UNIX_TIMESTAMP() WHERE user_id = ? AND id = ?
+	`, userID, sessionID); err != nil {
+		// Every later turn also needs to bump updated_at — otherwise
+		// ListSessions' ORDER BY updated_at DESC only reflects activity from
+		// the room's first turn until the connection's 30s save ticker (or
+		// its on-disconnect save, see transport.Handler) happens to fire,
+		// which is what made the room list look unsorted (or need a second
+		// back-navigation to catch up) right after a multi-turn chat.
+		return fmt.Errorf("store: touch session: %w", err)
 	}
 	if _, err := s.rw.ExecContext(ctx, `
 		INSERT INTO `+turnsTable+` (user_id, session_id, turn, role, text, refined, source, created_at)

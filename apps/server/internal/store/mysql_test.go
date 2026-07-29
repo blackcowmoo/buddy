@@ -979,6 +979,39 @@ func TestMySQLListSessionsOrderedByRecency(t *testing.T) {
 	}
 }
 
+// TestMySQLSaveTurnLaterTurnsBumpUpdatedAt guards the fix for a room list
+// that could sort stale until the connection's 30s save ticker (or its
+// on-disconnect save) happened to fire: SaveTurn only touched updated_at on
+// turn 0 or the first user turn, so a room that had already exchanged a few
+// turns wouldn't sort as the most recent until well after the learner's last
+// message actually landed.
+func TestMySQLSaveTurnLaterTurnsBumpUpdatedAt(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	userID := "later-turn-order-user"
+	if err := st.SaveTurn(ctx, userID, "s-old", 1, "user", "older room", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(old, 1) error = %v", err)
+	}
+	if err := st.SaveTurn(ctx, userID, "s-new", 1, "user", "newer room, first turn", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(new, 1) error = %v", err)
+	}
+	time.Sleep(1100 * time.Millisecond) // updated_at has 1-second resolution (UNIX_TIMESTAMP())
+
+	// A later turn (turn 2, well past the ensureSessionRow guard) on the
+	// *older* room should still bump it back to the top.
+	if err := st.SaveTurn(ctx, userID, "s-old", 2, "assistant", "a later reply", false, ""); err != nil {
+		t.Fatalf("SaveTurn(old, 2) error = %v", err)
+	}
+
+	sessions, err := st.ListSessions(ctx, userID)
+	if err != nil {
+		t.Fatalf("ListSessions() error = %v", err)
+	}
+	if len(sessions) != 2 || sessions[0].ID != "s-old" || sessions[1].ID != "s-new" {
+		t.Fatalf("ListSessions() = %+v, want [s-old, s-new] after s-old's later turn", sessions)
+	}
+}
+
 func TestMySQLDeleteSessionRemovesSessionAndTurns(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
