@@ -69,7 +69,7 @@ vi.mock("./lib/sessions", () => ({
 vi.mock("./lib/settings", () => ({
   fetchSettings: vi.fn(),
   saveSettings: vi.fn(),
-  MAX_INTERLOCUTOR_STYLE_LEN: 500,
+  MAX_INTERLOCUTOR_STYLE_LEN: 1024,
 }));
 
 vi.mock("./lib/roomHistory", () => ({
@@ -1194,9 +1194,9 @@ describe("conversation style", () => {
     render(<App />);
     await openMenu(user);
     const textarea = screen.getByLabelText("대화 상대 스타일");
-    fireEvent.change(textarea, { target: { value: "a".repeat(501) } });
+    fireEvent.change(textarea, { target: { value: "a".repeat(1025) } });
     await user.click(screen.getByRole("button", { name: "저장" }));
-    expect(await screen.findByText("500자를 초과했습니다 (현재 501자).")).toBeInTheDocument();
+    expect(await screen.findByText("1024자를 초과했습니다 (현재 1025자).")).toBeInTheDocument();
     expect(saveSettings).not.toHaveBeenCalled();
     expect(screen.queryByText("저장됨")).not.toBeInTheDocument();
   });

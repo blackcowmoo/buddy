@@ -11,7 +11,7 @@ export interface Settings {
 // Mirrors maxInterlocutorStyleLen in httpserver/server.go — the server
 // rejects longer values with a 400, so the form validates against the same
 // bound up front instead of letting the user submit into that silently.
-export const MAX_INTERLOCUTOR_STYLE_LEN = 500;
+export const MAX_INTERLOCUTOR_STYLE_LEN = 1024;
 
 // Fetches the caller's saved conversation-style preference. Returns null on
 // any failure (network error, non-200, bad JSON) rather than falling back to

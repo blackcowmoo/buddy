@@ -604,7 +604,7 @@ func sessionDeleteHandler(ident identity.Identifier, st store.Store, audio trans
 // maxInterlocutorStyleLen bounds the free-text conversation-style preference
 // so a learner can't balloon every chat session's system prompt (and LLM
 // cost) with an arbitrarily long paste.
-const maxInterlocutorStyleLen = 500
+const maxInterlocutorStyleLen = 1024
 
 // settingsGetHandler returns the caller's own saved conversation-style
 // preference — personal, not admin, like sessionsListHandler: scoped to
