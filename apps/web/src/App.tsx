@@ -25,7 +25,7 @@ import {
   type SessionSummary,
   type TurnRecord,
 } from "./lib/sessions";
-import { fetchSettings, saveSettings } from "./lib/settings";
+import { fetchSettings, saveSettings, MAX_INTERLOCUTOR_STYLE_LEN } from "./lib/settings";
 import { applyTheme, getStoredTheme, onSystemThemeChange, setStoredTheme, type Theme } from "./lib/theme";
 import { formatDateDivider, formatMessageTime, formatRelativeTime, isSameDay } from "./lib/time";
 import {
@@ -344,6 +344,7 @@ export function App() {
   const [styleSaving, setStyleSaving] = useState(false);
   const [styleSaved, setStyleSaved] = useState(false);
   const [styleLoadError, setStyleLoadError] = useState(false);
+  const [styleSaveError, setStyleSaveError] = useState<string | null>(null);
   const [loadingMoreHistory, setLoadingMoreHistory] = useState(false);
 
   const clientRef = useRef<BuddyClient | null>(null);
@@ -535,14 +536,25 @@ export function App() {
     async (e: React.FormEvent) => {
       e.preventDefault();
       if (styleLoadError) return;
-      setStyleSaving(true);
       setStyleSaved(false);
+      setStyleSaveError(null);
       const trimmed = styleInput.trim();
+      // Matches the server's utf8.RuneCountInString check (server.go) — checked
+      // client-side too so a too-long paste gets an immediate, specific message
+      // instead of a 400 that saveSettings collapses into a bare `false`.
+      const len = Array.from(trimmed).length;
+      if (len > MAX_INTERLOCUTOR_STYLE_LEN) {
+        setStyleSaveError(`${MAX_INTERLOCUTOR_STYLE_LEN}자를 초과했습니다 (현재 ${len}자).`);
+        return;
+      }
+      setStyleSaving(true);
       const ok = await saveSettings(trimmed);
       setStyleSaving(false);
       if (ok) {
         setStyleInput(trimmed);
         setStyleSaved(true);
+      } else {
+        setStyleSaveError("저장하지 못했습니다. 다시 시도해주세요.");
       }
     },
     [styleInput, styleLoadError],
@@ -551,6 +563,7 @@ export function App() {
   const handleStyleInputChange = useCallback((v: string) => {
     setStyleInput(v);
     setStyleSaved(false);
+    setStyleSaveError(null);
   }, []);
 
   const refreshSessions = useCallback(() => {
@@ -1248,6 +1261,7 @@ export function App() {
     styleSaving,
     styleSaved,
     styleLoadError,
+    styleSaveError,
     onSubmitStyle: submitStyle,
   };
 
@@ -1781,6 +1795,7 @@ function MenuPanel({
   styleSaving,
   styleSaved,
   styleLoadError,
+  styleSaveError,
   onSubmitStyle,
   chat,
 }: {
@@ -1797,6 +1812,7 @@ function MenuPanel({
   styleSaving: boolean;
   styleSaved: boolean;
   styleLoadError: boolean;
+  styleSaveError: string | null;
   onSubmitStyle: (e: React.FormEvent) => void;
   chat?: ChatMenuProps;
 }) {
@@ -1866,7 +1882,17 @@ function MenuPanel({
           <button type="submit" disabled={styleSaving || styleLoadError}>
             {styleSaving ? "저장 중…" : "저장"}
           </button>
+          <span
+            className={
+              Array.from(styleInput.trim()).length > MAX_INTERLOCUTOR_STYLE_LEN
+                ? "style-char-count style-char-count-over"
+                : "style-char-count"
+            }
+          >
+            {Array.from(styleInput.trim()).length}/{MAX_INTERLOCUTOR_STYLE_LEN}
+          </span>
           {styleSaved && <span className="style-saved">저장됨</span>}
+          {styleSaveError && <span className="style-save-error">{styleSaveError}</span>}
           {styleLoadError && (
             <span className="style-load-error">불러오지 못했습니다. 새로고침 후 다시 시도해주세요.</span>
           )}

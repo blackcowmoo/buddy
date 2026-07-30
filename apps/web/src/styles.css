@@ -360,6 +360,9 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 .style-form-row button { padding: 8px 12px; min-height: 36px; }
 .style-saved { font-size: 12px; color: var(--ok); }
 .style-load-error { font-size: 12px; color: var(--warn); }
+.style-save-error { font-size: 12px; color: var(--warn); }
+.style-char-count { font-size: 12px; color: var(--muted); margin-left: auto; }
+.style-char-count-over { color: var(--warn); }
 
 .path-form { display: flex; flex-direction: column; gap: 6px; }
 .path-form label { font-size: 12px; color: var(--muted); }

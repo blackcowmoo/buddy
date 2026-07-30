@@ -69,6 +69,7 @@ vi.mock("./lib/sessions", () => ({
 vi.mock("./lib/settings", () => ({
   fetchSettings: vi.fn(),
   saveSettings: vi.fn(),
+  MAX_INTERLOCUTOR_STYLE_LEN: 500,
 }));
 
 vi.mock("./lib/roomHistory", () => ({
@@ -1180,6 +1181,36 @@ describe("conversation style", () => {
     expect(screen.getByLabelText("대화 상대 스타일")).toBeDisabled();
     expect(screen.getByRole("button", { name: "저장" })).toBeDisabled();
     expect(saveSettings).not.toHaveBeenCalled();
+  });
+
+  // Regression: submitting a style over the server's 500-char cap used to
+  // fail the PUT with a 400 that saveSettings collapsed into a bare `false`,
+  // which submitStyle then did nothing with — no error, just no "저장됨".
+  // The limit is now checked client-side so the learner gets a specific
+  // message instead of a silent no-op.
+  it("rejects a style over the length limit without calling saveSettings", async () => {
+    vi.mocked(fetchSettings).mockResolvedValue({ interlocutorStyle: "" });
+    const user = userEvent.setup();
+    render(<App />);
+    await openMenu(user);
+    const textarea = screen.getByLabelText("대화 상대 스타일");
+    fireEvent.change(textarea, { target: { value: "a".repeat(501) } });
+    await user.click(screen.getByRole("button", { name: "저장" }));
+    expect(await screen.findByText("500자를 초과했습니다 (현재 501자).")).toBeInTheDocument();
+    expect(saveSettings).not.toHaveBeenCalled();
+    expect(screen.queryByText("저장됨")).not.toBeInTheDocument();
+  });
+
+  it("shows an error instead of failing silently when the save request fails", async () => {
+    vi.mocked(fetchSettings).mockResolvedValue({ interlocutorStyle: "" });
+    vi.mocked(saveSettings).mockResolvedValue(false);
+    const user = userEvent.setup();
+    render(<App />);
+    await openMenu(user);
+    await user.type(screen.getByLabelText("대화 상대 스타일"), "전문가처럼 답변해줘");
+    await user.click(screen.getByRole("button", { name: "저장" }));
+    expect(await screen.findByText("저장하지 못했습니다. 다시 시도해주세요.")).toBeInTheDocument();
+    expect(screen.queryByText("저장됨")).not.toBeInTheDocument();
   });
 });
 
