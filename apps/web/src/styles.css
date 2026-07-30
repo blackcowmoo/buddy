@@ -196,6 +196,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
    itself (message text only) so they read as metadata, not stray content
    tacked onto what the learner typed. */
 .msg-tools {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -208,8 +209,14 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
    row isn't dominated by a wall of rate buttons — see App.tsx StudyControl.
    Sized down from grammar-btn: the 🔊 emoji renders full-size color art
    regardless of font-size, so at a matching 32px it visually dwarfed the
-   plain-glyph grammar button next to it. */
-.study-control, .grammar-control { position: relative; display: inline-flex; }
+   plain-glyph grammar button next to it.
+   Deliberately not position:relative here (moved up to .msg-tools instead):
+   grammar-control sits left of study-control in the row, so anchoring each
+   popover to its own small button — rather than to the shared msg-tools box,
+   whose edge lines up flush with the bubble above it — pulled the grammar
+   popover's right:0 off the bubble's true right edge, skewing it left with
+   an oversized right margin. */
+.study-control, .grammar-control { display: inline-flex; }
 .grammar-btn { width: 28px; height: 28px; min-height: 28px; font-size: 13px; }
 .study-btn { width: 22px; height: 22px; min-height: 22px; font-size: 11px; }
 .grammar-btn:disabled { opacity: 0.7; }
