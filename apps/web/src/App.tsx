@@ -345,6 +345,11 @@ export function App() {
   const [styleSaved, setStyleSaved] = useState(false);
   const [styleLoadError, setStyleLoadError] = useState(false);
   const [styleSaveError, setStyleSaveError] = useState<string | null>(null);
+  // The learner's persistent cross-session profile (see settings.ts) —
+  // loaded alongside styleInput by the same fetchSettings call below, shown
+  // read-only in MenuPanel so a learner can check what past ended
+  // conversations have folded into it.
+  const [learnerProfile, setLearnerProfile] = useState("");
   const [loadingMoreHistory, setLoadingMoreHistory] = useState(false);
 
   const clientRef = useRef<BuddyClient | null>(null);
@@ -520,8 +525,12 @@ export function App() {
 
   useEffect(() => {
     fetchSettings().then((s) => {
-      if (s) setStyleInput(s.interlocutorStyle);
-      else setStyleLoadError(true);
+      if (s) {
+        setStyleInput(s.interlocutorStyle);
+        setLearnerProfile(s.learnerProfile);
+      } else {
+        setStyleLoadError(true);
+      }
     });
   }, []);
 
@@ -1263,6 +1272,7 @@ export function App() {
     styleLoadError,
     styleSaveError,
     onSubmitStyle: submitStyle,
+    learnerProfile,
   };
 
   if (view === "list") {
@@ -1729,6 +1739,46 @@ function ThemeSwitch({ theme, onChange }: { theme: Theme; onChange: (t: Theme) =
   );
 }
 
+// Read-only view onto the learner's persistent cross-session profile (see
+// settings.ts/store.Store.GetLearnerProfile) — recurring mistakes,
+// interests, proficiency trend, folded in from every ended session's study
+// summary and carried into every future session's system prompt regardless
+// of which chat room it's in. Tucked behind its own toggle rather than shown
+// inline: unlike the interlocutor-style form right above it, this is
+// LLM-authored prose with no length cap, so showing it by default could
+// dominate the menu. Local, unlifted open state is enough — MenuPanel itself
+// unmounts (and so does this) whenever the hamburger menu closes.
+function LearnerProfileControl({ profile, loadError }: { profile: string; loadError: boolean }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="learner-profile">
+      <button
+        type="button"
+        className="ghost menu-item"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="true"
+        aria-expanded={open}
+      >
+        🧠 학습 프로필 보기
+      </button>
+      {open && (
+        <div className="learner-profile-panel">
+          <div className="learner-profile-hint">
+            지금까지 마친 대화들을 요약해 다음 대화에 반영하는 내용이에요.
+          </div>
+          {loadError ? (
+            <span className="style-load-error">불러오지 못했습니다. 새로고침 후 다시 시도해주세요.</span>
+          ) : profile ? (
+            <div className="learner-profile-text">{profile}</div>
+          ) : (
+            <div className="learner-profile-empty">아직 정리된 내용이 없어요. 대화를 마치면 쌓여요.</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface ChatMenuProps {
   tts: TtsState;
   ttsProgress: number;
@@ -1797,6 +1847,7 @@ function MenuPanel({
   styleLoadError,
   styleSaveError,
   onSubmitStyle,
+  learnerProfile,
   chat,
 }: {
   email: string | null;
@@ -1814,6 +1865,7 @@ function MenuPanel({
   styleLoadError: boolean;
   styleSaveError: string | null;
   onSubmitStyle: (e: React.FormEvent) => void;
+  learnerProfile: string;
   chat?: ChatMenuProps;
 }) {
   return (
@@ -1898,6 +1950,8 @@ function MenuPanel({
           )}
         </div>
       </form>
+      <div className="menu-divider" />
+      <LearnerProfileControl profile={learnerProfile} loadError={styleLoadError} />
       <div className="menu-divider" />
       <button className="ghost menu-item" onClick={onGoToRecordings} role="menuitem">
         🎧 녹음 목록

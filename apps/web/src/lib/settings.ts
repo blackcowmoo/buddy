@@ -6,6 +6,13 @@ import { requestOK } from "./fetchJSON";
 // session is created (see pipeline.BuildSystemPrompt).
 export interface Settings {
   interlocutorStyle: string;
+  // The learner's persistent, LLM-maintained cross-session profile (recurring
+  // mistakes, interests, proficiency trend) — folded in from each ended
+  // session's study summary (see store.Store.GetLearnerProfile). Read-only:
+  // nothing under api/settings writes it, it only rides along on the same
+  // fetch so the menu can show it without a second round trip. "" if the
+  // learner hasn't ended a session yet.
+  learnerProfile: string;
 }
 
 // Mirrors maxInterlocutorStyleLen in httpserver/server.go — the server

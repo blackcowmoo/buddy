@@ -54,6 +54,41 @@ func TestSettingsGetReturnsEmptyStringWhenNeverSet(t *testing.T) {
 	}
 }
 
+func TestSettingsGetReturnsLearnerProfile(t *testing.T) {
+	st := &fakeSessionStore{learnerProfiles: map[string]string{"alex": "struggles with articles; loves cooking"}}
+	h := settingsGetHandler(fakeIdentifier{id: "alex", ok: true}, st)
+
+	req := httptest.NewRequest("GET", "/api/settings", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var body struct {
+		LearnerProfile string `json:"learnerProfile"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.LearnerProfile != "struggles with articles; loves cooking" {
+		t.Fatalf("learnerProfile = %q, want the saved value", body.LearnerProfile)
+	}
+}
+
+func TestSettingsGetInternalErrorOnLearnerProfileFailure(t *testing.T) {
+	st := &fakeSessionStore{learnerProfileErr: errors.New("mysql unreachable")}
+	h := settingsGetHandler(fakeIdentifier{id: "alex", ok: true}, st)
+
+	req := httptest.NewRequest("GET", "/api/settings", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+}
+
 func TestSettingsGetUnauthorizedWhenIdentifyFails(t *testing.T) {
 	h := settingsGetHandler(fakeIdentifier{ok: false}, &fakeSessionStore{})
 

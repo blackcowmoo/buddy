@@ -607,8 +607,12 @@ func sessionDeleteHandler(ident identity.Identifier, st store.Store, audio trans
 const maxInterlocutorStyleLen = 1024
 
 // settingsGetHandler returns the caller's own saved conversation-style
-// preference — personal, not admin, like sessionsListHandler: scoped to
-// whatever ident.Identify resolves to.
+// preference, alongside their persistent cross-session learner profile (see
+// store.Store.GetLearnerProfile) — read-only here, since nothing under
+// /api/settings writes it; it's folded in only so the frontend's one
+// settings fetch (see fetchSettings/MenuPanel in App.tsx) can show it next
+// to the style form instead of a second round trip. Personal, not admin,
+// like sessionsListHandler: scoped to whatever ident.Identify resolves to.
 func settingsGetHandler(ident identity.Identifier, st store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)
@@ -620,7 +624,12 @@ func settingsGetHandler(ident identity.Identifier, st store.Store) http.HandlerF
 			serverError(w, "get interlocutor style", err)
 			return
 		}
-		writeJSON(w, map[string]any{"interlocutorStyle": style})
+		profile, err := st.GetLearnerProfile(r.Context(), userID)
+		if err != nil {
+			serverError(w, "get learner profile", err)
+			return
+		}
+		writeJSON(w, map[string]any{"interlocutorStyle": style, "learnerProfile": profile})
 	}
 }
 

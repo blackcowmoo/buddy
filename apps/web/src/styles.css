@@ -364,6 +364,25 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 .style-char-count { font-size: 12px; color: var(--muted); margin-left: auto; }
 .style-char-count-over { color: var(--warn); }
 
+/* Read-only cross-session learner profile, tucked behind its own toggle in
+   MenuPanel — see settings.ts, store.Store.GetLearnerProfile, and
+   LearnerProfileControl in App.tsx. The panel scrolls within itself rather
+   than growing .menu-panel unbounded, since the LLM-authored text has no
+   length cap the way interlocutor style does. */
+.learner-profile-panel { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.learner-profile-hint { font-size: 11px; color: var(--muted); }
+.learner-profile-text {
+  font-size: 13px;
+  white-space: pre-wrap;
+  max-height: 160px;
+  overflow-y: auto;
+  padding: 6px 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-2);
+  border-radius: 10px;
+}
+.learner-profile-empty { font-size: 13px; color: var(--muted); }
+
 .path-form { display: flex; flex-direction: column; gap: 6px; }
 .path-form label { font-size: 12px; color: var(--muted); }
 .path-row { display: flex; gap: 6px; }

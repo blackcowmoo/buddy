@@ -7,7 +7,10 @@ afterEach(() => {
 
 describe("fetchSettings", () => {
   it("returns the saved style on a successful response", async () => {
-    const settings = { interlocutorStyle: "ask interview-style questions" };
+    const settings = {
+      interlocutorStyle: "ask interview-style questions",
+      learnerProfile: "struggles with articles; loves cooking",
+    };
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(settings) }),
