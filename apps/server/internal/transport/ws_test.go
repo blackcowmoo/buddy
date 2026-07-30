@@ -461,6 +461,7 @@ func (f *fakeStore) EndSession(ctx context.Context, userID, sessionID string) er
 	}
 	d.meta.Ended = true
 	d.meta.StudySummaryStatus = store.JobStatusPending
+	d.meta.QuizStatus = store.JobStatusPending
 	return nil
 }
 
@@ -496,6 +497,40 @@ func (f *fakeStore) RestartStudySummary(ctx context.Context, userID, sessionID s
 	}
 	d.meta.StudySummary = nil
 	d.meta.StudySummaryStatus = store.JobStatusPending
+	return nil
+}
+
+func (f *fakeStore) CompleteStudyQuiz(ctx context.Context, userID, sessionID string, questions []protocol.QuizQuestion) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.sessions[fakeStoreKey(userID, sessionID)]
+	if d == nil {
+		return nil // no-op, same as Save
+	}
+	d.meta.Quiz = questions
+	d.meta.QuizStatus = store.JobStatusDone
+	return nil
+}
+
+func (f *fakeStore) FailStudyQuiz(ctx context.Context, userID, sessionID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.sessions[fakeStoreKey(userID, sessionID)]
+	if d == nil {
+		return nil // no-op, same as Save
+	}
+	d.meta.QuizStatus = store.JobStatusFailed
+	return nil
+}
+
+func (f *fakeStore) MarkQuizCompleted(ctx context.Context, userID, sessionID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.sessions[fakeStoreKey(userID, sessionID)]
+	if d == nil {
+		return nil // no-op, same as Save
+	}
+	d.meta.QuizCompleted = true
 	return nil
 }
 

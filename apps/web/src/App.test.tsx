@@ -60,10 +60,10 @@ vi.mock("./lib/sessions", () => ({
   fetchSessions: vi.fn(),
   fetchSessionDetail: vi.fn(),
   fetchSessionCompaction: vi.fn(),
-  fetchSessionQuiz: vi.fn(),
   deleteSession: vi.fn(),
   endSession: vi.fn(),
   restudySession: vi.fn(),
+  markQuizCompleted: vi.fn(),
 }));
 
 vi.mock("./lib/settings", () => ({
@@ -97,8 +97,8 @@ import {
   endSession,
   fetchSessionCompaction,
   fetchSessionDetail,
-  fetchSessionQuiz,
   fetchSessions,
+  markQuizCompleted,
   restudySession,
 } from "./lib/sessions";
 import { fetchSettings, saveSettings } from "./lib/settings";
@@ -113,8 +113,8 @@ beforeEach(() => {
   vi.mocked(fetchSessions).mockResolvedValue([]);
   vi.mocked(fetchSessionDetail).mockResolvedValue(null);
   vi.mocked(fetchSessionCompaction).mockResolvedValue(null);
-  vi.mocked(fetchSessionQuiz).mockResolvedValue(null);
   vi.mocked(restudySession).mockResolvedValue(true);
+  vi.mocked(markQuizCompleted).mockResolvedValue(true);
   vi.mocked(fetchSettings).mockResolvedValue({ interlocutorStyle: "" });
   vi.mocked(saveSettings).mockResolvedValue(true);
   vi.mocked(parseRoomHash).mockReturnValue({ view: "list" });
@@ -268,6 +268,21 @@ describe("room list", () => {
     expect(await screen.findByText("정리 중")).toBeInTheDocument();
     expect(screen.queryByText("정리 중")?.closest("li")?.textContent).toContain("hello there");
     expect(screen.getByText("already done").closest("li")?.textContent).not.toContain("정리 중");
+  });
+
+  // Guards the "all correct" checkmark this feature adds to the room list
+  // (see store.SessionMeta.QuizCompleted/markQuizCompleted): only a session
+  // with quizCompleted true shows it, distinguishing it from an ended room
+  // that hasn't (yet) studied its quiz.
+  it("shows a completed badge only for a session whose quiz was marked completed", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: true, studySummaryStatus: "done", quizCompleted: true },
+      { id: "s2", title: "not yet studied", createdAt: 1, updatedAt: 2, ended: true, studySummaryStatus: "done", quizCompleted: false },
+    ]);
+    render(<App />);
+    expect(await screen.findByText("✅ 학습 완료")).toBeInTheDocument();
+    expect(screen.queryByText("✅ 학습 완료")?.closest("li")?.textContent).toContain("hello there");
+    expect(screen.getByText("not yet studied").closest("li")?.textContent).not.toContain("학습 완료");
   });
 
   it("starting a new chat opens the WS with no session id", async () => {
@@ -451,13 +466,80 @@ describe("room list", () => {
     }
   });
 
-  // Guards the on-demand quiz flow (see EndConversationControl/QuizPanel):
-  // "퀴즈 풀기" must fetch fresh questions (not something already carried by
-  // studySummary), grade a wrong answer as wrong while still surfacing the
-  // correct one, grade a matching answer as right even with different
-  // casing/whitespace (see normalizeQuizAnswer), advance across questions,
-  // and land on a final score once the last one is answered.
-  it("opens the quiz from the study feedback panel, grades answers, and shows a final score", async () => {
+  // Mirrors the study-summary polling test above, but for the quiz
+  // pre-generation job running independently alongside it (see
+  // pollQuizStatus/asyncjob.KindStudyQuiz): a room reopened while the quiz
+  // job is still pending shows the "준비하는 중" hint, not a dead "퀴즈 풀기"
+  // button, and picks up the "퀴즈 풀기" button once a later poll sees it land
+  // — all while the study summary itself was already done from the start.
+  it("reopening a room whose quiz is still pending shows a preparing hint, then the quiz button once it lands", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(fetchSessions).mockResolvedValue([
+        { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: true, studySummaryStatus: "done", quizStatus: "pending" },
+      ]);
+      vi.mocked(fetchSessionDetail).mockResolvedValueOnce({
+        hasMore: false,
+        session: {
+          id: "s1",
+          title: "hello there",
+          createdAt: 1,
+          updatedAt: 2,
+          ended: true,
+          studySummary: [{ english: "Focus on third-person -s.", translation: "3인칭 단수 -s에 집중하세요." }],
+          studySummaryStatus: "done",
+          quizStatus: "pending",
+        },
+        turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
+      });
+      render(<App />);
+      await flushUntil(() => screen.queryByText("hello there") !== null);
+      fireEvent.click(screen.getByText("hello there"));
+      await flushUntil(() => screen.queryByText("hi") !== null);
+
+      fireEvent.click(screen.getByRole("button", { name: "대화 종료" }));
+      await flushUntil(() => screen.queryByText("퀴즈를 준비하는 중…") !== null);
+      expect(screen.queryByText("퀴즈 풀기")).not.toBeInTheDocument();
+
+      vi.mocked(fetchSessionDetail).mockResolvedValue({
+        hasMore: false,
+        session: {
+          id: "s1",
+          title: "hello there",
+          createdAt: 1,
+          updatedAt: 2,
+          ended: true,
+          studySummary: [{ english: "Focus on third-person -s.", translation: "3인칭 단수 -s에 집중하세요." }],
+          studySummaryStatus: "done",
+          quiz: [
+            {
+              prompt: "He ___ to school.",
+              answer: "goes",
+              translation: "그는 학교에 가요.",
+              explanation: "unused",
+              explanationTranslation: "unused",
+            },
+          ],
+          quizStatus: "done",
+        },
+        turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
+      });
+      await act(() => vi.advanceTimersByTimeAsync(4000));
+      await flushUntil(() => screen.queryByText("퀴즈 풀기") !== null);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Guards the pre-generated quiz flow (see EndConversationControl/
+  // QuizPanel): the questions already arrive on session.quiz (pre-generated
+  // alongside the wrap-up — see asyncjob.KindStudyQuiz), so "퀴즈 풀기" just
+  // opens the panel with no fetch of its own. Grades a wrong answer as wrong
+  // while still surfacing the correct one, grades a matching answer as right
+  // even with different casing/whitespace (see normalizeQuizAnswer), advances
+  // across questions, lands on a final score, and — since one answer here is
+  // wrong — must never mark the quiz completed (see markQuizCompleted).
+  it("opens the pre-generated quiz from the study feedback panel, grades answers, and shows a final score", async () => {
     vi.mocked(fetchSessions).mockResolvedValue([
       { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: true, studySummaryStatus: "done" },
     ]);
@@ -471,25 +553,26 @@ describe("room list", () => {
         ended: true,
         studySummary: [{ english: "Focus on third-person -s.", translation: "3인칭 단수 -s에 집중하세요." }],
         studySummaryStatus: "done",
+        quiz: [
+          {
+            prompt: "He ___ to school every day.",
+            answer: "goes",
+            translation: "그는 매일 학교에 가요.",
+            explanation: "Third person singular needs -s.",
+            explanationTranslation: "3인칭 단수는 -s가 필요해요.",
+          },
+          {
+            prompt: "She likes ___ books.",
+            answer: "reading",
+            translation: "그녀는 책 읽는 것을 좋아해요.",
+            explanation: "The verb after \"likes\" takes the -ing form here.",
+            explanationTranslation: "\"likes\" 다음에는 -ing 형태가 와요.",
+          },
+        ],
+        quizStatus: "done",
       },
       turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
     });
-    vi.mocked(fetchSessionQuiz).mockResolvedValue([
-      {
-        prompt: "He ___ to school every day.",
-        answer: "goes",
-        translation: "그는 매일 학교에 가요.",
-        explanation: "Third person singular needs -s.",
-        explanationTranslation: "3인칭 단수는 -s가 필요해요.",
-      },
-      {
-        prompt: "She likes ___ books.",
-        answer: "reading",
-        translation: "그녀는 책 읽는 것을 좋아해요.",
-        explanation: "The verb after \"likes\" takes the -ing form here.",
-        explanationTranslation: "\"likes\" 다음에는 -ing 형태가 와요.",
-      },
-    ]);
     const user = userEvent.setup();
     render(<App />);
     await user.click(await screen.findByText("hello there"));
@@ -497,7 +580,6 @@ describe("room list", () => {
 
     await user.click(screen.getByRole("button", { name: "대화 종료" }));
     await user.click(await screen.findByText("퀴즈 풀기"));
-    expect(fetchSessionQuiz).toHaveBeenCalledWith("s1");
 
     // Question 1: a wrong answer still names the correct one.
     expect(await screen.findByText("He ___ to school every day.")).toBeInTheDocument();
@@ -515,11 +597,75 @@ describe("room list", () => {
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
 
     expect(screen.getByText("2문제 중 1개 맞혔어요!")).toBeInTheDocument();
+    expect(markQuizCompleted).not.toHaveBeenCalled();
   });
 
-  // Guards the empty-quiz case: no issues to build a quiz from must show an
-  // explanatory empty state, not a stuck loading spinner or a crash.
-  it("shows an empty state when the quiz has nothing to ask about", async () => {
+  // Guards the "all correct" completion path this feature exists for: only
+  // once every question in the quiz is answered correctly does it call
+  // markQuizCompleted — a single wrong answer anywhere (covered above) must
+  // never trigger it, and it must not fire after just the first of several
+  // correct answers either.
+  it("marks the quiz completed once every question is answered correctly", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: true, studySummaryStatus: "done" },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
+      session: {
+        id: "s1",
+        title: "hello there",
+        createdAt: 1,
+        updatedAt: 2,
+        ended: true,
+        studySummary: [{ english: "Focus on third-person -s.", translation: "3인칭 단수 -s에 집중하세요." }],
+        studySummaryStatus: "done",
+        quiz: [
+          {
+            prompt: "He ___ to school every day.",
+            answer: "goes",
+            translation: "그는 매일 학교에 가요.",
+            explanation: "Third person singular needs -s.",
+            explanationTranslation: "3인칭 단수는 -s가 필요해요.",
+          },
+          {
+            prompt: "She likes ___ books.",
+            answer: "reading",
+            translation: "그녀는 책 읽는 것을 좋아해요.",
+            explanation: "The verb after \"likes\" takes the -ing form here.",
+            explanationTranslation: "\"likes\" 다음에는 -ing 형태가 와요.",
+          },
+        ],
+        quizStatus: "done",
+      },
+      turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+    await screen.findByText("hi");
+
+    await user.click(screen.getByRole("button", { name: "대화 종료" }));
+    await user.click(await screen.findByText("퀴즈 풀기"));
+
+    await screen.findByText("He ___ to school every day.");
+    await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "goes");
+    await user.click(screen.getByRole("button", { name: "확인" }));
+    await screen.findByText("정답이에요!");
+    expect(markQuizCompleted).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "다음 문제" }));
+    await screen.findByText("She likes ___ books.");
+    await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "reading");
+    await user.click(screen.getByRole("button", { name: "확인" }));
+
+    await vi.waitFor(() => expect(markQuizCompleted).toHaveBeenCalledWith("s1"));
+  });
+
+  // Guards the no-quiz-content case (see needsStudyQuizBackfill server-side):
+  // instead of a dead-end "퀴즈 풀기" leading nowhere, the learner gets a
+  // "내가 읽었음" button that marks the same completion checkmark a fully-
+  // correct quiz would.
+  it("shows an acknowledge button instead of the quiz when there's nothing to ask about", async () => {
     vi.mocked(fetchSessions).mockResolvedValue([
       { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: true, studySummaryStatus: "done" },
     ]);
@@ -533,19 +679,23 @@ describe("room list", () => {
         ended: true,
         studySummary: [{ english: "Nice work, nothing to flag.", translation: "잘했어요, 지적할 부분이 없어요." }],
         studySummaryStatus: "done",
+        quiz: [],
+        quizStatus: "done",
       },
       turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
     });
-    vi.mocked(fetchSessionQuiz).mockResolvedValue([]);
     const user = userEvent.setup();
     render(<App />);
     await user.click(await screen.findByText("hello there"));
     await screen.findByText("hi");
 
     await user.click(screen.getByRole("button", { name: "대화 종료" }));
-    await user.click(await screen.findByText("퀴즈 풀기"));
+    expect(screen.queryByText("퀴즈 풀기")).not.toBeInTheDocument();
 
-    expect(await screen.findByText("퀴즈를 만들 만한 내용이 없어요.")).toBeInTheDocument();
+    await user.click(await screen.findByText("내가 읽었음"));
+
+    expect(markQuizCompleted).toHaveBeenCalledWith("s1");
+    expect(await screen.findByText("학습 완료로 표시했어요.")).toBeInTheDocument();
   });
 
   // Guards the "다시 확인하기" force-recheck button (see

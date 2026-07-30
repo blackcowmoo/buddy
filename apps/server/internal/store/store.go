@@ -59,6 +59,27 @@ type SessionMeta struct {
 	// left to poll for (see EndConversationControl in apps/web/src/App.tsx,
 	// which treats "" the same as JobStatusDone for that reason).
 	StudySummaryStatus string `json:"studySummaryStatus,omitempty"`
+	// Quiz is the pre-generated practice quiz saved by CompleteStudyQuiz —
+	// nil until QuizStatus reaches JobStatusDone. Generated alongside
+	// StudySummary, from the same flagged issues, right when EndSession
+	// freezes the room (see asyncjob.KindStudyQuiz), so opening the quiz
+	// (the "퀴즈 풀기" button) reads an already-finished result instead of
+	// waiting on an LLM call in the request path.
+	Quiz []protocol.QuizQuestion `json:"quiz,omitempty"`
+	// QuizStatus mirrors StudySummaryStatus but for asyncjob.KindStudyQuiz —
+	// a separate column (not reused from StudySummaryStatus) because the two
+	// jobs run independently, in parallel, not one after the other. "" means
+	// no quiz job has ever run for this session (e.g. one ended before this
+	// feature existed) — see needsStudyQuizBackfill, which re-triggers
+	// exactly that state the next time the session is viewed.
+	QuizStatus string `json:"quizStatus,omitempty"`
+	// QuizCompleted is a one-way "studied this" checkmark for the room list
+	// (see ListSessions): set by MarkQuizCompleted once the learner either
+	// answers every quiz question correctly, or — for a session with no
+	// quiz-worthy issues (Quiz empty) — acknowledges it via the "내가 읽었음"
+	// button instead. Never cleared once set, so a later imperfect retry
+	// doesn't take the checkmark away.
+	QuizCompleted bool `json:"quizCompleted,omitempty"`
 }
 
 // Turn is one persisted message in a session's full transcript — the source
@@ -255,6 +276,22 @@ type Store interface {
 	// no-op if sessionID doesn't exist or belongs to a different user, same
 	// as Save.
 	RestartStudySummary(ctx context.Context, userID, sessionID string) error
+
+	// CompleteStudyQuiz saves the quiz an asyncjob.KindStudyQuiz job
+	// generated for an already-ended session — Quiz becomes questions and
+	// QuizStatus becomes JobStatusDone. Mirrors CompleteStudySummary; a
+	// no-op if sessionID doesn't exist or belongs to a different user.
+	CompleteStudyQuiz(ctx context.Context, userID, sessionID string, questions []protocol.QuizQuestion) error
+	// FailStudyQuiz marks QuizStatus JobStatusFailed after an
+	// asyncjob.KindStudyQuiz job's LLM call errored — mirrors
+	// FailStudySummary; the reaper still retries the job from scratch
+	// regardless (see asyncjob.Queue.Execute).
+	FailStudyQuiz(ctx context.Context, userID, sessionID string) error
+	// MarkQuizCompleted sets QuizCompleted true — see its doc comment on
+	// SessionMeta for when this is called and why it never gets cleared
+	// again. A no-op if sessionID doesn't exist or belongs to a different
+	// user, same as Save.
+	MarkQuizCompleted(ctx context.Context, userID, sessionID string) error
 
 	// GetLearnerProfile returns userID's persistent, LLM-maintained
 	// cross-session profile (recurring mistakes, interests, proficiency

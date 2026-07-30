@@ -1174,13 +1174,23 @@ func TestMySQLEndSessionFreezesImmediatelyWithoutTheSummary(t *testing.T) {
 	if len(meta.StudySummary) != 0 {
 		t.Fatalf("StudySummary = %+v, want empty until CompleteStudySummary runs", meta.StudySummary)
 	}
+	// EndSession flips quiz_status to pending in the same UPDATE as
+	// study_summary_status — the two background jobs (asyncjob.
+	// KindStudySummary/KindStudyQuiz) are enqueued together right after this
+	// by httpserver.sessionEndHandler, not one after the other.
+	if meta.QuizStatus != JobStatusPending {
+		t.Fatalf("QuizStatus = %q, want JobStatusPending immediately after EndSession", meta.QuizStatus)
+	}
+	if len(meta.Quiz) != 0 {
+		t.Fatalf("Quiz = %+v, want empty until CompleteStudyQuiz runs", meta.Quiz)
+	}
 
 	sessions, err := st.ListSessions(ctx, userID)
 	if err != nil {
 		t.Fatalf("ListSessions() error = %v", err)
 	}
-	if len(sessions) != 1 || !sessions[0].Ended || sessions[0].StudySummaryStatus != JobStatusPending {
-		t.Fatalf("ListSessions() = %+v, want the ended session pending its wrap-up", sessions)
+	if len(sessions) != 1 || !sessions[0].Ended || sessions[0].StudySummaryStatus != JobStatusPending || sessions[0].QuizStatus != JobStatusPending {
+		t.Fatalf("ListSessions() = %+v, want the ended session pending its wrap-up and quiz", sessions)
 	}
 }
 
@@ -1295,6 +1305,149 @@ func TestMySQLRestartStudySummaryMissingSessionIsNoop(t *testing.T) {
 	st := requireStore(t)
 	if err := st.RestartStudySummary(context.Background(), "alex", "no-such-session"); err != nil {
 		t.Fatalf("RestartStudySummary() error = %v, want nil (silent no-op)", err)
+	}
+}
+
+// TestMySQLCompleteStudyQuizSavesQuestionsAndMarksDone mirrors
+// TestMySQLCompleteStudySummarySavesTextAndMarksDone: once the
+// asyncjob.KindStudyQuiz job finishes, its questions land in Quiz and
+// QuizStatus flips to JobStatusDone.
+func TestMySQLCompleteStudyQuizSavesQuestionsAndMarksDone(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	const userID = "complete-quiz-user"
+	sessionID := "sess-complete-quiz"
+	if err := st.SaveTurn(ctx, userID, sessionID, 1, "user", "first message", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn() error = %v", err)
+	}
+	if err := st.EndSession(ctx, userID, sessionID); err != nil {
+		t.Fatalf("EndSession() error = %v", err)
+	}
+	wantQuiz := []protocol.QuizQuestion{{Prompt: "He ___ to school.", Answer: "goes", Translation: "그는 학교에 가요.", Explanation: "subject-verb agreement", ExplanationTranslation: "주어-동사 일치"}}
+	if err := st.CompleteStudyQuiz(ctx, userID, sessionID, wantQuiz); err != nil {
+		t.Fatalf("CompleteStudyQuiz() error = %v", err)
+	}
+	meta, _, err := st.SessionDetail(ctx, userID, sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if meta.QuizStatus != JobStatusDone {
+		t.Fatalf("QuizStatus = %q, want JobStatusDone", meta.QuizStatus)
+	}
+	if len(meta.Quiz) != 1 || meta.Quiz[0] != wantQuiz[0] {
+		t.Fatalf("Quiz = %+v, want %+v", meta.Quiz, wantQuiz)
+	}
+}
+
+// TestMySQLCompleteStudyQuizWithNoQuestionsStillMarksDone documents that an
+// ended session with no flagged issues (runStudyQuiz skips the LLM call
+// entirely — see its doc comment) still reaches a terminal QuizStatus, with
+// Quiz staying empty rather than the JSON literal "[]" — same round-trip
+// contract as CompleteStudySummary's empty-summary case.
+func TestMySQLCompleteStudyQuizWithNoQuestionsStillMarksDone(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	const userID = "complete-quiz-empty-user"
+	sessionID := "sess-complete-quiz-empty"
+	if err := st.SaveTurn(ctx, userID, sessionID, 1, "user", "first message", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn() error = %v", err)
+	}
+	if err := st.EndSession(ctx, userID, sessionID); err != nil {
+		t.Fatalf("EndSession() error = %v", err)
+	}
+	if err := st.CompleteStudyQuiz(ctx, userID, sessionID, nil); err != nil {
+		t.Fatalf("CompleteStudyQuiz() error = %v", err)
+	}
+	meta, _, err := st.SessionDetail(ctx, userID, sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if meta.QuizStatus != JobStatusDone {
+		t.Fatalf("QuizStatus = %q, want JobStatusDone", meta.QuizStatus)
+	}
+	if len(meta.Quiz) != 0 {
+		t.Fatalf("Quiz = %+v, want empty", meta.Quiz)
+	}
+}
+
+// TestMySQLFailStudyQuizMarksFailedWithoutTouchingQuestions mirrors
+// TestMySQLFailStudySummaryMarksFailedWithoutTouchingText.
+func TestMySQLFailStudyQuizMarksFailedWithoutTouchingQuestions(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	const userID = "fail-quiz-user"
+	sessionID := "sess-fail-quiz"
+	if err := st.SaveTurn(ctx, userID, sessionID, 1, "user", "first message", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn() error = %v", err)
+	}
+	if err := st.EndSession(ctx, userID, sessionID); err != nil {
+		t.Fatalf("EndSession() error = %v", err)
+	}
+	if err := st.FailStudyQuiz(ctx, userID, sessionID); err != nil {
+		t.Fatalf("FailStudyQuiz() error = %v", err)
+	}
+	meta, _, err := st.SessionDetail(ctx, userID, sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if meta.QuizStatus != JobStatusFailed {
+		t.Fatalf("QuizStatus = %q, want JobStatusFailed", meta.QuizStatus)
+	}
+	if len(meta.Quiz) != 0 {
+		t.Fatalf("Quiz = %+v, want still empty after a failed attempt", meta.Quiz)
+	}
+}
+
+// TestMySQLMarkQuizCompletedSetsFlag guards the room-list checkmark: once
+// set, QuizCompleted reads back true both from SessionDetail and
+// ListSessions (the room list's own source, see sessionsListHandler).
+func TestMySQLMarkQuizCompletedSetsFlag(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	const userID = "mark-quiz-completed-user"
+	sessionID := "sess-mark-quiz-completed"
+	if err := st.SaveTurn(ctx, userID, sessionID, 1, "user", "first message", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn() error = %v", err)
+	}
+	if err := st.EndSession(ctx, userID, sessionID); err != nil {
+		t.Fatalf("EndSession() error = %v", err)
+	}
+
+	meta, _, err := st.SessionDetail(ctx, userID, sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if meta.QuizCompleted {
+		t.Fatalf("QuizCompleted = true before MarkQuizCompleted, want false")
+	}
+
+	if err := st.MarkQuizCompleted(ctx, userID, sessionID); err != nil {
+		t.Fatalf("MarkQuizCompleted() error = %v", err)
+	}
+
+	meta, _, err = st.SessionDetail(ctx, userID, sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if !meta.QuizCompleted {
+		t.Fatalf("QuizCompleted = false after MarkQuizCompleted, want true")
+	}
+
+	sessions, err := st.ListSessions(ctx, userID)
+	if err != nil {
+		t.Fatalf("ListSessions() error = %v", err)
+	}
+	if len(sessions) != 1 || !sessions[0].QuizCompleted {
+		t.Fatalf("ListSessions() = %+v, want QuizCompleted true", sessions)
+	}
+}
+
+// TestMySQLMarkQuizCompletedMissingSessionIsNoop mirrors EndSession's "no
+// row to match" behavior.
+func TestMySQLMarkQuizCompletedMissingSessionIsNoop(t *testing.T) {
+	st := requireStore(t)
+	if err := st.MarkQuizCompleted(context.Background(), "alex", "no-such-session"); err != nil {
+		t.Fatalf("MarkQuizCompleted() error = %v, want nil (silent no-op)", err)
 	}
 }
 

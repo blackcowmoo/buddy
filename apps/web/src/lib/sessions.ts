@@ -29,6 +29,22 @@ export interface SessionSummary {
   // left to poll for) — EndConversationControl treats both the same as
   // "done".
   studySummaryStatus?: "pending" | "done" | "failed";
+  // The pre-generated practice quiz (see store.SessionMeta.Quiz) — absent/
+  // empty until quizStatus reaches "done". Generated alongside studySummary,
+  // from the same flagged issues, right when the conversation ends, so
+  // EndConversationControl's "퀴즈 풀기" button reads this instead of
+  // triggering an LLM call itself.
+  quiz?: QuizQuestion[];
+  // Mirrors studySummaryStatus but for the quiz pre-generation job (see
+  // store.SessionMeta.QuizStatus) — a separate status because the two jobs
+  // run independently, in parallel, not one after the other.
+  quizStatus?: "pending" | "done" | "failed";
+  // Whether the learner has studied this session's quiz — either by
+  // answering every question correctly, or (when quiz is empty) by
+  // acknowledging it via "내가 읽었음" instead (see markQuizCompleted). A
+  // one-way checkmark: never cleared once set. Drives the room list's
+  // "all correct" badge.
+  quizCompleted?: boolean;
 }
 
 export interface TurnRecord {
@@ -116,19 +132,16 @@ export async function fetchSessionCompaction(id: string): Promise<SessionCompact
   );
 }
 
-// Generates a short fill-in-the-blank practice quiz on demand from an ended
-// session's flagged issues (see httpserver.sessionQuizHandler) — unlike
-// studySummary (generated once, automatically, right when the conversation
-// ends), this fires only when the learner opens the quiz (see the "퀴즈 풀기"
-// button in EndConversationControl), so a fresh LLM call happens per
-// request rather than something persisted on the session. Returns null on
-// any failure.
-export async function fetchSessionQuiz(id: string): Promise<QuizQuestion[] | null> {
-  const result = await fetchJSON<{ questions: QuizQuestion[] } | null>(
-    `api/sessions/${encodeURIComponent(id)}/quiz`,
-    null,
-  );
-  return result?.questions ?? null;
+// Marks an ended session's quiz as studied (see
+// httpserver.sessionQuizCompleteHandler) — called once a learner answers
+// every quiz question correctly (see QuizPanel), or, for a session whose
+// pre-generated quiz came back with no questions at all, when the learner
+// taps "내가 읽었음" instead (see EndConversationControl). Drives the room
+// list's "all correct" badge (see quizCompleted on SessionSummary) once the
+// room is left and the list refreshes. Returns whether the request itself
+// succeeded.
+export async function markQuizCompleted(id: string): Promise<boolean> {
+  return requestOK(`api/sessions/${encodeURIComponent(id)}/quiz/complete`, { method: "POST" });
 }
 
 // Deletes one chat room and its transcript (the server also cascades to any
