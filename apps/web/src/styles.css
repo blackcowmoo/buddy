@@ -584,7 +584,6 @@ a.icon-btn.ghost {
 }
 
 .correction {
-  max-width: 85%;
   background: var(--panel);
   border: 1px solid var(--border-2);
   border-left: 3px solid var(--warn);
