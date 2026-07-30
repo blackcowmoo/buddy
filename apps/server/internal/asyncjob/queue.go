@@ -216,6 +216,43 @@ func (q *Queue) EnqueueAndTryRun(ctx context.Context, kind Kind, dedupeKey, logI
 	return true, nil
 }
 
+// EnqueueAndRunInBackground is EnqueueAndTryRun's split-context sibling for
+// callers that must return before the job finishes but still want it to run
+// immediately rather than wait on the pooled Worker: Enqueue happens
+// synchronously on ctx (cheap — no LLM call — so it's safe to await before
+// e.g. an HTTP response), while TryClaimByID/Execute run in a detached
+// goroutine on context.Background() so a request ending doesn't cut the job
+// short. Used by transport.EnqueueStudySummaryJob/EnqueueStudyQuizJob, whose
+// httpserver.sessionEndHandler caller needs to respond as soon as the job is
+// durably queued. Enqueue/claim/execute errors are logged here, tagged with
+// kind and logID, the same as EnqueueAndTryRun.
+func (q *Queue) EnqueueAndRunInBackground(ctx context.Context, kind Kind, dedupeKey, logID string, payload any, claimTTL time.Duration, handler Handler) error {
+	if q == nil {
+		return nil
+	}
+	job, ok, err := q.Enqueue(ctx, kind, dedupeKey, payload)
+	if err != nil {
+		return fmt.Errorf("asyncjob: %s: enqueue %s: %w", kind, logID, err)
+	}
+	if !ok {
+		return nil // deduped: another attempt already owns this job
+	}
+	go func() {
+		claimed, err := q.TryClaimByID(context.Background(), job, claimTTL)
+		if err != nil {
+			log.Printf("asyncjob: %s: background claim %s: %v", kind, logID, err)
+			return
+		}
+		if !claimed {
+			return // lost the race to a pooled Worker, which owns it now
+		}
+		if err := q.Execute(context.Background(), job, handler); err != nil {
+			log.Printf("asyncjob: %s: background execute %s: %v", kind, logID, err)
+		}
+	}()
+	return nil
+}
+
 // completeJob marks a claimed job done: removed from processing, its claim
 // released, and its dedupe entry cleared, so a later Enqueue with the same
 // dedupe key is treated as a fresh job rather than a duplicate of one
