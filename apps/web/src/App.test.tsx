@@ -116,7 +116,7 @@ beforeEach(() => {
   vi.mocked(fetchSessionCompaction).mockResolvedValue(null);
   vi.mocked(restudySession).mockResolvedValue(true);
   vi.mocked(markQuizCompleted).mockResolvedValue(true);
-  vi.mocked(fetchSettings).mockResolvedValue({ interlocutorStyle: "" });
+  vi.mocked(fetchSettings).mockResolvedValue({ interlocutorStyle: "", learnerProfile: "" });
   vi.mocked(saveSettings).mockResolvedValue(true);
   vi.mocked(parseRoomHash).mockReturnValue({ view: "list" });
   vi.mocked(currentRoomHistoryState).mockReturnValue({ view: "list" });
@@ -1149,7 +1149,10 @@ describe("hamburger menu", () => {
 
 describe("conversation style", () => {
   it("populates the field with the saved style once loaded", async () => {
-    vi.mocked(fetchSettings).mockResolvedValue({ interlocutorStyle: "면접관처럼 질문해줘" });
+    vi.mocked(fetchSettings).mockResolvedValue({
+      interlocutorStyle: "면접관처럼 질문해줘",
+      learnerProfile: "",
+    });
     const user = userEvent.setup();
     render(<App />);
     await openMenu(user);
@@ -1157,7 +1160,7 @@ describe("conversation style", () => {
   });
 
   it("saves the edited style and shows a confirmation", async () => {
-    vi.mocked(fetchSettings).mockResolvedValue({ interlocutorStyle: "" });
+    vi.mocked(fetchSettings).mockResolvedValue({ interlocutorStyle: "", learnerProfile: "" });
     const user = userEvent.setup();
     render(<App />);
     await openMenu(user);
@@ -1189,7 +1192,7 @@ describe("conversation style", () => {
   // The limit is now checked client-side so the learner gets a specific
   // message instead of a silent no-op.
   it("rejects a style over the length limit without calling saveSettings", async () => {
-    vi.mocked(fetchSettings).mockResolvedValue({ interlocutorStyle: "" });
+    vi.mocked(fetchSettings).mockResolvedValue({ interlocutorStyle: "", learnerProfile: "" });
     const user = userEvent.setup();
     render(<App />);
     await openMenu(user);
@@ -1202,7 +1205,7 @@ describe("conversation style", () => {
   });
 
   it("shows an error instead of failing silently when the save request fails", async () => {
-    vi.mocked(fetchSettings).mockResolvedValue({ interlocutorStyle: "" });
+    vi.mocked(fetchSettings).mockResolvedValue({ interlocutorStyle: "", learnerProfile: "" });
     vi.mocked(saveSettings).mockResolvedValue(false);
     const user = userEvent.setup();
     render(<App />);
@@ -1211,6 +1214,39 @@ describe("conversation style", () => {
     await user.click(screen.getByRole("button", { name: "저장" }));
     expect(await screen.findByText("저장하지 못했습니다. 다시 시도해주세요.")).toBeInTheDocument();
     expect(screen.queryByText("저장됨")).not.toBeInTheDocument();
+  });
+});
+
+describe("learner profile", () => {
+  it("stays collapsed until the toggle button is clicked", async () => {
+    vi.mocked(fetchSettings).mockResolvedValue({
+      interlocutorStyle: "",
+      learnerProfile: "articles를 자주 틀림; 요리에 관심 많음",
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await openMenu(user);
+    expect(screen.queryByText("articles를 자주 틀림; 요리에 관심 많음")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "🧠 학습 프로필 보기" }));
+    expect(await screen.findByText("articles를 자주 틀림; 요리에 관심 많음")).toBeInTheDocument();
+  });
+
+  it("shows an empty state when no session has ended yet", async () => {
+    vi.mocked(fetchSettings).mockResolvedValue({ interlocutorStyle: "", learnerProfile: "" });
+    const user = userEvent.setup();
+    render(<App />);
+    await openMenu(user);
+    await user.click(screen.getByRole("button", { name: "🧠 학습 프로필 보기" }));
+    expect(await screen.findByText(/아직 정리된 내용이 없어요/)).toBeInTheDocument();
+  });
+
+  it("shows the load-failure error when opened after a failed settings fetch", async () => {
+    vi.mocked(fetchSettings).mockResolvedValue(null);
+    const user = userEvent.setup();
+    render(<App />);
+    await openMenu(user);
+    await user.click(screen.getByRole("button", { name: "🧠 학습 프로필 보기" }));
+    expect(await screen.findAllByText(/불러오지 못했습니다/)).toHaveLength(2);
   });
 });
 
