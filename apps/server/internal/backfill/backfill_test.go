@@ -247,6 +247,18 @@ func (f *fakeStore) RestartStudySummary(ctx context.Context, userID, sessionID s
 	return errors.New("not used by these tests")
 }
 
+func (f *fakeStore) CompleteStudyQuiz(ctx context.Context, userID, sessionID string, questions []protocol.QuizQuestion) error {
+	return errors.New("not used by these tests")
+}
+
+func (f *fakeStore) FailStudyQuiz(ctx context.Context, userID, sessionID string) error {
+	return errors.New("not used by these tests")
+}
+
+func (f *fakeStore) MarkQuizCompleted(ctx context.Context, userID, sessionID string) error {
+	return errors.New("not used by these tests")
+}
+
 func (f *fakeStore) GetLearnerProfile(ctx context.Context, userID string) (string, error) {
 	return "", errors.New("not used by these tests")
 }

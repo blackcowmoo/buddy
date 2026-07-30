@@ -169,6 +169,16 @@ func main() {
 			transport.StudySummaryJobHandler(pipe, st)).Run(jobsCtx)
 	}
 
+	// Practice-quiz pre-generation: runs independently of, but is enqueued
+	// alongside, the wrap-up above (see httpserver.sessionEndHandler) — same
+	// "optional feature, zero setup by default" convention.
+	var studyQuizQueue *asyncjob.Queue
+	if rdb != nil {
+		studyQuizQueue = asyncjob.NewQueue(rdb)
+		go asyncjob.NewWorker(rdb, asyncjob.KindStudyQuiz, transport.StudyQuizWorkerConcurrency, transport.StudyQuizClaimTTL,
+			transport.StudyQuizJobHandler(pipe, st)).Run(jobsCtx)
+	}
+
 	// Temporary audio backup: only enabled once an endpoint is configured, so
 	// the server still boots with zero setup by default (see internal/audiostore).
 	// A second, independent feature (the recording archive below) archives
@@ -199,7 +209,7 @@ func main() {
 		defer recordings.Close()
 	}
 
-	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, translateQueue, correctionBackfillQueue, studySummaryQueue)
+	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, translateQueue, correctionBackfillQueue, studySummaryQueue, studyQuizQueue)
 
 	go func() {
 		log.Printf("buddy up on %s  env=%s  stt=%v  feedback=%s",

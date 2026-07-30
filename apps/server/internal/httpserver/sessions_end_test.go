@@ -52,7 +52,7 @@ func TestSessionEndHandlerFreezesImmediately(t *testing.T) {
 		detailMeta:  store.SessionMeta{ID: "s1"},
 		detailTurns: []store.Turn{{Turn: 1, Role: "user", Text: "He go to school.", Correction: &protocol.Correction{Issues: []protocol.Issue{{Type: "grammar"}}}}},
 	}
-	h := sessionEndHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, nil)
+	h := sessionEndHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, nil, nil)
 
 	done := make(chan struct{})
 	go func() {
@@ -90,7 +90,7 @@ func TestSessionEndHandlerNoQueueEventuallyCompletesStudySummary(t *testing.T) {
 		detailTurns:     []store.Turn{{Turn: 1, Role: "user", Text: "He go to school.", Correction: &protocol.Correction{Issues: []protocol.Issue{{Type: "grammar"}}}}},
 		learnerProfiles: map[string]string{"alex": "old profile"},
 	}
-	h := sessionEndHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, nil)
+	h := sessionEndHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, nil, nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postEndRequest(t))
@@ -121,7 +121,7 @@ func TestSessionEndHandlerWithQueueEnqueuesDurableJob(t *testing.T) {
 		detailMeta:  store.SessionMeta{ID: "s1"},
 		detailTurns: []store.Turn{{Turn: 1, Role: "user", Text: "He go to school.", Correction: &protocol.Correction{Issues: []protocol.Issue{{Type: "grammar"}}}}},
 	}
-	h := sessionEndHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, queue)
+	h := sessionEndHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, queue, nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postEndRequest(t))
@@ -132,9 +132,61 @@ func TestSessionEndHandlerWithQueueEnqueuesDurableJob(t *testing.T) {
 	waitForCondition(t, 2*time.Second, func() bool { return st.snapshotCompleteSummaryCalls() == 1 })
 }
 
+// TestSessionEndHandlerNoQueueEventuallyCompletesStudyQuiz mirrors
+// TestSessionEndHandlerNoQueueEventuallyCompletesStudySummary for the quiz
+// pre-generation job (studyQuizQueue == nil): it still gets generated and
+// persisted on its own detached goroutine, running independently of (not
+// chained after) the study-summary one — see RunStudyQuizInline.
+func TestSessionEndHandlerNoQueueEventuallyCompletesStudyQuiz(t *testing.T) {
+	pipe := &pipeline.Pipeline{
+		Analysis: []pipeline.Candidate{{Model: "m", LLM: &fakeStudySummaryLLM{complete: func(msgs []llm.Message) (string, error) {
+			return `{"sentences":[{"english":"unused","translation":"unused"}],"questions":[{"prompt":"He ___ to school.","answer":"goes","translation":"unused","explanation":"unused","explanationTranslation":"unused"}]}`, nil
+		}}}},
+	}
+	st := &fakeSessionStore{
+		detailMeta:  store.SessionMeta{ID: "s1"},
+		detailTurns: []store.Turn{{Turn: 1, Role: "user", Text: "He go to school.", Correction: &protocol.Correction{Issues: []protocol.Issue{{Type: "grammar"}}}}},
+	}
+	h := sessionEndHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, nil, nil)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, postEndRequest(t))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+
+	waitForCondition(t, 2*time.Second, func() bool { return st.snapshotCompleteQuizCalls() == 1 })
+}
+
+// TestSessionEndHandlerWithQueueEnqueuesQuizDurableJob mirrors
+// TestSessionEndHandlerWithQueueEnqueuesDurableJob for
+// asyncjob.KindStudyQuiz.
+func TestSessionEndHandlerWithQueueEnqueuesQuizDurableJob(t *testing.T) {
+	rdb := requireRedis(t)
+	queue := asyncjob.NewQueue(rdb)
+	pipe := &pipeline.Pipeline{
+		Analysis: []pipeline.Candidate{{Model: "m", LLM: &fakeStudySummaryLLM{complete: func(msgs []llm.Message) (string, error) {
+			return `{"sentences":[{"english":"unused","translation":"unused"}],"questions":[{"prompt":"He ___ to school.","answer":"goes","translation":"unused","explanation":"unused","explanationTranslation":"unused"}]}`, nil
+		}}}},
+	}
+	st := &fakeSessionStore{
+		detailMeta:  store.SessionMeta{ID: "s1"},
+		detailTurns: []store.Turn{{Turn: 1, Role: "user", Text: "He go to school.", Correction: &protocol.Correction{Issues: []protocol.Issue{{Type: "grammar"}}}}},
+	}
+	h := sessionEndHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, nil, queue)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, postEndRequest(t))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+
+	waitForCondition(t, 2*time.Second, func() bool { return st.snapshotCompleteQuizCalls() == 1 })
+}
+
 func TestSessionEndHandlerNotFoundPropagatesStoreErrNotFound(t *testing.T) {
 	st := &fakeSessionStore{endErr: store.ErrNotFound}
-	h := sessionEndHandler(fakeIdentifier{id: "alex", ok: true}, st, &pipeline.Pipeline{}, nil)
+	h := sessionEndHandler(fakeIdentifier{id: "alex", ok: true}, st, &pipeline.Pipeline{}, nil, nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postEndRequest(t))
@@ -145,7 +197,7 @@ func TestSessionEndHandlerNotFoundPropagatesStoreErrNotFound(t *testing.T) {
 }
 
 func TestSessionEndHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
-	h := sessionEndHandler(fakeIdentifier{ok: false}, &fakeSessionStore{}, &pipeline.Pipeline{}, nil)
+	h := sessionEndHandler(fakeIdentifier{ok: false}, &fakeSessionStore{}, &pipeline.Pipeline{}, nil, nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postEndRequest(t))

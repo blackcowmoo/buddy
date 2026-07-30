@@ -230,6 +230,26 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 	if err := addColumn(sessionsTable, "study_summary_status VARCHAR(16) NOT NULL DEFAULT ''", "study_summary_status"); err != nil {
 		return nil, err
 	}
+	// Predates asyncjob.KindStudyQuiz: pre-generates the practice quiz
+	// alongside the wrap-up, right when EndSession freezes the room, instead
+	// of on demand when the learner opens it — so tapping "퀴즈 풀기" shows an
+	// already-finished quiz instantly. Same no-DEFAULT reasoning as
+	// study_summary above.
+	if err := addColumn(sessionsTable, "quiz TEXT NOT NULL", "quiz"); err != nil {
+		return nil, err
+	}
+	// Tracks asyncjob.KindStudyQuiz's own progress independently of
+	// study_summary_status — the two jobs run in parallel from the same
+	// EndSession call, not one after the other, so they need separate status
+	// columns. Same DEFAULT reasoning as study_summary_status above.
+	if err := addColumn(sessionsTable, "quiz_status VARCHAR(16) NOT NULL DEFAULT ''", "quiz_status"); err != nil {
+		return nil, err
+	}
+	// A one-way "studied this" checkmark for the room list — see
+	// SessionMeta.QuizCompleted's doc comment.
+	if err := addColumn(sessionsTable, "quiz_completed TINYINT(1) NOT NULL DEFAULT 0", "quiz_completed"); err != nil {
+		return nil, err
+	}
 	// One-time reset for rows written before GenerateStudySummary switched to
 	// the bilingual (English + native-translation, sentence-by-sentence) JSON
 	// shape decodeStudySummary now expects: a pre-existing "done" summary is
@@ -372,8 +392,8 @@ type execer interface {
 // writes (see its doc comment) — title_generated now only feeds this check.
 func ensureSessionRow(ctx context.Context, exec execer, userID, sessionID, text string) error {
 	_, err := exec.ExecContext(ctx, `
-		INSERT INTO `+sessionsTable+` (user_id, id, title, summary, recent, created_at, updated_at, study_summary)
-		VALUES (?, ?, ?, '', '[]', UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), '')
+		INSERT INTO `+sessionsTable+` (user_id, id, title, summary, recent, created_at, updated_at, study_summary, quiz)
+		VALUES (?, ?, ?, '', '[]', UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), '', '')
 		ON DUPLICATE KEY UPDATE
 			title = IF(title_generated = 0, VALUES(title), title),
 			updated_at = VALUES(updated_at)
@@ -515,8 +535,8 @@ func (s *MySQLStore) SaveTranslation(ctx context.Context, userID, sessionID stri
 // knows to leave this title alone.
 func (s *MySQLStore) SaveGeneratedTitle(ctx context.Context, userID, sessionID, title string) error {
 	if _, err := s.rw.ExecContext(ctx, `
-		INSERT INTO `+sessionsTable+` (user_id, id, title, summary, recent, created_at, updated_at, title_generated, study_summary)
-		VALUES (?, ?, ?, '', '[]', UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), 1, '')
+		INSERT INTO `+sessionsTable+` (user_id, id, title, summary, recent, created_at, updated_at, title_generated, study_summary, quiz)
+		VALUES (?, ?, ?, '', '[]', UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), 1, '', '')
 		ON DUPLICATE KEY UPDATE
 			title = VALUES(title),
 			title_generated = 1,
@@ -531,15 +551,18 @@ func (s *MySQLStore) SaveGeneratedTitle(ctx context.Context, userID, sessionID, 
 // confirm "end this conversation", the session row already exists (it
 // carries at least one saved turn — see SaveTurn), so unlike
 // SaveGeneratedTitle there's no race with a row-creating write to guard
-// against. study_summary itself is untouched here — it's still whatever it
-// was (normally empty) until CompleteStudySummary fills it in — only
-// study_summary_status flips to JobStatusPending, immediately, so freezing
-// the room never waits on the wrap-up LLM call.
+// against. study_summary/quiz themselves are untouched here — they're still
+// whatever they were (normally empty) until CompleteStudySummary/
+// CompleteStudyQuiz fill them in — only study_summary_status and
+// quiz_status flip to JobStatusPending, immediately, so freezing the room
+// never waits on either background job's LLM call. Both jobs are enqueued
+// right after this by httpserver.sessionEndHandler, in parallel — see
+// asyncjob.KindStudySummary/asyncjob.KindStudyQuiz.
 func (s *MySQLStore) EndSession(ctx context.Context, userID, sessionID string) error {
 	if _, err := s.rw.ExecContext(ctx, `
-		UPDATE `+sessionsTable+` SET ended = 1, study_summary_status = ?, updated_at = UNIX_TIMESTAMP()
+		UPDATE `+sessionsTable+` SET ended = 1, study_summary_status = ?, quiz_status = ?, updated_at = UNIX_TIMESTAMP()
 		WHERE user_id = ? AND id = ?
-	`, JobStatusPending, userID, sessionID); err != nil {
+	`, JobStatusPending, JobStatusPending, userID, sessionID); err != nil {
 		return fmt.Errorf("store: end session: %w", err)
 	}
 	return nil
@@ -615,9 +638,72 @@ func (s *MySQLStore) RestartStudySummary(ctx context.Context, userID, sessionID 
 	return nil
 }
 
+// CompleteStudyQuiz persists an asyncjob.KindStudyQuiz job's finished quiz
+// and marks it done — mirrors CompleteStudySummary; an empty quiz (no issues
+// flagged) still stores as '', not "[]", so it round-trips through
+// decodeQuiz the same way a never-completed one does.
+func (s *MySQLStore) CompleteStudyQuiz(ctx context.Context, userID, sessionID string, questions []protocol.QuizQuestion) error {
+	var encoded string
+	if len(questions) > 0 {
+		b, err := json.Marshal(questions)
+		if err != nil {
+			return fmt.Errorf("store: encode quiz: %w", err)
+		}
+		encoded = string(b)
+	}
+	if _, err := s.rw.ExecContext(ctx, `
+		UPDATE `+sessionsTable+` SET quiz = ?, quiz_status = ?
+		WHERE user_id = ? AND id = ?
+	`, encoded, JobStatusDone, userID, sessionID); err != nil {
+		return fmt.Errorf("store: complete study quiz: %w", err)
+	}
+	return nil
+}
+
+// decodeQuiz parses the quiz column's JSON-encoded []protocol.QuizQuestion —
+// mirrors decodeStudySummary. "" (never completed, or no issues were
+// flagged) decodes to nil.
+func decodeQuiz(raw string) []protocol.QuizQuestion {
+	if raw == "" {
+		return nil
+	}
+	var questions []protocol.QuizQuestion
+	if err := json.Unmarshal([]byte(raw), &questions); err != nil {
+		return nil
+	}
+	return questions
+}
+
+// FailStudyQuiz records that an asyncjob.KindStudyQuiz job's LLM call
+// errored — mirrors FailStudySummary.
+func (s *MySQLStore) FailStudyQuiz(ctx context.Context, userID, sessionID string) error {
+	if _, err := s.rw.ExecContext(ctx, `
+		UPDATE `+sessionsTable+` SET quiz_status = ?
+		WHERE user_id = ? AND id = ?
+	`, JobStatusFailed, userID, sessionID); err != nil {
+		return fmt.Errorf("store: fail study quiz: %w", err)
+	}
+	return nil
+}
+
+// MarkQuizCompleted sets quiz_completed — see SessionMeta.QuizCompleted's
+// doc comment. A plain UPDATE, not conditional on quiz_status/quiz content:
+// callers (sessionQuizCompleteHandler) are what decide when this is the
+// right call to make (either every question answered correctly, or the "내가
+// 읽었음" acknowledgment for a quiz with nothing to answer).
+func (s *MySQLStore) MarkQuizCompleted(ctx context.Context, userID, sessionID string) error {
+	if _, err := s.rw.ExecContext(ctx, `
+		UPDATE `+sessionsTable+` SET quiz_completed = 1
+		WHERE user_id = ? AND id = ?
+	`, userID, sessionID); err != nil {
+		return fmt.Errorf("store: mark quiz completed: %w", err)
+	}
+	return nil
+}
+
 func (s *MySQLStore) ListSessions(ctx context.Context, userID string) ([]SessionMeta, error) {
 	rows, err := s.ro.QueryContext(ctx, `
-		SELECT id, title, created_at, updated_at, ended, study_summary, study_summary_status FROM `+sessionsTable+`
+		SELECT id, title, created_at, updated_at, ended, study_summary, study_summary_status, quiz_status, quiz_completed FROM `+sessionsTable+`
 		WHERE user_id = ? ORDER BY updated_at DESC
 	`, userID)
 	if err != nil {
@@ -628,13 +714,14 @@ func (s *MySQLStore) ListSessions(ctx context.Context, userID string) ([]Session
 	out := []SessionMeta{}
 	for rows.Next() {
 		var m SessionMeta
-		var ended int
+		var ended, quizCompleted int
 		var studySummaryJSON string
-		if err := rows.Scan(&m.ID, &m.Title, &m.CreatedAt, &m.UpdatedAt, &ended, &studySummaryJSON, &m.StudySummaryStatus); err != nil {
+		if err := rows.Scan(&m.ID, &m.Title, &m.CreatedAt, &m.UpdatedAt, &ended, &studySummaryJSON, &m.StudySummaryStatus, &m.QuizStatus, &quizCompleted); err != nil {
 			return nil, fmt.Errorf("store: list sessions: %w", err)
 		}
 		m.Ended = ended != 0
 		m.StudySummary = decodeStudySummary(studySummaryJSON)
+		m.QuizCompleted = quizCompleted != 0
 		out = append(out, m)
 	}
 	return out, rows.Err()
@@ -673,16 +760,16 @@ func (s *MySQLStore) sessionDetail(ctx context.Context, userID, sessionID string
 	var metaErr, turnsErr error
 	var turns []Turn
 	var hasMore bool
-	var ended int
-	var studySummaryJSON string
+	var ended, quizCompleted int
+	var studySummaryJSON, quizJSON string
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		metaErr = s.ro.QueryRowContext(ctx, `
-			SELECT title, created_at, updated_at, ended, study_summary, study_summary_status FROM `+sessionsTable+` WHERE user_id = ? AND id = ?
-		`, userID, sessionID).Scan(&meta.Title, &meta.CreatedAt, &meta.UpdatedAt, &ended, &studySummaryJSON, &meta.StudySummaryStatus)
+			SELECT title, created_at, updated_at, ended, study_summary, study_summary_status, quiz, quiz_status, quiz_completed FROM `+sessionsTable+` WHERE user_id = ? AND id = ?
+		`, userID, sessionID).Scan(&meta.Title, &meta.CreatedAt, &meta.UpdatedAt, &ended, &studySummaryJSON, &meta.StudySummaryStatus, &quizJSON, &meta.QuizStatus, &quizCompleted)
 	}()
 	go func() {
 		defer wg.Done()
@@ -701,6 +788,8 @@ func (s *MySQLStore) sessionDetail(ctx context.Context, userID, sessionID string
 	}
 	meta.Ended = ended != 0
 	meta.StudySummary = decodeStudySummary(studySummaryJSON)
+	meta.Quiz = decodeQuiz(quizJSON)
+	meta.QuizCompleted = quizCompleted != 0
 	return meta, turns, hasMore, nil
 }
 

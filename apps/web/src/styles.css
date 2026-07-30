@@ -310,7 +310,9 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 /* Fill-in-the-blank practice quiz, opened via "퀴즈 풀기" in place of the
    study summary — see App.tsx QuizPanel. Reuses .study-summary-en/-ko for
    the explanation pairing (identical look). */
-.quiz-start-btn { width: 100%; margin-top: 4px; }
+.quiz-start-btn, .quiz-ack-btn { width: 100%; margin-top: 4px; }
+.quiz-preparing, .quiz-acknowledged { font-size: 13px; color: var(--muted); padding: 2px 4px; }
+.quiz-acknowledged { color: var(--ok); }
 .quiz-panel { display: flex; flex-direction: column; gap: 8px; }
 .quiz-back-btn { align-self: flex-start; padding: 2px 4px; font-size: 12px; }
 .quiz-question { display: flex; flex-direction: column; gap: 8px; }
@@ -480,6 +482,11 @@ a.icon-btn.ghost {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+.session-item .quiz-completed-badge {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--ok);
 }
 .session-delete { width: 36px; height: 36px; min-height: 36px; font-size: 14px; flex-shrink: 0; }
 
