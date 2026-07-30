@@ -80,6 +80,23 @@ type fakeSessionStore struct {
 	restartSummaryCalls []struct{ userID, sessionID string }
 	restartSummaryErr   error
 
+	// completeQuizCalls/failQuizCalls back CompleteStudyQuiz/FailStudyQuiz
+	// for the quiz pre-generation job's tests; left zero for tests in this
+	// file, which don't call either.
+	completeQuizCalls []struct {
+		userID, sessionID string
+		questions         []protocol.QuizQuestion
+	}
+	completeQuizErr error
+	failQuizCalls   []struct{ userID, sessionID string }
+	failQuizErr     error
+
+	// markQuizCompletedCalls/markQuizCompletedErr back MarkQuizCompleted for
+	// sessions_quiz_complete_test.go; left zero for tests in this file, which
+	// don't call it.
+	markQuizCompletedCalls []struct{ userID, sessionID string }
+	markQuizCompletedErr   error
+
 	// learnerProfiles/learnerProfileErr back GetLearnerProfile/
 	// SaveLearnerProfile for sessions_end_test.go.
 	learnerProfiles   map[string]string // userID -> profile
@@ -240,6 +257,39 @@ func (f *fakeSessionStore) RestartStudySummary(ctx context.Context, userID, sess
 	return nil
 }
 
+func (f *fakeSessionStore) CompleteStudyQuiz(ctx context.Context, userID, sessionID string, questions []protocol.QuizQuestion) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.completeQuizErr != nil {
+		return f.completeQuizErr
+	}
+	f.completeQuizCalls = append(f.completeQuizCalls, struct {
+		userID, sessionID string
+		questions         []protocol.QuizQuestion
+	}{userID, sessionID, questions})
+	return nil
+}
+
+func (f *fakeSessionStore) FailStudyQuiz(ctx context.Context, userID, sessionID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failQuizErr != nil {
+		return f.failQuizErr
+	}
+	f.failQuizCalls = append(f.failQuizCalls, struct{ userID, sessionID string }{userID, sessionID})
+	return nil
+}
+
+func (f *fakeSessionStore) MarkQuizCompleted(ctx context.Context, userID, sessionID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.markQuizCompletedErr != nil {
+		return f.markQuizCompletedErr
+	}
+	f.markQuizCompletedCalls = append(f.markQuizCompletedCalls, struct{ userID, sessionID string }{userID, sessionID})
+	return nil
+}
+
 func (f *fakeSessionStore) GetLearnerProfile(ctx context.Context, userID string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -290,6 +340,24 @@ func (f *fakeSessionStore) snapshotRestartSummaryCalls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.restartSummaryCalls)
+}
+
+func (f *fakeSessionStore) snapshotCompleteQuizCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.completeQuizCalls)
+}
+
+func (f *fakeSessionStore) snapshotFailQuizCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.failQuizCalls)
+}
+
+func (f *fakeSessionStore) snapshotMarkQuizCompletedCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.markQuizCompletedCalls)
 }
 
 func (f *fakeSessionStore) snapshotLearnerProfile(userID string) string {

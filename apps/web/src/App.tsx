@@ -19,8 +19,8 @@ import {
   endSession,
   fetchSessionCompaction,
   fetchSessionDetail,
-  fetchSessionQuiz,
   fetchSessions,
+  markQuizCompleted,
   restudySession,
   type SessionSummary,
   type TurnRecord,
@@ -257,6 +257,20 @@ export function App() {
   // background job finishes, even if that's well after this room was
   // opened.
   const [endedSummaryStatus, setEndedSummaryStatus] = useState<"pending" | "done" | "failed">("done");
+  // Mirrors endedSummary/endedSummaryStatus, but for the pre-generated
+  // practice quiz (see store.SessionMeta.Quiz/QuizStatus) — generated
+  // alongside the wrap-up, from the same flagged issues, right when the
+  // conversation ends, so EndConversationControl's "퀴즈 풀기" button reads
+  // this instead of triggering an LLM call itself. Sampled fresh in
+  // enterChat, then kept current by pollQuizStatus while "pending"/"failed".
+  const [endedQuiz, setEndedQuiz] = useState<QuizQuestion[]>([]);
+  const [endedQuizStatus, setEndedQuizStatus] = useState<"pending" | "done" | "failed">("done");
+  // Mirrors store.SessionMeta.QuizCompleted for the open room — a one-way
+  // "studied this" checkmark (see markQuizCompleted), sampled fresh in
+  // enterChat. Never polled for like the two above: it only ever changes
+  // because this client itself called markQuizCompleted, so there's nothing
+  // else to wait on landing in the background.
+  const [endedQuizCompleted, setEndedQuizCompleted] = useState(false);
   // Grammar/translation state per turn — pending flags are set the moment a
   // result is expected (final_transcript/assistant_done for a live turn, or
   // on hydration for a history turn still missing one, see enterChat/
@@ -715,6 +729,27 @@ export function App() {
     schedulePoll(tick, intervalMs);
   }, [schedulePoll]);
 
+  // Mirrors pollStudySummary exactly, but for the quiz pre-generation job
+  // (see asyncjob.KindStudyQuiz) — a separate poller, not folded into the
+  // one above, since the two background jobs run independently and can land
+  // at different times.
+  const pollQuizStatus = useCallback((sessionId: string, token: object) => {
+    const maxAttempts = 30;
+    const intervalMs = 4000;
+    let attempt = 0;
+    const tick = async () => {
+      if (pollTokenRef.current !== token) return; // left this room, or opened another
+      attempt++;
+      const detail = await fetchSessionDetail(sessionId, { limit: 0 });
+      if (pollTokenRef.current !== token || !detail) return;
+      const status = detail.session.quizStatus || "done";
+      setEndedQuiz(detail.session.quiz ?? []);
+      setEndedQuizStatus(status);
+      if (status !== "done" && attempt < maxAttempts) schedulePoll(tick, intervalMs);
+    };
+    schedulePoll(tick, intervalMs);
+  }, [schedulePoll]);
+
   // Opens a room and enters chat view. sessionId omitted starts a brand-new
   // room (server mints the ID, delivered on the "ready" event); given an
   // existing ID, this hydrates the visible transcript from its persisted
@@ -727,6 +762,9 @@ export function App() {
       endedRef.current = false;
       setEndedSummary([]);
       setEndedSummaryStatus("done");
+      setEndedQuiz([]);
+      setEndedQuizStatus("done");
+      setEndedQuizCompleted(false);
       setAwaitingReply(false);
       // A fresh room entry always starts stuck to the bottom (the most
       // recent turns, loaded below) with no older page pending — cleared
@@ -774,11 +812,18 @@ export function App() {
           setEndedSummary(detail.session.studySummary ?? []);
           const summaryStatus = detail.session.studySummaryStatus || "done";
           setEndedSummaryStatus(summaryStatus);
+          setEndedQuiz(detail.session.quiz ?? []);
+          const quizStatus = detail.session.quizStatus || "done";
+          setEndedQuizStatus(quizStatus);
+          setEndedQuizCompleted(detail.session.quizCompleted ?? false);
           clientRef.current?.close();
           // The wrap-up is still generating (or the last attempt failed —
           // see pollStudySummary's doc comment) — keep checking until it
           // lands, since nothing pushes it to an already-open client.
           if (summaryStatus !== "done") pollStudySummary(sessionId, token);
+          // Same reasoning, for the quiz pre-generation job running
+          // independently alongside it — see pollQuizStatus.
+          if (quizStatus !== "done") pollQuizStatus(sessionId, token);
         }
         // Whether this room saw activity recently enough that a user turn
         // with no correctionStatus at all is plausibly still in flight
@@ -819,7 +864,7 @@ export function App() {
       setMenuOpen(false);
       setView("chat");
     },
-    [resetTurnState, pollMissingFeedback, pollStudySummary],
+    [resetTurnState, pollMissingFeedback, pollStudySummary, pollQuizStatus],
   );
 
   // Fetches the page of turns older than whatever's currently loaded —
@@ -869,6 +914,9 @@ export function App() {
     endedRef.current = false;
     setEndedSummary([]);
     setEndedSummaryStatus("done");
+    setEndedQuiz([]);
+    setEndedQuizStatus("done");
+    setEndedQuizCompleted(false);
     setAwaitingReply(false);
     setMenuOpen(false);
     setView("list");
@@ -955,6 +1003,16 @@ export function App() {
     }
     if (token) pollStudySummary(activeSessionId, token);
   }, [activeSessionId, pollStudySummary]);
+
+  // Reflects a just-completed quiz (see markQuizCompleted, called from
+  // QuizPanel/EndConversationControl) in this room's own state immediately —
+  // the room list itself picks up the persisted flag separately, the next
+  // time it refreshes (see resetToListView), so this is just so the panel
+  // doesn't show a stale "퀴즈 풀기"/"내가 읽었음" button for the rest of this
+  // visit.
+  const handleQuizCompleted = useCallback(() => {
+    setEndedQuizCompleted(true);
+  }, []);
 
   // Restores an open room from the URL on a fresh load (e.g. a refresh), and
   // keeps the view in sync with browser back/forward (incl. swipe) — neither
@@ -1219,6 +1277,11 @@ export function App() {
                         <span className="spinning">⏳</span> 정리 중
                       </span>
                     )}
+                    {s.ended && s.quizCompleted && (
+                      <span className="quiz-completed-badge" title="퀴즈까지 모두 완료했어요">
+                        ✅ 학습 완료
+                      </span>
+                    )}
                     <span className="title">{s.title}</span>
                     <span className="time">{formatRelativeTime(s.updatedAt)}</span>
                   </button>
@@ -1261,8 +1324,12 @@ export function App() {
               ended={ended}
               studySummary={endedSummary}
               studySummaryStatus={endedSummaryStatus}
+              quiz={endedQuiz}
+              quizStatus={endedQuizStatus}
+              quizCompleted={endedQuizCompleted}
               onEnd={endConversation}
               onRestudy={restudyConversation}
+              onQuizCompleted={handleQuizCompleted}
             />
           </>
         }
@@ -1938,29 +2005,41 @@ function EndConversationControl({
   ended,
   studySummary,
   studySummaryStatus,
+  quiz,
+  quizStatus,
+  quizCompleted,
   onEnd,
   onRestudy,
+  onQuizCompleted,
 }: {
   sessionId: string | null;
   ended: boolean;
   studySummary: StudySummarySentence[];
   studySummaryStatus: "pending" | "done" | "failed";
+  quiz: QuizQuestion[];
+  quizStatus: "pending" | "done" | "failed";
+  quizCompleted: boolean;
   onEnd: () => void;
   onRestudy: () => void;
+  onQuizCompleted: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  // Quiz state lives here (not inside QuizPanel) only so it can be reset
+  // quizMode lives here (not inside QuizPanel) only so it can be reset
   // whenever the popover itself closes — reopening always lands back on the
-  // summary, never mid-quiz from a previous visit.
+  // summary, never mid-quiz from a previous visit. The questions themselves
+  // are a prop now (pre-generated alongside the wrap-up — see App's
+  // endedQuiz/pollQuizStatus), not fetched on demand here anymore.
   const [quizMode, setQuizMode] = useState(false);
-  const [quiz, setQuiz] = useState<QuizQuestion[] | null>(null);
-  const [quizLoading, setQuizLoading] = useState(false);
+  // Local-only echo of "내가 읽었음" being tapped this visit, so the button
+  // swaps to a confirmation instantly rather than waiting on quizCompleted
+  // to round-trip back through App's own state.
+  const [acknowledged, setAcknowledged] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
 
   const close = useCallback(() => {
     setOpen(false);
     setQuizMode(false);
-    setQuiz(null);
+    setAcknowledged(false);
   }, []);
   useDismiss(open, panelRef, close);
 
@@ -1973,19 +2052,23 @@ function EndConversationControl({
     }
   }, [sessionId, open, close]);
 
-  const startQuiz = useCallback(async () => {
-    if (!sessionId) return;
+  const startQuiz = useCallback(() => {
     setQuizMode(true);
-    setQuizLoading(true);
-    const questions = await fetchSessionQuiz(sessionId);
-    setQuiz(questions ?? []);
-    setQuizLoading(false);
-  }, [sessionId]);
+  }, []);
 
   const backToSummary = useCallback(() => {
     setQuizMode(false);
-    setQuiz(null);
   }, []);
+
+  // Acknowledges a quiz with nothing to ask about (see quiz.length === 0
+  // below) — the same "studied this" checkmark a fully-correct quiz sets
+  // (see QuizPanel), just without any questions to answer first.
+  const acknowledgeNoQuiz = useCallback(async () => {
+    if (!sessionId) return;
+    setAcknowledged(true);
+    const ok = await markQuizCompleted(sessionId);
+    if (ok) onQuizCompleted();
+  }, [sessionId, onQuizCompleted]);
 
   if (!sessionId) return null;
 
@@ -2041,10 +2124,26 @@ function EndConversationControl({
                   ))}
                 </div>
               )}
-              {studySummary.length > 0 && (
+              {studySummary.length > 0 && quiz.length > 0 && (
                 <button type="button" className="quiz-start-btn" onClick={startQuiz}>
                   퀴즈 풀기
                 </button>
+              )}
+              {studySummary.length > 0 && quiz.length === 0 && quizStatus === "done" && (
+                quizCompleted || acknowledged ? (
+                  <div className="quiz-acknowledged" role="status">
+                    학습 완료로 표시했어요.
+                  </div>
+                ) : (
+                  <button type="button" className="quiz-ack-btn" onClick={() => void acknowledgeNoQuiz()}>
+                    내가 읽었음
+                  </button>
+                )
+              )}
+              {studySummary.length > 0 && quiz.length === 0 && quizStatus !== "done" && (
+                <div className="quiz-preparing" role="status">
+                  퀴즈를 준비하는 중…
+                </div>
               )}
               {studySummary.length === 0 && (
                 <button type="button" className="restudy-btn" onClick={onRestudy}>
@@ -2054,7 +2153,7 @@ function EndConversationControl({
             </>
           )}
           {ended && studySummaryStatus === "done" && quizMode && (
-            <QuizPanel loading={quizLoading} questions={quiz} onBack={backToSummary} />
+            <QuizPanel sessionId={sessionId} questions={quiz} onBack={backToSummary} onCompleted={onQuizCompleted} />
           )}
         </div>
       )}
@@ -2074,35 +2173,49 @@ function normalizeQuizAnswer(s: string): string {
 }
 
 // The fill-in-the-blank practice quiz shown in place of the study summary
-// once a learner taps "퀴즈 풀기" (see EndConversationControl, which owns
-// questions/loading state so it can reset them the instant the popover
-// closes). One question at a time; typing an answer and confirming reveals
-// whether it matched (see normalizeQuizAnswer) plus the explanation/
-// translation, then advances — ending on a plain right/total score.
+// once a learner taps "퀴즈 풀기" (see EndConversationControl, which only
+// shows that button once questions is non-empty — pre-generated alongside
+// the wrap-up, so there's nothing left to fetch or wait on here). One
+// question at a time; typing an answer and confirming reveals whether it
+// matched (see normalizeQuizAnswer) plus the explanation/translation, then
+// advances — ending on a plain right/total score. Answering every question
+// correctly calls onCompleted (see markQuizCompleted) so the room list can
+// show the same "all correct" checkmark a session with nothing left to quiz
+// gets via "내가 읽었음" — a single wrong answer anywhere must never trigger
+// it.
 function QuizPanel({
-  loading,
+  sessionId,
   questions,
   onBack,
+  onCompleted,
 }: {
-  loading: boolean;
-  questions: QuizQuestion[] | null;
+  sessionId: string;
+  questions: QuizQuestion[];
   onBack: () => void;
+  onCompleted: () => void;
 }) {
   const [index, setIndex] = useState(0);
   const [answer, setAnswer] = useState("");
   const [checked, setChecked] = useState(false);
   const [correctCount, setCorrectCount] = useState(0);
 
-  const question = questions?.[index];
+  const question = questions[index];
   const isCorrect = checked && question ? normalizeQuizAnswer(answer) === normalizeQuizAnswer(question.answer) : false;
 
   const check = useCallback(() => {
     if (!question || checked || !answer.trim()) return;
     setChecked(true);
-    if (normalizeQuizAnswer(answer) === normalizeQuizAnswer(question.answer)) {
-      setCorrectCount((c) => c + 1);
-    }
-  }, [answer, checked, question]);
+    const correct = normalizeQuizAnswer(answer) === normalizeQuizAnswer(question.answer);
+    setCorrectCount((c) => {
+      const next = c + (correct ? 1 : 0);
+      if (index + 1 === questions.length && next === questions.length) {
+        void markQuizCompleted(sessionId).then((ok) => {
+          if (ok) onCompleted();
+        });
+      }
+      return next;
+    });
+  }, [answer, checked, question, index, questions, sessionId, onCompleted]);
 
   const next = useCallback(() => {
     setIndex((i) => i + 1);
@@ -2110,69 +2223,59 @@ function QuizPanel({
     setChecked(false);
   }, []);
 
+  if (!question) return null;
+
   return (
     <div className="quiz-panel">
       <button type="button" className="ghost quiz-back-btn" onClick={onBack}>
         ← 요약으로
       </button>
-      {loading && (
-        <div className="compaction-loading" role="status">
-          퀴즈를 만드는 중…
+      <div className="quiz-question">
+        <div className="quiz-progress">
+          {index + 1} / {questions.length}
         </div>
-      )}
-      {!loading && questions && questions.length === 0 && (
-        <div className="compaction-empty" role="status">
-          퀴즈를 만들 만한 내용이 없어요.
-        </div>
-      )}
-      {!loading && question && (
-        <div className="quiz-question">
-          <div className="quiz-progress">
-            {index + 1} / {questions!.length}
-          </div>
-          <div className="quiz-prompt">{question.prompt}</div>
-          <input
-            type="text"
-            className="quiz-answer-input"
-            value={answer}
-            onChange={(e) => setAnswer(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key !== "Enter") return;
-              if (checked) next();
-              else check();
-            }}
-            disabled={checked}
-            placeholder="빈칸에 들어갈 단어를 입력하세요"
-            aria-label="정답 입력"
-          />
-          {!checked && (
-            <button type="button" className="quiz-check-btn" onClick={check} disabled={!answer.trim()}>
-              확인
-            </button>
-          )}
-          {checked && (
-            <>
-              <div className={`quiz-result ${isCorrect ? "correct" : "incorrect"}`} role="status">
-                {isCorrect ? "정답이에요!" : `아쉬워요. 정답: ${question.answer}`}
+        <div className="quiz-prompt">{question.prompt}</div>
+        <input
+          type="text"
+          className="quiz-answer-input"
+          value={answer}
+          onChange={(e) => setAnswer(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter") return;
+            if (checked) next();
+            else check();
+          }}
+          disabled={checked}
+          placeholder="빈칸에 들어갈 단어를 입력하세요"
+          aria-label="정답 입력"
+        />
+        {!checked && (
+          <button type="button" className="quiz-check-btn" onClick={check} disabled={!answer.trim()}>
+            확인
+          </button>
+        )}
+        {checked && (
+          <>
+            <div className={`quiz-result ${isCorrect ? "correct" : "incorrect"}`} role="status">
+              {isCorrect ? "정답이에요!" : `아쉬워요. 정답: ${question.answer}`}
+            </div>
+            <p className="study-summary-sentence">
+              <span className="study-summary-en">{question.explanation}</span>
+              <span className="study-summary-ko">{question.explanationTranslation}</span>
+            </p>
+            <div className="study-summary-ko quiz-translation">{question.translation}</div>
+            {index + 1 < questions.length ? (
+              <button type="button" className="quiz-next-btn" onClick={next}>
+                다음 문제
+              </button>
+            ) : (
+              <div className="quiz-score" role="status">
+                {questions.length}문제 중 {correctCount}개 맞혔어요!
               </div>
-              <p className="study-summary-sentence">
-                <span className="study-summary-en">{question.explanation}</span>
-                <span className="study-summary-ko">{question.explanationTranslation}</span>
-              </p>
-              <div className="study-summary-ko quiz-translation">{question.translation}</div>
-              {index + 1 < questions!.length ? (
-                <button type="button" className="quiz-next-btn" onClick={next}>
-                  다음 문제
-                </button>
-              ) : (
-                <div className="quiz-score" role="status">
-                  {questions!.length}문제 중 {correctCount}개 맞혔어요!
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      )}
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }

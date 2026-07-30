@@ -67,6 +67,16 @@ const (
 	// persisted state a reopened room (or the room list) polls to show
 	// whether it's still in progress.
 	KindStudySummary Kind = "study-summary"
+	// KindStudyQuiz is the session-level practice-quiz pre-generation job
+	// (payload: {UserID, SessionID} — see transport.EnqueueStudyQuizJob),
+	// enqueued alongside KindStudySummary right when EndSession freezes the
+	// room, so opening the quiz later (see httpserver.sessionQuizHandler)
+	// reads an already-finished result instead of paying for the LLM call in
+	// that request. Draws from the exact same flagged issues KindStudySummary
+	// does, but runs as its own independent job/status column (store.
+	// SessionMeta.QuizStatus) rather than chained after the summary, so a
+	// slow or failed summary never delays or blocks the quiz.
+	KindStudyQuiz Kind = "study-quiz"
 )
 
 // Job is the durable Redis envelope for one unit of background work.

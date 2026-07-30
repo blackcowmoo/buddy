@@ -22,7 +22,6 @@ import (
 	"buddy/server/internal/config"
 	"buddy/server/internal/identity"
 	"buddy/server/internal/pipeline"
-	"buddy/server/internal/protocol"
 	"buddy/server/internal/recording"
 	"buddy/server/internal/store"
 	"buddy/server/internal/transport"
@@ -42,11 +41,12 @@ import (
 // convention as audio/recordings above. Durable title generation is wired
 // the same optional way, but directly onto pipe.TitleHook by the caller
 // (see cmd/server/main.go) rather than through a parameter here — same as
-// pipe.ReplyHook/CorrectHook/TranslateHook. studySummaryQueue is nil the same
-// optional way — sessionEndHandler falls back to running the wrap-up inline,
-// on a detached goroutine, instead of durably queuing it (see
-// transport.EnqueueStudySummaryJob).
-func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue, studySummaryQueue *asyncjob.Queue) *http.Server {
+// pipe.ReplyHook/CorrectHook/TranslateHook. studySummaryQueue/studyQuizQueue
+// are nil the same optional way — sessionEndHandler falls back to running
+// the wrap-up/quiz inline, each on its own detached goroutine, instead of
+// durably queuing them (see transport.EnqueueStudySummaryJob/
+// EnqueueStudyQuizJob).
+func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue, studySummaryQueue *asyncjob.Queue, studyQuizQueue *asyncjob.Queue) *http.Server {
 	mux := http.NewServeMux()
 
 	// Realtime + API first (exact patterns win over the "/" catch-all).
@@ -65,11 +65,11 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	})
 	mux.HandleFunc("/api/me", meHandler(cfg.IdentityMode, ident))
 	mux.HandleFunc("GET /api/sessions", sessionsListHandler(ident, st))
-	mux.HandleFunc("GET /api/sessions/{id}", sessionDetailHandler(ident, st, translateQueue, correctionQueue, pipe, studySummaryQueue))
+	mux.HandleFunc("GET /api/sessions/{id}", sessionDetailHandler(ident, st, translateQueue, correctionQueue, pipe, studySummaryQueue, studyQuizQueue))
 	mux.HandleFunc("GET /api/sessions/{id}/compaction", sessionCompactionHandler(ident, st))
-	mux.HandleFunc("POST /api/sessions/{id}/end", sessionEndHandler(ident, st, pipe, studySummaryQueue))
+	mux.HandleFunc("POST /api/sessions/{id}/end", sessionEndHandler(ident, st, pipe, studySummaryQueue, studyQuizQueue))
 	mux.HandleFunc("POST /api/sessions/{id}/restudy", sessionRestudyHandler(ident, st, pipe, studySummaryQueue))
-	mux.HandleFunc("GET /api/sessions/{id}/quiz", sessionQuizHandler(ident, st, pipe))
+	mux.HandleFunc("POST /api/sessions/{id}/quiz/complete", sessionQuizCompleteHandler(ident, st))
 	mux.HandleFunc("DELETE /api/sessions/{id}", sessionDeleteHandler(ident, st, audio, recordings))
 	mux.HandleFunc("GET /api/settings", settingsGetHandler(ident, st))
 	mux.HandleFunc("PUT /api/settings", settingsSaveHandler(ident, st))
@@ -209,16 +209,20 @@ const defaultSessionPageLimit = 30
 // same goes for a study-summary wrap-up left in JobStatusPending with no
 // StudySummary yet — see needsStudySummaryBackfill — which is how the
 // legacy-reset migration in store.NewMySQL gets its rows regenerated rather
-// than left permanently blank. Either way this never delays the response:
-// Enqueue is a couple of fast Redis calls, but it's still fired via `go` so a
-// slow/unavailable Redis can never make opening a conversation wait on it,
-// and the actual work happens entirely out-of-band in internal/backfill's
-// Workers (or the pooled asyncjob.KindStudySummary Worker — see
-// cmd/server/main.go), over the session's whole transcript regardless of
-// which page triggered it — the learner sees today's (possibly
-// still-missing) results immediately and gets the filled-in ones on their
-// next visit.
-func sessionDetailHandler(ident identity.Identifier, st store.Store, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue, pipe *pipeline.Pipeline, studySummaryQueue *asyncjob.Queue) http.HandlerFunc {
+// than left permanently blank, and for a session ended before quiz
+// pre-generation existed at all — see needsStudyQuizBackfill, which
+// re-enqueues asyncjob.KindStudyQuiz the first time such a session is
+// reopened, so it only ever needs generating once rather than staying stuck
+// on the old on-demand-at-click-time path forever. Either way this never
+// delays the response: Enqueue is a couple of fast Redis calls, but it's
+// still fired via `go` so a slow/unavailable Redis can never make opening a
+// conversation wait on it, and the actual work happens entirely out-of-band
+// in internal/backfill's Workers (or the pooled asyncjob.KindStudySummary/
+// KindStudyQuiz Workers — see cmd/server/main.go), over the session's whole
+// transcript regardless of which page triggered it — the learner sees
+// today's (possibly still-missing) results immediately and gets the
+// filled-in ones on their next visit.
+func sessionDetailHandler(ident identity.Identifier, st store.Store, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue, pipe *pipeline.Pipeline, studySummaryQueue *asyncjob.Queue, studyQuizQueue *asyncjob.Queue) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)
 		if !ok {
@@ -265,6 +269,13 @@ func sessionDetailHandler(ident identity.Identifier, st store.Store, translateQu
 			go func() {
 				if err := transport.EnqueueStudySummaryJob(context.Background(), studySummaryQueue, pipe, st, userID, sessionID); err != nil {
 					log.Printf("session detail: enqueue study summary backfill %s/%s: %v", userID, sessionID, err)
+				}
+			}()
+		}
+		if needsStudyQuizBackfill(meta) {
+			go func() {
+				if err := transport.EnqueueStudyQuizJob(context.Background(), studyQuizQueue, pipe, st, userID, sessionID); err != nil {
+					log.Printf("session detail: enqueue study quiz backfill %s/%s: %v", userID, sessionID, err)
 				}
 			}()
 		}
@@ -316,6 +327,22 @@ func needsStudySummaryBackfill(meta store.SessionMeta, turns []store.Turn) bool 
 		return false
 	}
 	return len(transport.CollectStudyIssues(turns)) > 0
+}
+
+// needsStudyQuizBackfill reports whether an ended session predates quiz
+// pre-generation entirely: QuizStatus == "" only ever arises from a session
+// that was ended before asyncjob.KindStudyQuiz existed (see EndSession,
+// which now sets QuizStatus to JobStatusPending the instant it ends any
+// session) — every session ended since then reaches a terminal QuizStatus
+// (JobStatusDone, even with an empty quiz — see runStudyQuiz) on its own, so
+// there's no live job here for a redundant enqueue to race, unlike
+// needsStudySummaryBackfill's legacy-reset case. Doesn't gate on
+// CollectStudyIssues the way needsStudySummaryBackfill does: an ended
+// session with no flagged issues still needs its QuizStatus moved off ""
+// (to JobStatusDone with an empty quiz), or it would look "still pending"
+// forever.
+func needsStudyQuizBackfill(meta store.SessionMeta) bool {
+	return meta.Ended && meta.QuizStatus == ""
 }
 
 // sessionCompactionHandler exposes a session's current LLM-context state —
@@ -371,16 +398,19 @@ func sessionCompactionHandler(ident identity.Identifier, st store.Store) http.Ha
 // sessionEndHandler permanently marks one chat room read-only
 // (store.Store.EndSession) the instant the learner confirms "end this
 // conversation" (see EndConversationControl in apps/web/src/App.tsx) —
-// freezing never waits on the wrap-up LLM call, which this kicks off
-// separately right after (transport.EnqueueStudySummaryJob), so the room is
-// safely read-only, and the response comes back, before that call has even
-// started. The wrap-up itself — and folding it into the learner's
+// freezing never waits on either background job's LLM call, which this
+// kicks off separately right after (transport.EnqueueStudySummaryJob and
+// transport.EnqueueStudyQuizJob, run independently rather than chained), so
+// the room is safely read-only, and the response comes back, before either
+// call has even started. The wrap-up — and folding it into the learner's
 // persistent cross-session profile — happens in the background from there
-// (see transport.StudySummaryJobHandler/runStudySummary): both survive the
-// learner navigating away right after this returns, which is the entire
-// point of routing it through asyncjob rather than generating it inline in
-// this request as a previous version of this handler did.
-func sessionEndHandler(ident identity.Identifier, st store.Store, pipe *pipeline.Pipeline, studySummaryQueue *asyncjob.Queue) http.HandlerFunc {
+// (see transport.StudySummaryJobHandler/runStudySummary), and the practice
+// quiz alongside it (see transport.StudyQuizJobHandler/runStudyQuiz), pre-
+// generated now instead of on demand so the "퀴즈 풀기" button later reads an
+// already-finished result: both survive the learner navigating away right
+// after this returns, which is the entire point of routing them through
+// asyncjob rather than generating them inline in this request.
+func sessionEndHandler(ident identity.Identifier, st store.Store, pipe *pipeline.Pipeline, studySummaryQueue *asyncjob.Queue, studyQuizQueue *asyncjob.Queue) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)
 		if !ok {
@@ -410,6 +440,21 @@ func sessionEndHandler(ident identity.Identifier, st store.Store, pipe *pipeline
 			go func() {
 				if err := transport.RunStudySummaryInline(context.Background(), pipe, st, userID, sessionID); err != nil {
 					log.Printf("end session: study summary %s/%s: %v", userID, sessionID, err)
+				}
+			}()
+		}
+
+		if studyQuizQueue != nil {
+			if err := transport.EnqueueStudyQuizJob(r.Context(), studyQuizQueue, pipe, st, userID, sessionID); err != nil {
+				log.Printf("end session: enqueue study quiz %s/%s: %v", userID, sessionID, err)
+			}
+		} else {
+			// Same no-Redis fallback as the study summary above — its own
+			// detached goroutine, run concurrently with (not after) the one
+			// above, since the two jobs are independent.
+			go func() {
+				if err := transport.RunStudyQuizInline(context.Background(), pipe, st, userID, sessionID); err != nil {
+					log.Printf("end session: study quiz %s/%s: %v", userID, sessionID, err)
 				}
 			}()
 		}
@@ -481,16 +526,19 @@ func sessionRestudyHandler(ident identity.Identifier, st store.Store, pipe *pipe
 	}
 }
 
-// sessionQuizHandler synthesizes a short fill-in-the-blank practice quiz on
-// demand from an ended session's flagged issues (see
-// pipeline.Pipeline.GenerateStudyQuiz and transport.CollectStudyIssues) —
-// unlike the study-summary wrap-up (generated once, automatically, in the
-// background right after the learner ends the conversation), this only runs
-// when the learner explicitly opens the quiz (see the "퀴즈 풀기" button in
-// EndConversationControl): not every learner wants one, and it's an extra
-// LLM call per request rather than something worth persisting, so nothing
-// here is written back to the store.
-func sessionQuizHandler(ident identity.Identifier, st store.Store, pipe *pipeline.Pipeline) http.HandlerFunc {
+// sessionQuizCompleteHandler marks an ended session's quiz as studied (see
+// SessionMeta.QuizCompleted's doc comment) — called by the frontend either
+// once a learner answers every quiz question correctly (grading happens
+// entirely client-side in QuizPanel, the same trust-the-client model
+// normalizeQuizAnswer already used before this endpoint existed), or, for a
+// session whose quiz came back with no questions at all, when the learner
+// taps "내가 읽었음" (I've read it) instead — both cases mean the same thing
+// for the room list's badge: this session's feedback has been studied.
+// Deliberately not gated on server-side state the way sessionRestudyHandler
+// is: unlike regenerating a wrap-up (a real, costly LLM call this handler
+// must protect from replay), setting one boolean is harmless to call more
+// than once or in an unexpected state.
+func sessionQuizCompleteHandler(ident identity.Identifier, st store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)
 		if !ok {
@@ -498,27 +546,11 @@ func sessionQuizHandler(ident identity.Identifier, st store.Store, pipe *pipelin
 		}
 		sessionID := r.PathValue("id")
 
-		_, turns, err := st.SessionDetail(r.Context(), userID, sessionID)
-		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				http.NotFound(w, r)
-				return
-			}
-			serverError(w, "session detail", err)
+		if err := st.MarkQuizCompleted(r.Context(), userID, sessionID); err != nil {
+			serverError(w, "mark quiz completed", err)
 			return
 		}
-
-		issues := transport.CollectStudyIssues(turns)
-		if len(issues) == 0 {
-			writeJSON(w, map[string]any{"questions": []protocol.QuizQuestion{}})
-			return
-		}
-		questions, err := pipe.GenerateStudyQuiz(r.Context(), issues)
-		if err != nil {
-			serverError(w, "generate quiz", err)
-			return
-		}
-		writeJSON(w, map[string]any{"questions": questions})
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
