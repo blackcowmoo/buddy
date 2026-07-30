@@ -34,6 +34,7 @@ type HTTPTranscriber struct {
 
 	http *http.Client
 	next uint64
+	name string // built once in NewHTTPTranscriber; Transcribe calls Name() on every utterance
 }
 
 func NewHTTPTranscriber(engine string, urls, models []string) *HTTPTranscriber {
@@ -42,11 +43,12 @@ func NewHTTPTranscriber(engine string, urls, models []string) *HTTPTranscriber {
 		URLs:   urls,
 		Models: models,
 		http:   &http.Client{Timeout: 60 * time.Second},
+		name:   engine + "-server(" + strings.Join(uniqueNonEmpty(models), ",") + ")",
 	}
 }
 
 func (h *HTTPTranscriber) Name() string {
-	return h.Engine + "-server(" + strings.Join(uniqueNonEmpty(h.Models), ",") + ")"
+	return h.name
 }
 
 // pickEndpoint round-robins across URLs (so concurrent fast/refine-track

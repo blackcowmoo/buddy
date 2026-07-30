@@ -154,37 +154,12 @@ func RunStudySummaryInline(ctx context.Context, pipe *pipeline.Pipeline, st stor
 
 // EnqueueStudySummaryJob durably queues the wrap-up generation for a
 // just-frozen session (see httpserver.sessionEndHandler, called right after
-// store.Store.EndSession). Enqueue itself happens synchronously, on ctx —
-// cheap (no LLM call), so it's safe to await before the HTTP response — so
-// the job is durably sitting in Redis even if this replica dies moments
-// later; only the actual LLM call runs in the background, in a detached
-// goroutine racing the pooled asyncjob.Worker (see cmd/server/main.go) to
-// claim it, on context.Background() so it isn't cut short by the request
-// that triggered it ending. Mirrors Queue.EnqueueAndTryRun's fast path, just
-// split across the synchronous/background boundary sessionEndHandler needs.
+// store.Store.EndSession) — see asyncjob.Queue.EnqueueAndRunInBackground for
+// why enqueue happens synchronously on ctx while the actual LLM call runs in
+// a detached background goroutine racing the pooled asyncjob.Worker (see
+// cmd/server/main.go) to claim it.
 func EnqueueStudySummaryJob(ctx context.Context, queue *asyncjob.Queue, pipe *pipeline.Pipeline, st store.Store, userID, sessionID string) error {
 	payload := studySummaryJobPayload{UserID: userID, SessionID: sessionID}
-	job, ok, err := queue.Enqueue(ctx, asyncjob.KindStudySummary, turnKey(userID, sessionID, 0), payload)
-	if err != nil {
-		return fmt.Errorf("study summary: enqueue: %w", err)
-	}
-	if !ok {
-		return nil // already queued or in flight — another attempt owns it
-	}
-	logID := turnLogID(userID, sessionID, 0)
-	handler := StudySummaryJobHandler(pipe, st)
-	go func() {
-		claimed, err := queue.TryClaimByID(context.Background(), job, StudySummaryClaimTTL)
-		if err != nil {
-			log.Printf("study summary: inline claim %s: %v", logID, err)
-			return
-		}
-		if !claimed {
-			return // lost the race to a pooled Worker, which owns it now
-		}
-		if err := queue.Execute(context.Background(), job, handler); err != nil {
-			log.Printf("study summary: inline execute %s: %v", logID, err)
-		}
-	}()
-	return nil
+	return queue.EnqueueAndRunInBackground(ctx, asyncjob.KindStudySummary, turnKey(userID, sessionID, 0),
+		turnLogID(userID, sessionID, 0), payload, StudySummaryClaimTTL, StudySummaryJobHandler(pipe, st))
 }

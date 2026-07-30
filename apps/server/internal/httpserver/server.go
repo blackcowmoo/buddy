@@ -395,6 +395,28 @@ func sessionCompactionHandler(ident identity.Identifier, st store.Store) http.Ha
 	}
 }
 
+// enqueueOrRunInline is the shared "durable queue if Redis is configured,
+// otherwise a detached best-effort goroutine" fallback behind
+// sessionEndHandler's and sessionRestudyHandler's study-summary/quiz kickoff:
+// when queue is non-nil, enqueue runs synchronously on ctx (cheap — no LLM
+// call — the queue's own EnqueueAndRunInBackground handles backgrounding the
+// actual work); otherwise inline runs the whole job itself, so it must be
+// backgrounded here on a detached context.Background() goroutine to get the
+// same "outlives this response" behavior without Redis.
+func enqueueOrRunInline(queue *asyncjob.Queue, ctx context.Context, enqueueErrLabel string, enqueue func(ctx context.Context) error, inlineErrLabel string, inline func(ctx context.Context) error) {
+	if queue != nil {
+		if err := enqueue(ctx); err != nil {
+			log.Printf("%s: %v", enqueueErrLabel, err)
+		}
+		return
+	}
+	go func() {
+		if err := inline(context.Background()); err != nil {
+			log.Printf("%s: %v", inlineErrLabel, err)
+		}
+	}()
+}
+
 // sessionEndHandler permanently marks one chat room read-only
 // (store.Store.EndSession) the instant the learner confirms "end this
 // conversation" (see EndConversationControl in apps/web/src/App.tsx) —
@@ -427,37 +449,39 @@ func sessionEndHandler(ident identity.Identifier, st store.Store, pipe *pipeline
 			return
 		}
 
-		if studySummaryQueue != nil {
-			if err := transport.EnqueueStudySummaryJob(r.Context(), studySummaryQueue, pipe, st, userID, sessionID); err != nil {
-				log.Printf("end session: enqueue study summary %s/%s: %v", userID, sessionID, err)
-			}
-		} else {
-			// No Redis configured, so no durable queue to hand this to —
-			// still run it on a detached context.Background() goroutine
-			// rather than inline in this request, for the same "outlives
-			// this response" behavior EnqueueStudySummaryJob's background
-			// claim/execute gets from Redis.
-			go func() {
-				if err := transport.RunStudySummaryInline(context.Background(), pipe, st, userID, sessionID); err != nil {
-					log.Printf("end session: study summary %s/%s: %v", userID, sessionID, err)
-				}
-			}()
-		}
-
-		if studyQuizQueue != nil {
-			if err := transport.EnqueueStudyQuizJob(r.Context(), studyQuizQueue, pipe, st, userID, sessionID); err != nil {
-				log.Printf("end session: enqueue study quiz %s/%s: %v", userID, sessionID, err)
-			}
-		} else {
-			// Same no-Redis fallback as the study summary above — its own
-			// detached goroutine, run concurrently with (not after) the one
-			// above, since the two jobs are independent.
-			go func() {
-				if err := transport.RunStudyQuizInline(context.Background(), pipe, st, userID, sessionID); err != nil {
-					log.Printf("end session: study quiz %s/%s: %v", userID, sessionID, err)
-				}
-			}()
-		}
+		// Kicked off concurrently, not sequentially: both are independent, and
+		// each blocks the response on its own Enqueue round trip (see
+		// enqueueOrRunInline), so running them one after another would pay
+		// that latency twice for no reason.
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			enqueueOrRunInline(studySummaryQueue, r.Context(),
+				fmt.Sprintf("end session: enqueue study summary %s/%s", userID, sessionID),
+				func(ctx context.Context) error {
+					return transport.EnqueueStudySummaryJob(ctx, studySummaryQueue, pipe, st, userID, sessionID)
+				},
+				fmt.Sprintf("end session: study summary %s/%s", userID, sessionID),
+				func(ctx context.Context) error {
+					return transport.RunStudySummaryInline(ctx, pipe, st, userID, sessionID)
+				},
+			)
+		}()
+		go func() {
+			defer wg.Done()
+			enqueueOrRunInline(studyQuizQueue, r.Context(),
+				fmt.Sprintf("end session: enqueue study quiz %s/%s", userID, sessionID),
+				func(ctx context.Context) error {
+					return transport.EnqueueStudyQuizJob(ctx, studyQuizQueue, pipe, st, userID, sessionID)
+				},
+				fmt.Sprintf("end session: study quiz %s/%s", userID, sessionID),
+				func(ctx context.Context) error {
+					return transport.RunStudyQuizInline(ctx, pipe, st, userID, sessionID)
+				},
+			)
+		}()
+		wg.Wait()
 
 		w.WriteHeader(http.StatusNoContent)
 	}
@@ -508,19 +532,16 @@ func sessionRestudyHandler(ident identity.Identifier, st store.Store, pipe *pipe
 			return
 		}
 
-		if studySummaryQueue != nil {
-			if err := transport.EnqueueStudySummaryJob(r.Context(), studySummaryQueue, pipe, st, userID, sessionID); err != nil {
-				log.Printf("restudy session: enqueue study summary %s/%s: %v", userID, sessionID, err)
-			}
-		} else {
-			// No Redis configured — same detached-goroutine fallback
-			// sessionEndHandler uses.
-			go func() {
-				if err := transport.RunStudySummaryInline(context.Background(), pipe, st, userID, sessionID); err != nil {
-					log.Printf("restudy session: study summary %s/%s: %v", userID, sessionID, err)
-				}
-			}()
-		}
+		enqueueOrRunInline(studySummaryQueue, r.Context(),
+			fmt.Sprintf("restudy session: enqueue study summary %s/%s", userID, sessionID),
+			func(ctx context.Context) error {
+				return transport.EnqueueStudySummaryJob(ctx, studySummaryQueue, pipe, st, userID, sessionID)
+			},
+			fmt.Sprintf("restudy session: study summary %s/%s", userID, sessionID),
+			func(ctx context.Context) error {
+				return transport.RunStudySummaryInline(ctx, pipe, st, userID, sessionID)
+			},
+		)
 
 		w.WriteHeader(http.StatusNoContent)
 	}

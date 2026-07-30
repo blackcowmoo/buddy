@@ -90,33 +90,13 @@ func RunStudyQuizInline(ctx context.Context, pipe *pipeline.Pipeline, st store.S
 
 // EnqueueStudyQuizJob durably queues quiz pre-generation for a just-frozen
 // session — mirrors EnqueueStudySummaryJob exactly, including the
-// synchronous-enqueue/background-execute split; see its doc comment for the
-// full reasoning. Called alongside EnqueueStudySummaryJob (not chained after
-// it) from httpserver.sessionEndHandler, since both jobs draw independently
-// from the same already-persisted issues.
+// synchronous-enqueue/background-execute split (see
+// asyncjob.Queue.EnqueueAndRunInBackground for the full reasoning). Called
+// alongside EnqueueStudySummaryJob (not chained after it) from
+// httpserver.sessionEndHandler, since both jobs draw independently from the
+// same already-persisted issues.
 func EnqueueStudyQuizJob(ctx context.Context, queue *asyncjob.Queue, pipe *pipeline.Pipeline, st store.Store, userID, sessionID string) error {
 	payload := studyQuizJobPayload{UserID: userID, SessionID: sessionID}
-	job, ok, err := queue.Enqueue(ctx, asyncjob.KindStudyQuiz, turnKey(userID, sessionID, 0), payload)
-	if err != nil {
-		return fmt.Errorf("study quiz: enqueue: %w", err)
-	}
-	if !ok {
-		return nil // already queued or in flight — another attempt owns it
-	}
-	logID := turnLogID(userID, sessionID, 0)
-	handler := StudyQuizJobHandler(pipe, st)
-	go func() {
-		claimed, err := queue.TryClaimByID(context.Background(), job, StudyQuizClaimTTL)
-		if err != nil {
-			log.Printf("study quiz: inline claim %s: %v", logID, err)
-			return
-		}
-		if !claimed {
-			return // lost the race to a pooled Worker, which owns it now
-		}
-		if err := queue.Execute(context.Background(), job, handler); err != nil {
-			log.Printf("study quiz: inline execute %s: %v", logID, err)
-		}
-	}()
-	return nil
+	return queue.EnqueueAndRunInBackground(ctx, asyncjob.KindStudyQuiz, turnKey(userID, sessionID, 0),
+		turnLogID(userID, sessionID, 0), payload, StudyQuizClaimTTL, StudyQuizJobHandler(pipe, st))
 }

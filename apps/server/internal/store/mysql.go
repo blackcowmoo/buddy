@@ -576,13 +576,9 @@ func (s *MySQLStore) EndSession(ctx context.Context, userID, sessionID string) e
 // "[]", so it round-trips through decodeStudySummary the same way a
 // never-completed one does.
 func (s *MySQLStore) CompleteStudySummary(ctx context.Context, userID, sessionID string, summary []protocol.StudySummarySentence) error {
-	var encoded string
-	if len(summary) > 0 {
-		b, err := json.Marshal(summary)
-		if err != nil {
-			return fmt.Errorf("store: encode study summary: %w", err)
-		}
-		encoded = string(b)
+	encoded, err := encodeJSONSlice(summary)
+	if err != nil {
+		return fmt.Errorf("store: encode study summary: %w", err)
 	}
 	if _, err := s.rw.ExecContext(ctx, `
 		UPDATE `+sessionsTable+` SET study_summary = ?, study_summary_status = ?
@@ -591,6 +587,22 @@ func (s *MySQLStore) CompleteStudySummary(ctx context.Context, userID, sessionID
 		return fmt.Errorf("store: complete study summary: %w", err)
 	}
 	return nil
+}
+
+// encodeJSONSlice marshals items to a JSON array, except an empty/nil slice
+// encodes as "" rather than "[]" — matching the legacy plain-text columns
+// (study_summary, quiz) this backs, so a never-completed row and a
+// completed-but-empty row are indistinguishable, both round-tripping to nil
+// through decodeStudySummary/decodeQuiz.
+func encodeJSONSlice[T any](items []T) (string, error) {
+	if len(items) == 0 {
+		return "", nil
+	}
+	b, err := json.Marshal(items)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 // decodeStudySummary parses the study_summary column's JSON-encoded
@@ -614,13 +626,7 @@ func decodeStudySummary(raw string) []protocol.StudySummarySentence {
 // FailStudySummary records that an asyncjob.KindStudySummary job's LLM call
 // errored — see the Store interface doc comment.
 func (s *MySQLStore) FailStudySummary(ctx context.Context, userID, sessionID string) error {
-	if _, err := s.rw.ExecContext(ctx, `
-		UPDATE `+sessionsTable+` SET study_summary_status = ?
-		WHERE user_id = ? AND id = ?
-	`, JobStatusFailed, userID, sessionID); err != nil {
-		return fmt.Errorf("store: fail study summary: %w", err)
-	}
-	return nil
+	return s.failSessionJob(ctx, userID, sessionID, "study_summary_status", "fail study summary")
 }
 
 // RestartStudySummary resets a wrap-up back to JobStatusPending with an
@@ -643,13 +649,9 @@ func (s *MySQLStore) RestartStudySummary(ctx context.Context, userID, sessionID 
 // flagged) still stores as '', not "[]", so it round-trips through
 // decodeQuiz the same way a never-completed one does.
 func (s *MySQLStore) CompleteStudyQuiz(ctx context.Context, userID, sessionID string, questions []protocol.QuizQuestion) error {
-	var encoded string
-	if len(questions) > 0 {
-		b, err := json.Marshal(questions)
-		if err != nil {
-			return fmt.Errorf("store: encode quiz: %w", err)
-		}
-		encoded = string(b)
+	encoded, err := encodeJSONSlice(questions)
+	if err != nil {
+		return fmt.Errorf("store: encode quiz: %w", err)
 	}
 	if _, err := s.rw.ExecContext(ctx, `
 		UPDATE `+sessionsTable+` SET quiz = ?, quiz_status = ?
@@ -677,11 +679,18 @@ func decodeQuiz(raw string) []protocol.QuizQuestion {
 // FailStudyQuiz records that an asyncjob.KindStudyQuiz job's LLM call
 // errored — mirrors FailStudySummary.
 func (s *MySQLStore) FailStudyQuiz(ctx context.Context, userID, sessionID string) error {
+	return s.failSessionJob(ctx, userID, sessionID, "quiz_status", "fail study quiz")
+}
+
+// failSessionJob marks a session-scoped async job (study summary or quiz) as
+// failed by setting its status column — shared by FailStudySummary and
+// FailStudyQuiz, which differ only in which column they update.
+func (s *MySQLStore) failSessionJob(ctx context.Context, userID, sessionID, statusColumn, errLabel string) error {
 	if _, err := s.rw.ExecContext(ctx, `
-		UPDATE `+sessionsTable+` SET quiz_status = ?
+		UPDATE `+sessionsTable+` SET `+statusColumn+` = ?
 		WHERE user_id = ? AND id = ?
 	`, JobStatusFailed, userID, sessionID); err != nil {
-		return fmt.Errorf("store: fail study quiz: %w", err)
+		return fmt.Errorf("store: %s: %w", errLabel, err)
 	}
 	return nil
 }
@@ -1021,17 +1030,9 @@ func (s *MySQLStore) FailJob(ctx context.Context, userID, sessionID string, turn
 // idempotency guard), so a stale "not done yet" read from a lagging replica
 // would cause a duplicate LLM call — the same reasoning as LastTurn.
 func (s *MySQLStore) JobStatus(ctx context.Context, userID, sessionID string, turn int, kind string) (string, error) {
-	var status string
-	err := s.rw.QueryRowContext(ctx, `
+	return scanStringOrEmpty(ctx, s.rw, "job status", `
 		SELECT status FROM `+jobsTable+` WHERE user_id = ? AND session_id = ? AND turn = ? AND kind = ?
-	`, userID, sessionID, turn, kind).Scan(&status)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("store: job status: %w", err)
-	}
-	return status, nil
+	`, userID, sessionID, turn, kind)
 }
 
 // AssistantTurnText reads one turn's assistant text — see the Store
@@ -1039,17 +1040,25 @@ func (s *MySQLStore) JobStatus(ctx context.Context, userID, sessionID string, tu
 // not s.ro, for the same reason as JobStatus: its caller is polling for a
 // write that just happened, which a read replica may not have yet.
 func (s *MySQLStore) AssistantTurnText(ctx context.Context, userID, sessionID string, turn int) (string, error) {
-	var text string
-	err := s.rw.QueryRowContext(ctx, `
+	return scanStringOrEmpty(ctx, s.rw, "assistant turn text", `
 		SELECT text FROM `+turnsTable+` WHERE user_id = ? AND session_id = ? AND turn = ? AND role = 'assistant'
-	`, userID, sessionID, turn).Scan(&text)
+	`, userID, sessionID, turn)
+}
+
+// scanStringOrEmpty runs a single-row, single-column query and returns "" (no
+// error) when the row doesn't exist — the shared shape behind JobStatus,
+// AssistantTurnText, GetInterlocutorStyle, and GetLearnerProfile, which
+// differ only in which db handle, query, and error label they use.
+func scanStringOrEmpty(ctx context.Context, db *sql.DB, errLabel, query string, args ...any) (string, error) {
+	var v string
+	err := db.QueryRowContext(ctx, query, args...).Scan(&v)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("store: assistant turn text: %w", err)
+		return "", fmt.Errorf("store: %s: %w", errLabel, err)
 	}
-	return text, nil
+	return v, nil
 }
 
 // DeleteSession removes a session and its transcript in one transaction, so
@@ -1079,17 +1088,8 @@ func (s *MySQLStore) DeleteSession(ctx context.Context, userID, sessionID string
 }
 
 func (s *MySQLStore) GetInterlocutorStyle(ctx context.Context, userID string) (string, error) {
-	var style string
-	err := s.ro.QueryRowContext(ctx,
-		`SELECT interlocutor_style FROM `+settingsTable+` WHERE user_id = ?`, userID,
-	).Scan(&style)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("store: get interlocutor style: %w", err)
-	}
-	return style, nil
+	return scanStringOrEmpty(ctx, s.ro, "get interlocutor style",
+		`SELECT interlocutor_style FROM `+settingsTable+` WHERE user_id = ?`, userID)
 }
 
 func (s *MySQLStore) SaveInterlocutorStyle(ctx context.Context, userID, style string) error {
@@ -1110,17 +1110,8 @@ func (s *MySQLStore) SaveInterlocutorStyle(ctx context.Context, userID, style st
 }
 
 func (s *MySQLStore) GetLearnerProfile(ctx context.Context, userID string) (string, error) {
-	var profile string
-	err := s.ro.QueryRowContext(ctx,
-		`SELECT learner_profile FROM `+settingsTable+` WHERE user_id = ?`, userID,
-	).Scan(&profile)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("store: get learner profile: %w", err)
-	}
-	return profile, nil
+	return scanStringOrEmpty(ctx, s.ro, "get learner profile",
+		`SELECT learner_profile FROM `+settingsTable+` WHERE user_id = ?`, userID)
 }
 
 func (s *MySQLStore) SaveLearnerProfile(ctx context.Context, userID, profile string) error {
