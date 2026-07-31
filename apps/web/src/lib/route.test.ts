@@ -21,4 +21,12 @@ describe("currentPage", () => {
   it("tolerates a trailing slash", () => {
     expect(currentPage("/recordings/")).toBe("recordings");
   });
+
+  it("recognizes the word-review page at root", () => {
+    expect(currentPage("/words")).toBe("words");
+  });
+
+  it("recognizes the word-review page under a ROOT_PATH prefix", () => {
+    expect(currentPage("/pr/14/words")).toBe("words");
+  });
 });

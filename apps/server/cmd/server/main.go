@@ -25,6 +25,7 @@ import (
 	"buddy/server/internal/stt"
 	"buddy/server/internal/transport"
 	"buddy/server/internal/webassets"
+	"buddy/server/internal/wordreview"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -209,7 +210,24 @@ func main() {
 		defer recordings.Close()
 	}
 
-	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, translateQueue, correctionBackfillQueue, studySummaryQueue, studyQuizQueue)
+	// Word-review (spaced-repetition study list): unlike recordings above,
+	// this has no external dependency beyond MySQL, so it's always on —
+	// shares st's pools the same way.
+	wordReviews := buildWordReviewStore(context.Background(), st)
+	defer wordReviews.Close()
+
+	// Word verification: fact-checks a word/phrase right after "학습하기"
+	// saves it Pending (see httpserver.wordSaveHandler), same "optional
+	// durable queue, inline-goroutine fallback when Redis isn't configured"
+	// convention as studySummaryQueue/studyQuizQueue above.
+	var wordVerifyQueue *asyncjob.Queue
+	if rdb != nil {
+		wordVerifyQueue = asyncjob.NewQueue(rdb)
+		go asyncjob.NewWorker(rdb, asyncjob.KindWordVerify, transport.WordVerifyWorkerConcurrency, transport.WordVerifyClaimTTL,
+			transport.WordVerifyJobHandler(pipe, wordReviews)).Run(jobsCtx)
+	}
+
+	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, wordReviews, wordVerifyQueue, translateQueue, correctionBackfillQueue, studySummaryQueue, studyQuizQueue)
 
 	go func() {
 		log.Printf("buddy up on %s  env=%s  stt=%v  feedback=%s",
@@ -294,6 +312,19 @@ func buildRecordingStore(ctx context.Context, cfg config.Config, st *store.MySQL
 		log.Fatalf("recording store: %v", err)
 	}
 	return rec
+}
+
+// buildWordReviewStore builds the spaced-repetition study-list store
+// (internal/wordreview). Unlike buildRecordingStore, this has no optional
+// external dependency (no S3, just MySQL) so it's constructed unconditionally
+// — shares st's pools the same way.
+func buildWordReviewStore(ctx context.Context, st *store.MySQLStore) *wordreview.MySQLStore {
+	rw, ro := st.DB()
+	words, err := wordreview.NewMySQL(ctx, rw, ro)
+	if err != nil {
+		log.Fatalf("word review store: %v", err)
+	}
+	return words
 }
 
 // buildSTT builds the STT ensemble for pipeline.Pipeline.STT: one Recognizer
