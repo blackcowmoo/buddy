@@ -336,6 +336,11 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
    study summary — see App.tsx QuizPanel. Reuses .study-summary-en/-ko for
    the explanation pairing (identical look). */
 .quiz-start-btn, .quiz-ack-btn { width: 100%; margin-top: 4px; }
+/* Groups "퀴즈 풀기" with its "퀴즈 다시 만들기" reset action (see
+   EndConversationControl's onQuizReset) so the secondary regenerate button
+   doesn't compete visually with the primary one. */
+.quiz-actions { display: flex; flex-direction: column; gap: 4px; }
+.quiz-reset-btn { width: 100%; }
 .quiz-preparing, .quiz-acknowledged { font-size: 13px; color: var(--muted); padding: 2px 4px; }
 .quiz-acknowledged { color: var(--ok); }
 .quiz-panel { display: flex; flex-direction: column; gap: 8px; }
@@ -343,6 +348,10 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 .quiz-question { display: flex; flex-direction: column; gap: 8px; }
 .quiz-progress { font-size: 12px; color: var(--muted); }
 .quiz-prompt { font-size: 13px; }
+/* Korean gloss of just the blanked word/phrase (see QuizQuestion.
+   answerMeaning) — shown alongside quiz-prompt before the learner answers,
+   since a blanked English sentence alone can fit many different words. */
+.quiz-meaning-hint { font-size: 13px; color: var(--muted); font-style: italic; }
 .quiz-answer-input {
   font: inherit;
   font-size: 16px; /* iOS Safari zoom threshold, same as .composer input */

@@ -259,6 +259,10 @@ func (f *fakeStore) MarkQuizCompleted(ctx context.Context, userID, sessionID str
 	return errors.New("not used by these tests")
 }
 
+func (f *fakeStore) RestartStudyQuiz(ctx context.Context, userID, sessionID string) error {
+	return errors.New("not used by these tests")
+}
+
 func (f *fakeStore) GetLearnerProfile(ctx context.Context, userID string) (string, error) {
 	return "", errors.New("not used by these tests")
 }

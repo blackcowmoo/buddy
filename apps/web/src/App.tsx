@@ -28,6 +28,7 @@ import {
   fetchSessionDetail,
   fetchSessions,
   markQuizCompleted,
+  resetQuiz,
   restudySession,
   type SessionSummary,
   type TurnRecord,
@@ -38,6 +39,7 @@ import { formatDateDivider, formatMessageTime, formatRelativeTime, isSameDay } f
 import { clearDraft, loadDraft, saveDraft } from "./lib/draftCache";
 import { suggestWords } from "./lib/wordSearch";
 import { saveWord, fetchWords } from "./lib/wordReview";
+import { checkQuizAnswer } from "./lib/quizCheck";
 import {
   MAX_EXTRA_RATES,
   NATIVE_RATE,
@@ -1051,6 +1053,29 @@ export function App() {
     if (token) pollStudySummary(activeSessionId, token);
   }, [activeSessionId, pollStudySummary]);
 
+  // Regenerates an ended session's practice quiz from scratch on demand —
+  // see httpserver.sessionQuizResetHandler, the "퀴즈 다시 만들기" button in
+  // EndConversationControl. Unlike restudyConversation, this isn't limited
+  // to a stuck-empty result: a learner can ask for a fresh set of questions
+  // even when the current quiz already has real content (e.g. one generated
+  // before answerMeaning/acceptableAnswers existed). Clears the local quiz
+  // state immediately so the panel shows "준비하는 중" rather than the stale
+  // quiz while the background job regenerates it, and reuses pollQuizStatus
+  // the same way reopening a still-generating room does.
+  const resetConversationQuiz = useCallback(async () => {
+    if (!activeSessionId) return;
+    const token = pollTokenRef.current;
+    setEndedQuiz([]);
+    setEndedQuizStatus("pending");
+    setEndedQuizCompleted(false);
+    const ok = await resetQuiz(activeSessionId);
+    if (!ok) {
+      setEndedQuizStatus("failed");
+      return;
+    }
+    if (token) pollQuizStatus(activeSessionId, token);
+  }, [activeSessionId, pollQuizStatus]);
+
   // Reflects a just-completed quiz (see markQuizCompleted, called from
   // QuizPanel/EndConversationControl) in this room's own state immediately —
   // the room list itself picks up the persisted flag separately, the next
@@ -1386,6 +1411,7 @@ export function App() {
               onEnd={endConversation}
               onRestudy={restudyConversation}
               onQuizCompleted={handleQuizCompleted}
+              onQuizReset={resetConversationQuiz}
             />
           </>
         }
@@ -2272,6 +2298,7 @@ function EndConversationControl({
   onEnd,
   onRestudy,
   onQuizCompleted,
+  onQuizReset,
 }: {
   sessionId: string | null;
   ended: boolean;
@@ -2283,6 +2310,7 @@ function EndConversationControl({
   onEnd: () => void;
   onRestudy: () => void;
   onQuizCompleted: () => void;
+  onQuizReset: () => void;
 }) {
   const [open, setOpen] = useState(false);
   // quizMode lives here (not inside QuizPanel) only so it can be reset
@@ -2386,9 +2414,14 @@ function EndConversationControl({
                 </div>
               )}
               {studySummary.length > 0 && quiz.length > 0 && (
-                <button type="button" className="quiz-start-btn" onClick={startQuiz}>
-                  퀴즈 풀기
-                </button>
+                <div className="quiz-actions">
+                  <button type="button" className="quiz-start-btn" onClick={startQuiz}>
+                    퀴즈 풀기
+                  </button>
+                  <button type="button" className="ghost quiz-reset-btn" onClick={onQuizReset}>
+                    퀴즈 다시 만들기
+                  </button>
+                </div>
               )}
               {studySummary.length > 0 && quiz.length === 0 && quizStatus === "done" && (
                 quizCompleted || acknowledged ? (
@@ -2423,14 +2456,26 @@ function EndConversationControl({
 }
 
 // normalizeQuizAnswer loosely-matches a learner's typed answer against
-// QuizQuestion.answer for QuizPanel's grading: case/whitespace differences
-// and trailing punctuation shouldn't count as wrong, but this is still just
-// a string comparison, not an LLM judgment call — a correct answer phrased
-// very differently from QuizQuestion.answer (a synonym, a different verb
-// tense) will be marked wrong. Acceptable for a quick self-check quiz; not
-// worth an extra per-answer LLM call to fix.
+// QuizQuestion.answer/acceptableAnswers for QuizPanel's grading: case/
+// whitespace differences and trailing punctuation shouldn't count as wrong,
+// but this is still just a string comparison, not an LLM judgment call — a
+// correct answer phrased very differently from every listed answer (a
+// synonym the model didn't list, a different verb tense) will still be
+// marked wrong. Acceptable for a quick self-check quiz; not worth an extra
+// per-answer LLM call to fix.
 function normalizeQuizAnswer(s: string): string {
   return s.trim().toLowerCase().replace(/[.,!?;:'"]+$/g, "");
+}
+
+// isQuizAnswerAccepted checks a typed answer against QuizQuestion.answer AND
+// every listed acceptableAnswers — a close synonym the model already vetted
+// as fitting this exact blank (see quizSystemPrompt server-side) shouldn't
+// be marked wrong just for not being the one word the model happened to
+// list first.
+function isQuizAnswerAccepted(question: QuizQuestion, raw: string): boolean {
+  const normalized = normalizeQuizAnswer(raw);
+  if (normalized === normalizeQuizAnswer(question.answer)) return true;
+  return (question.acceptableAnswers ?? []).some((a) => normalizeQuizAnswer(a) === normalized);
 }
 
 // The fill-in-the-blank practice quiz shown in place of the study summary
@@ -2438,7 +2483,7 @@ function normalizeQuizAnswer(s: string): string {
 // shows that button once questions is non-empty — pre-generated alongside
 // the wrap-up, so there's nothing left to fetch or wait on here). One
 // question at a time; typing an answer and confirming reveals whether it
-// matched (see normalizeQuizAnswer) plus the explanation/translation, then
+// matched (see isQuizAnswerAccepted) plus the explanation/translation, then
 // advances — ending on a plain right/total score. Answering every question
 // correctly calls onCompleted (see markQuizCompleted) so the room list can
 // show the same "all correct" checkmark a session with nothing left to quiz
@@ -2458,30 +2503,63 @@ function QuizPanel({
   const [index, setIndex] = useState(0);
   const [answer, setAnswer] = useState("");
   const [checked, setChecked] = useState(false);
+  // True while an answer that didn't match answer/acceptableAnswers
+  // literally is being double-checked against checkQuizAnswer's LLM fallback
+  // (see check()) — distinct from `checked`, which only flips once that
+  // fallback (if any) has actually resolved, so the UI shows "확인하는 중…"
+  // instead of prematurely revealing a result.
+  const [checking, setChecking] = useState(false);
+  const [correct, setCorrect] = useState(false);
   const [correctCount, setCorrectCount] = useState(0);
 
   const question = questions[index];
-  const isCorrect = checked && question ? normalizeQuizAnswer(answer) === normalizeQuizAnswer(question.answer) : false;
+
+  // finalize records one question's outcome once it's fully settled — either
+  // immediately (an exact/listed-synonym match) or after checkQuizAnswer's
+  // LLM fallback resolves — so check()'s two paths share the exact same
+  // "advance score, complete the quiz if this was the last correct answer"
+  // logic instead of duplicating it.
+  const finalize = useCallback(
+    (isAnswerCorrect: boolean) => {
+      setChecked(true);
+      setChecking(false);
+      setCorrect(isAnswerCorrect);
+      setCorrectCount((c) => {
+        const next = c + (isAnswerCorrect ? 1 : 0);
+        if (index + 1 === questions.length && next === questions.length) {
+          void markQuizCompleted(sessionId).then((ok) => {
+            if (ok) onCompleted();
+          });
+        }
+        return next;
+      });
+    },
+    [index, questions.length, sessionId, onCompleted],
+  );
 
   const check = useCallback(() => {
-    if (!question || checked || !answer.trim()) return;
-    setChecked(true);
-    const correct = normalizeQuizAnswer(answer) === normalizeQuizAnswer(question.answer);
-    setCorrectCount((c) => {
-      const next = c + (correct ? 1 : 0);
-      if (index + 1 === questions.length && next === questions.length) {
-        void markQuizCompleted(sessionId).then((ok) => {
-          if (ok) onCompleted();
-        });
-      }
-      return next;
+    if (!question || checked || checking || !answer.trim()) return;
+    if (isQuizAnswerAccepted(question, answer)) {
+      finalize(true);
+      return;
+    }
+    // Didn't match answer/acceptableAnswers literally — ask a fast chat-model
+    // call whether it's still a valid synonym the quiz's own generation step
+    // didn't think to list (see checkQuizAnswer's doc comment on why this is
+    // biased toward "no" server-side, so a hallucinated false positive can't
+    // teach the learner something wrong).
+    setChecking(true);
+    void checkQuizAnswer(question.prompt, question.answer, question.acceptableAnswers, answer).then((verdict) => {
+      finalize(verdict);
     });
-  }, [answer, checked, question, index, questions, sessionId, onCompleted]);
+  }, [question, checked, checking, answer, finalize]);
 
   const next = useCallback(() => {
     setIndex((i) => i + 1);
     setAnswer("");
     setChecked(false);
+    setChecking(false);
+    setCorrect(false);
   }, []);
 
   if (!question) return null;
@@ -2496,6 +2574,7 @@ function QuizPanel({
           {index + 1} / {questions.length}
         </div>
         <div className="quiz-prompt">{question.prompt}</div>
+        {question.answerMeaning && <div className="quiz-meaning-hint">💡 {question.answerMeaning}</div>}
         <input
           type="text"
           className="quiz-answer-input"
@@ -2506,19 +2585,19 @@ function QuizPanel({
             if (checked) next();
             else check();
           }}
-          disabled={checked}
+          disabled={checked || checking}
           placeholder="빈칸에 들어갈 단어를 입력하세요"
           aria-label="정답 입력"
         />
         {!checked && (
-          <button type="button" className="quiz-check-btn" onClick={check} disabled={!answer.trim()}>
-            확인
+          <button type="button" className="quiz-check-btn" onClick={check} disabled={!answer.trim() || checking}>
+            {checking ? "확인하는 중…" : "확인"}
           </button>
         )}
         {checked && (
           <>
-            <div className={`quiz-result ${isCorrect ? "correct" : "incorrect"}`} role="status">
-              {isCorrect ? "정답이에요!" : `아쉬워요. 정답: ${question.answer}`}
+            <div className={`quiz-result ${correct ? "correct" : "incorrect"}`} role="status">
+              {correct ? "정답이에요!" : `아쉬워요. 정답: ${question.answer}`}
             </div>
             <p className="study-summary-sentence">
               <span className="study-summary-en">{question.explanation}</span>

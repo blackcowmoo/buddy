@@ -1310,6 +1310,64 @@ func TestGenerateStudyQuizPropagatesBadJSON(t *testing.T) {
 	}
 }
 
+// ---- CheckQuizAnswer() -----------------------------------------------------------
+
+func TestCheckQuizAnswerParsesVerdictAndSendsDetails(t *testing.T) {
+	var gotInput string
+	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		gotInput = msgs[len(msgs)-1].Content
+		return `{"correct": true}`, nil
+	}}, ChatModel: "m"}
+	got, err := p.CheckQuizAnswer(context.Background(), "He ___ to school.", "goes", []string{"walks"}, "commutes")
+	if err != nil {
+		t.Fatalf("CheckQuizAnswer() error = %v", err)
+	}
+	if !got {
+		t.Fatalf("CheckQuizAnswer() = false, want true")
+	}
+	for _, want := range []string{"He ___ to school.", "goes", "walks", "commutes"} {
+		if !strings.Contains(gotInput, want) {
+			t.Fatalf("input sent to the model missing %q: %q", want, gotInput)
+		}
+	}
+}
+
+func TestCheckQuizAnswerUsesChatModelNotAnalysisEnsemble(t *testing.T) {
+	analysisCalls := 0
+	p := &Pipeline{
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			analysisCalls++
+			return "should not be used", nil
+		}}}},
+		LLM:       &fakeLLM{complete: func(msgs []llm.Message) (string, error) { return `{"correct": false}`, nil }},
+		ChatModel: "chat",
+	}
+	if _, err := p.CheckQuizAnswer(context.Background(), "He ___ to school.", "goes", nil, "walks"); err != nil {
+		t.Fatalf("CheckQuizAnswer() error = %v", err)
+	}
+	if analysisCalls != 0 {
+		t.Fatalf("CheckQuizAnswer should use the chat model, not the Analysis ensemble; got %d analysis calls", analysisCalls)
+	}
+}
+
+func TestCheckQuizAnswerPropagatesLLMError(t *testing.T) {
+	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		return "", errors.New("down")
+	}}, ChatModel: "m"}
+	if _, err := p.CheckQuizAnswer(context.Background(), "p", "a", nil, "b"); err == nil {
+		t.Fatal("expected an error when the LLM call fails")
+	}
+}
+
+func TestCheckQuizAnswerRejectsBadJSON(t *testing.T) {
+	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		return "not json", nil
+	}}, ChatModel: "m"}
+	if _, err := p.CheckQuizAnswer(context.Background(), "p", "a", nil, "b"); err == nil {
+		t.Fatal("expected an error when the model's reply isn't valid JSON")
+	}
+}
+
 func TestUpdateLearnerProfileSendsPreviousProfileAndNewSummary(t *testing.T) {
 	var gotInput string
 	p := &Pipeline{
