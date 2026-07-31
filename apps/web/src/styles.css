@@ -680,6 +680,45 @@ a.icon-btn.ghost {
    anymore, so it just centers on its own line. */
 .composer-ended .hint.ended { margin: 0 2px; width: 100%; text-align: center; }
 
+/* Word-lookup side panel, opened from the composer (not the header) — see
+   App.tsx WordSearchControl. Deliberately position:relative on its own
+   wrapper rather than the composer: it's the first item in that row, so
+   anchoring to itself keeps the panel flush with the row's left edge.
+   Opens UPWARD (bottom, not top) since the composer sits at the very
+   bottom of the screen — .study-panel's default top-anchoring would push
+   this panel off-screen. */
+.word-search { position: relative; display: inline-flex; flex-shrink: 0; }
+.word-search-panel {
+  top: auto;
+  bottom: calc(100% + 6px);
+  left: 0;
+  width: min(90vw, 360px);
+  max-width: calc(100vw - 16px);
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.word-search-panel form { display: flex; gap: 6px; }
+.word-search-panel input[type="text"] {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 16px; /* iOS Safari zoom threshold, same as .composer input */
+  background: var(--panel-2);
+  border: 1px solid var(--border-2);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+.word-search-status { font-size: 13px; color: var(--muted); padding: 2px 4px; }
+.word-search-results { display: flex; flex-direction: column; gap: 8px; list-style: none; margin: 0; padding: 0; }
+.word-search-results li { display: flex; flex-direction: column; gap: 2px; padding: 2px 4px; }
+.word-search-word { font-weight: 600; }
+.word-search-meaning { font-size: 13px; color: var(--muted); }
+.word-search-example { font-size: 13px; font-style: italic; }
+
 /* Primary action: a thumb-reachable circular mic FAB. */
 .mic {
   flex-shrink: 0;

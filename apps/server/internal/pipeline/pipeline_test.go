@@ -1030,6 +1030,45 @@ func TestGenerateTitlePropagatesLLMError(t *testing.T) {
 	}
 }
 
+// ---- SuggestWords() -----------------------------------------------------------
+
+func TestSuggestWordsParsesSuggestions(t *testing.T) {
+	var gotInput string
+	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		gotInput = msgs[len(msgs)-1].Content
+		return `{"suggestions":[{"word":"furious","meaning":"화가 나서 참을 수 없는","example":"She was furious when she found out."}]}`, nil
+	}}, ChatModel: "m", FeedbackLang: "ko"}
+	got, err := p.SuggestWords(context.Background(), "화가 나서 참을 수 없는 느낌")
+	if err != nil {
+		t.Fatalf("SuggestWords() error = %v", err)
+	}
+	if gotInput != "화가 나서 참을 수 없는 느낌" {
+		t.Fatalf("input sent to the model = %q, want the description verbatim", gotInput)
+	}
+	want := []protocol.WordSuggestion{{Word: "furious", Meaning: "화가 나서 참을 수 없는", Example: "She was furious when she found out."}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("SuggestWords() = %+v, want %+v", got, want)
+	}
+}
+
+func TestSuggestWordsPropagatesLLMError(t *testing.T) {
+	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		return "", errors.New("down")
+	}}, ChatModel: "m"}
+	if _, err := p.SuggestWords(context.Background(), "설명"); err == nil {
+		t.Fatal("expected an error when the LLM call fails")
+	}
+}
+
+func TestSuggestWordsRejectsBadJSON(t *testing.T) {
+	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		return "not json", nil
+	}}, ChatModel: "m"}
+	if _, err := p.SuggestWords(context.Background(), "설명"); err == nil {
+		t.Fatal("expected an error when the model's reply isn't valid JSON")
+	}
+}
+
 // ---- GenerateStudySummary() -----------------------------------------------
 
 func TestGenerateStudySummarySendsIssueDetails(t *testing.T) {

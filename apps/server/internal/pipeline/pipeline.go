@@ -1228,6 +1228,52 @@ func renderTitleInput(transcript []llm.Message) string {
 	return b.String()
 }
 
+// SuggestWords asks the chat model for candidate English words/phrases
+// matching a learner's native-language description of a word they can't
+// recall mid-conversation (e.g. "화가 나서 참을 수 없는 느낌" -> "furious"/"livid").
+// A fresh two-message call, same "never touches the session's own
+// transcript" shape as GenerateTitle/analyze()-based tasks. Unlike the
+// Analysis-ensemble tasks (GenerateStudySummary, correct(), ...), this uses a
+// single fast call (p.LLM/p.ChatModel) — the same tier as GenerateTitle: it
+// backs a live side panel a learner consults mid-typing, so latency matters
+// more than the higher quality bar correct()/GenerateStudySummary need, and
+// a mediocre suggestion just gets re-asked.
+func (p *Pipeline) SuggestWords(ctx context.Context, description string) ([]protocol.WordSuggestion, error) {
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: wordSuggestionSystemPrompt(p.FeedbackLang)},
+		{Role: llm.RoleUser, Content: description},
+	}
+	raw, err := p.LLM.Complete(ctx, p.ChatModel, msgs, true)
+	if err != nil {
+		return nil, err
+	}
+	var parsed struct {
+		Suggestions []protocol.WordSuggestion `json:"suggestions"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return nil, fmt.Errorf("word suggestion: bad json: %w", err)
+	}
+	return parsed.Suggestions, nil
+}
+
+// wordSuggestionSystemPrompt builds SuggestWords' prompt, reusing the same
+// native-language config as correctionSystemPrompt/studySummarySystemPrompt.
+func wordSuggestionSystemPrompt(lang string) string {
+	native := languageName(lang)
+	return fmt.Sprintf(`You help a %[1]s-speaking English learner who is mid-conversation and can't
+recall an English word, by suggesting candidates from a %[1]s description of
+what they mean.
+Given a short %[1]s phrase describing a word or concept, suggest 3-5 English
+word/phrase candidates that best match it, most likely match first.
+Return STRICT JSON only, no prose, in exactly this shape:
+{"suggestions":[{"word":"<English word or short phrase>","meaning":"<brief %[1]s gloss>","example":"<one example English sentence using it>"}]}
+Rules:
+- "word" MUST stay in English.
+- "meaning" MUST be written in %[1]s.
+- "example" MUST be a natural English sentence that uses "word".
+- If the description is too vague to suggest anything meaningful, return an empty "suggestions" array rather than guessing wildly.`, native)
+}
+
 // renderTranslationContext formats prior turns as context for
 // TranslateWithContext, mirroring renderCorrectionContext's shape but
 // labeled for translation rather than correction so the prompt never
