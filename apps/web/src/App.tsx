@@ -1,6 +1,13 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { BuddyClient, type Status } from "./lib/ws";
-import type { Correction, InputSource, QuizQuestion, ServerEvent, StudySummarySentence } from "./lib/protocol";
+import type {
+  Correction,
+  InputSource,
+  QuizQuestion,
+  ServerEvent,
+  StudySummarySentence,
+  WordSuggestion,
+} from "./lib/protocol";
 import { PCMRecorder } from "./audio/recorder";
 import { KokoroSpeaker } from "./tts/kokoro";
 import { prPath } from "./lib/rootPath";
@@ -28,6 +35,8 @@ import {
 import { fetchSettings, saveSettings, MAX_INTERLOCUTOR_STYLE_LEN } from "./lib/settings";
 import { applyTheme, getStoredTheme, onSystemThemeChange, setStoredTheme, type Theme } from "./lib/theme";
 import { formatDateDivider, formatMessageTime, formatRelativeTime, isSameDay } from "./lib/time";
+import { clearDraft, loadDraft, saveDraft } from "./lib/draftCache";
+import { suggestWords } from "./lib/wordSearch";
 import {
   MAX_EXTRA_RATES,
   NATIVE_RATE,
@@ -806,6 +815,10 @@ export function App() {
         hasPushedRoomEntryRef.current = true;
       }
       setActiveSessionId(sessionId ?? null);
+      // Restore whatever draft this room had cached (see draftCache.ts) —
+      // otherwise a leftover draft from the previous room would silently
+      // carry over into this one, or a real draft would look lost.
+      setText(sessionId ? loadDraft(sessionId) : "");
       if (sessionId) {
         // Fire the WS handshake alongside the transcript fetch — they're
         // independent round trips — instead of waiting for the fetch first.
@@ -1181,9 +1194,10 @@ export function App() {
     clientRef.current?.sendText(t, voiceDraft ? "voice" : undefined);
     setAwaitingReply(true);
     setText("");
+    if (activeSessionId) clearDraft(activeSessionId);
     setVoiceDraft(false);
     voiceDraftAutoTextRef.current = null;
-  }, [text, voiceDraft]);
+  }, [text, voiceDraft, activeSessionId]);
 
   const onComposerSubmit = useCallback(
     (e: React.FormEvent) => {
@@ -1479,6 +1493,7 @@ export function App() {
         </footer>
       ) : (
         <footer className="composer">
+          <WordSearchControl />
           <button
             className={`mic ${mic ? "on" : ""}`}
             onClick={toggleMic}
@@ -1501,6 +1516,7 @@ export function App() {
               onChange={(e) => {
                 const v = e.target.value;
                 setText(v);
+                if (activeSessionId) saveDraft(activeSessionId, v);
                 if (voiceDraft && v === "") discardVoiceDraft(); // cleared by hand — treat as discarded
               }}
               onKeyDown={onComposerKeyDown}
@@ -2014,6 +2030,88 @@ interface FeedbackTurn {
   turn: number;
   text: string;
   correction: Correction;
+}
+
+// Lets a learner, mid-typing, describe (in their native language) a word
+// they can't recall and get English candidates back from the chat LLM (see
+// pipeline.SuggestWords). Anchored next to the composer rather than the
+// header — so it's reachable without leaving the chat window — and opens
+// upward (see .word-search-panel in styles.css) since the composer sits at
+// the very bottom of the screen. Unlike CompactionInfo/usePopoverFetch's
+// panels, there's nothing to fetch on open: it only calls out once the
+// learner actually types a description and submits it.
+function WordSearchControl() {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [suggestions, setSuggestions] = useState<WordSuggestion[] | null>(null);
+  const [failed, setFailed] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  useDismiss(open, panelRef, () => setOpen(false));
+
+  const onSubmit = useCallback(
+    (e: React.FormEvent) => {
+      e.preventDefault();
+      const q = query.trim();
+      if (!q) return;
+      setLoading(true);
+      setFailed(false);
+      void suggestWords(q).then((result) => {
+        setLoading(false);
+        setFailed(result === null);
+        setSuggestions(result);
+      });
+    },
+    [query],
+  );
+
+  return (
+    <div className="word-search" ref={panelRef}>
+      <button
+        type="button"
+        className="ghost icon-btn"
+        aria-haspopup="true"
+        aria-expanded={open}
+        aria-label="모르는 단어 찾기"
+        title="모르는 단어 찾기"
+        onClick={() => setOpen((o) => !o)}
+      >
+        🔎
+      </button>
+      {open && (
+        <div className="word-search-panel study-panel" role="menu">
+          <form onSubmit={onSubmit}>
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="예: 화가 나서 참을 수 없는 느낌"
+              autoComplete="off"
+            />
+            <button type="submit" disabled={loading || !query.trim()}>
+              찾기
+            </button>
+          </form>
+          {loading && <div className="word-search-status">찾는 중…</div>}
+          {!loading && failed && <div className="word-search-status">불러오지 못했어요.</div>}
+          {!loading && !failed && suggestions && suggestions.length === 0 && (
+            <div className="word-search-status">추천할 단어를 찾지 못했어요.</div>
+          )}
+          {!loading && !failed && suggestions && suggestions.length > 0 && (
+            <ul className="word-search-results">
+              {suggestions.map((s, i) => (
+                <li key={i}>
+                  <span className="word-search-word">{s.word}</span>
+                  <span className="word-search-meaning">{s.meaning}</span>
+                  <span className="word-search-example">{s.example}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // Debug view onto internal/session's compaction: shows the room's rolling

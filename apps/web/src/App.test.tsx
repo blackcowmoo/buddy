@@ -72,6 +72,10 @@ vi.mock("./lib/settings", () => ({
   MAX_INTERLOCUTOR_STYLE_LEN: 1024,
 }));
 
+vi.mock("./lib/wordSearch", () => ({
+  suggestWords: vi.fn(),
+}));
+
 vi.mock("./lib/roomHistory", () => ({
   parseRoomHash: vi.fn(() => ({ view: "list" })),
   currentRoomHistoryState: vi.fn(() => ({ view: "list" })),
@@ -103,6 +107,7 @@ import {
   restudySession,
 } from "./lib/sessions";
 import { fetchSettings, saveSettings } from "./lib/settings";
+import { suggestWords } from "./lib/wordSearch";
 import { KokoroSpeaker } from "./tts/kokoro";
 import { BuddyClient } from "./lib/ws";
 
@@ -118,6 +123,7 @@ beforeEach(() => {
   vi.mocked(markQuizCompleted).mockResolvedValue(true);
   vi.mocked(fetchSettings).mockResolvedValue({ interlocutorStyle: "", learnerProfile: "" });
   vi.mocked(saveSettings).mockResolvedValue(true);
+  vi.mocked(suggestWords).mockResolvedValue([]);
   vi.mocked(parseRoomHash).mockReturnValue({ view: "list" });
   vi.mocked(currentRoomHistoryState).mockReturnValue({ view: "list" });
   vi.stubGlobal("location", {
@@ -1859,6 +1865,112 @@ describe("composer", () => {
 
     expect(lastSendText()).not.toHaveBeenCalled();
     expect(textarea).toHaveValue("Hello\nBuddy");
+  });
+});
+
+// The word-lookup panel is anchored next to the composer (see
+// WordSearchControl in App.tsx), not the header — reachable mid-typing
+// without ever navigating away from the chat window, unlike the header
+// popovers covered under "compaction info"/"feedback summary" above.
+describe("word search panel", () => {
+  async function openExistingRoom(user: ReturnType<typeof userEvent.setup>, title = "word test room") {
+    vi.mocked(fetchSessions).mockResolvedValue([{ id: "s1", title, createdAt: 1, updatedAt: 2 }]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
+      session: { id: "s1", title, createdAt: 1, updatedAt: 2 },
+      turns: [],
+    });
+    render(<App />);
+    await user.click(await screen.findByText(title));
+    await screen.findByPlaceholderText("…or type in English");
+  }
+
+  it("lets the learner describe a word in Korean and shows the LLM's English suggestions", async () => {
+    vi.mocked(suggestWords).mockResolvedValue([
+      { word: "furious", meaning: "화가 나서 참을 수 없는", example: "She was furious when she found out." },
+    ]);
+    const user = userEvent.setup();
+    await openExistingRoom(user);
+
+    await user.click(screen.getByRole("button", { name: "모르는 단어 찾기" }));
+    await user.type(
+      screen.getByPlaceholderText("예: 화가 나서 참을 수 없는 느낌"),
+      "화가 나서 참을 수 없는 느낌",
+    );
+    await user.click(screen.getByRole("button", { name: "찾기" }));
+
+    expect(suggestWords).toHaveBeenCalledWith("화가 나서 참을 수 없는 느낌");
+    expect(await screen.findByText("furious")).toBeInTheDocument();
+    expect(screen.getByText("She was furious when she found out.")).toBeInTheDocument();
+  });
+
+  it("shows a failure message when the request fails", async () => {
+    vi.mocked(suggestWords).mockResolvedValue(null);
+    const user = userEvent.setup();
+    await openExistingRoom(user);
+
+    await user.click(screen.getByRole("button", { name: "모르는 단어 찾기" }));
+    await user.type(screen.getByPlaceholderText("예: 화가 나서 참을 수 없는 느낌"), "설명");
+    await user.click(screen.getByRole("button", { name: "찾기" }));
+
+    expect(await screen.findByText("불러오지 못했어요.")).toBeInTheDocument();
+  });
+
+  // The whole point of anchoring this next to the composer instead of a
+  // separate screen: opening it must never unmount the composer itself.
+  it("stays inside the chat window — the composer remains mounted while the panel is open", async () => {
+    const user = userEvent.setup();
+    await openExistingRoom(user);
+
+    await user.click(screen.getByRole("button", { name: "모르는 단어 찾기" }));
+    expect(screen.getByPlaceholderText("…or type in English")).toBeInTheDocument();
+  });
+});
+
+// Opening the word-search panel (or switching rooms) must never silently
+// drop what a learner was mid-typing — see lib/draftCache.ts.
+describe("composer draft caching", () => {
+  it("persists the in-progress draft per room and restores it on reopen", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "draft room", createdAt: 1, updatedAt: 2 },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
+      session: { id: "s1", title: "draft room", createdAt: 1, updatedAt: 2 },
+      turns: [],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("draft room"));
+    const textarea = await screen.findByPlaceholderText("…or type in English");
+    await user.type(textarea, "half-typed sentence");
+
+    expect(localStorage.getItem("buddy.chat.draft.s1")).toContain("half-typed sentence");
+
+    await user.click(screen.getByRole("button", { name: "목록으로" }));
+    act(() => capturedPopStateHandler?.({ view: "list" }));
+    await screen.findByRole("button", { name: "+ 새 대화" });
+
+    await user.click(await screen.findByText("draft room"));
+    expect(await screen.findByPlaceholderText("…or type in English")).toHaveValue("half-typed sentence");
+  });
+
+  it("clears the cached draft once the message is actually sent", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "draft room", createdAt: 1, updatedAt: 2 },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
+      session: { id: "s1", title: "draft room", createdAt: 1, updatedAt: 2 },
+      turns: [],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("draft room"));
+    const textarea = await screen.findByPlaceholderText("…or type in English");
+    await user.type(textarea, "send me{Enter}");
+
+    expect(localStorage.getItem("buddy.chat.draft.s1")).toBeNull();
   });
 });
 

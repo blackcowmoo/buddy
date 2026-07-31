@@ -46,6 +46,16 @@ export interface QuizQuestion {
   explanationTranslation: string; // native-language translation of explanation
 }
 
+// One candidate English word/phrase suggested for a learner's
+// native-language description of a word they can't recall (see
+// lib/wordSearch.ts's suggestWords) — mirrors protocol.WordSuggestion
+// server-side.
+export interface WordSuggestion {
+  word: string; // the candidate English word or phrase
+  meaning: string; // brief native-language gloss
+  example: string; // one example English sentence using word
+}
+
 // How the learner produced a turn — spoken (transcribed by STT) or typed.
 export type InputSource = "voice" | "text";
 

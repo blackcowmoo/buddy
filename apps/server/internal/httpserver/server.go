@@ -73,6 +73,7 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux.HandleFunc("DELETE /api/sessions/{id}", sessionDeleteHandler(ident, st, audio, recordings))
 	mux.HandleFunc("GET /api/settings", settingsGetHandler(ident, st))
 	mux.HandleFunc("PUT /api/settings", settingsSaveHandler(ident, st))
+	mux.HandleFunc("POST /api/words/suggest", wordSuggestHandler(ident, pipe))
 	mux.HandleFunc("GET /api/recordings", recordingsListHandler(ident, recordings))
 	mux.HandleFunc("GET /api/recordings/{id}/audio", recordingAudioHandler(ident, recordings))
 	mux.HandleFunc("DELETE /api/recordings/{id}", recordingDeleteHandler(ident, audio, recordings))
@@ -682,6 +683,49 @@ func settingsSaveHandler(ident identity.Identifier, st store.Store) http.Handler
 			return
 		}
 		writeJSON(w, map[string]any{"interlocutorStyle": style})
+	}
+}
+
+// maxWordQueryLen caps the Korean description a learner can send to
+// wordSuggestHandler — generous for the "short phrase describing a word"
+// framing wordSuggestionSystemPrompt asks for, same reasoning as
+// maxInterlocutorStyleLen guarding against an arbitrarily long paste.
+const maxWordQueryLen = 200
+
+// wordSuggestHandler asks pipeline.SuggestWords for English word/phrase
+// candidates matching a learner's native-language description — a quick,
+// synchronous call (unlike GenerateStudySummary/GenerateStudyQuiz's
+// asyncjob-backed handlers) since it's cheap, latency-sensitive, and has
+// nothing worth persisting durably: a dropped request just gets retried by
+// the learner reopening the panel.
+func wordSuggestHandler(ident identity.Identifier, pipe *pipeline.Pipeline) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		_, ok := requireUser(w, r, ident)
+		if !ok {
+			return
+		}
+		var body struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		query := strings.TrimSpace(body.Query)
+		if query == "" {
+			http.Error(w, "query is required", http.StatusBadRequest)
+			return
+		}
+		if utf8.RuneCountInString(query) > maxWordQueryLen {
+			http.Error(w, fmt.Sprintf("query exceeds %d characters", maxWordQueryLen), http.StatusBadRequest)
+			return
+		}
+		suggestions, err := pipe.SuggestWords(r.Context(), query)
+		if err != nil {
+			serverError(w, "suggest words", err)
+			return
+		}
+		writeJSON(w, map[string]any{"suggestions": suggestions})
 	}
 }
 

@@ -118,6 +118,16 @@ type QuizQuestion struct {
 	ExplanationTranslation string `json:"explanationTranslation"` // native-language translation of Explanation
 }
 
+// WordSuggestion is one candidate English word/phrase returned by
+// pipeline.SuggestWords for a learner's native-language description of a
+// word they can't recall mid-conversation — see httpserver's
+// wordSuggestHandler.
+type WordSuggestion struct {
+	Word    string `json:"word"`    // the candidate English word or phrase
+	Meaning string `json:"meaning"` // brief native-language gloss
+	Example string `json:"example"` // one example English sentence using Word
+}
+
 // ---- client -> server (TEXT control frames) ---------------------------------
 
 type ClientMsg struct {
