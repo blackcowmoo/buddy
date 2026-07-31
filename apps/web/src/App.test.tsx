@@ -1924,6 +1924,35 @@ describe("word search panel", () => {
     expect(await screen.findByText("불러오지 못했어요.")).toBeInTheDocument();
   });
 
+  // The learner closes the panel to go back to writing their own sentence
+  // in the composer while a (possibly slow, see wordSearch.ts) search is
+  // still in flight — the icon button must surface completion without
+  // forcing the panel to stay open and block their typing.
+  it("badges the search icon once a search finishes while the panel is closed", async () => {
+    let resolveSearch: (value: Awaited<ReturnType<typeof suggestWords>>) => void = () => {};
+    vi.mocked(suggestWords).mockReturnValue(
+      new Promise((resolve) => {
+        resolveSearch = resolve;
+      }),
+    );
+    const user = userEvent.setup();
+    await openExistingRoom(user);
+
+    await user.click(screen.getByRole("button", { name: "모르는 단어 찾기" }));
+    await user.type(screen.getByPlaceholderText("예: 화가 나서 참을 수 없는 느낌"), "화가 나서");
+    await user.click(screen.getByRole("button", { name: "찾기" }));
+
+    await user.click(screen.getByRole("button", { name: "모르는 단어 찾기" }));
+    expect(screen.queryByPlaceholderText("예: 화가 나서 참을 수 없는 느낌")).not.toBeInTheDocument();
+
+    resolveSearch([{ word: "furious", meaning: "화가 나서 참을 수 없는", example: "She was furious." }]);
+    await screen.findByRole("button", { name: "모르는 단어 찾기 (검색 결과 도착)" });
+
+    await user.click(screen.getByRole("button", { name: "모르는 단어 찾기 (검색 결과 도착)" }));
+    expect(await screen.findByText("furious")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "모르는 단어 찾기" })).toBeInTheDocument();
+  });
+
   // The whole point of anchoring this next to the composer instead of a
   // separate screen: opening it must never unmount the composer itself.
   it("stays inside the chat window — the composer remains mounted while the panel is open", async () => {

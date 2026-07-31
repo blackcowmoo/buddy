@@ -780,6 +780,23 @@ a.icon-btn.ghost {
    bottom of the screen — .study-panel's default top-anchoring would push
    this panel off-screen. */
 .word-search { position: relative; display: inline-flex; flex-shrink: 0; }
+/* Marks that a search finished while the panel was closed — the learner
+   went back to writing their own sentence in the composer instead of
+   staring at "찾는 중…" (see WordSearchControl's hasUnseenResult), so the
+   dot needs to catch the eye without a number (unlike .menu-badge's due
+   count, a search result count isn't the useful signal here). Clears the
+   moment the panel is reopened. */
+.word-search-toggle { position: relative; }
+.word-search-badge-dot {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--bg);
+}
 .word-search-panel {
   top: auto;
   bottom: calc(100% + 6px);

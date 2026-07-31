@@ -2077,6 +2077,26 @@ function WordSearchControl() {
   const panelRef = useRef<HTMLDivElement>(null);
   useDismiss(open, panelRef, () => setOpen(false));
 
+  // True once a search finishes while the panel is closed — e.g. the learner
+  // fired off a search, then closed the panel to keep writing their own
+  // sentence in the composer while the (possibly slow, see wordSearch.ts)
+  // model call runs. `open` itself can't be read from inside the promise
+  // callback below (that closure captures whatever `open` was at submit
+  // time, not at resolution time), so a ref mirrors the latest value.
+  const [hasUnseenResult, setHasUnseenResult] = useState(false);
+  const openRef = useRef(open);
+  useEffect(() => {
+    openRef.current = open;
+  }, [open]);
+
+  const toggleOpen = useCallback(() => {
+    setOpen((o) => {
+      const next = !o;
+      if (next) setHasUnseenResult(false);
+      return next;
+    });
+  }, []);
+
   // Which suggested words the learner has chosen to add to their
   // spaced-repetition study list ("학습하기") — keyed by word+meaning (not
   // word text alone, and not list index) so two suggestions that share a
@@ -2100,6 +2120,7 @@ function WordSearchControl() {
         setLoading(false);
         setFailed(result === null);
         setSuggestions(result);
+        if (!openRef.current) setHasUnseenResult(true);
       });
     },
     [query],
@@ -2122,14 +2143,15 @@ function WordSearchControl() {
     <div className="word-search" ref={panelRef}>
       <button
         type="button"
-        className="ghost icon-btn"
+        className="ghost icon-btn word-search-toggle"
         aria-haspopup="true"
         aria-expanded={open}
-        aria-label="모르는 단어 찾기"
+        aria-label={hasUnseenResult ? "모르는 단어 찾기 (검색 결과 도착)" : "모르는 단어 찾기"}
         title="모르는 단어 찾기"
-        onClick={() => setOpen((o) => !o)}
+        onClick={toggleOpen}
       >
         🔎
+        {hasUnseenResult && <span className="word-search-badge-dot" aria-hidden="true" />}
       </button>
       {open && (
         <div className="word-search-panel study-panel" role="menu">
