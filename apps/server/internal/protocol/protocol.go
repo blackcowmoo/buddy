@@ -111,11 +111,26 @@ type StudySummarySentence struct {
 // GenerateStudySummary's prose wrap-up actually landed, rather than just
 // re-reading it.
 type QuizQuestion struct {
-	Prompt                 string `json:"prompt"`                 // English sentence with exactly one blank ("___") to fill in
-	Answer                 string `json:"answer"`                 // the word/phrase that correctly fills the blank, in English
-	Translation            string `json:"translation"`            // native-language translation of the full, correctly-filled sentence
-	Explanation            string `json:"explanation"`            // why this is the answer, in English, short and kind
-	ExplanationTranslation string `json:"explanationTranslation"` // native-language translation of Explanation
+	Prompt string `json:"prompt"` // English sentence with exactly one blank ("___") to fill in
+	Answer string `json:"answer"` // the word/phrase that correctly fills the blank, in English
+	// AnswerMeaning is a short native-language gloss of Answer alone (its
+	// sense in this sentence, not a translation of the whole sentence) —
+	// shown to the learner alongside Prompt before they answer. A blanked
+	// English sentence alone can fit many different words, so without this
+	// there's nothing to actually predict from; pairing the blank with what
+	// it means narrows it down to one guessable word the same way a
+	// dictionary-style gloss would.
+	AnswerMeaning string `json:"answerMeaning"`
+	// AcceptableAnswers lists close synonyms/alternate forms of Answer that
+	// also correctly fill Prompt with the same meaning — QuizPanel accepts
+	// any of these as correct too, since a learner shouldn't be marked wrong
+	// for a word that fits just as naturally. Empty when Answer has no
+	// reasonable substitute in this exact sentence. Never includes Answer
+	// itself.
+	AcceptableAnswers      []string `json:"acceptableAnswers,omitempty"`
+	Translation            string   `json:"translation"`            // native-language translation of the full, correctly-filled sentence
+	Explanation            string   `json:"explanation"`            // why Answer specifically (not just any AcceptableAnswers) fits this sentence's meaning/nuance, in English, short and kind
+	ExplanationTranslation string   `json:"explanationTranslation"` // native-language translation of Explanation
 }
 
 // WordSuggestion is one candidate English word/phrase returned by

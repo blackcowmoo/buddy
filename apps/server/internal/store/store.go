@@ -292,6 +292,20 @@ type Store interface {
 	// again. A no-op if sessionID doesn't exist or belongs to a different
 	// user, same as Save.
 	MarkQuizCompleted(ctx context.Context, userID, sessionID string) error
+	// RestartStudyQuiz resets an already-terminal (JobStatusDone or
+	// JobStatusFailed) quiz back to JobStatusPending, clears any stored Quiz,
+	// and clears QuizCompleted — so asyncjob.KindStudyQuiz regenerates a
+	// fresh set of questions from scratch. Unlike RestartStudySummary (only
+	// ever called to recover a stuck empty result), this is meant to be
+	// called on a quiz that already has real content too: the "퀴즈 다시
+	// 만들기" button (see httpserver.sessionQuizResetHandler) lets a learner
+	// ask for a brand-new quiz on demand, e.g. one generated before
+	// AnswerMeaning/AcceptableAnswers existed. Clearing QuizCompleted matters
+	// here specifically — the old quiz's "studied this" checkmark must not
+	// carry over to questions the learner hasn't actually seen yet. A no-op
+	// if sessionID doesn't exist or belongs to a different user, same as
+	// Save.
+	RestartStudyQuiz(ctx context.Context, userID, sessionID string) error
 
 	// GetLearnerProfile returns userID's persistent, LLM-maintained
 	// cross-session profile (recurring mistakes, interests, proficiency

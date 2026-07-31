@@ -77,6 +77,8 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux.HandleFunc("POST /api/sessions/{id}/end", sessionEndHandler(ident, st, pipe, studySummaryQueue, studyQuizQueue))
 	mux.HandleFunc("POST /api/sessions/{id}/restudy", sessionRestudyHandler(ident, st, pipe, studySummaryQueue))
 	mux.HandleFunc("POST /api/sessions/{id}/quiz/complete", sessionQuizCompleteHandler(ident, st))
+	mux.HandleFunc("POST /api/sessions/{id}/quiz/reset", sessionQuizResetHandler(ident, st, pipe, studyQuizQueue))
+	mux.HandleFunc("POST /api/quiz/check-answer", quizAnswerCheckHandler(ident, pipe))
 	mux.HandleFunc("DELETE /api/sessions/{id}", sessionDeleteHandler(ident, st, audio, recordings))
 	mux.HandleFunc("GET /api/settings", settingsGetHandler(ident, st))
 	mux.HandleFunc("PUT /api/settings", settingsSaveHandler(ident, st))
@@ -587,6 +589,60 @@ func sessionQuizCompleteHandler(ident identity.Identifier, st store.Store) http.
 	}
 }
 
+// sessionQuizResetHandler lets a learner force-regenerate an ended session's
+// practice quiz from scratch — the "퀴즈 다시 만들기" button in
+// EndConversationControl (apps/web/src/App.tsx), shown whenever a quiz has
+// finished generating (whether or not it came back empty). Unlike
+// sessionRestudyHandler, this doesn't require the existing result to be
+// empty first: the whole point is regenerating a quiz that already has real
+// questions, e.g. one generated before AnswerMeaning/AcceptableAnswers
+// existed. Still gated on QuizStatus being terminal (JobStatusDone,
+// JobStatusFailed, or "" for a session ended before quiz pre-generation
+// existed) rather than JobStatusPending, so this can't race a
+// still-in-flight generation into two competing writers.
+func sessionQuizResetHandler(ident identity.Identifier, st store.Store, pipe *pipeline.Pipeline, studyQuizQueue *asyncjob.Queue) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := requireUser(w, r, ident)
+		if !ok {
+			return
+		}
+		sessionID := r.PathValue("id")
+
+		meta, _, err := st.SessionDetail(r.Context(), userID, sessionID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				http.NotFound(w, r)
+				return
+			}
+			serverError(w, "session detail", err)
+			return
+		}
+		resettable := meta.QuizStatus == store.JobStatusDone || meta.QuizStatus == store.JobStatusFailed || meta.QuizStatus == ""
+		if !meta.Ended || !resettable {
+			http.Error(w, "quiz is not in a resettable state", http.StatusConflict)
+			return
+		}
+
+		if err := st.RestartStudyQuiz(r.Context(), userID, sessionID); err != nil {
+			serverError(w, "restart study quiz", err)
+			return
+		}
+
+		enqueueOrRunInline(studyQuizQueue, r.Context(),
+			fmt.Sprintf("reset quiz: enqueue study quiz %s/%s", userID, sessionID),
+			func(ctx context.Context) error {
+				return transport.EnqueueStudyQuizJob(ctx, studyQuizQueue, pipe, st, userID, sessionID)
+			},
+			fmt.Sprintf("reset quiz: study quiz %s/%s", userID, sessionID),
+			func(ctx context.Context) error {
+				return transport.RunStudyQuizInline(ctx, pipe, st, userID, sessionID)
+			},
+		)
+
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 // sessionDeleteHandler removes one chat room and its full transcript, and
 // cascades to that room's audio: every recording captured in it (see
 // recording.Store.DeleteBySession, when archival is enabled) and every
@@ -737,6 +793,57 @@ func wordSuggestHandler(ident identity.Identifier, pipe *pipeline.Pipeline) http
 			return
 		}
 		writeJSON(w, map[string]any{"suggestions": suggestions})
+	}
+}
+
+// maxQuizAnswerCheckLen caps the typed answer quizAnswerCheckHandler sends to
+// pipeline.CheckQuizAnswer — a fill-in-the-blank answer is at most a short
+// phrase, same "cap a free-text field a learner controls" reasoning as
+// maxWordQueryLen.
+const maxQuizAnswerCheckLen = 200
+
+// quizAnswerCheckHandler asks pipeline.CheckQuizAnswer whether a learner's
+// typed quiz answer should count as correct, for the one case QuizPanel's
+// client-side isQuizAnswerAccepted can't already resolve on its own: an
+// answer that didn't literally match QuizQuestion.answer or
+// acceptableAnswers, but might still be a genuine synonym the model didn't
+// think to list at quiz-generation time. Not session-scoped — the question
+// itself (prompt/answer/acceptableAnswers) is already loaded client-side
+// (see App.tsx's endedQuiz), so this only needs what's in the request body,
+// the same "no session lookup needed" shape as wordSuggestHandler.
+func quizAnswerCheckHandler(ident identity.Identifier, pipe *pipeline.Pipeline) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		_, ok := requireUser(w, r, ident)
+		if !ok {
+			return
+		}
+		var body struct {
+			Prompt            string   `json:"prompt"`
+			Answer            string   `json:"answer"`
+			AcceptableAnswers []string `json:"acceptableAnswers"`
+			LearnerAnswer     string   `json:"learnerAnswer"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		prompt := strings.TrimSpace(body.Prompt)
+		answer := strings.TrimSpace(body.Answer)
+		learnerAnswer := strings.TrimSpace(body.LearnerAnswer)
+		if prompt == "" || answer == "" || learnerAnswer == "" {
+			http.Error(w, "prompt, answer, and learnerAnswer are required", http.StatusBadRequest)
+			return
+		}
+		if utf8.RuneCountInString(learnerAnswer) > maxQuizAnswerCheckLen {
+			http.Error(w, fmt.Sprintf("learnerAnswer exceeds %d characters", maxQuizAnswerCheckLen), http.StatusBadRequest)
+			return
+		}
+		correct, err := pipe.CheckQuizAnswer(r.Context(), prompt, answer, body.AcceptableAnswers, learnerAnswer)
+		if err != nil {
+			serverError(w, "check quiz answer", err)
+			return
+		}
+		writeJSON(w, map[string]any{"correct": correct})
 	}
 }
 

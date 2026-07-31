@@ -97,6 +97,12 @@ type fakeSessionStore struct {
 	markQuizCompletedCalls []struct{ userID, sessionID string }
 	markQuizCompletedErr   error
 
+	// restartQuizCalls/restartQuizErr back RestartStudyQuiz for
+	// sessions_quiz_reset_test.go; left zero for tests in this file, which
+	// don't call it.
+	restartQuizCalls []struct{ userID, sessionID string }
+	restartQuizErr   error
+
 	// learnerProfiles/learnerProfileErr back GetLearnerProfile/
 	// SaveLearnerProfile for sessions_end_test.go.
 	learnerProfiles   map[string]string // userID -> profile
@@ -290,6 +296,16 @@ func (f *fakeSessionStore) MarkQuizCompleted(ctx context.Context, userID, sessio
 	return nil
 }
 
+func (f *fakeSessionStore) RestartStudyQuiz(ctx context.Context, userID, sessionID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.restartQuizErr != nil {
+		return f.restartQuizErr
+	}
+	f.restartQuizCalls = append(f.restartQuizCalls, struct{ userID, sessionID string }{userID, sessionID})
+	return nil
+}
+
 func (f *fakeSessionStore) GetLearnerProfile(ctx context.Context, userID string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -358,6 +374,12 @@ func (f *fakeSessionStore) snapshotMarkQuizCompletedCalls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.markQuizCompletedCalls)
+}
+
+func (f *fakeSessionStore) snapshotRestartQuizCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.restartQuizCalls)
 }
 
 func (f *fakeSessionStore) snapshotLearnerProfile(userID string) string {

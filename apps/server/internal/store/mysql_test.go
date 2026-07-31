@@ -1334,7 +1334,7 @@ func TestMySQLCompleteStudyQuizSavesQuestionsAndMarksDone(t *testing.T) {
 	if meta.QuizStatus != JobStatusDone {
 		t.Fatalf("QuizStatus = %q, want JobStatusDone", meta.QuizStatus)
 	}
-	if len(meta.Quiz) != 1 || meta.Quiz[0] != wantQuiz[0] {
+	if len(meta.Quiz) != 1 || !reflect.DeepEqual(meta.Quiz[0], wantQuiz[0]) {
 		t.Fatalf("Quiz = %+v, want %+v", meta.Quiz, wantQuiz)
 	}
 }
@@ -1448,6 +1448,52 @@ func TestMySQLMarkQuizCompletedMissingSessionIsNoop(t *testing.T) {
 	st := requireStore(t)
 	if err := st.MarkQuizCompleted(context.Background(), "alex", "no-such-session"); err != nil {
 		t.Fatalf("MarkQuizCompleted() error = %v, want nil (silent no-op)", err)
+	}
+}
+
+// TestMySQLRestartStudyQuizResetsDoneToPendingClearsQuizAndCompleted guards
+// the "퀴즈 다시 만들기" recovery path (see httpserver.sessionQuizResetHandler):
+// unlike RestartStudySummary, this must reset a quiz that already carries
+// real content, and must also clear QuizCompleted so a checkmark earned on
+// the old questions doesn't silently carry over to ones the learner hasn't
+// answered yet.
+func TestMySQLRestartStudyQuizResetsDoneToPendingClearsQuizAndCompleted(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	const userID = "restart-quiz-user"
+	sessionID := "sess-restart-quiz"
+	if err := st.SaveTurn(ctx, userID, sessionID, 1, "user", "first message", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn() error = %v", err)
+	}
+	if err := st.EndSession(ctx, userID, sessionID); err != nil {
+		t.Fatalf("EndSession() error = %v", err)
+	}
+	oldQuiz := []protocol.QuizQuestion{{Prompt: "He ___ to school.", Answer: "goes"}}
+	if err := st.CompleteStudyQuiz(ctx, userID, sessionID, oldQuiz); err != nil {
+		t.Fatalf("CompleteStudyQuiz() error = %v", err)
+	}
+	if err := st.MarkQuizCompleted(ctx, userID, sessionID); err != nil {
+		t.Fatalf("MarkQuizCompleted() error = %v", err)
+	}
+
+	if err := st.RestartStudyQuiz(ctx, userID, sessionID); err != nil {
+		t.Fatalf("RestartStudyQuiz() error = %v", err)
+	}
+	meta, _, err := st.SessionDetail(ctx, userID, sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if meta.QuizStatus != JobStatusPending || len(meta.Quiz) != 0 || meta.QuizCompleted {
+		t.Fatalf("meta = %+v, want JobStatusPending with an empty quiz and QuizCompleted false", meta)
+	}
+}
+
+// TestMySQLRestartStudyQuizMissingSessionIsNoop mirrors EndSession's "no row
+// to match" behavior.
+func TestMySQLRestartStudyQuizMissingSessionIsNoop(t *testing.T) {
+	st := requireStore(t)
+	if err := st.RestartStudyQuiz(context.Background(), "alex", "no-such-session"); err != nil {
+		t.Fatalf("RestartStudyQuiz() error = %v, want nil (silent no-op)", err)
 	}
 }
 

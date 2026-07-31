@@ -6,6 +6,7 @@ import {
   fetchSessionDetail,
   fetchSessions,
   markQuizCompleted,
+  resetQuiz,
 } from "./sessions";
 
 afterEach(() => {
@@ -168,5 +169,25 @@ describe("markQuizCompleted", () => {
   it("returns false when fetch rejects", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
     await expect(markQuizCompleted("s1")).resolves.toBe(false);
+  });
+});
+
+describe("resetQuiz", () => {
+  it("sends a bare POST request to the quiz/reset route and returns true on success", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(resetQuiz("weird id/1")).resolves.toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith("api/sessions/weird%20id%2F1/quiz/reset", { method: "POST" });
+  });
+
+  it("returns false on a non-ok response", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
+    await expect(resetQuiz("s1")).resolves.toBe(false);
+  });
+
+  it("returns false when fetch rejects", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
+    await expect(resetQuiz("s1")).resolves.toBe(false);
   });
 });

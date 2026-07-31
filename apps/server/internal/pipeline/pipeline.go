@@ -1097,18 +1097,99 @@ For each question:
 - "prompt" is a natural English sentence with exactly one blank, written as
   "___", where the tested word or phrase belongs.
 - "answer" is the exact word or phrase that correctly fills that blank.
+- "answerMeaning" is a SHORT %[1]s gloss of "answer" alone — its meaning as
+  used in this sentence, not a translation of the whole sentence. Shown to
+  the learner next to "prompt" BEFORE they answer: a blanked English
+  sentence alone can fit many different words, so pair the blank with what
+  it means so there's something concrete to guess from.
+- "acceptableAnswers" lists other words/phrases (an empty array is fine)
+  that would ALSO correctly and naturally fill the same blank with
+  essentially the same meaning — close synonyms or alternate forms a
+  learner could reasonably type instead of "answer". Never include "answer"
+  itself, and never include a word that would change the sentence's meaning
+  or make it ungrammatical.
 - "translation" is a natural %[1]s translation of the FULL sentence with the
   blank correctly filled in, so the learner can check they understood the
   meaning even if they get the blank wrong.
-- "explanation" briefly says, in English, why that's the answer.
+- "explanation" briefly says, in English, why "answer" specifically is the
+  best fit for THIS sentence — if "acceptableAnswers" is non-empty, contrast
+  "answer" against them (a difference in nuance, formality, or collocation)
+  rather than only restating the grammar rule, so the learner comes away
+  with a feel for why this exact word fits here, not just that it's
+  correct.
 - "explanationTranslation" is a natural %[1]s translation of "explanation".
 Return STRICT JSON only, no prose, in exactly this shape:
-{"questions":[{"prompt":"<sentence with one ___ blank>","answer":"<the word/phrase that fills it>","translation":"<%[1]s translation of the full correct sentence>","explanation":"<why, in English>","explanationTranslation":"<%[1]s translation of explanation>"}]}
+{"questions":[{"prompt":"<sentence with one ___ blank>","answer":"<the word/phrase that fills it>","answerMeaning":"<short %[1]s gloss of answer alone>","acceptableAnswers":["<other word/phrase that also fits>"],"translation":"<%[1]s translation of the full correct sentence>","explanation":"<why this word specifically, in English>","explanationTranslation":"<%[1]s translation of explanation>"}]}
 Rules:
-- "prompt", "answer", and "explanation" MUST stay in English.
-- "translation" and "explanationTranslation" MUST be written in %[1]s.
+- "prompt", "answer", "acceptableAnswers", and "explanation" MUST stay in English.
+- "answerMeaning", "translation", and "explanationTranslation" MUST be written in %[1]s.
 - Every "prompt" must contain exactly one "___".
+- "acceptableAnswers" must never contain "answer" itself, and may be an empty array.
 - Prefer variety: don't test the same single pattern more than twice.`, native)
+}
+
+// CheckQuizAnswer asks whether a learner's typed quiz answer should count as
+// correct when it didn't already match QuizQuestion.Answer or
+// AcceptableAnswers verbatim (see QuizPanel's client-side isQuizAnswerAccepted,
+// apps/web/src/App.tsx) — a learner may type a genuine synonym the model
+// didn't think to list at quiz-generation time. Deliberately biased toward
+// "no": httpserver.quizAnswerCheckHandler only calls this after the cheap
+// exact-match check already failed, so a false negative here just shows the
+// intended answer (mildly annoying, already the pre-existing behavior), while
+// a false positive would actively teach the learner something wrong — worse
+// than being marked wrong for a right answer. A single fast call (p.LLM/
+// p.ChatModel), same tier as SuggestWords/GenerateTitle: this only runs once
+// per wrong-looking answer, not per keystroke or for an already-accepted one,
+// so call volume stays low despite being a live per-answer check.
+func (p *Pipeline) CheckQuizAnswer(ctx context.Context, prompt, canonicalAnswer string, acceptableAnswers []string, learnerAnswer string) (bool, error) {
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: quizAnswerCheckSystemPrompt},
+		{Role: llm.RoleUser, Content: renderQuizAnswerCheckInput(prompt, canonicalAnswer, acceptableAnswers, learnerAnswer)},
+	}
+	raw, err := p.LLM.Complete(ctx, p.ChatModel, msgs, true)
+	if err != nil {
+		return false, err
+	}
+	var parsed struct {
+		Correct bool `json:"correct"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return false, fmt.Errorf("quiz answer check: bad json: %w", err)
+	}
+	return parsed.Correct, nil
+}
+
+// quizAnswerCheckSystemPrompt asks in English regardless of FeedbackLang: the
+// verdict is a plain boolean consumed by QuizPanel, never shown to the
+// learner, so there's no native-language output to configure — same
+// reasoning as learnerProfileSystemPrompt.
+const quizAnswerCheckSystemPrompt = `You are grading one fill-in-the-blank English quiz answer. You will be given
+the sentence with its blank, the accepted answer(s) for that blank, and a
+learner's typed answer that did not literally match any of them.
+Decide whether the learner's answer would ALSO correctly and naturally fill
+the blank with essentially the same meaning as the accepted answer(s) — a
+genuine synonym or equivalent form, not merely a related or plausible-looking
+word.
+Default to false unless you are confident the learner's answer is correct: a
+wrong "true" verdict teaches the learner something incorrect, which is worse
+than a correct answer being marked wrong. Answer false if the learner's
+answer would change the sentence's meaning, grammaticality, or register.
+Return STRICT JSON only, no prose, in exactly this shape:
+{"correct": true or false}`
+
+func renderQuizAnswerCheckInput(prompt, canonicalAnswer string, acceptableAnswers []string, learnerAnswer string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Sentence: %q\n", prompt)
+	fmt.Fprintf(&b, "Accepted answer: %q\n", canonicalAnswer)
+	if len(acceptableAnswers) > 0 {
+		quoted := make([]string, len(acceptableAnswers))
+		for i, a := range acceptableAnswers {
+			quoted[i] = fmt.Sprintf("%q", a)
+		}
+		fmt.Fprintf(&b, "Also accepted: %s\n", strings.Join(quoted, ", "))
+	}
+	fmt.Fprintf(&b, "Learner's answer: %q\n", learnerAnswer)
+	return b.String()
 }
 
 // UpdateLearnerProfile folds one just-ended session's study wrap-up (see

@@ -710,6 +710,21 @@ func (s *MySQLStore) MarkQuizCompleted(ctx context.Context, userID, sessionID st
 	return nil
 }
 
+// RestartStudyQuiz resets a quiz back to JobStatusPending with an empty quiz
+// and quiz_completed cleared — see the Store interface doc comment. Unlike
+// RestartStudySummary, this is meant to be called on an already-terminal row
+// regardless of whether it already carries real questions, so it clears
+// quiz explicitly rather than relying on it already being empty.
+func (s *MySQLStore) RestartStudyQuiz(ctx context.Context, userID, sessionID string) error {
+	if _, err := s.rw.ExecContext(ctx, `
+		UPDATE `+sessionsTable+` SET quiz = '', quiz_status = ?, quiz_completed = 0
+		WHERE user_id = ? AND id = ?
+	`, JobStatusPending, userID, sessionID); err != nil {
+		return fmt.Errorf("store: restart study quiz: %w", err)
+	}
+	return nil
+}
+
 func (s *MySQLStore) ListSessions(ctx context.Context, userID string) ([]SessionMeta, error) {
 	rows, err := s.ro.QueryContext(ctx, `
 		SELECT id, title, created_at, updated_at, ended, study_summary, study_summary_status, quiz_status, quiz_completed FROM `+sessionsTable+`

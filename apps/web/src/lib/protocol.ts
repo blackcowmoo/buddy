@@ -41,8 +41,20 @@ export interface StudySummarySentence {
 export interface QuizQuestion {
   prompt: string; // English sentence with exactly one "___" blank
   answer: string; // the word/phrase that correctly fills the blank
+  // Short native-language gloss of `answer` alone (its meaning in this
+  // sentence, not a translation of the whole sentence) — shown next to
+  // `prompt` before the learner answers, so a blanked English sentence
+  // (which alone could fit many different words) becomes guessable.
+  // Optional only because a quiz persisted before this field existed
+  // decodes without it — see the "퀴즈 다시 만들기" reset button.
+  answerMeaning?: string;
+  // Close synonyms/alternate forms of `answer` that also correctly fill the
+  // blank — QuizPanel accepts any of these as correct too. Absent/empty for
+  // a question with no reasonable substitute, or one persisted before this
+  // field existed.
+  acceptableAnswers?: string[];
   translation: string; // native-language translation of the full, correct sentence
-  explanation: string; // why this is the answer, in English
+  explanation: string; // why `answer` specifically fits this sentence's meaning/nuance, in English
   explanationTranslation: string; // native-language translation of explanation
 }
 

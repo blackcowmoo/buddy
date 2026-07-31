@@ -144,6 +144,19 @@ export async function markQuizCompleted(id: string): Promise<boolean> {
   return requestOK(`api/sessions/${encodeURIComponent(id)}/quiz/complete`, { method: "POST" });
 }
 
+// Forces an ended session's pre-generated quiz to regenerate from scratch
+// (see httpserver.sessionQuizResetHandler) — the "퀴즈 다시 만들기" button in
+// EndConversationControl. Unlike restudySession, the server accepts this
+// even when the existing quiz already has real questions: the whole point
+// is replacing them with a fresh set (e.g. one written before
+// answerMeaning/acceptableAnswers existed), not just recovering a stuck
+// empty result. Returns whether the reset request itself succeeded, not
+// whether the regenerated quiz has landed yet — callers still poll
+// quizStatus for that, same as endSession.
+export async function resetQuiz(id: string): Promise<boolean> {
+  return requestOK(`api/sessions/${encodeURIComponent(id)}/quiz/reset`, { method: "POST" });
+}
+
 // Deletes one chat room and its transcript (the server also cascades to any
 // recordings archived under it — see httpserver.sessionDeleteHandler).
 // Returns whether the request succeeded, so the caller can decide what to do

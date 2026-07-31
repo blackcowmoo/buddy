@@ -534,6 +534,19 @@ func (f *fakeStore) MarkQuizCompleted(ctx context.Context, userID, sessionID str
 	return nil
 }
 
+func (f *fakeStore) RestartStudyQuiz(ctx context.Context, userID, sessionID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.sessions[fakeStoreKey(userID, sessionID)]
+	if d == nil {
+		return nil // no-op, same as Save
+	}
+	d.meta.Quiz = nil
+	d.meta.QuizStatus = store.JobStatusPending
+	d.meta.QuizCompleted = false
+	return nil
+}
+
 func (f *fakeStore) DeleteSession(ctx context.Context, userID, sessionID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
