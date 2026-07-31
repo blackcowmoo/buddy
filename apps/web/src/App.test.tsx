@@ -76,6 +76,11 @@ vi.mock("./lib/wordSearch", () => ({
   suggestWords: vi.fn(),
 }));
 
+vi.mock("./lib/wordReview", () => ({
+  saveWord: vi.fn(),
+  fetchWords: vi.fn(),
+}));
+
 vi.mock("./lib/roomHistory", () => ({
   parseRoomHash: vi.fn(() => ({ view: "list" })),
   currentRoomHistoryState: vi.fn(() => ({ view: "list" })),
@@ -108,6 +113,7 @@ import {
 } from "./lib/sessions";
 import { fetchSettings, saveSettings } from "./lib/settings";
 import { suggestWords } from "./lib/wordSearch";
+import { saveWord, fetchWords } from "./lib/wordReview";
 import { KokoroSpeaker } from "./tts/kokoro";
 import { BuddyClient } from "./lib/ws";
 
@@ -124,6 +130,8 @@ beforeEach(() => {
   vi.mocked(fetchSettings).mockResolvedValue({ interlocutorStyle: "", learnerProfile: "" });
   vi.mocked(saveSettings).mockResolvedValue(true);
   vi.mocked(suggestWords).mockResolvedValue([]);
+  vi.mocked(saveWord).mockResolvedValue(null);
+  vi.mocked(fetchWords).mockResolvedValue({ words: [], dueCount: 0 });
   vi.mocked(parseRoomHash).mockReturnValue({ view: "list" });
   vi.mocked(currentRoomHistoryState).mockReturnValue({ view: "list" });
   vi.stubGlobal("location", {
@@ -1924,6 +1932,105 @@ describe("word search panel", () => {
 
     await user.click(screen.getByRole("button", { name: "모르는 단어 찾기" }));
     expect(screen.getByPlaceholderText("…or type in English")).toBeInTheDocument();
+  });
+
+  // "학습하기" only saves the one suggestion the learner explicitly picks —
+  // opening the panel and searching must never bulk-save every result (see
+  // wordreview's package doc and httpserver.wordSaveHandler).
+  it("adds only the chosen suggestion to the study list, not the whole search result", async () => {
+    vi.mocked(suggestWords).mockResolvedValue([
+      { word: "furious", meaning: "화가 나서 참을 수 없는", example: "She was furious." },
+      { word: "livid", meaning: "몹시 화가 난", example: "He was livid." },
+    ]);
+    vi.mocked(saveWord).mockResolvedValue({
+      id: "w1",
+      word: "furious",
+      meaning: "화가 나서 참을 수 없는",
+      example: "She was furious.",
+      stage: 0,
+      reviewCount: 0,
+      nextReviewAt: 1700000000,
+      status: "pending",
+    });
+    const user = userEvent.setup();
+    await openExistingRoom(user);
+
+    await user.click(screen.getByRole("button", { name: "모르는 단어 찾기" }));
+    await user.type(screen.getByPlaceholderText("예: 화가 나서 참을 수 없는 느낌"), "화가 나서");
+    await user.click(screen.getByRole("button", { name: "찾기" }));
+    await screen.findByText("furious");
+
+    const learnButtons = screen.getAllByRole("button", { name: "학습하기" });
+    expect(learnButtons).toHaveLength(2);
+    await user.click(learnButtons[0]);
+
+    expect(saveWord).toHaveBeenCalledTimes(1);
+    expect(saveWord).toHaveBeenCalledWith({
+      word: "furious",
+      meaning: "화가 나서 참을 수 없는",
+      example: "She was furious.",
+    });
+    // The clicked suggestion flips to a disabled "still verifying" state; the
+    // other suggestion is untouched and still offers "학습하기".
+    expect(await screen.findByRole("button", { name: "✓ 확인 중" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "학습하기" })).toBeInTheDocument();
+  });
+
+  // Regression test for independent per-meaning tracking: two suggestions
+  // that share a word but differ in meaning (e.g. "bank" the riverbank vs.
+  // "bank" the financial one) must track "학습하기"/"확인 중" independently —
+  // saving one must never disable the other's button.
+  it("tracks the same word with two different meanings independently", async () => {
+    vi.mocked(suggestWords).mockResolvedValue([
+      { word: "bank", meaning: "강둑", example: "They sat on the bank." },
+      { word: "bank", meaning: "은행", example: "I went to the bank." },
+    ]);
+    vi.mocked(saveWord).mockResolvedValue({
+      id: "w1",
+      word: "bank",
+      meaning: "강둑",
+      example: "They sat on the bank.",
+      stage: 0,
+      reviewCount: 0,
+      nextReviewAt: 1700000000,
+      status: "pending",
+    });
+    const user = userEvent.setup();
+    await openExistingRoom(user);
+
+    await user.click(screen.getByRole("button", { name: "모르는 단어 찾기" }));
+    await user.type(screen.getByPlaceholderText("예: 화가 나서 참을 수 없는 느낌"), "은행 강둑");
+    await user.click(screen.getByRole("button", { name: "찾기" }));
+    await screen.findByText("강둑");
+
+    const learnButtons = screen.getAllByRole("button", { name: "학습하기" });
+    expect(learnButtons).toHaveLength(2);
+    await user.click(learnButtons[0]);
+
+    expect(saveWord).toHaveBeenCalledWith({ word: "bank", meaning: "강둑", example: "They sat on the bank." });
+    // Only the riverbank sense flips to "확인 중" — the financial sense (same
+    // word text, different meaning) must still offer "학습하기".
+    expect(await screen.findByRole("button", { name: "✓ 확인 중" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "학습하기" })).toBeEnabled();
+  });
+
+  it("leaves the suggestion clickable again if saving it fails", async () => {
+    vi.mocked(suggestWords).mockResolvedValue([
+      { word: "furious", meaning: "화가 나서 참을 수 없는", example: "She was furious." },
+    ]);
+    vi.mocked(saveWord).mockResolvedValue(null);
+    const user = userEvent.setup();
+    await openExistingRoom(user);
+
+    await user.click(screen.getByRole("button", { name: "모르는 단어 찾기" }));
+    await user.type(screen.getByPlaceholderText("예: 화가 나서 참을 수 없는 느낌"), "화가 나서");
+    await user.click(screen.getByRole("button", { name: "찾기" }));
+    await screen.findByText("furious");
+
+    await user.click(screen.getByRole("button", { name: "학습하기" }));
+
+    expect(saveWord).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole("button", { name: "학습하기" })).toBeEnabled();
   });
 });
 

@@ -37,6 +37,7 @@ import { applyTheme, getStoredTheme, onSystemThemeChange, setStoredTheme, type T
 import { formatDateDivider, formatMessageTime, formatRelativeTime, isSameDay } from "./lib/time";
 import { clearDraft, loadDraft, saveDraft } from "./lib/draftCache";
 import { suggestWords } from "./lib/wordSearch";
+import { saveWord, fetchWords } from "./lib/wordReview";
 import {
   MAX_EXTRA_RATES,
   NATIVE_RATE,
@@ -359,6 +360,11 @@ export function App() {
   // read-only in MenuPanel so a learner can check what past ended
   // conversations have folded into it.
   const [learnerProfile, setLearnerProfile] = useState("");
+  // How many saved words are due for spaced-repetition review right now —
+  // fetched once on app load (below) and shown as a badge on the "단어 복습"
+  // menu item, the only "reminder" this feature gives (see wordreview's
+  // package doc: no push notifications, just this in-app nudge on open).
+  const [wordDueCount, setWordDueCount] = useState(0);
   const [loadingMoreHistory, setLoadingMoreHistory] = useState(false);
 
   const clientRef = useRef<BuddyClient | null>(null);
@@ -540,6 +546,12 @@ export function App() {
       } else {
         setStyleLoadError(true);
       }
+    });
+  }, []);
+
+  useEffect(() => {
+    fetchWords().then((result) => {
+      if (result) setWordDueCount(result.dueCount);
     });
   }, []);
 
@@ -1238,6 +1250,10 @@ export function App() {
     window.location.assign("recordings");
   }, []);
 
+  const goToWords = useCallback(() => {
+    window.location.assign("words");
+  }, []);
+
   // Click-outside / Escape closes the menu, same as any dropdown.
   const closeMenu = useCallback(() => setMenuOpen(false), []);
   useDismiss(menuOpen, menuRef, closeMenu);
@@ -1279,6 +1295,8 @@ export function App() {
     prError,
     onGoToPath: goToPath,
     onGoToRecordings: goToRecordings,
+    onGoToWords: goToWords,
+    wordDueCount,
     styleInput,
     onStyleInputChange: handleStyleInputChange,
     styleSaving,
@@ -1537,7 +1555,9 @@ export function App() {
                 ✕
               </button>
             )}
-            <button type="submit">Send</button>
+            <button type="submit" className="send-btn" aria-label="Send" title="Send">
+              ➤
+            </button>
           </form>
         </footer>
       )}
@@ -1856,6 +1876,8 @@ function MenuPanel({
   prError,
   onGoToPath,
   onGoToRecordings,
+  onGoToWords,
+  wordDueCount,
   styleInput,
   onStyleInputChange,
   styleSaving,
@@ -1874,6 +1896,8 @@ function MenuPanel({
   prError: boolean;
   onGoToPath: (e: React.FormEvent) => void;
   onGoToRecordings: () => void;
+  onGoToWords: () => void;
+  wordDueCount: number;
   styleInput: string;
   onStyleInputChange: (v: string) => void;
   styleSaving: boolean;
@@ -1972,6 +1996,10 @@ function MenuPanel({
       <button className="ghost menu-item" onClick={onGoToRecordings} role="menuitem">
         🎧 녹음 목록
       </button>
+      <button className="ghost menu-item" onClick={onGoToWords} role="menuitem">
+        📚 단어 복습
+        {wordDueCount > 0 && <span className="menu-badge">{wordDueCount}</span>}
+      </button>
       <div className="menu-divider" />
       <form className="path-form" onSubmit={onGoToPath}>
         <label htmlFor="pr-path">PR 미리보기로 이동</label>
@@ -2049,6 +2077,18 @@ function WordSearchControl() {
   const panelRef = useRef<HTMLDivElement>(null);
   useDismiss(open, panelRef, () => setOpen(false));
 
+  // Which suggested words the learner has chosen to add to their
+  // spaced-repetition study list ("학습하기") — keyed by word+meaning (not
+  // word text alone, and not list index) so two suggestions that share a
+  // word but differ in meaning (e.g. "bank" the riverbank vs. "bank" the
+  // financial one) still track their "학습 중" state independently instead
+  // of one save wrongly marking the other as already added. Search results
+  // are never auto-saved in bulk; only a suggestion the learner explicitly
+  // picks here ends up in review rotation (see httpserver.wordSaveHandler).
+  const [learning, setLearning] = useState<Set<string>>(new Set());
+  const [savingWord, setSavingWord] = useState<string | null>(null);
+  const learnKey = (s: WordSuggestion) => `${s.word} ${s.meaning}`;
+
   const onSubmit = useCallback(
     (e: React.FormEvent) => {
       e.preventDefault();
@@ -2063,6 +2103,19 @@ function WordSearchControl() {
       });
     },
     [query],
+  );
+
+  const onLearn = useCallback(
+    (s: WordSuggestion) => {
+      const key = learnKey(s);
+      if (learning.has(key) || savingWord === key) return;
+      setSavingWord(key);
+      void saveWord(s).then((saved) => {
+        setSavingWord(null);
+        if (saved) setLearning((prev) => new Set(prev).add(key));
+      });
+    },
+    [learning, savingWord],
   );
 
   return (
@@ -2104,6 +2157,14 @@ function WordSearchControl() {
                   <span className="word-search-word">{s.word}</span>
                   <span className="word-search-meaning">{s.meaning}</span>
                   <span className="word-search-example">{s.example}</span>
+                  <button
+                    type="button"
+                    className="word-learn-btn"
+                    onClick={() => onLearn(s)}
+                    disabled={learning.has(learnKey(s)) || savingWord === learnKey(s)}
+                  >
+                    {learning.has(learnKey(s)) ? "✓ 확인 중" : "학습하기"}
+                  </button>
                 </li>
               ))}
             </ul>

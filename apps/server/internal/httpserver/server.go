@@ -25,6 +25,7 @@ import (
 	"buddy/server/internal/recording"
 	"buddy/server/internal/store"
 	"buddy/server/internal/transport"
+	"buddy/server/internal/wordreview"
 )
 
 // New builds the single HTTP entry point. assets is the embedded frontend FS
@@ -45,8 +46,14 @@ import (
 // are nil the same optional way — sessionEndHandler falls back to running
 // the wrap-up/quiz inline, each on its own detached goroutine, instead of
 // durably queuing them (see transport.EnqueueStudySummaryJob/
-// EnqueueStudyQuizJob).
-func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue, studySummaryQueue *asyncjob.Queue, studyQuizQueue *asyncjob.Queue) *http.Server {
+// EnqueueStudyQuizJob). words is never nil — unlike recordings, the
+// word-review study list (internal/wordreview) has no optional external
+// dependency, so cmd/server/main.go always constructs it. wordVerifyQueue is
+// nil the same optional way as studySummaryQueue/studyQuizQueue —
+// wordSaveHandler falls back to running the model-consensus check inline on
+// its own detached goroutine instead of durably queuing it (see
+// transport.EnqueueWordVerifyJob).
+func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, words wordreview.Store, wordVerifyQueue *asyncjob.Queue, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue, studySummaryQueue *asyncjob.Queue, studyQuizQueue *asyncjob.Queue) *http.Server {
 	mux := http.NewServeMux()
 
 	// Realtime + API first (exact patterns win over the "/" catch-all).
@@ -74,6 +81,10 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux.HandleFunc("GET /api/settings", settingsGetHandler(ident, st))
 	mux.HandleFunc("PUT /api/settings", settingsSaveHandler(ident, st))
 	mux.HandleFunc("POST /api/words/suggest", wordSuggestHandler(ident, pipe))
+	mux.HandleFunc("POST /api/words/save", wordSaveHandler(ident, words, pipe, wordVerifyQueue))
+	mux.HandleFunc("GET /api/words", wordsListHandler(ident, words))
+	mux.HandleFunc("POST /api/words/{id}/review", wordReviewHandler(ident, words))
+	mux.HandleFunc("DELETE /api/words/{id}", wordDeleteHandler(ident, words))
 	mux.HandleFunc("GET /api/recordings", recordingsListHandler(ident, recordings))
 	mux.HandleFunc("GET /api/recordings/{id}/audio", recordingAudioHandler(ident, recordings))
 	mux.HandleFunc("DELETE /api/recordings/{id}", recordingDeleteHandler(ident, audio, recordings))

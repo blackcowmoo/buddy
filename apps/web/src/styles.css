@@ -130,7 +130,25 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 }
 .menu-row { display: flex; }
 .menu-row .pill, .menu-row > button { width: 100%; justify-content: center; }
-.menu-item { width: 100%; text-align: left; }
+.menu-item { width: 100%; text-align: left; display: flex; align-items: center; gap: 6px; }
+/* Due-review count on the "단어 복습" menu item — the only proactive nudge
+   this feature gives (no push notifications, see wordreview's package doc),
+   so it needs to actually catch the eye: filled accent pill, not a muted
+   badge. */
+.menu-badge {
+  margin-left: auto;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 12px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
 .menu-divider { height: 1px; background: var(--border-2); margin: 2px 0; }
 
 .user-info { padding: 2px 4px; }
@@ -547,6 +565,46 @@ a.icon-btn.ghost {
 .recording-row audio { width: 100%; height: 36px; }
 .recording-delete { width: 32px; height: 32px; min-height: 32px; font-size: 14px; flex-shrink: 0; }
 
+/* Word-review page (pages/WordReview.tsx) — reuses .recording-row's card
+   shape for each tracked word, and .quiz-* (App.tsx's QuizPanel) for the
+   review-quiz interaction itself. */
+.word-review-page { gap: 10px; }
+.word-review-due-hint { margin: 0; }
+.word-list { display: flex; flex-direction: column; gap: 10px; list-style: none; margin: 0; padding: 0; }
+.word-list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+}
+.word-list-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.word-list-next { font-size: 12px; color: var(--muted); }
+.word-list-delete { width: 32px; height: 32px; min-height: 32px; font-size: 14px; flex-shrink: 0; }
+/* Section headers splitting the word list into 복습 목록/확인 중/제외된 단어
+   (see WordReview.tsx) — small and muted like other section-y labels
+   (.tts-settings-label), not competing with the page's own <h1>. */
+.word-section-title { font-size: 13px; font-weight: 600; color: var(--muted); margin: 4px 0 0; }
+.word-list-row-rejected { border-color: var(--err); }
+.word-list-reject-reason { font-size: 12px; color: var(--err); }
+
+/* Recognition-mode multiple choice (WordReview.tsx's reading quiz) — a
+   vertical stack of full-width option buttons, reusing .quiz-result's
+   correct/incorrect color convention once answered. */
+.quiz-choices { display: flex; flex-direction: column; gap: 8px; }
+.quiz-choice-btn {
+  width: 100%;
+  text-align: left;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border-2);
+}
+.quiz-choice-btn.correct { border-color: var(--ok); color: var(--ok); }
+.quiz-choice-btn.incorrect { border-color: var(--err); color: var(--err); }
+
 .date-divider {
   display: flex;
   justify-content: center;
@@ -668,8 +726,42 @@ a.icon-btn.ghost {
   -webkit-appearance: none;
   appearance: none;
 }
-.composer button[type="submit"] {
+/* Scoped to the send-btn class (not a bare button[type="submit"] selector)
+   so this round treatment doesn't also catch the word-search popup's "찾기"
+   submit button, which needs to stay a normal pill-shaped text button. */
+.composer .send-btn {
   flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
+  padding: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+}
+/* Unify the composer row's mixed icon buttons (search trigger, voice-draft
+   discard) into the same size/bordered/elevated look as .mic and the round
+   submit button — the base .icon-btn's 34px reads as a mismatched size next
+   to the 44px send button and 56px mic, so bump it to 44px here to match.
+   Scoped to .composer so it doesn't bleed into topbar/msg-tools/menu icon
+   buttons, which still use the smaller 34px base. */
+.composer .icon-btn {
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
+  font-size: 18px;
+  border: 1px solid var(--border-2);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+}
+.composer button,
+.composer .icon-btn {
+  transition: transform 0.12s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+.composer button:active,
+.composer .icon-btn:active {
+  transform: scale(0.95);
 }
 /* Marks the composer text as a not-yet-sent voice draft awaiting review —
    see the "pending_transcript" case in App.tsx's onEvent. */
@@ -698,9 +790,15 @@ a.icon-btn.ghost {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
+  /* Match the app's standard card radius (--radius, used by bubbles/panels)
+     instead of .study-panel's smaller default 10px — this popup is one of
+     the bigger cards in the app, so the tighter radius read as slightly
+     out of place next to it. */
+  border-radius: var(--radius);
+  padding: 12px;
 }
-.word-search-panel form { display: flex; gap: 6px; }
+.word-search-panel form { display: flex; gap: 8px; align-items: stretch; }
 .word-search-panel input[type="text"] {
   flex: 1;
   min-width: 0;
@@ -709,27 +807,65 @@ a.icon-btn.ghost {
   background: var(--panel-2);
   border: 1px solid var(--border-2);
   color: var(--text);
-  border-radius: 8px;
-  padding: 6px 8px;
+  border-radius: 10px;
+  padding: 8px 12px;
+  min-height: 40px;
+}
+/* Keep the submit button the same height as the input next to it — the
+   base button rule's 44px min-height was taller than the input's 40px,
+   which threw the row out of alignment. */
+.word-search-panel form button[type="submit"] {
+  flex-shrink: 0;
+  min-height: 40px;
+  padding: 0 16px;
+  border-radius: 10px;
 }
 .word-search-status { font-size: 13px; color: var(--muted); padding: 2px 4px; }
 .word-search-results { display: flex; flex-direction: column; gap: 8px; list-style: none; margin: 0; padding: 0; }
-.word-search-results li { display: flex; flex-direction: column; gap: 2px; padding: 2px 4px; }
+/* Give each suggestion its own card instead of a plain text row blending
+   into the popup background — matches how session/recording rows elsewhere
+   in the app use --panel-2 cards to separate list items. */
+.word-search-results li {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: var(--panel-2);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
 .word-search-word { font-weight: 600; }
 .word-search-meaning { font-size: 13px; color: var(--muted); }
 .word-search-example { font-size: 13px; font-style: italic; }
+/* Explicit opt-in into spaced-repetition review — search results are never
+   auto-saved in bulk, so this is a normal small ghost pill, not a
+   full-width primary button, and swaps to a flat "already added" label
+   once saved instead of disappearing (so the learner can see which
+   suggestions they already picked without it looking clickable again). */
+.word-learn-btn {
+  align-self: flex-start;
+  min-height: 30px;
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+}
+.word-learn-btn:disabled { opacity: 0.7; }
 
-/* Primary action: a thumb-reachable circular mic FAB. */
+/* Primary action: a thumb-reachable circular mic FAB. Matches the other
+   composer buttons at 44px (was 56px) so the row reads as one consistent
+   set of round buttons instead of mismatched sizes. */
 .mic {
   flex-shrink: 0;
-  width: 56px;
-  height: 56px;
-  min-height: 56px;
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
   padding: 0;
+  border: 1px solid var(--border-2);
   border-radius: 50%;
   background: var(--panel-2);
   color: var(--text);
-  font-size: 22px;
+  font-size: 18px;
   display: grid;
   place-items: center;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
