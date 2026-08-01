@@ -326,6 +326,11 @@ export function WordReview() {
                     <input
                       type="text"
                       className="quiz-answer-input"
+                      // Width tracks what's actually been typed, not the
+                      // expected answer -- a box pre-sized to fit the
+                      // answer would give its length away before the
+                      // learner types anything.
+                      style={{ width: `${Math.min(40, Math.max(8, answer.length + 2))}ch` }}
                       value={answer}
                       onChange={(e) => setAnswer(e.target.value)}
                       onKeyDown={(e) => {

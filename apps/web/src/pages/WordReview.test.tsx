@@ -236,6 +236,23 @@ describe("WordReview page", () => {
     expect(await screen.findByText("1개 중 1개 맞혔어요!")).toBeInTheDocument();
   });
 
+  it("grows the answer input to fit what's typed, not the length of the hidden answer", async () => {
+    vi.mocked(fetchWords).mockResolvedValue({ words: [dueWord], dueCount: 1 });
+    const user = userEvent.setup();
+    render(<WordReview />);
+
+    await user.click(await screen.findByRole("button", { name: "복습 시작" }));
+
+    const input = screen.getByRole("textbox", { name: "정답 입력" });
+    const widthBefore = input.style.width;
+
+    await user.type(input, "ecstatic");
+    const widthAfter = input.style.width;
+
+    expect(widthAfter).not.toBe(widthBefore);
+    expect(parseInt(widthAfter, 10)).toBeGreaterThan(parseInt(widthBefore, 10));
+  });
+
   it("masks each significant word of a phrase separately, keeping words in between visible, when the example inflects it", async () => {
     vi.mocked(fetchWords).mockResolvedValue({ words: [idiomWord], dueCount: 1 });
     vi.mocked(reviewWord).mockResolvedValue({ ...idiomWord, stage: 1, reviewCount: 1 });
