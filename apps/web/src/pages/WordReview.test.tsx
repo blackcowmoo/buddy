@@ -277,7 +277,7 @@ describe("WordReview page", () => {
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
   });
 
-  it("counts a wrong answer as incorrect and still advances", async () => {
+  it("requeues a missed word for a same-session retry instead of ending the session on it", async () => {
     vi.mocked(fetchWords).mockResolvedValue({ words: [dueWord], dueCount: 1 });
     vi.mocked(reviewWord).mockResolvedValue({ ...dueWord, stage: 0, reviewCount: 1 });
     const user = userEvent.setup();
@@ -290,8 +290,17 @@ describe("WordReview page", () => {
     expect(await screen.findByText(/아쉬워요\. 정답: ecstatic/)).toBeInTheDocument();
     expect(reviewWord).toHaveBeenCalledWith("w1", false);
 
+    // Missing the only word in the queue doesn't end the session -- it's
+    // requeued for a same-day retry, so there's another question to go.
+    expect(screen.getByRole("button", { name: "다음 단어" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "다음 단어" }));
+
+    await user.type(await screen.findByRole("textbox", { name: "정답 입력" }), "ecstatic");
+    await user.click(screen.getByRole("button", { name: "확인" }));
+    expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
+
     await user.click(screen.getByRole("button", { name: "결과 보기" }));
-    expect(await screen.findByText("1개 중 0개 맞혔어요!")).toBeInTheDocument();
+    expect(await screen.findByText("2개 중 1개 맞혔어요!")).toBeInTheDocument();
   });
 
   // With only one verified word tracked (dueWord alone, no others to pull

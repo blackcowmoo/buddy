@@ -162,7 +162,16 @@ export function WordReview() {
   const finishCheck = useCallback(
     (item: QuizItem, correct: boolean) => {
       setChecked(true);
-      if (correct) setCorrectCount((c) => c + 1);
+      if (correct) {
+        setCorrectCount((c) => c + 1);
+      } else {
+        // A miss resets the word's schedule to be due again today instead of
+        // tomorrow (see the backend's nextSchedule) -- requeue it here too,
+        // at the back of this session's queue, so the learner actually gets
+        // that same-day retry now rather than only next time they open
+        // review.
+        setQuizQueue((prev) => (prev ? [...prev, item] : prev));
+      }
       void reviewWord(item.word.id, correct).then((updated) => {
         if (!updated) return;
         setWords((prev) => prev.map((w) => (w.id === updated.id ? updated : w)));
