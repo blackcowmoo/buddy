@@ -29,35 +29,40 @@ const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 // recall-mode review question doesn't just hand the learner the answer —
 // same spirit as QuizPanel's LLM-generated fill-in-the-blank prompts,
 // applied here to the plain example sentence saved alongside the word.
-function maskWord(example: string, word: string): string {
-  if (!word) return example;
+// `answer` is what the learner is expected to type back: usually `word`
+// itself, but see the fallback branch below for the multi-blank case.
+function computeBlank(example: string, word: string): { masked: string; answer: string } {
+  if (!word) return { masked: example, answer: word };
   const exact = new RegExp(escapeRegExp(word), "gi");
   if (exact.test(example)) {
-    return example.replace(exact, "____");
+    return { masked: example.replace(exact, "____"), answer: word };
   }
 
   // The saved example doesn't contain `word` verbatim — this happens when
   // the LLM inflects a phrase for the sentence's subject/tense (e.g. word
-  // "do one's best" → example "do my best"). Fall back to locating each
+  // "do one's best" → example "do my best"). Fall back to masking each
   // significant word of the phrase on its own (tolerant of suffix changes
-  // like run → running) and collapsing the whole span they cover — "my"
-  // included — into a single blank, so the answer still reads as one gap
-  // to fill rather than leaving it fully shown.
+  // like run → running), leaving words in between — "my" here — visible so
+  // the learner can see where they fit, rather than one blank that either
+  // hands over the whole answer or swallows unrelated sentence words. The
+  // learner types the blanked words back as one space-separated answer, so
+  // `answer` is built the same way rather than from the full dictionary
+  // form (which would require typing "one's", never itself blanked).
   const tokens = word
     .split(/\s+/)
     .map((t) => t.replace(/[^a-zA-Z']/g, ""))
     .filter((t) => t.length > 1 && !maskStopWords.has(t.toLowerCase()));
 
-  let start = Infinity;
-  let end = -1;
+  let masked = example;
+  const matched: string[] = [];
   for (const token of tokens) {
-    const match = new RegExp(`\\b${escapeRegExp(token)}\\w*`, "i").exec(example);
-    if (!match) continue;
-    start = Math.min(start, match.index);
-    end = Math.max(end, match.index + match[0].length);
+    const regex = new RegExp(`\\b${escapeRegExp(token)}\\w*`, "i");
+    if (!regex.test(masked)) continue;
+    matched.push(token);
+    masked = masked.replace(regex, "____");
   }
-  if (end === -1) return example;
-  return `${example.slice(0, start)}____${example.slice(end)}`;
+  if (matched.length === 0) return { masked: example, answer: word };
+  return { masked, answer: matched.join(" ") };
 }
 
 // A review session mixes two question shapes so a learner practices both
@@ -135,10 +140,11 @@ export function WordReview() {
 
   const currentItem = quizQueue?.[index] ?? null;
   const current = currentItem?.word ?? null;
+  const recallBlank = currentItem?.mode === "recall" ? computeBlank(currentItem.word.example, currentItem.word.word) : null;
   const isCorrect =
     checked && currentItem
       ? currentItem.mode === "recall"
-        ? normalizeAnswer(answer) === normalizeAnswer(currentItem.word.word)
+        ? normalizeAnswer(answer) === normalizeAnswer(recallBlank!.answer)
         : selectedChoice === currentItem.word.meaning
       : false;
 
@@ -157,7 +163,8 @@ export function WordReview() {
 
   const checkRecall = useCallback(() => {
     if (!currentItem || checked || currentItem.mode !== "recall" || !answer.trim()) return;
-    finishCheck(currentItem, normalizeAnswer(answer) === normalizeAnswer(currentItem.word.word));
+    const expected = computeBlank(currentItem.word.example, currentItem.word.word).answer;
+    finishCheck(currentItem, normalizeAnswer(answer) === normalizeAnswer(expected));
   }, [currentItem, checked, answer, finishCheck]);
 
   const chooseRecognition = useCallback(
@@ -315,7 +322,7 @@ export function WordReview() {
                 {currentItem.mode === "recall" ? (
                   <>
                     <div className="quiz-prompt">{current.meaning}</div>
-                    <div className="word-search-example">{maskWord(current.example, current.word)}</div>
+                    <div className="word-search-example">{recallBlank!.masked}</div>
                     <input
                       type="text"
                       className="quiz-answer-input"
@@ -327,7 +334,11 @@ export function WordReview() {
                         else checkRecall();
                       }}
                       disabled={checked}
-                      placeholder="빈칸에 들어갈 단어를 입력하세요"
+                      placeholder={
+                        recallBlank!.answer.includes(" ")
+                          ? "빈칸에 들어갈 단어들을 띄어쓰기로 구분해 입력하세요"
+                          : "빈칸에 들어갈 단어를 입력하세요"
+                      }
                       aria-label="정답 입력"
                     />
                     {!checked && (
@@ -371,7 +382,7 @@ export function WordReview() {
                     <div className={`quiz-result ${isCorrect ? "correct" : "incorrect"}`} role="status">
                       {isCorrect
                         ? "정답이에요!"
-                        : `아쉬워요. 정답: ${currentItem.mode === "recall" ? current.word : current.meaning}`}
+                        : `아쉬워요. 정답: ${currentItem.mode === "recall" ? recallBlank!.answer : current.meaning}`}
                     </div>
                     <button type="button" className="quiz-next-btn" onClick={next}>
                       {index + 1 < quizQueue.length ? "다음 단어" : "결과 보기"}
