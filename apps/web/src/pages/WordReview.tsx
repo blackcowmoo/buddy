@@ -38,19 +38,26 @@ function maskWord(example: string, word: string): string {
 
   // The saved example doesn't contain `word` verbatim — this happens when
   // the LLM inflects a phrase for the sentence's subject/tense (e.g. word
-  // "do one's best" → example "do my best"). Fall back to masking each
-  // significant word of the phrase on its own, tolerant of suffix changes
-  // (run → running), rather than leaving the whole answer showing.
+  // "do one's best" → example "do my best"). Fall back to locating each
+  // significant word of the phrase on its own (tolerant of suffix changes
+  // like run → running) and collapsing the whole span they cover — "my"
+  // included — into a single blank, so the answer still reads as one gap
+  // to fill rather than leaving it fully shown.
   const tokens = word
     .split(/\s+/)
     .map((t) => t.replace(/[^a-zA-Z']/g, ""))
     .filter((t) => t.length > 1 && !maskStopWords.has(t.toLowerCase()));
 
-  let masked = example;
+  let start = Infinity;
+  let end = -1;
   for (const token of tokens) {
-    masked = masked.replace(new RegExp(`\\b${escapeRegExp(token)}\\w*`, "gi"), "____");
+    const match = new RegExp(`\\b${escapeRegExp(token)}\\w*`, "i").exec(example);
+    if (!match) continue;
+    start = Math.min(start, match.index);
+    end = Math.max(end, match.index + match[0].length);
   }
-  return masked.replace(/(?:____[\s,]*){2,}/g, "____ ").trimEnd();
+  if (end === -1) return example;
+  return `${example.slice(0, start)}____${example.slice(end)}`;
 }
 
 // A review session mixes two question shapes so a learner practices both

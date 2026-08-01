@@ -236,7 +236,7 @@ describe("WordReview page", () => {
     expect(await screen.findByText("1개 중 1개 맞혔어요!")).toBeInTheDocument();
   });
 
-  it("masks each significant word of a phrase when the example inflects it rather than showing it unmasked", async () => {
+  it("masks the whole span of a phrase as one blank when the example inflects it rather than showing it unmasked", async () => {
     vi.mocked(fetchWords).mockResolvedValue({ words: [idiomWord], dueCount: 1 });
     render(<WordReview />);
 
@@ -245,7 +245,7 @@ describe("WordReview page", () => {
     // "do one's best" never appears verbatim in the example (it's
     // "do my best"), so the exact-match mask would leave it fully shown.
     expect(await screen.findByText("최선을 다하다")).toBeInTheDocument();
-    expect(screen.getByText("I will ____ my ____ to finish the project on time.")).toBeInTheDocument();
+    expect(screen.getByText("I will ____ to finish the project on time.")).toBeInTheDocument();
   });
 
   it("counts a wrong answer as incorrect and still advances", async () => {
