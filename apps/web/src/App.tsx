@@ -1279,6 +1279,10 @@ export function App() {
     window.location.assign("words");
   }, []);
 
+  const goToMatch = useCallback(() => {
+    window.location.assign("match");
+  }, []);
+
   // Click-outside / Escape closes the menu, same as any dropdown.
   const closeMenu = useCallback(() => setMenuOpen(false), []);
   useDismiss(menuOpen, menuRef, closeMenu);
@@ -1321,6 +1325,7 @@ export function App() {
     onGoToPath: goToPath,
     onGoToRecordings: goToRecordings,
     onGoToWords: goToWords,
+    onGoToMatch: goToMatch,
     wordDueCount,
     styleInput,
     onStyleInputChange: handleStyleInputChange,
@@ -1903,6 +1908,7 @@ function MenuPanel({
   onGoToPath,
   onGoToRecordings,
   onGoToWords,
+  onGoToMatch,
   wordDueCount,
   styleInput,
   onStyleInputChange,
@@ -1923,6 +1929,7 @@ function MenuPanel({
   onGoToPath: (e: React.FormEvent) => void;
   onGoToRecordings: () => void;
   onGoToWords: () => void;
+  onGoToMatch: () => void;
   wordDueCount: number;
   styleInput: string;
   onStyleInputChange: (v: string) => void;
@@ -2025,6 +2032,9 @@ function MenuPanel({
       <button className="ghost menu-item" onClick={onGoToWords} role="menuitem">
         📚 단어 복습
         {wordDueCount > 0 && <span className="menu-badge">{wordDueCount}</span>}
+      </button>
+      <button className="ghost menu-item" onClick={onGoToMatch} role="menuitem">
+        🎮 단어 매칭 게임
       </button>
       <div className="menu-divider" />
       <form className="path-form" onSubmit={onGoToPath}>

@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { Recordings } from "./pages/Recordings";
 import { WordReview } from "./pages/WordReview";
+import { WordMatch } from "./pages/WordMatch";
 import { currentPage } from "./lib/route";
 import "./styles.css";
 
@@ -11,6 +12,7 @@ const page = currentPage(window.location.pathname);
 function renderPage() {
   if (page === "recordings") return <Recordings />;
   if (page === "words") return <WordReview />;
+  if (page === "match") return <WordMatch />;
   return <App />;
 }
 

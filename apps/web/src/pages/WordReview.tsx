@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { confirmThenDelete } from "../lib/confirmDelete";
 import { deleteWord, fetchWords, reviewWord, type WordReviewItem } from "../lib/wordReview";
 import { formatAbsoluteDateTime } from "../lib/time";
+import { shuffled } from "../lib/shuffle";
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -21,15 +22,6 @@ function maskWord(example: string, word: string): string {
   if (!word) return example;
   const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return example.replace(new RegExp(escaped, "gi"), "____");
-}
-
-function shuffled<T>(items: T[]): T[] {
-  const out = [...items];
-  for (let i = out.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [out[i], out[j]] = [out[j], out[i]];
-  }
-  return out;
 }
 
 // A review session mixes two question shapes so a learner practices both
