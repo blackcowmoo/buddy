@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { confirmThenDelete } from "../lib/confirmDelete";
 import { deleteWord, fetchWords, reviewWord, type WordReviewItem } from "../lib/wordReview";
 import { formatAbsoluteDateTime } from "../lib/time";
@@ -100,6 +100,7 @@ export function WordReview() {
   const [selectedChoice, setSelectedChoice] = useState<string | null>(null);
   const [checked, setChecked] = useState(false);
   const [correctCount, setCorrectCount] = useState(0);
+  const answerRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     fetchWords().then((result) => {
@@ -112,6 +113,16 @@ export function WordReview() {
       setState("ready");
     });
   }, []);
+
+  // Grow the answer box to fit multi-word answers (same trick as the
+  // message composer's textarea): reset to "auto" so scrollHeight reflects
+  // the content's natural height, not the previously-set pixel height.
+  useEffect(() => {
+    const el = answerRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [answer]);
 
   const handleDelete = (id: string) => confirmThenDelete("이 단어를 삭제할까요?", deleteWord, id, setWords);
 
@@ -323,18 +334,24 @@ export function WordReview() {
                   <>
                     <div className="quiz-prompt">{current.meaning}</div>
                     <div className="word-search-example">{recallBlank!.masked}</div>
-                    <input
-                      type="text"
+                    <textarea
+                      ref={answerRef}
                       className="quiz-answer-input"
                       // Width tracks what's actually been typed, not the
                       // expected answer -- a box pre-sized to fit the
                       // answer would give its length away before the
-                      // learner types anything.
-                      style={{ width: `${Math.min(40, Math.max(8, answer.length + 2))}ch` }}
+                      // learner types anything. It stops growing wider past
+                      // 24ch and wraps at word boundaries instead (a
+                      // textarea's default line-break behavior), with the
+                      // height effect above growing the box to fit.
+                      style={{ width: `${Math.min(24, Math.max(8, answer.length + 2))}ch` }}
+                      rows={1}
+                      maxLength={100}
                       value={answer}
                       onChange={(e) => setAnswer(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key !== "Enter") return;
+                        e.preventDefault();
                         if (checked) next();
                         else checkRecall();
                       }}
