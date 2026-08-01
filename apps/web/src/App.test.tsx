@@ -1496,6 +1496,14 @@ describe("hamburger menu", () => {
     await user.click(screen.getByRole("menuitem", { name: /녹음 목록/ }));
     expect(location.assign).toHaveBeenCalledWith("recordings");
   });
+
+  it("navigates to the relative word-matching game page from the menu", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await openMenu(user);
+    await user.click(screen.getByRole("menuitem", { name: /단어 매칭 게임/ }));
+    expect(location.assign).toHaveBeenCalledWith("match");
+  });
 });
 
 describe("conversation style", () => {

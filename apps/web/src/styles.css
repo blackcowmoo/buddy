@@ -614,6 +614,33 @@ a.icon-btn.ghost {
 .quiz-choice-btn.correct { border-color: var(--ok); color: var(--ok); }
 .quiz-choice-btn.incorrect { border-color: var(--err); color: var(--err); }
 
+/* Word-matching mini-game (pages/WordMatch.tsx) — a face-down card grid,
+   pure play with no score persisted anywhere (see the page's doc comment on
+   why: reward-free, so the timer/move-count are just live feedback). */
+.word-match-page { gap: 10px; }
+.word-match-stats { display: flex; gap: 14px; font-size: 13px; color: var(--muted); }
+.word-match-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.word-match-card {
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 6px;
+  font-size: 13px;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+}
+.word-match-card-flipped { border-color: var(--accent); color: var(--accent); }
+.word-match-card-matched { border-color: var(--ok); color: var(--ok); opacity: 0.6; }
+.word-match-won { display: flex; flex-direction: column; gap: 8px; text-align: center; }
+
 .date-divider {
   display: flex;
   justify-content: center;

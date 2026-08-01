@@ -29,4 +29,12 @@ describe("currentPage", () => {
   it("recognizes the word-review page under a ROOT_PATH prefix", () => {
     expect(currentPage("/pr/14/words")).toBe("words");
   });
+
+  it("recognizes the word-match game page at root", () => {
+    expect(currentPage("/match")).toBe("match");
+  });
+
+  it("recognizes the word-match game page under a ROOT_PATH prefix", () => {
+    expect(currentPage("/pr/14/match")).toBe("match");
+  });
 });
