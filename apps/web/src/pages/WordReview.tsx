@@ -14,14 +14,43 @@ function normalizeAnswer(s: string): string {
   return s.trim().toLowerCase().replace(/[.,!?;:'"]+$/g, "");
 }
 
+// Phrase words that carry no meaning of their own and are often swapped
+// out by the LLM's example sentence (e.g. "one's" → "my"/"his"), so they
+// shouldn't be required to literally match when masking.
+const maskStopWords = new Set([
+  "a", "an", "the", "to", "of", "in", "on", "at", "for", "and", "or",
+  "one's", "someone's", "somebody's", "one", "oneself", "yourself",
+  "himself", "herself", "themselves", "sb", "sb's", "sth",
+]);
+
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 // Hides the target word/phrase inside its own example sentence so the
 // recall-mode review question doesn't just hand the learner the answer —
 // same spirit as QuizPanel's LLM-generated fill-in-the-blank prompts,
 // applied here to the plain example sentence saved alongside the word.
 function maskWord(example: string, word: string): string {
   if (!word) return example;
-  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return example.replace(new RegExp(escaped, "gi"), "____");
+  const exact = new RegExp(escapeRegExp(word), "gi");
+  if (exact.test(example)) {
+    return example.replace(exact, "____");
+  }
+
+  // The saved example doesn't contain `word` verbatim — this happens when
+  // the LLM inflects a phrase for the sentence's subject/tense (e.g. word
+  // "do one's best" → example "do my best"). Fall back to masking each
+  // significant word of the phrase on its own, tolerant of suffix changes
+  // (run → running), rather than leaving the whole answer showing.
+  const tokens = word
+    .split(/\s+/)
+    .map((t) => t.replace(/[^a-zA-Z']/g, ""))
+    .filter((t) => t.length > 1 && !maskStopWords.has(t.toLowerCase()));
+
+  let masked = example;
+  for (const token of tokens) {
+    masked = masked.replace(new RegExp(`\\b${escapeRegExp(token)}\\w*`, "gi"), "____");
+  }
+  return masked.replace(/(?:____[\s,]*){2,}/g, "____ ").trimEnd();
 }
 
 // A review session mixes two question shapes so a learner practices both

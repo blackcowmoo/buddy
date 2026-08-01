@@ -32,6 +32,17 @@ const dueWord: WordReviewItem = {
   status: "verified",
 };
 
+const idiomWord: WordReviewItem = {
+  id: "w-idiom",
+  word: "do one's best",
+  meaning: "최선을 다하다",
+  example: "I will do my best to finish the project on time.",
+  stage: 0,
+  reviewCount: 0,
+  nextReviewAt: Math.floor(Date.now() / 1000) - 3600, // 1 hour ago: due
+  status: "verified",
+};
+
 const futureWord: WordReviewItem = {
   id: "w2",
   word: "elated",
@@ -223,6 +234,18 @@ describe("WordReview page", () => {
 
     await user.click(screen.getByRole("button", { name: "결과 보기" }));
     expect(await screen.findByText("1개 중 1개 맞혔어요!")).toBeInTheDocument();
+  });
+
+  it("masks each significant word of a phrase when the example inflects it rather than showing it unmasked", async () => {
+    vi.mocked(fetchWords).mockResolvedValue({ words: [idiomWord], dueCount: 1 });
+    render(<WordReview />);
+
+    await userEvent.setup().click(await screen.findByRole("button", { name: "복습 시작" }));
+
+    // "do one's best" never appears verbatim in the example (it's
+    // "do my best"), so the exact-match mask would leave it fully shown.
+    expect(await screen.findByText("최선을 다하다")).toBeInTheDocument();
+    expect(screen.getByText("I will ____ my ____ to finish the project on time.")).toBeInTheDocument();
   });
 
   it("counts a wrong answer as incorrect and still advances", async () => {
