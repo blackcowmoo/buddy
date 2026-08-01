@@ -627,6 +627,71 @@ describe("room list", () => {
     expect(markQuizCompleted).not.toHaveBeenCalled();
   });
 
+  // Guards against the popover's own outside-click dismissal (see useDismiss)
+  // discarding quiz progress: an accidental click outside the panel while
+  // mid-quiz used to reset both quizMode and QuizPanel's own state, so
+  // reopening always restarted from question 1. Progress now lives in
+  // EndConversationControl (see quizIndex/quizAnswer/etc.), which survives
+  // the close, so reopening must land back on the same question.
+  it("keeps quiz progress after an outside click closes the popover and it's reopened", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: true, studySummaryStatus: "done" },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
+      session: {
+        id: "s1",
+        title: "hello there",
+        createdAt: 1,
+        updatedAt: 2,
+        ended: true,
+        studySummary: [{ english: "Focus on third-person -s.", translation: "3인칭 단수 -s에 집중하세요." }],
+        studySummaryStatus: "done",
+        quiz: [
+          {
+            prompt: "He ___ to school every day.",
+            answer: "goes",
+            translation: "그는 매일 학교에 가요.",
+            explanation: "Third person singular needs -s.",
+            explanationTranslation: "3인칭 단수는 -s가 필요해요.",
+          },
+          {
+            prompt: "She likes ___ books.",
+            answer: "reading",
+            translation: "그녀는 책 읽는 것을 좋아해요.",
+            explanation: "The verb after \"likes\" takes the -ing form here.",
+            explanationTranslation: "\"likes\" 다음에는 -ing 형태가 와요.",
+          },
+        ],
+        quizStatus: "done",
+      },
+      turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+    await screen.findByText("hi");
+
+    await user.click(screen.getByRole("button", { name: "대화 종료" }));
+    await user.click(await screen.findByText("퀴즈 풀기"));
+
+    await screen.findByText("He ___ to school every day.");
+    await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "goes");
+    await user.click(screen.getByRole("button", { name: "확인" }));
+    await screen.findByText("정답이에요!");
+    await user.click(screen.getByRole("button", { name: "다음 문제" }));
+    await screen.findByText("She likes ___ books.");
+
+    // Accidental outside click — dismisses the popover entirely.
+    await user.click(document.body);
+    expect(screen.queryByText("She likes ___ books.")).not.toBeInTheDocument();
+
+    // Reopening must show question 2 again, not restart from question 1.
+    await user.click(screen.getByRole("button", { name: "대화 종료" }));
+    expect(await screen.findByText("She likes ___ books.")).toBeInTheDocument();
+    expect(screen.queryByText("He ___ to school every day.")).not.toBeInTheDocument();
+  });
+
   // Guards the "all correct" completion path this feature exists for: only
   // once every question in the quiz is answered correctly does it call
   // markQuizCompleted — a single wrong answer anywhere (covered above) must
