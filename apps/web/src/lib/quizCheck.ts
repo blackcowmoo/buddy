@@ -8,6 +8,17 @@
 // JSON) as well as an explicit "no": an unconfirmed answer must grade wrong,
 // the same bias quizAnswerCheckSystemPrompt applies server-side, so a flaky
 // request can't accidentally grade a genuinely wrong answer as right.
+// normalizeQuizAnswer loosely-matches a learner's typed answer against a
+// canonical one for QuizPanel/WordReview's local grading: case/whitespace
+// differences and trailing punctuation shouldn't count as wrong, but this is
+// still just a string comparison, not an LLM judgment call — a correct
+// answer phrased very differently (a synonym, a different verb tense) will
+// still be marked wrong. Acceptable for a quick self-check quiz; that's what
+// checkQuizAnswer above is for.
+export function normalizeQuizAnswer(s: string): string {
+  return s.trim().toLowerCase().replace(/[.,!?;:'"]+$/g, "");
+}
+
 export async function checkQuizAnswer(
   prompt: string,
   answer: string,

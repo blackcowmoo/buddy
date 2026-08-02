@@ -3,16 +3,9 @@ import { confirmThenDelete } from "../lib/confirmDelete";
 import { deleteWord, fetchWords, reviewWord, type WordReviewItem } from "../lib/wordReview";
 import { formatAbsoluteDateTime } from "../lib/time";
 import { shuffled } from "../lib/shuffle";
+import { normalizeQuizAnswer as normalizeAnswer } from "../lib/quizCheck";
 
 type LoadState = "loading" | "ready" | "error";
-
-// Mirrors App.tsx's QuizPanel/normalizeQuizAnswer: a loose match (trim,
-// lowercase, drop trailing punctuation) so "Ecstatic." and "ecstatic" both
-// count as correct, without pulling in a full spellcheck/LLM-judge pass for
-// what's meant to be a quick self-check.
-function normalizeAnswer(s: string): string {
-  return s.trim().toLowerCase().replace(/[.,!?;:'"]+$/g, "");
-}
 
 // Phrase words that carry no meaning of their own and are often swapped
 // out by the LLM's example sentence (e.g. "one's" → "my"/"his"), so they

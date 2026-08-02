@@ -82,7 +82,8 @@ vi.mock("./lib/wordReview", () => ({
   fetchWords: vi.fn(),
 }));
 
-vi.mock("./lib/quizCheck", () => ({
+vi.mock("./lib/quizCheck", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./lib/quizCheck")>()),
   checkQuizAnswer: vi.fn(),
 }));
 

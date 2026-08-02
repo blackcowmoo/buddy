@@ -2,7 +2,7 @@ package httpserver
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -83,8 +83,7 @@ func wordSaveHandler(ident identity.Identifier, words wordreview.Store, pipe *pi
 			Meaning string `json:"meaning"`
 			Example string `json:"example"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, "bad request", http.StatusBadRequest)
+		if !decodeJSON(w, r, &body) {
 			return
 		}
 		word := strings.TrimSpace(body.Word)
@@ -94,8 +93,7 @@ func wordSaveHandler(ident identity.Identifier, words wordreview.Store, pipe *pi
 			http.Error(w, "word is required", http.StatusBadRequest)
 			return
 		}
-		if utf8.RuneCountInString(word) > maxWordLen {
-			http.Error(w, "word is too long", http.StatusBadRequest)
+		if !requireMaxRunes(w, word, maxWordLen, "word is too long") {
 			return
 		}
 		if utf8.RuneCountInString(meaning) > maxWordFieldLen || utf8.RuneCountInString(example) > maxWordFieldLen {
@@ -166,8 +164,7 @@ func wordReviewHandler(ident identity.Identifier, words wordreview.Store) http.H
 		var body struct {
 			Correct bool `json:"correct"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, "bad request", http.StatusBadRequest)
+		if !decodeJSON(w, r, &body) {
 			return
 		}
 		updated, err := words.Review(r.Context(), userID, r.PathValue("id"), body.Correct, time.Now())
@@ -195,5 +192,46 @@ func wordDeleteHandler(ident identity.Identifier, words wordreview.Store) http.H
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// maxWordQueryLen caps the Korean description a learner can send to
+// wordSuggestHandler — generous for the "short phrase describing a word"
+// framing wordSuggestionSystemPrompt asks for, same reasoning as
+// maxInterlocutorStyleLen guarding against an arbitrarily long paste.
+const maxWordQueryLen = 200
+
+// wordSuggestHandler asks pipeline.SuggestWords for English word/phrase
+// candidates matching a learner's native-language description — a quick,
+// synchronous call (unlike GenerateStudySummary/GenerateStudyQuiz's
+// asyncjob-backed handlers) since it's cheap, latency-sensitive, and has
+// nothing worth persisting durably: a dropped request just gets retried by
+// the learner reopening the panel.
+func wordSuggestHandler(ident identity.Identifier, pipe *pipeline.Pipeline) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		_, ok := requireUser(w, r, ident)
+		if !ok {
+			return
+		}
+		var body struct {
+			Query string `json:"query"`
+		}
+		if !decodeJSON(w, r, &body) {
+			return
+		}
+		query := strings.TrimSpace(body.Query)
+		if query == "" {
+			http.Error(w, "query is required", http.StatusBadRequest)
+			return
+		}
+		if !requireMaxRunes(w, query, maxWordQueryLen, fmt.Sprintf("query exceeds %d characters", maxWordQueryLen)) {
+			return
+		}
+		suggestions, err := pipe.SuggestWords(r.Context(), query)
+		if err != nil {
+			serverError(w, "suggest words", err)
+			return
+		}
+		writeJSON(w, map[string]any{"suggestions": suggestions})
 	}
 }
