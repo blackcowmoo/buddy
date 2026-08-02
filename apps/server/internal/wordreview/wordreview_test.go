@@ -13,9 +13,9 @@ func TestNextScheduleAdvancesStageOnCorrectAnswer(t *testing.T) {
 	if newStage != 1 {
 		t.Errorf("newStage = %d, want 1", newStage)
 	}
-	want := now.Add(stageIntervals[1])
+	want := now.Add(stageIntervals[0])
 	if !nextReviewAt.Equal(want) {
-		t.Errorf("nextReviewAt = %v, want %v (stageIntervals[1] out)", nextReviewAt, want)
+		t.Errorf("nextReviewAt = %v, want %v (stageIntervals[0] out: a first-time correct answer schedules 1 day, not a step further)", nextReviewAt, want)
 	}
 }
 
@@ -35,10 +35,10 @@ func TestNextScheduleKeepsGrowingPastTheHandTunedStages(t *testing.T) {
 	if newStage != wantStage {
 		t.Errorf("newStage = %d, want %d (still advancing, never retires)", newStage, wantStage)
 	}
-	wantInterval := stageIntervals[lastStage] * 2 // one doubling past the table's last entry
+	wantInterval := stageIntervals[lastStage] // the table's last entry, no doubling yet
 	want := now.Add(wantInterval)
 	if !nextReviewAt.Equal(want) {
-		t.Errorf("nextReviewAt = %v, want %v (doubled past the table)", nextReviewAt, want)
+		t.Errorf("nextReviewAt = %v, want %v (the table's last entry, indexed by the old stage)", nextReviewAt, want)
 	}
 
 	// And it keeps going: several more correct answers in a row keep pushing
@@ -68,17 +68,16 @@ func TestIntervalForStageClampsToMaxIntervalInsteadOfOverflowing(t *testing.T) {
 	}
 }
 
-func TestNextScheduleRegressesOneStageOnMiss(t *testing.T) {
+func TestNextScheduleResetsToStageZeroOnMiss(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	newStage, nextReviewAt := nextSchedule(3, false, now)
 
-	if newStage != 2 {
-		t.Errorf("newStage = %d, want 2 (one step back from 3)", newStage)
+	if newStage != 0 {
+		t.Errorf("newStage = %d, want 0 (a miss resets progress, not just one step back)", newStage)
 	}
-	want := now.Add(stageIntervals[0])
-	if !nextReviewAt.Equal(want) {
-		t.Errorf("nextReviewAt = %v, want %v (always the shortest interval after a miss)", nextReviewAt, want)
+	if !nextReviewAt.Equal(now) {
+		t.Errorf("nextReviewAt = %v, want %v (due immediately, retryable the same day rather than pushed to tomorrow)", nextReviewAt, now)
 	}
 }
 
@@ -90,8 +89,7 @@ func TestNextScheduleMissAtStageZeroStaysAtZero(t *testing.T) {
 	if newStage != 0 {
 		t.Errorf("newStage = %d, want 0 (never goes negative)", newStage)
 	}
-	want := now.Add(stageIntervals[0])
-	if !nextReviewAt.Equal(want) {
-		t.Errorf("nextReviewAt = %v, want %v", nextReviewAt, want)
+	if !nextReviewAt.Equal(now) {
+		t.Errorf("nextReviewAt = %v, want %v", nextReviewAt, now)
 	}
 }

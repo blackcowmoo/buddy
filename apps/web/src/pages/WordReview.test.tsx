@@ -32,6 +32,17 @@ const dueWord: WordReviewItem = {
   status: "verified",
 };
 
+const idiomWord: WordReviewItem = {
+  id: "w-idiom",
+  word: "do one's best",
+  meaning: "최선을 다하다",
+  example: "I will do my best to finish the project on time.",
+  stage: 0,
+  reviewCount: 0,
+  nextReviewAt: Math.floor(Date.now() / 1000) - 3600, // 1 hour ago: due
+  status: "verified",
+};
+
 const futureWord: WordReviewItem = {
   id: "w2",
   word: "elated",
@@ -225,7 +236,48 @@ describe("WordReview page", () => {
     expect(await screen.findByText("1개 중 1개 맞혔어요!")).toBeInTheDocument();
   });
 
-  it("counts a wrong answer as incorrect and still advances", async () => {
+  it("grows the answer input to fit what's typed, not the length of the hidden answer", async () => {
+    vi.mocked(fetchWords).mockResolvedValue({ words: [dueWord], dueCount: 1 });
+    const user = userEvent.setup();
+    render(<WordReview />);
+
+    await user.click(await screen.findByRole("button", { name: "복습 시작" }));
+
+    const input = screen.getByRole("textbox", { name: "정답 입력" });
+    const widthBefore = input.style.width;
+
+    await user.type(input, "ecstatic");
+    const widthAfter = input.style.width;
+
+    expect(widthAfter).not.toBe(widthBefore);
+    expect(parseInt(widthAfter, 10)).toBeGreaterThan(parseInt(widthBefore, 10));
+  });
+
+  it("masks each significant word of a phrase separately, keeping words in between visible, when the example inflects it", async () => {
+    vi.mocked(fetchWords).mockResolvedValue({ words: [idiomWord], dueCount: 1 });
+    vi.mocked(reviewWord).mockResolvedValue({ ...idiomWord, stage: 1, reviewCount: 1 });
+    const user = userEvent.setup();
+    render(<WordReview />);
+
+    await user.click(await screen.findByRole("button", { name: "복습 시작" }));
+
+    // "do one's best" never appears verbatim in the example (it's "do my
+    // best") -- "my" stays visible, and only "do"/"best" are blanked, so
+    // the learner doesn't need to type "one's" (never itself blanked) or
+    // guess "my" is part of the answer.
+    expect(await screen.findByText("최선을 다하다")).toBeInTheDocument();
+    expect(screen.getByText("I will ____ my ____ to finish the project on time.")).toBeInTheDocument();
+    expect(
+      screen.getByPlaceholderText("빈칸에 들어갈 단어들을 띄어쓰기로 구분해 입력하세요"),
+    ).toBeInTheDocument();
+
+    await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "do best");
+    await user.click(screen.getByRole("button", { name: "확인" }));
+
+    expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
+  });
+
+  it("requeues a missed word for a same-session retry instead of ending the session on it", async () => {
     vi.mocked(fetchWords).mockResolvedValue({ words: [dueWord], dueCount: 1 });
     vi.mocked(reviewWord).mockResolvedValue({ ...dueWord, stage: 0, reviewCount: 1 });
     const user = userEvent.setup();
@@ -238,8 +290,17 @@ describe("WordReview page", () => {
     expect(await screen.findByText(/아쉬워요\. 정답: ecstatic/)).toBeInTheDocument();
     expect(reviewWord).toHaveBeenCalledWith("w1", false);
 
+    // Missing the only word in the queue doesn't end the session -- it's
+    // requeued for a same-day retry, so there's another question to go.
+    expect(screen.getByRole("button", { name: "다음 단어" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "다음 단어" }));
+
+    await user.type(await screen.findByRole("textbox", { name: "정답 입력" }), "ecstatic");
+    await user.click(screen.getByRole("button", { name: "확인" }));
+    expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
+
     await user.click(screen.getByRole("button", { name: "결과 보기" }));
-    expect(await screen.findByText("1개 중 0개 맞혔어요!")).toBeInTheDocument();
+    expect(await screen.findByText("2개 중 1개 맞혔어요!")).toBeInTheDocument();
   });
 
   // With only one verified word tracked (dueWord alone, no others to pull

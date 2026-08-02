@@ -2,8 +2,10 @@
 // chose to study from the word-search popup (internal/pipeline.SuggestWords),
 // and schedules when to re-quiz them using a Leitner-style spaced-repetition
 // schedule loosely modeled on the Ebbinghaus forgetting curve: each correct
-// recall pushes the next review further out; a miss snaps it back to the
-// shortest interval. This package doesn't generate word/meaning/example —
+// recall pushes the next review further out; a miss resets progress and
+// makes the word due again immediately, so it can be retried the same day
+// instead of waiting until the next scheduled interval. This package
+// doesn't generate word/meaning/example —
 // those come from pipeline.SuggestWords — it only tracks review scheduling
 // for whichever suggestions the learner picked, and only those: nothing here
 // is written unless the learner explicitly asks to study one specific
@@ -69,22 +71,20 @@ func intervalForStage(stage int) time.Duration {
 }
 
 // nextSchedule computes one review answer's outcome, given the word's stage
-// going in. correct advances a stage and pushes the next review further out
-// (see intervalForStage) — a word is never removed from rotation, just
-// reviewed less and less often as it's repeatedly recalled correctly.
-// incorrect drops back one stage (never below 0) and reschedules at the
-// shortest interval, same as a word that's never been reviewed at all — a
-// miss means the forgetting curve reset, not just slowed.
+// going in. correct advances a stage and pushes the next review out by
+// intervalForStage(stage) — the interval stageIntervals labels for that
+// stage->stage+1 step, so a first-ever (or post-miss) correct answer, from
+// stage 0, schedules exactly stageIntervals[0] (1 day) out, not a step
+// further. incorrect resets to stage 0 and reschedules the word due right
+// now instead of a day out — a miss means the forgetting curve reset, not
+// just slowed by a step, and the word should be retryable the same day
+// rather than pushed to tomorrow.
 func nextSchedule(stage int, correct bool, now time.Time) (newStage int, nextReviewAt time.Time) {
 	if correct {
 		newStage = stage + 1
-		return newStage, now.Add(intervalForStage(newStage))
+		return newStage, now.Add(intervalForStage(stage))
 	}
-	newStage = stage - 1
-	if newStage < 0 {
-		newStage = 0
-	}
-	return newStage, now.Add(intervalForStage(0))
+	return 0, now
 }
 
 // Status values for Word.Status — see the package doc for the

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { confirmThenDelete } from "../lib/confirmDelete";
 import { deleteWord, fetchWords, reviewWord, type WordReviewItem } from "../lib/wordReview";
 import { formatAbsoluteDateTime } from "../lib/time";
@@ -14,14 +14,55 @@ function normalizeAnswer(s: string): string {
   return s.trim().toLowerCase().replace(/[.,!?;:'"]+$/g, "");
 }
 
+// Phrase words that carry no meaning of their own and are often swapped
+// out by the LLM's example sentence (e.g. "one's" → "my"/"his"), so they
+// shouldn't be required to literally match when masking.
+const maskStopWords = new Set([
+  "a", "an", "the", "to", "of", "in", "on", "at", "for", "and", "or",
+  "one's", "someone's", "somebody's", "one", "oneself", "yourself",
+  "himself", "herself", "themselves", "sb", "sb's", "sth",
+]);
+
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 // Hides the target word/phrase inside its own example sentence so the
 // recall-mode review question doesn't just hand the learner the answer —
 // same spirit as QuizPanel's LLM-generated fill-in-the-blank prompts,
 // applied here to the plain example sentence saved alongside the word.
-function maskWord(example: string, word: string): string {
-  if (!word) return example;
-  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return example.replace(new RegExp(escaped, "gi"), "____");
+// `answer` is what the learner is expected to type back: usually `word`
+// itself, but see the fallback branch below for the multi-blank case.
+function computeBlank(example: string, word: string): { masked: string; answer: string } {
+  if (!word) return { masked: example, answer: word };
+  const exact = new RegExp(escapeRegExp(word), "gi");
+  if (exact.test(example)) {
+    return { masked: example.replace(exact, "____"), answer: word };
+  }
+
+  // The saved example doesn't contain `word` verbatim — this happens when
+  // the LLM inflects a phrase for the sentence's subject/tense (e.g. word
+  // "do one's best" → example "do my best"). Fall back to masking each
+  // significant word of the phrase on its own (tolerant of suffix changes
+  // like run → running), leaving words in between — "my" here — visible so
+  // the learner can see where they fit, rather than one blank that either
+  // hands over the whole answer or swallows unrelated sentence words. The
+  // learner types the blanked words back as one space-separated answer, so
+  // `answer` is built the same way rather than from the full dictionary
+  // form (which would require typing "one's", never itself blanked).
+  const tokens = word
+    .split(/\s+/)
+    .map((t) => t.replace(/[^a-zA-Z']/g, ""))
+    .filter((t) => t.length > 1 && !maskStopWords.has(t.toLowerCase()));
+
+  let masked = example;
+  const matched: string[] = [];
+  for (const token of tokens) {
+    const regex = new RegExp(`\\b${escapeRegExp(token)}\\w*`, "i");
+    if (!regex.test(masked)) continue;
+    matched.push(token);
+    masked = masked.replace(regex, "____");
+  }
+  if (matched.length === 0) return { masked: example, answer: word };
+  return { masked, answer: matched.join(" ") };
 }
 
 // A review session mixes two question shapes so a learner practices both
@@ -59,6 +100,7 @@ export function WordReview() {
   const [selectedChoice, setSelectedChoice] = useState<string | null>(null);
   const [checked, setChecked] = useState(false);
   const [correctCount, setCorrectCount] = useState(0);
+  const answerRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     fetchWords().then((result) => {
@@ -71,6 +113,16 @@ export function WordReview() {
       setState("ready");
     });
   }, []);
+
+  // Grow the answer box to fit multi-word answers (same trick as the
+  // message composer's textarea): reset to "auto" so scrollHeight reflects
+  // the content's natural height, not the previously-set pixel height.
+  useEffect(() => {
+    const el = answerRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [answer]);
 
   const handleDelete = (id: string) => confirmThenDelete("이 단어를 삭제할까요?", deleteWord, id, setWords);
 
@@ -99,17 +151,27 @@ export function WordReview() {
 
   const currentItem = quizQueue?.[index] ?? null;
   const current = currentItem?.word ?? null;
+  const recallBlank = currentItem?.mode === "recall" ? computeBlank(currentItem.word.example, currentItem.word.word) : null;
   const isCorrect =
     checked && currentItem
       ? currentItem.mode === "recall"
-        ? normalizeAnswer(answer) === normalizeAnswer(currentItem.word.word)
+        ? normalizeAnswer(answer) === normalizeAnswer(recallBlank!.answer)
         : selectedChoice === currentItem.word.meaning
       : false;
 
   const finishCheck = useCallback(
     (item: QuizItem, correct: boolean) => {
       setChecked(true);
-      if (correct) setCorrectCount((c) => c + 1);
+      if (correct) {
+        setCorrectCount((c) => c + 1);
+      } else {
+        // A miss resets the word's schedule to be due again today instead of
+        // tomorrow (see the backend's nextSchedule) -- requeue it here too,
+        // at the back of this session's queue, so the learner actually gets
+        // that same-day retry now rather than only next time they open
+        // review.
+        setQuizQueue((prev) => (prev ? [...prev, item] : prev));
+      }
       void reviewWord(item.word.id, correct).then((updated) => {
         if (!updated) return;
         setWords((prev) => prev.map((w) => (w.id === updated.id ? updated : w)));
@@ -121,7 +183,8 @@ export function WordReview() {
 
   const checkRecall = useCallback(() => {
     if (!currentItem || checked || currentItem.mode !== "recall" || !answer.trim()) return;
-    finishCheck(currentItem, normalizeAnswer(answer) === normalizeAnswer(currentItem.word.word));
+    const expected = computeBlank(currentItem.word.example, currentItem.word.word).answer;
+    finishCheck(currentItem, normalizeAnswer(answer) === normalizeAnswer(expected));
   }, [currentItem, checked, answer, finishCheck]);
 
   const chooseRecognition = useCallback(
@@ -279,19 +342,34 @@ export function WordReview() {
                 {currentItem.mode === "recall" ? (
                   <>
                     <div className="quiz-prompt">{current.meaning}</div>
-                    <div className="word-search-example">{maskWord(current.example, current.word)}</div>
-                    <input
-                      type="text"
+                    <div className="word-search-example">{recallBlank!.masked}</div>
+                    <textarea
+                      ref={answerRef}
                       className="quiz-answer-input"
+                      // Width tracks what's actually been typed, not the
+                      // expected answer -- a box pre-sized to fit the
+                      // answer would give its length away before the
+                      // learner types anything. It stops growing wider past
+                      // 24ch and wraps at word boundaries instead (a
+                      // textarea's default line-break behavior), with the
+                      // height effect above growing the box to fit.
+                      style={{ width: `${Math.min(24, Math.max(8, answer.length + 2))}ch` }}
+                      rows={1}
+                      maxLength={100}
                       value={answer}
                       onChange={(e) => setAnswer(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key !== "Enter") return;
+                        e.preventDefault();
                         if (checked) next();
                         else checkRecall();
                       }}
                       disabled={checked}
-                      placeholder="빈칸에 들어갈 단어를 입력하세요"
+                      placeholder={
+                        recallBlank!.answer.includes(" ")
+                          ? "빈칸에 들어갈 단어들을 띄어쓰기로 구분해 입력하세요"
+                          : "빈칸에 들어갈 단어를 입력하세요"
+                      }
                       aria-label="정답 입력"
                     />
                     {!checked && (
@@ -335,7 +413,7 @@ export function WordReview() {
                     <div className={`quiz-result ${isCorrect ? "correct" : "incorrect"}`} role="status">
                       {isCorrect
                         ? "정답이에요!"
-                        : `아쉬워요. 정답: ${currentItem.mode === "recall" ? current.word : current.meaning}`}
+                        : `아쉬워요. 정답: ${currentItem.mode === "recall" ? recallBlank!.answer : current.meaning}`}
                     </div>
                     <button type="button" className="quiz-next-btn" onClick={next}>
                       {index + 1 < quizQueue.length ? "다음 단어" : "결과 보기"}
