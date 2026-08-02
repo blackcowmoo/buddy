@@ -4,6 +4,8 @@ import { readStored, writeStored } from "./storedValue";
 
 const STORAGE_KEY = "buddy.tts.extraRates";
 
+export type TtsState = "idle" | "loading" | "ready" | "error";
+
 export const NATIVE_RATE = 1;
 export const MAX_EXTRA_RATES = 2;
 const DEFAULT_EXTRA_RATES = [0.5, 0.8];

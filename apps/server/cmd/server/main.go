@@ -135,25 +135,21 @@ func main() {
 	jobsCtx, jobsCancel := context.WithCancel(context.Background())
 	defer jobsCancel()
 	if rdb != nil {
-		replyQueue := asyncjob.NewQueue(rdb)
+		replyQueue := startWorker(rdb, jobsCtx, asyncjob.KindReply, transport.ReplyWorkerConcurrency, transport.ReplyClaimTTL,
+			transport.ReplyJobHandler(pipe, st, nil, nil))
 		pipe.ReplyHook = transport.NewReplyHook(pipe, st, replyQueue)
-		go asyncjob.NewWorker(rdb, asyncjob.KindReply, transport.ReplyWorkerConcurrency, transport.ReplyClaimTTL,
-			transport.ReplyJobHandler(pipe, st, nil, nil)).Run(jobsCtx)
 
-		correctionQueue := asyncjob.NewQueue(rdb)
+		correctionQueue := startWorker(rdb, jobsCtx, asyncjob.KindCorrection, transport.CorrectionWorkerConcurrency, transport.CorrectionClaimTTL,
+			transport.CorrectionJobHandler(pipe, st, nil))
 		pipe.CorrectHook = transport.NewCorrectHook(pipe, st, correctionQueue)
-		go asyncjob.NewWorker(rdb, asyncjob.KindCorrection, transport.CorrectionWorkerConcurrency, transport.CorrectionClaimTTL,
-			transport.CorrectionJobHandler(pipe, st, nil)).Run(jobsCtx)
 
-		liveTranslationQueue := asyncjob.NewQueue(rdb)
+		liveTranslationQueue := startWorker(rdb, jobsCtx, asyncjob.KindLiveTranslation, transport.LiveTranslationWorkerConcurrency, transport.LiveTranslationClaimTTL,
+			transport.TranslationJobHandler(pipe, st, nil))
 		pipe.TranslateHook = transport.NewTranslateHook(pipe, st, liveTranslationQueue)
-		go asyncjob.NewWorker(rdb, asyncjob.KindLiveTranslation, transport.LiveTranslationWorkerConcurrency, transport.LiveTranslationClaimTTL,
-			transport.TranslationJobHandler(pipe, st, nil)).Run(jobsCtx)
 
-		titleQueue := asyncjob.NewQueue(rdb)
+		titleQueue := startWorker(rdb, jobsCtx, asyncjob.KindTitle, transport.TitleWorkerConcurrency, transport.TitleClaimTTL,
+			transport.TitleJobHandler(pipe, st))
 		pipe.TitleHook = transport.NewTitleHook(pipe, st, titleQueue)
-		go asyncjob.NewWorker(rdb, asyncjob.KindTitle, transport.TitleWorkerConcurrency, transport.TitleClaimTTL,
-			transport.TitleJobHandler(pipe, st)).Run(jobsCtx)
 	}
 
 	// End-of-conversation wrap-up: unlike the hooks above, this isn't wired
@@ -165,9 +161,8 @@ func main() {
 	// on its own detached goroutine in that case.
 	var studySummaryQueue *asyncjob.Queue
 	if rdb != nil {
-		studySummaryQueue = asyncjob.NewQueue(rdb)
-		go asyncjob.NewWorker(rdb, asyncjob.KindStudySummary, transport.StudySummaryWorkerConcurrency, transport.StudySummaryClaimTTL,
-			transport.StudySummaryJobHandler(pipe, st)).Run(jobsCtx)
+		studySummaryQueue = startWorker(rdb, jobsCtx, asyncjob.KindStudySummary, transport.StudySummaryWorkerConcurrency, transport.StudySummaryClaimTTL,
+			transport.StudySummaryJobHandler(pipe, st))
 	}
 
 	// Practice-quiz pre-generation: runs independently of, but is enqueued
@@ -175,9 +170,8 @@ func main() {
 	// "optional feature, zero setup by default" convention.
 	var studyQuizQueue *asyncjob.Queue
 	if rdb != nil {
-		studyQuizQueue = asyncjob.NewQueue(rdb)
-		go asyncjob.NewWorker(rdb, asyncjob.KindStudyQuiz, transport.StudyQuizWorkerConcurrency, transport.StudyQuizClaimTTL,
-			transport.StudyQuizJobHandler(pipe, st)).Run(jobsCtx)
+		studyQuizQueue = startWorker(rdb, jobsCtx, asyncjob.KindStudyQuiz, transport.StudyQuizWorkerConcurrency, transport.StudyQuizClaimTTL,
+			transport.StudyQuizJobHandler(pipe, st))
 	}
 
 	// Temporary audio backup: only enabled once an endpoint is configured, so
@@ -222,9 +216,8 @@ func main() {
 	// convention as studySummaryQueue/studyQuizQueue above.
 	var wordVerifyQueue *asyncjob.Queue
 	if rdb != nil {
-		wordVerifyQueue = asyncjob.NewQueue(rdb)
-		go asyncjob.NewWorker(rdb, asyncjob.KindWordVerify, transport.WordVerifyWorkerConcurrency, transport.WordVerifyClaimTTL,
-			transport.WordVerifyJobHandler(pipe, wordReviews)).Run(jobsCtx)
+		wordVerifyQueue = startWorker(rdb, jobsCtx, asyncjob.KindWordVerify, transport.WordVerifyWorkerConcurrency, transport.WordVerifyClaimTTL,
+			transport.WordVerifyJobHandler(pipe, wordReviews))
 	}
 
 	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, wordReviews, wordVerifyQueue, translateQueue, correctionBackfillQueue, studySummaryQueue, studyQuizQueue)
@@ -245,6 +238,17 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
+}
+
+// startWorker builds a new asyncjob.Queue for kind and starts its worker
+// goroutine on jobsCtx, returning the queue — the common tail shared by
+// every asyncjob kind wired up above. Each call site still assigns its own
+// hook (if any) onto pipe itself, since that varies per kind and doesn't
+// depend on the worker goroutine having started yet.
+func startWorker(rdb redis.UniversalClient, jobsCtx context.Context, kind asyncjob.Kind, concurrency int, claimTTL time.Duration, handler asyncjob.Handler) *asyncjob.Queue {
+	queue := asyncjob.NewQueue(rdb)
+	go asyncjob.NewWorker(rdb, kind, concurrency, claimTTL, handler).Run(jobsCtx)
+	return queue
 }
 
 // buildRedis constructs the shared Redis Cluster client used by two

@@ -1,7 +1,6 @@
 package transport
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -11,7 +10,6 @@ import (
 	"time"
 
 	"buddy/server/internal/identity"
-	"buddy/server/internal/llm"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/protocol"
 	"buddy/server/internal/recording"
@@ -30,16 +28,6 @@ const (
 	// pcmSampleRate matches the wire format documented in internal/protocol:
 	// mono, 16 kHz, signed 16-bit little-endian PCM.
 	pcmSampleRate = 16000
-
-	// titleTimeout bounds Handler.generateTitle's LLM call — its own budget,
-	// not the connection's ctx, since a barge-in or disconnect right after
-	// the first reply must not cut short the one-shot title generation for
-	// that room (mirrors audioSaveTimeout below). Matches llm.OpenAI's own
-	// request timeout: a locally hosted model can take far longer than a
-	// hosted API to answer even this one-shot call, and a tighter budget
-	// here would just fail it early and force a retry on an already-slow
-	// server.
-	titleTimeout = 24 * time.Hour
 )
 
 // AudioSaver persists one utterance's raw audio bytes to a temporary backing
@@ -293,156 +281,4 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	cancel()
 	log.Printf("ws: connection closed")
 	_ = c.Close(websocket.StatusNormalClosure, "bye")
-}
-
-// persistEvent writes a copy of ev's payload to durable per-session
-// transcript storage. It's deliberately narrow and off the hot path:
-// EvAssistantDelta fires many times per turn as tokens stream, so only
-// events that represent a finished piece of state trigger a write, and each
-// write runs in its own goroutine so a slow database never adds latency to
-// the live conversation the learner is watching. Writes use
-// context.Background(), not the connection's context, so a turn's result
-// still lands even if the client disconnects or barges in right as it
-// completes (same reasoning as pipeline.compact's use of Background).
-//
-// Turn 0 (the opening greeting, see pipeline.StartConversation) is written
-// here like any other turn: store.MySQLStore.SaveTurn inserts into
-// buddy_turns unconditionally and also creates the *session row* right away
-// (title placeholder'd from the greeting text), so a greeting-only room is
-// already visible to ListSessions/SessionDetail — the learner can find it
-// and delete it even if they never reply. If the learner's turn 1 does land,
-// SaveTurn replaces that placeholder title with their own first message.
-func persistEvent(st store.Store, userID, sessionID string, ev protocol.ServerEvent) {
-	switch ev.Type {
-	case protocol.EvFinal:
-		go saveTurn(st, userID, sessionID, ev.Turn, "user", ev.Text, false, ev.Source)
-	case protocol.EvRefined:
-		go saveTurn(st, userID, sessionID, ev.Turn, "user", ev.Text, true, ev.Source)
-	case protocol.EvAssistantDone:
-		go saveTurn(st, userID, sessionID, ev.Turn, "assistant", ev.Text, false, "")
-	case protocol.EvCorrection:
-		if ev.Failed {
-			// Only durable when a job was actually reserved for this turn
-			// (see store.ReserveCorrectionJob) — a plain UPDATE with no
-			// matching row is a harmless no-op, same as saveCorrection below
-			// when the queue-backed path isn't configured.
-			go failCorrectionJob(st, userID, sessionID, ev.Turn)
-			return
-		}
-		if ev.Correction == nil {
-			return
-		}
-		go saveCorrection(st, userID, sessionID, ev.Turn, *ev.Correction)
-	case protocol.EvUserTranslation:
-		go saveTranslation(st, userID, sessionID, ev.Turn, "user", ev.Text)
-	case protocol.EvAssistantTranslation:
-		go saveTranslation(st, userID, sessionID, ev.Turn, "assistant", ev.Text)
-	}
-}
-
-func saveTurn(st store.Store, userID, sessionID string, turn int, role, text string, refined bool, source string) {
-	if err := st.SaveTurn(context.Background(), userID, sessionID, turn, role, text, refined, source); err != nil {
-		log.Printf("store: save turn %s/%s#%d: %v", userID, sessionID, turn, err)
-	}
-}
-
-func saveCorrection(st store.Store, userID, sessionID string, turn int, c protocol.Correction) {
-	if err := st.SaveCorrection(context.Background(), userID, sessionID, turn, c); err != nil {
-		log.Printf("store: save correction %s/%s#%d: %v", userID, sessionID, turn, err)
-	}
-}
-
-// failCorrectionJob mirrors saveCorrection for the failure path — a second,
-// less-detailed FailJob write on top of CorrectionJobHandler's own (see
-// analysis_jobs.go) when the queue-backed path is configured, and the only
-// one at all when it isn't (a harmless no-op there, same as saveCorrection
-// above with no reservation to match).
-func failCorrectionJob(st store.Store, userID, sessionID string, turn int) {
-	if err := st.FailJob(context.Background(), userID, sessionID, turn, "correction", "analysis failed"); err != nil {
-		log.Printf("store: fail correction job %s/%s#%d: %v", userID, sessionID, turn, err)
-	}
-}
-
-func saveTranslation(st store.Store, userID, sessionID string, turn int, role, translation string) {
-	if err := st.SaveTranslation(context.Background(), userID, sessionID, turn, role, translation); err != nil {
-		log.Printf("store: save translation %s/%s#%d: %v", userID, sessionID, turn, err)
-	}
-}
-
-// generateTitle asks the pipeline's LLM for a proper chat-room title from
-// the conversation so far — on turn 1 this replaces the raw-text-truncation
-// placeholder store.MySQLStore.SaveTurn sets, and every
-// TitleRegenerateEveryNTurns turns after that it re-titles the room from the
-// fuller transcript. Runs entirely off the live turn: emit fires this via
-// `go` so the learner's reply is never delayed, and it uses
-// context.Background() (bounded by titleTimeout, not the connection's ctx)
-// so a disconnect right after the reply doesn't cut it short — same
-// reasoning as backupAudio below.
-//
-// sess.Export()'s recent window reliably includes every turn up to and
-// including this turn's user message (session.Session.AppendUser runs
-// synchronously before the pipeline's async work starts), but NOT this
-// turn's assistant reply — pipeline.HandleText/HandleUtterance only calls
-// sess.AppendAssistant right after emit() returns, racing this goroutine.
-// That's why assistantText is passed in explicitly (as ev.Text) and appended
-// here rather than re-read from sess.
-//
-// ev.Turn == 1 normally happens once per session's lifetime — session.New's
-// turn counter is seeded from store.Store.LastTurn on every connect (see
-// session.Session.Seed), so a reconnect resumes numbering rather than
-// restarting at 0. It can still recur (e.g. a race between two connections
-// both seeing the same LastTurn before either has saved turn 1), so this
-// isn't relied on for correctness: titleDedupeKey includes the turn number,
-// so a repeat call for the same turn just regenerates an equivalent title
-// rather than flapping between two different ones.
-func (h *Handler) generateTitle(userID, sessionID string, sess *session.Session, turn int, assistantText string) {
-	_, recent := sess.Export()
-	transcript := make([]llm.Message, 0, len(recent)+1)
-	transcript = append(transcript, recent...)
-	transcript = append(transcript, llm.Message{Role: llm.RoleAssistant, Content: assistantText})
-	hasUserTurn := false
-	for _, m := range transcript {
-		if m.Role == llm.RoleUser {
-			hasUserTurn = true
-			break
-		}
-	}
-	if !hasUserTurn {
-		return
-	}
-	// ctx is titleTimeout-bounded (its own budget, not the connection's —
-	// see that const's doc comment); RunTitle's queue-backed TitleHook path
-	// ignores it and uses context.Background() internally instead (see
-	// NewTitleHook), the same "hook always keeps making progress past a
-	// disconnect" convention as NewReplyHook/NewCorrectHook. save is only
-	// consulted on the direct (no-hook) fallback — see RunTitle's doc
-	// comment for why the hook path persists on its own.
-	ctx, cancel := context.WithTimeout(context.Background(), titleTimeout)
-	defer cancel()
-	h.pipe.RunTitle(ctx, userID, sessionID, turn, transcript, func(title string) error {
-		return h.store.SaveGeneratedTitle(context.Background(), userID, sessionID, title)
-	})
-}
-
-// backupAudio streams one utterance's raw PCM to the configured temporary
-// store (see internal/audiostore.Store) as a best-effort disposable backup.
-// It runs on its own context.Background() timeout rather than the turn's
-// context, so a barge-in that cancels the turn doesn't truncate the upload —
-// and it only logs on failure, since losing this backup must never affect
-// the live conversation.
-//
-// The key is prefixed with sessionID (not just userID) so
-// AudioSaver.DeleteBySession can find and remove every backup belonging to a
-// room once its chat session is deleted — otherwise these temporary backups
-// would outlive the conversation they belong to indefinitely. id is the same
-// one passed to internal/recording.Store.Save for this utterance (see the
-// ServeHTTP call site), so AudioSaver.Delete can also remove this one backup
-// when just its matching recording — not the whole session — is deleted.
-func (h *Handler) backupAudio(userID, sessionID, id string, pcm []byte) {
-	key := userID + "/" + sessionID + "/" + id + ".pcm"
-	ctx, cancel := context.WithTimeout(context.Background(), audioSaveTimeout)
-	defer cancel()
-	if err := h.audio.SaveStream(ctx, key, bytes.NewReader(pcm)); err != nil {
-		log.Printf("audiostore: backup %s: %v", key, err)
-	}
 }
