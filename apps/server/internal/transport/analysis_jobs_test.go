@@ -18,7 +18,7 @@ import (
 
 func TestNewCorrectHookReturnsNilWithoutQueue(t *testing.T) {
 	pipe := &pipeline.Pipeline{}
-	if hook := NewCorrectHook(pipe, newFakeStore(), nil); hook != nil {
+	if hook := NewCorrectHook(pipe, newFakeStore(), nil, nil, nil); hook != nil {
 		t.Fatalf("NewCorrectHook(nil queue) = %v, want nil (so correct() falls back to the direct in-process path)", hook)
 	}
 }
@@ -36,7 +36,7 @@ func TestCorrectHookFastPathPersistsAndCallsOnResult(t *testing.T) {
 		}}},
 		FeedbackLang: "ko",
 	}
-	hook := NewCorrectHook(pipe, st, queue)
+	hook := NewCorrectHook(pipe, st, nil, nil, queue)
 
 	var gotCorrected, gotTranslation string
 	var gotIssues []protocol.Issue
@@ -83,6 +83,40 @@ func TestCorrectHookFastPathPersistsAndCallsOnResult(t *testing.T) {
 	}
 }
 
+// TestCorrectHookFastPathCapturesVocabularyWord guards the queued path's
+// wiring of captureCorrectionWords (see word_capture.go): a vocabulary issue
+// coming out of the queued CorrectionJobHandler must land in the wordreview
+// store, not just in the fast-path onResult callback.
+func TestCorrectHookFastPathCapturesVocabularyWord(t *testing.T) {
+	rdb := requireReplyRedis(t)
+	queue := asyncjob.NewQueue(rdb)
+	st := newFakeStore()
+	if err := st.SaveTurn(context.Background(), "alex", "sess-correct-capture", 1, "user", "I was very angry", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(user) error = %v", err)
+	}
+	pipe := &pipeline.Pipeline{
+		Analysis: []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{
+			complete: `{"corrected":"I was furious.","translation":"","issues":[{"type":"vocabulary","span":"very angry","suggestion":"furious","explanationTranslation":"몹시 화난"}]}`,
+		}}},
+		FeedbackLang: "ko",
+	}
+	words := newFakeWordReviewStore()
+	hook := NewCorrectHook(pipe, st, words, nil, queue)
+
+	hook(context.Background(), "alex", "sess-correct-capture", 1, "I was very angry", "",
+		func(corrected string, issues []protocol.Issue, translation string) {},
+		func() { t.Fatalf("onFailure called unexpectedly") },
+	)
+
+	list, err := words.List(context.Background(), "alex")
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(list) != 1 || list[0].Word != "furious" {
+		t.Fatalf("captured words = %+v, want exactly one 'furious'", list)
+	}
+}
+
 // TestCorrectHookFastPathCallsOnFailureAndMarksJobFailed is the fix for the
 // bug this file's other correction test doesn't cover: when analyze() itself
 // errors (every candidate LLM call failing), the live connection must still
@@ -100,7 +134,7 @@ func TestCorrectHookFastPathCallsOnFailureAndMarksJobFailed(t *testing.T) {
 		Analysis:     []pipeline.Candidate{{Model: "m", LLM: failingAnalysisLLM{}}},
 		FeedbackLang: "ko",
 	}
-	hook := NewCorrectHook(pipe, st, queue)
+	hook := NewCorrectHook(pipe, st, nil, nil, queue)
 
 	var onResultCalled, onFailureCalled bool
 	hook(context.Background(), "alex", "sess-correct-fail", 1, "he go school", "",
@@ -221,7 +255,7 @@ func TestHandlerGenerateTitleUsesQueueWhenConfigured(t *testing.T) {
 	}
 	pipe := &pipeline.Pipeline{LLM: fixedCompleteLLM{reply: "Queued Title"}, ChatModel: "m"}
 	pipe.TitleHook = NewTitleHook(pipe, st, queue)
-	h := NewHandler(pipe, nil, st, nil, nil)
+	h := NewHandler(pipe, nil, st, nil, nil, nil, nil)
 
 	sess := session.New("sys")
 	sess.AppendUser("first message")

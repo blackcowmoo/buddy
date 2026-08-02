@@ -49,7 +49,7 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux := http.NewServeMux()
 
 	// Realtime + API first (exact patterns win over the "/" catch-all).
-	wsHandler := transport.NewHandler(pipe, ident, st, audio, recordings)
+	wsHandler := transport.NewHandler(pipe, ident, st, audio, recordings, words, wordVerifyQueue)
 	mux.Handle("/ws", wsHandler)
 	// The STT ensemble is fixed once pipe is constructed, so its name list is
 	// computed once here rather than per health-check request.

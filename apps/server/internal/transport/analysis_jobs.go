@@ -13,6 +13,7 @@ import (
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/protocol"
 	"buddy/server/internal/store"
+	"buddy/server/internal/wordreview"
 )
 
 const (
@@ -74,7 +75,15 @@ type correctionJobPayload struct {
 // asyncjob.Queue.Execute), but this way a poller (or a page reload) sees
 // CorrectionStatus == JobStatusFailed in the meantime instead of a job that
 // looks like it's simply still pending forever.
-func CorrectionJobHandler(pipe *pipeline.Pipeline, st store.Store, onResult func(corrected string, issues []protocol.Issue, translation string)) asyncjob.Handler {
+//
+// words/wordVerifyQueue feed captureCorrectionWords (see word_capture.go),
+// run right after the correction itself is durably saved — this is the one
+// call site guaranteed to run for every correction regardless of deployment
+// mode (a reap-retry or a different replica's worker has no live connection
+// to emit onResult to, but still lands here), so it's where auto-capture
+// has to live to never miss a correction. words may be nil in tests that
+// don't care about word capture.
+func CorrectionJobHandler(pipe *pipeline.Pipeline, st store.Store, words wordreview.Store, wordVerifyQueue *asyncjob.Queue, onResult func(corrected string, issues []protocol.Issue, translation string)) asyncjob.Handler {
 	return func(ctx context.Context, job asyncjob.Job) error {
 		var payload correctionJobPayload
 		if err := json.Unmarshal(job.Payload, &payload); err != nil {
@@ -87,11 +96,11 @@ func CorrectionJobHandler(pipe *pipeline.Pipeline, st store.Store, onResult func
 			}
 			return fmt.Errorf("correction job: analyze: %w", err)
 		}
-		if err := st.SaveCorrection(ctx, payload.UserID, payload.SessionID, payload.Turn, protocol.Correction{
-			Original: payload.Text, Corrected: corrected, Issues: issues,
-		}); err != nil {
+		result := protocol.Correction{Original: payload.Text, Corrected: corrected, Issues: issues}
+		if err := st.SaveCorrection(ctx, payload.UserID, payload.SessionID, payload.Turn, result); err != nil {
 			return fmt.Errorf("correction job: save: %w", err)
 		}
+		captureCorrectionWords(ctx, pipe, words, wordVerifyQueue, payload.UserID, result)
 		if strings.TrimSpace(translation) != "" {
 			if err := st.SaveTranslation(ctx, payload.UserID, payload.SessionID, payload.Turn, "user", translation); err != nil {
 				log.Printf("correction job: save translation %s/%s#%d: %v", payload.UserID, payload.SessionID, payload.Turn, err)
@@ -120,7 +129,7 @@ func CorrectionJobHandler(pipe *pipeline.Pipeline, st store.Store, onResult func
 // signal. A dedup ("!ok") or lost-race ("!claimed") return deliberately
 // skips onFailure: another attempt already owns this job and will report
 // its own outcome.
-func NewCorrectHook(pipe *pipeline.Pipeline, st store.Store, queue *asyncjob.Queue) pipeline.CorrectHook {
+func NewCorrectHook(pipe *pipeline.Pipeline, st store.Store, words wordreview.Store, wordVerifyQueue *asyncjob.Queue, queue *asyncjob.Queue) pipeline.CorrectHook {
 	if queue == nil {
 		return nil
 	}
@@ -130,7 +139,7 @@ func NewCorrectHook(pipe *pipeline.Pipeline, st store.Store, queue *asyncjob.Que
 		}
 		payload := correctionJobPayload{UserID: userID, SessionID: sessionID, Turn: turn, Text: text, ContextMsg: contextMsg}
 		logID := turnLogID(userID, sessionID, turn)
-		handler := CorrectionJobHandler(pipe, st, onResult)
+		handler := CorrectionJobHandler(pipe, st, words, wordVerifyQueue, onResult)
 		// A dedup or lost-race return (ran=false, err=nil) deliberately
 		// skips onFailure: another attempt already owns this job and will
 		// report its own outcome. An enqueue/claim/execute error (err != nil)

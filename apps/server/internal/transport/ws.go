@@ -9,12 +9,14 @@ import (
 	"sync"
 	"time"
 
+	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/identity"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/protocol"
 	"buddy/server/internal/recording"
 	"buddy/server/internal/session"
 	"buddy/server/internal/store"
+	"buddy/server/internal/wordreview"
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
@@ -51,15 +53,17 @@ type AudioSaver interface {
 
 // Handler upgrades HTTP to WebSocket and runs one conversation per connection.
 type Handler struct {
-	pipe       *pipeline.Pipeline
-	ident      identity.Identifier
-	store      store.Store
-	audio      AudioSaver
-	recordings recording.Store // nil disables recording archival (see config.Config's S3Bucket)
+	pipe            *pipeline.Pipeline
+	ident           identity.Identifier
+	store           store.Store
+	audio           AudioSaver
+	recordings      recording.Store // nil disables recording archival (see config.Config's S3Bucket)
+	words           wordreview.Store
+	wordVerifyQueue *asyncjob.Queue
 }
 
-func NewHandler(p *pipeline.Pipeline, ident identity.Identifier, st store.Store, audio AudioSaver, recordings recording.Store) *Handler {
-	return &Handler{pipe: p, ident: ident, store: st, audio: audio, recordings: recordings}
+func NewHandler(p *pipeline.Pipeline, ident identity.Identifier, st store.Store, audio AudioSaver, recordings recording.Store, words wordreview.Store, wordVerifyQueue *asyncjob.Queue) *Handler {
+	return &Handler{pipe: p, ident: ident, store: st, audio: audio, recordings: recordings, words: words, wordVerifyQueue: wordVerifyQueue}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -178,7 +182,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// events reach it, so pipeline goroutines can emit concurrently.
 	events := make(chan protocol.ServerEvent, 128)
 	emit := func(ev protocol.ServerEvent) {
-		persistEvent(h.store, userID, sessionID, ev)
+		persistEvent(h.pipe, h.store, h.words, h.wordVerifyQueue, userID, sessionID, ev)
 		// Turn 1's assistant reply is the first full exchange this room has
 		// — enough context to title it. Every TitleRegenerateEveryNTurns
 		// turns after that re-titles the room too, so the title keeps

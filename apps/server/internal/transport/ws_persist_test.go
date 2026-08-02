@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"buddy/server/internal/pipeline"
 	"buddy/server/internal/protocol"
 	"buddy/server/internal/store"
 
@@ -99,8 +100,8 @@ func TestPersistEventSavesTranslationsByRole(t *testing.T) {
 		t.Fatalf("SaveTurn(assistant) error = %v", err)
 	}
 
-	persistEvent(st, "alex", "sess-1", protocol.ServerEvent{Type: protocol.EvUserTranslation, Turn: 1, Text: "그는 학교에 간다"})
-	persistEvent(st, "alex", "sess-1", protocol.ServerEvent{Type: protocol.EvAssistantTranslation, Turn: 1, Text: "좋아요!"})
+	persistEvent(nil, st, nil, nil, "alex", "sess-1", protocol.ServerEvent{Type: protocol.EvUserTranslation, Turn: 1, Text: "그는 학교에 간다"})
+	persistEvent(nil, st, nil, nil, "alex", "sess-1", protocol.ServerEvent{Type: protocol.EvAssistantTranslation, Turn: 1, Text: "좋아요!"})
 
 	var turns []store.Turn
 	pollUntil(t, func() bool {
@@ -119,5 +120,42 @@ func TestPersistEventSavesTranslationsByRole(t *testing.T) {
 	}
 	if turns[1].Role != "assistant" || turns[1].Translation != "좋아요!" {
 		t.Fatalf("assistant turn = %+v", turns[1])
+	}
+}
+
+// TestPersistEventCapturesVocabularyWordFromCorrection guards the live
+// (no-durable-queue) path's wiring of captureCorrectionWords: in a
+// deployment with no Redis-backed correction queue, persistEvent's
+// EvCorrection case is the *only* place a correction (and any word captured
+// from it) ever gets persisted, so it must not be skipped here.
+func TestPersistEventCapturesVocabularyWordFromCorrection(t *testing.T) {
+	st := newFakeStore()
+	ctx := context.Background()
+	if err := st.SaveTurn(ctx, "alex", "sess-1", 1, "user", "I was very angry", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(user) error = %v", err)
+	}
+	pipe := &pipeline.Pipeline{Analysis: []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{complete: `{"valid":true,"reason":""}`}}}}
+	words := newFakeWordReviewStore()
+
+	persistEvent(pipe, st, words, nil, "alex", "sess-1", protocol.ServerEvent{
+		Type: protocol.EvCorrection,
+		Turn: 1,
+		Correction: &protocol.Correction{
+			Original:  "I was very angry",
+			Corrected: "I was furious.",
+			Issues:    []protocol.Issue{{Type: "vocabulary", Span: "very angry", Suggestion: "furious", ExplanationTranslation: "몹시 화난"}},
+		},
+	})
+
+	pollUntil(t, func() bool {
+		list, err := words.List(ctx, "alex")
+		return err == nil && len(list) == 1
+	})
+	list, err := words.List(ctx, "alex")
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(list) != 1 || list[0].Word != "furious" {
+		t.Fatalf("captured words = %+v, want exactly one 'furious'", list)
 	}
 }

@@ -4,8 +4,11 @@ import (
 	"context"
 	"log"
 
+	"buddy/server/internal/asyncjob"
+	"buddy/server/internal/pipeline"
 	"buddy/server/internal/protocol"
 	"buddy/server/internal/store"
+	"buddy/server/internal/wordreview"
 )
 
 // persistEvent writes a copy of ev's payload to durable per-session
@@ -25,7 +28,7 @@ import (
 // already visible to ListSessions/SessionDetail — the learner can find it
 // and delete it even if they never reply. If the learner's turn 1 does land,
 // SaveTurn replaces that placeholder title with their own first message.
-func persistEvent(st store.Store, userID, sessionID string, ev protocol.ServerEvent) {
+func persistEvent(pipe *pipeline.Pipeline, st store.Store, words wordreview.Store, wordVerifyQueue *asyncjob.Queue, userID, sessionID string, ev protocol.ServerEvent) {
 	switch ev.Type {
 	case protocol.EvFinal:
 		go saveTurn(st, userID, sessionID, ev.Turn, "user", ev.Text, false, ev.Source)
@@ -45,7 +48,15 @@ func persistEvent(st store.Store, userID, sessionID string, ev protocol.ServerEv
 		if ev.Correction == nil {
 			return
 		}
-		go saveCorrection(st, userID, sessionID, ev.Turn, *ev.Correction)
+		// In a deployment with no durable correction queue configured,
+		// this is the only place a correction (and the words captured from
+		// it — see captureCorrectionWords) ever gets persisted; when a
+		// queue is configured this runs alongside CorrectionJobHandler's own
+		// save, which is fine — both are idempotent (see word_capture.go).
+		go func(c protocol.Correction) {
+			saveCorrection(st, userID, sessionID, ev.Turn, c)
+			captureCorrectionWords(context.Background(), pipe, words, wordVerifyQueue, userID, c)
+		}(*ev.Correction)
 	case protocol.EvUserTranslation:
 		go saveTranslation(st, userID, sessionID, ev.Turn, "user", ev.Text)
 	case protocol.EvAssistantTranslation:

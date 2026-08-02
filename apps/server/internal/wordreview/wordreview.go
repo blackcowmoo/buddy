@@ -1,15 +1,18 @@
-// Package wordreview persists words/phrases/idioms the learner explicitly
-// chose to study from the word-search popup (internal/pipeline.SuggestWords),
-// and schedules when to re-quiz them using a Leitner-style spaced-repetition
-// schedule loosely modeled on the Ebbinghaus forgetting curve: each correct
-// recall pushes the next review further out; a miss resets progress and
-// makes the word due again immediately, so it can be retried the same day
-// instead of waiting until the next scheduled interval. This package
-// doesn't generate word/meaning/example —
-// those come from pipeline.SuggestWords — it only tracks review scheduling
-// for whichever suggestions the learner picked, and only those: nothing here
-// is written unless the learner explicitly asks to study one specific
-// suggestion (see httpserver.wordSaveHandler).
+// Package wordreview persists words/phrases the learner is meant to study —
+// either ones they explicitly chose from the word-search popup
+// (internal/pipeline.SuggestWords, see httpserver.wordSaveHandler), or ones
+// auto-captured from a vocabulary/phrasing fix in an in-conversation grammar
+// correction (see transport.captureCorrectionWords): a word reached for
+// mid-conversation and gotten wrong is just as worth drilling as one the
+// learner couldn't produce at all. Either way this package schedules when to
+// re-quiz them using a Leitner-style spaced-repetition schedule loosely
+// modeled on the Ebbinghaus forgetting curve: each correct recall pushes the
+// next review further out; a miss resets progress and makes the word due
+// again immediately, so it can be retried the same day instead of waiting
+// until the next scheduled interval. This package doesn't generate
+// word/meaning/example itself — those come from whichever source captured
+// the word — it only tracks review scheduling for whichever words ended up
+// saved.
 //
 // A newly saved word starts StatusPending and enters review rotation only
 // once pipeline.Pipeline.VerifyWord's model-consensus check confirms it's a
@@ -120,9 +123,9 @@ type Word struct {
 	VerifyReason string
 }
 
-// Store persists the learner's chosen study words and their review
-// schedules, scoped per user the same way internal/store and
-// internal/recording are.
+// Store persists the learner's study words (chosen or auto-captured — see
+// the package doc) and their review schedules, scoped per user the same way
+// internal/store and internal/recording are.
 type Store interface {
 	// Save adds word/meaning/example to userID's study list as
 	// StatusPending — not yet due for review; see MarkVerified. A no-op that

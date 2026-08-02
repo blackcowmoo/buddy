@@ -322,7 +322,7 @@ func TestWSReplyPersistsAfterClientDisconnectsMidReply(t *testing.T) {
 		MaxHistoryMessages: 20,
 	}
 	pipe.ReplyHook = NewReplyHook(pipe, st, queue)
-	h := NewHandler(pipe, identity.NewCookieIdentifier(), st, nil, nil)
+	h := NewHandler(pipe, identity.NewCookieIdentifier(), st, nil, nil, nil, nil)
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 
