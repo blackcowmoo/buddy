@@ -28,7 +28,7 @@ func newTestServerWithTitleLLM(t *testing.T, st store.Store, completeFn func(msg
 		LLM:                fakeLLM{completeFn: completeFn},
 		MaxHistoryMessages: 20,
 	}
-	h := NewHandler(pipe, identity.NewCookieIdentifier(), st, nil, nil)
+	h := NewHandler(pipe, identity.NewCookieIdentifier(), st, nil, nil, nil, nil)
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	return srv

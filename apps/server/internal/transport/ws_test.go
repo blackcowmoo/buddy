@@ -731,7 +731,7 @@ func newTestServerFull(t *testing.T, st store.Store, audio AudioSaver, recording
 		LLM:                fakeLLM{},
 		MaxHistoryMessages: 20,
 	}
-	h := NewHandler(pipe, identity.NewCookieIdentifier(), st, audio, recordings)
+	h := NewHandler(pipe, identity.NewCookieIdentifier(), st, audio, recordings, nil, nil)
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	return srv
@@ -912,7 +912,7 @@ func TestWSFirstVisitSetsAnonymousCookie(t *testing.T) {
 // must refuse before ever attempting the WS upgrade.
 func TestWSRejectsWhenIdentityFails(t *testing.T) {
 	pipe := &pipeline.Pipeline{STT: []stt.Recognizer{fakeSTT{text: "hi"}}, LLM: fakeLLM{}}
-	h := NewHandler(pipe, fakeHeaderIdentifier{"X-Auth-Request-Email"}, newFakeStore(), nil, nil)
+	h := NewHandler(pipe, fakeHeaderIdentifier{"X-Auth-Request-Email"}, newFakeStore(), nil, nil, nil, nil)
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
@@ -930,7 +930,7 @@ func TestWSRejectsWhenIdentityFails(t *testing.T) {
 // contract, but with identity resolving successfully.
 func TestWSHeaderIdentityConnectsWhenHeaderPresent(t *testing.T) {
 	pipe := &pipeline.Pipeline{STT: []stt.Recognizer{fakeSTT{text: "hi"}}, LLM: fakeLLM{}}
-	h := NewHandler(pipe, fakeHeaderIdentifier{"X-Auth-Request-Email"}, newFakeStore(), nil, nil)
+	h := NewHandler(pipe, fakeHeaderIdentifier{"X-Auth-Request-Email"}, newFakeStore(), nil, nil, nil, nil)
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
@@ -996,7 +996,7 @@ func TestWSSessionSystemPromptIncludesSavedInterlocutorStyle(t *testing.T) {
 		LLM:                llmDouble,
 		MaxHistoryMessages: 20,
 	}
-	h := NewHandler(pipe, identity.NewCookieIdentifier(), st, nil, nil)
+	h := NewHandler(pipe, identity.NewCookieIdentifier(), st, nil, nil, nil, nil)
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 
@@ -1028,7 +1028,7 @@ func TestWSSessionSystemPromptIncludesLearnerProfile(t *testing.T) {
 		LLM:                llmDouble,
 		MaxHistoryMessages: 20,
 	}
-	h := NewHandler(pipe, identity.NewCookieIdentifier(), st, nil, nil)
+	h := NewHandler(pipe, identity.NewCookieIdentifier(), st, nil, nil, nil, nil)
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 
@@ -1425,7 +1425,7 @@ func TestWSCorrectionAndTranslationSurviveDisconnect(t *testing.T) {
 		MaxHistoryMessages: 1000, // keep compact() from also racing the shared gate
 		FeedbackLang:       "ko",
 	}
-	h := NewHandler(pipe, identity.NewCookieIdentifier(), st, nil, nil)
+	h := NewHandler(pipe, identity.NewCookieIdentifier(), st, nil, nil, nil, nil)
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 

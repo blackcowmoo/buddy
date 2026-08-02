@@ -134,14 +134,36 @@ func main() {
 	// next turn once history grows past the window again.
 	jobsCtx, jobsCancel := context.WithCancel(context.Background())
 	defer jobsCancel()
+
+	// Word-review (spaced-repetition study list): unlike recordings below,
+	// this has no external dependency beyond MySQL, so it's always on —
+	// shares st's pools the same way. Built here, ahead of the correction
+	// hook below, because captureCorrectionWords (see
+	// transport.CorrectionJobHandler) needs it to auto-capture
+	// vocabulary/phrasing corrections into the same study list.
+	wordReviews := buildWordReviewStore(context.Background(), st)
+	defer wordReviews.Close()
+
+	// Word verification: fact-checks a word/phrase right after "학습하기"
+	// saves it Pending (see httpserver.wordSaveHandler) or after a
+	// vocabulary/phrasing correction auto-captures it (see
+	// transport.captureCorrectionWords), same "optional durable queue,
+	// inline-goroutine fallback when Redis isn't configured" convention as
+	// studySummaryQueue/studyQuizQueue below.
+	var wordVerifyQueue *asyncjob.Queue
+	if rdb != nil {
+		wordVerifyQueue = startWorker(rdb, jobsCtx, asyncjob.KindWordVerify, transport.WordVerifyWorkerConcurrency, transport.WordVerifyClaimTTL,
+			transport.WordVerifyJobHandler(pipe, wordReviews))
+	}
+
 	if rdb != nil {
 		replyQueue := startWorker(rdb, jobsCtx, asyncjob.KindReply, transport.ReplyWorkerConcurrency, transport.ReplyClaimTTL,
 			transport.ReplyJobHandler(pipe, st, nil, nil))
 		pipe.ReplyHook = transport.NewReplyHook(pipe, st, replyQueue)
 
 		correctionQueue := startWorker(rdb, jobsCtx, asyncjob.KindCorrection, transport.CorrectionWorkerConcurrency, transport.CorrectionClaimTTL,
-			transport.CorrectionJobHandler(pipe, st, nil))
-		pipe.CorrectHook = transport.NewCorrectHook(pipe, st, correctionQueue)
+			transport.CorrectionJobHandler(pipe, st, wordReviews, wordVerifyQueue, nil))
+		pipe.CorrectHook = transport.NewCorrectHook(pipe, st, wordReviews, wordVerifyQueue, correctionQueue)
 
 		liveTranslationQueue := startWorker(rdb, jobsCtx, asyncjob.KindLiveTranslation, transport.LiveTranslationWorkerConcurrency, transport.LiveTranslationClaimTTL,
 			transport.TranslationJobHandler(pipe, st, nil))
@@ -202,22 +224,6 @@ func main() {
 	recordings := buildRecordingStore(context.Background(), cfg, st)
 	if recordings != nil {
 		defer recordings.Close()
-	}
-
-	// Word-review (spaced-repetition study list): unlike recordings above,
-	// this has no external dependency beyond MySQL, so it's always on —
-	// shares st's pools the same way.
-	wordReviews := buildWordReviewStore(context.Background(), st)
-	defer wordReviews.Close()
-
-	// Word verification: fact-checks a word/phrase right after "학습하기"
-	// saves it Pending (see httpserver.wordSaveHandler), same "optional
-	// durable queue, inline-goroutine fallback when Redis isn't configured"
-	// convention as studySummaryQueue/studyQuizQueue above.
-	var wordVerifyQueue *asyncjob.Queue
-	if rdb != nil {
-		wordVerifyQueue = startWorker(rdb, jobsCtx, asyncjob.KindWordVerify, transport.WordVerifyWorkerConcurrency, transport.WordVerifyClaimTTL,
-			transport.WordVerifyJobHandler(pipe, wordReviews))
 	}
 
 	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, wordReviews, wordVerifyQueue, translateQueue, correctionBackfillQueue, studySummaryQueue, studyQuizQueue)

@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/wordreview"
@@ -30,8 +32,32 @@ func newFakeWordReviewStore(words ...wordreview.Word) *fakeWordReviewStore {
 	return s
 }
 
+// Save mirrors wordreview.MySQLStore.Save's dedup semantics: re-saving the
+// same (userID, word, meaning) triple returns the existing row untouched
+// rather than creating a duplicate — captureCorrectionWords relies on this
+// to stay idempotent across the fast/ensemble and queued/live correction
+// paths that can each try to save the same captured word.
 func (s *fakeWordReviewStore) Save(ctx context.Context, userID, word, meaning, example string) (wordreview.Word, error) {
-	return wordreview.Word{}, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, w := range s.words {
+		if w.UserID == userID && w.Word == word && w.Meaning == meaning {
+			return w, nil
+		}
+	}
+	now := time.Now()
+	w := wordreview.Word{
+		ID:           uuid.New().String(),
+		UserID:       userID,
+		Word:         word,
+		Meaning:      meaning,
+		Example:      example,
+		NextReviewAt: now,
+		CreatedAt:    now,
+		Status:       wordreview.StatusPending,
+	}
+	s.words[w.ID] = w
+	return w, nil
 }
 
 func (s *fakeWordReviewStore) Get(ctx context.Context, userID, id string) (wordreview.Word, error) {
