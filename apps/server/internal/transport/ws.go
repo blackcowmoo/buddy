@@ -183,15 +183,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	events := make(chan protocol.ServerEvent, 128)
 	emit := func(ev protocol.ServerEvent) {
 		persistEvent(h.pipe, h.store, h.words, h.wordVerifyQueue, userID, sessionID, ev)
-		// Turn 1's assistant reply is the first full exchange this room has
-		// — enough context to title it. Every TitleRegenerateEveryNTurns
-		// turns after that re-titles the room too, so the title keeps
-		// tracking the conversation's actual topic instead of staying
-		// pinned to whatever turn 1 happened to be about. Fired here (not
-		// off persistEvent, which has no pipeline access) so it never
-		// delays the reply the learner is watching; see Handler.generateTitle
-		// for why a reconnect firing this again is still safe.
-		if ev.Type == protocol.EvAssistantDone && (ev.Turn == 1 || ev.Turn%TitleRegenerateEveryNTurns == 0) {
+		if ev.Type == protocol.EvAssistantDone && shouldGenerateTitle(ev.Turn) {
 			go h.generateTitle(userID, sessionID, sess, ev.Turn, ev.Text)
 		}
 		select {
