@@ -300,14 +300,21 @@ func (p *Pipeline) StartConversation(ctx context.Context, userID, sessionID stri
 
 const openingSystemPrompt = `Start the conversation: the learner has not said anything yet. Greet them
 warmly in 1-2 short spoken-style sentences appropriate for opening a brand new
-conversation. Then ask ONE opening question:
-  - If the learner profile above tells you something about this learner (an
+conversation. Then ask ONE opening question, pitched at this learner's level:
+  - If the learner profile above notes a proficiency level or a pattern of
+    recurring mistakes, calibrate the question's vocabulary and grammar to it
+    — short, everyday wording for a beginner-sounding profile, richer
+    vocabulary and more complex phrasing for an advanced one. Also, if the
+    learner profile above tells you something about this learner (an
     interest, an ongoing topic, something they were practicing or struggling
     with), pick ONE such detail and turn it into a natural, specific question
     about it. Vary which detail you pick each time rather than defaulting to
     the same one, and never say or imply that you're recalling stored notes.
-  - Otherwise, ask an easy, varied opening question (their day, an interest,
-    what they'd like to practice) — avoid always asking the same question.
+  - Otherwise (nothing known about this learner yet), default to simple,
+    everyday wording and ask an easy, varied opening question (their day, an
+    interest, what they'd like to practice) — avoid always asking the same question.
+Either way, keep the question answerable in one sentence, but specific
+enough that a one-word reply wouldn't fully answer it.
 Do not mention that you were told to do this.`
 
 const openingFallback = "Hey there! Glad you're here — what would you like to talk about today?"

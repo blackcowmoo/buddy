@@ -109,21 +109,35 @@ func runStudySummary(ctx context.Context, pipe *pipeline.Pipeline, st store.Stor
 	// English-only regardless of its input, and the English sentences alone
 	// already carry the full substance of the wrap-up.
 	if len(summary) > 0 {
-		var english strings.Builder
-		for _, sentence := range summary {
-			english.WriteString(sentence.English)
-			english.WriteString(" ")
-		}
 		prevProfile, err := st.GetLearnerProfile(ctx, userID)
 		if err != nil {
 			log.Printf("study summary: get learner profile %s: %v", userID, err)
-		} else if merged, err := pipe.UpdateLearnerProfile(ctx, prevProfile, strings.TrimSpace(english.String())); err != nil {
+		} else if merged, err := pipe.UpdateLearnerProfile(ctx, prevProfile, studySummaryEnglish(summary)); err != nil {
 			log.Printf("study summary: update learner profile %s: %v", userID, err)
 		} else if err := st.SaveLearnerProfile(ctx, userID, merged); err != nil {
 			log.Printf("study summary: save learner profile %s: %v", userID, err)
 		}
 	}
 	return nil
+}
+
+// studySummaryEnglish flattens a study wrap-up's English sentences into the
+// plain text pipeline.UpdateLearnerProfile expects as its "new session
+// wrap-up note" — shared by runStudySummary (folding a single just-ended
+// session in) and runProfileRegenerate (replaying every remaining session's
+// wrap-up from scratch, see profile_regenerate_job.go). Only the English
+// half of each StudySummarySentence is used: UpdateLearnerProfile's own
+// output is English-only regardless of its input, and the English sentences
+// alone already carry the full substance of the wrap-up — the paired
+// native-language translation exists for the learner reading the summary
+// directly, not for this machine-consumed fold.
+func studySummaryEnglish(summary []protocol.StudySummarySentence) string {
+	var english strings.Builder
+	for _, sentence := range summary {
+		english.WriteString(sentence.English)
+		english.WriteString(" ")
+	}
+	return strings.TrimSpace(english.String())
 }
 
 // StudySummaryJobHandler builds the asyncjob.Handler that runs one queued

@@ -25,6 +25,7 @@ import {
   endSession,
   fetchSessionDetail,
   fetchSessions,
+  markInstant,
   resetQuiz,
   restudySession,
   type SessionSummary,
@@ -181,6 +182,39 @@ export function App() {
     setAwaitingReply(false);
   }, []);
 
+  // True for a room opened via "인스턴트 대화" (see enterChat's `quick` opt) —
+  // one exchange, then the room ends itself, no manual "종료" tap needed, and
+  // it's marked instant (see markInstant below) so it never shows up in the
+  // main room list — only in its own list, pages/InstantSessions.tsx. Usable
+  // any number of times, not gated to once a day — "quick"/instant just
+  // describes the one-exchange-then-done shape of the room itself. Mirrors
+  // endedRef's reasoning: onEvent's assistant_done handler is a stable
+  // useCallback and needs to read this synchronously, so it's kept in a ref
+  // alongside the state used for rendering.
+  const [quickMode, setQuickMode] = useState(false);
+  const quickModeRef = useRef(false);
+  // The turn number of the one exchange a quick-mode room is waiting on —
+  // set once (assistant_done for turn >= 1; turn 0 is the room's own opening
+  // greeting, not the learner's sentence) so the effect below knows which
+  // turn's correction/translations to wait for before auto-ending.
+  const [quickWatchTurn, setQuickWatchTurn] = useState<number | null>(null);
+  // True once the learner has sent their one sentence in quick mode — locks
+  // the composer immediately (see the footer below) so a second message
+  // can't sneak in before the auto-end effect has had a chance to fire.
+  const [quickSent, setQuickSent] = useState(false);
+  // Guards the auto-end effect below against firing endSession more than
+  // once (e.g. a later unrelated `turns` update re-running the effect while
+  // the first endSession call is still in flight).
+  const quickEndingRef = useRef(false);
+
+  const resetQuickState = useCallback((quick: boolean) => {
+    quickModeRef.current = quick;
+    setQuickMode(quick);
+    setQuickWatchTurn(null);
+    setQuickSent(false);
+    quickEndingRef.current = false;
+  }, []);
+
   const [mic, setMic] = useState(false);
   const [text, setText] = useState("");
   // True while the composer's text is a still-unsent voice draft (an
@@ -291,6 +325,15 @@ export function App() {
           if (current.view === "chat" && current.id == null) {
             replaceRoomState({ view: "chat", id: e.session });
           }
+          // Flags this brand-new room as instant right away, before the
+          // learner has even said anything — a plain fire-and-forget call
+          // (markInstant is an idempotent upsert, so a reconnect re-sending
+          // "ready" for the same room is harmless). Reconnecting to an
+          // *existing* room never has quickModeRef set (it's only ever true
+          // for the enterChat(undefined, { quick: true }) path that opened
+          // this room in the first place), so this never mis-fires for a
+          // normal room.
+          if (quickModeRef.current) void markInstant(e.session);
         }
         break;
       case "pending_transcript": {
@@ -346,6 +389,12 @@ export function App() {
         setMsgs((m) => upsertAssistant(m, e.turn, () => e.text ?? ""));
         patchTurn(e.turn, { assistantTranslationPending: true });
         if (e.text && speakerRef.current?.loaded) void speakerRef.current.speak(e.text);
+        // Turn 0 is the room's own opening greeting (see protocol.ts), not
+        // the learner's sentence — only the first *real* reply is what a
+        // quick-mode room is waiting to wrap up after.
+        if (quickModeRef.current && e.turn >= 1) {
+          setQuickWatchTurn((prev) => (prev === null ? e.turn : prev));
+        }
         break;
       case "correction":
         // correct() always emits this once its analyze() pass finishes, even
@@ -658,9 +707,10 @@ export function App() {
   // history first, since reconnecting the WS alone only seeds LLM context,
   // it doesn't replay old chat bubbles.
   const enterChat = useCallback(
-    async (sessionId?: string, opts?: { push?: boolean }) => {
+    async (sessionId?: string, opts?: { push?: boolean; quick?: boolean }) => {
       resetTurnState();
       resetEndedState();
+      resetQuickState(!!opts?.quick);
       // A fresh room entry always starts stuck to the bottom (the most
       // recent turns, loaded below) with no older page pending — cleared
       // again if this turns out to be a brand-new room with nothing to page
@@ -763,7 +813,7 @@ export function App() {
       setMenuOpen(false);
       setView("chat");
     },
-    [resetTurnState, resetEndedState, pollMissingFeedback, pollStudySummary, pollQuizStatus],
+    [resetTurnState, resetEndedState, resetQuickState, pollMissingFeedback, pollStudySummary, pollQuizStatus],
   );
 
   // Fetches the page of turns older than whatever's currently loaded —
@@ -810,6 +860,7 @@ export function App() {
     setMsgs([]);
     resetTurnState();
     resetEndedState();
+    resetQuickState(false);
     setMenuOpen(false);
     setView("list");
     setActiveSessionId(null);
@@ -817,7 +868,7 @@ export function App() {
     setLoadingMoreHistory(false);
     hasPushedRoomEntryRef.current = false;
     refreshSessions();
-  }, [refreshSessions, resetTurnState, resetEndedState]);
+  }, [refreshSessions, resetTurnState, resetEndedState, resetQuickState]);
 
   // Holds the .convo scroll position steady when new content is added:
   // pinned to the bottom for a fresh room entry or a live message arriving
@@ -928,6 +979,46 @@ export function App() {
   const handleQuizCompleted = useCallback(() => {
     setEndedQuizCompleted(true);
   }, []);
+
+  // Wraps up an "인스턴트 대화" room on its own, the moment the one exchange it
+  // was opened for has its grammar correction back — same freeze + background
+  // wrap-up as a learner-confirmed endConversation, just triggered
+  // automatically instead of behind the 🎓 button, and without leaving the
+  // room (so the reply and its correction stay visible right where the
+  // learner is, instead of bouncing back to the list). Gates on
+  // correctionPending specifically, not the translation-pending flags too:
+  // correct() is guaranteed to emit exactly one "correction" event per turn,
+  // success or failure (see pipeline.correct's doc comment), but
+  // translateAssistant can fail silently with no event at all — gating on it
+  // here would leave a transient translation outage wedging quick mode open
+  // forever. Once frozen, pollMissingFeedback (the same poll a reopened
+  // ended room already relies on) picks up any translation that was still
+  // mid-flight at that instant, since onEvent drops the live event for it
+  // the moment endedRef flips.
+  useEffect(() => {
+    if (!quickMode || quickWatchTurn === null || ended || !activeSessionId) return;
+    if (quickEndingRef.current) return;
+    const meta = turns[quickWatchTurn];
+    if (!meta || meta.correctionPending) return;
+    quickEndingRef.current = true;
+    const token = pollTokenRef.current;
+    void endSession(activeSessionId).then((ok) => {
+      if (!ok) {
+        quickEndingRef.current = false; // let a later retry (e.g. another turns update) try again
+        return;
+      }
+      clientRef.current?.close();
+      setEnded(true);
+      endedRef.current = true;
+      setEndedSummaryStatus("pending");
+      setEndedQuizStatus("pending");
+      if (token) {
+        pollStudySummary(activeSessionId, token);
+        pollQuizStatus(activeSessionId, token);
+        pollMissingFeedback(activeSessionId, token);
+      }
+    });
+  }, [quickMode, quickWatchTurn, ended, activeSessionId, turns, pollStudySummary, pollQuizStatus, pollMissingFeedback]);
 
   // Restores an open room from the URL on a fresh load (e.g. a refresh), and
   // keeps the view in sync with browser back/forward (incl. swipe) — neither
@@ -1077,6 +1168,7 @@ export function App() {
     if (activeSessionId) clearDraft(activeSessionId);
     setVoiceDraft(false);
     voiceDraftAutoTextRef.current = null;
+    if (quickModeRef.current) setQuickSent(true);
   }, [text, voiceDraft, activeSessionId]);
 
   const onComposerSubmit = useCallback(
@@ -1126,6 +1218,10 @@ export function App() {
     window.location.assign("match");
   }, []);
 
+  const goToInstant = useCallback(() => {
+    window.location.assign("instant");
+  }, []);
+
   // Click-outside / Escape closes the menu, same as any dropdown.
   const closeMenu = useCallback(() => setMenuOpen(false), []);
   useDismiss(menuOpen, menuRef, closeMenu);
@@ -1167,6 +1263,7 @@ export function App() {
     prError,
     onGoToPath: goToPath,
     onGoToRecordings: goToRecordings,
+    onGoToInstant: goToInstant,
     onGoToWords: goToWords,
     onGoToMatch: goToMatch,
     wordDueCount,
@@ -1188,6 +1285,12 @@ export function App() {
         <main className="session-list">
           <button className="new-chat" onClick={() => void enterChat()}>
             + 새 대화
+          </button>
+          <button
+            className="new-chat ghost quick-chat"
+            onClick={() => void enterChat(undefined, { quick: true })}
+          >
+            ✏️ 인스턴트 대화
           </button>
           {sessions.length === 0 ? (
             <p className="hint">아직 대화 기록이 없어요. 새 대화를 시작해보세요.</p>
@@ -1280,6 +1383,11 @@ export function App() {
         {loadingMoreHistory && (
           <p className="hint" role="status" aria-label="이전 대화 불러오는 중">
             <span className="spinning">⏳</span>
+          </p>
+        )}
+        {quickMode && !ended && (
+          <p className="hint quick-mode-hint" role="status">
+            ✏️ 인스턴트 대화: 문장을 하나 보내면 답변과 피드백을 받고 바로 마무리돼요.
           </p>
         )}
         {msgs.length === 0 && (
@@ -1380,7 +1488,19 @@ export function App() {
       {ended ? (
         <footer className="composer composer-ended">
           <p className="hint ended" role="status">
-            이 대화는 종료되어 더 이상 메시지를 보낼 수 없어요.
+            {quickMode
+              ? "인스턴트 대화를 완료했어요! 위 🎓 버튼에서 학습 피드백을 확인해보세요."
+              : "이 대화는 종료되어 더 이상 메시지를 보낼 수 없어요."}
+          </p>
+        </footer>
+      ) : quickMode && quickSent ? (
+        // Locks the composer the instant the learner's one sentence is sent
+        // — the auto-end effect above is still waiting on that turn's
+        // correction/translations, so nothing here should let a second
+        // message sneak in before the room wraps itself up.
+        <footer className="composer composer-ended">
+          <p className="hint ended" role="status">
+            <span className="spinning">⏳</span> 답변을 기다리는 중이에요…
           </p>
         </footer>
       ) : (

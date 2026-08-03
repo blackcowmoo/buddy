@@ -203,6 +203,18 @@ func (f *fakeStore) ListSessions(ctx context.Context, userID string) ([]store.Se
 	return nil, errors.New("not used by these tests")
 }
 
+func (f *fakeStore) ListInstantSessions(ctx context.Context, userID string) ([]store.SessionMeta, error) {
+	return nil, errors.New("not used by these tests")
+}
+
+func (f *fakeStore) MarkInstant(ctx context.Context, userID, sessionID string) error {
+	return errors.New("not used by these tests")
+}
+
+func (f *fakeStore) ListSessionsWithStudySummary(ctx context.Context, userID string) ([]store.SessionMeta, error) {
+	return nil, errors.New("not used by these tests")
+}
+
 func (f *fakeStore) SessionDetail(ctx context.Context, userID, sessionID string) (store.SessionMeta, []store.Turn, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

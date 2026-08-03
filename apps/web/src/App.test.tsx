@@ -58,6 +58,8 @@ vi.mock("./lib/me", () => ({
 
 vi.mock("./lib/sessions", () => ({
   fetchSessions: vi.fn(),
+  fetchInstantSessions: vi.fn(),
+  markInstant: vi.fn(),
   fetchSessionDetail: vi.fn(),
   fetchSessionCompaction: vi.fn(),
   deleteSession: vi.fn(),
@@ -111,9 +113,11 @@ import {
 import {
   deleteSession,
   endSession,
+  fetchInstantSessions,
   fetchSessionCompaction,
   fetchSessionDetail,
   fetchSessions,
+  markInstant,
   markQuizCompleted,
   resetQuiz,
   restudySession,
@@ -131,6 +135,8 @@ beforeEach(() => {
   capturedPopStateHandler = null;
   vi.mocked(fetchMe).mockResolvedValue(null);
   vi.mocked(fetchSessions).mockResolvedValue([]);
+  vi.mocked(fetchInstantSessions).mockResolvedValue([]);
+  vi.mocked(markInstant).mockResolvedValue(true);
   vi.mocked(fetchSessionDetail).mockResolvedValue(null);
   vi.mocked(fetchSessionCompaction).mockResolvedValue(null);
   vi.mocked(restudySession).mockResolvedValue(true);
@@ -1319,6 +1325,119 @@ describe("room list", () => {
   });
 });
 
+// "인스턴트 대화": a low-friction entry point that reuses the normal
+// chat/correction/end-conversation pipeline, but the room ends itself after
+// exactly one exchange instead of waiting for the learner to tap 🎓. Usable
+// any number of times (not gated to once a day), and marked instant (see
+// markInstant) so it's excluded from the main room list — see the separate
+// "instant sessions page" describe block below for its own dedicated list.
+describe("quick mode (인스턴트 대화)", () => {
+  it("opens a fresh room with no session id and shows the quick-mode hint", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "✏️ 인스턴트 대화" }));
+
+    expect(lastClientInstance().connect).toHaveBeenCalledWith(undefined);
+    expect(
+      await screen.findByText(/인스턴트 대화: 문장을 하나 보내면 답변과 피드백을/),
+    ).toBeInTheDocument();
+  });
+
+  // Guards the exclusion from the main room list: a brand-new quick-mode
+  // room must be flagged instant the moment the server mints its ID, not on
+  // some later action — see ListSessions' exclusion server-side.
+  it("marks the room instant as soon as the server mints its session id", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "✏️ 인스턴트 대화" }));
+    act(() => emit({ type: "ready", turn: 0, session: "s1" }));
+
+    await vi.waitFor(() => expect(markInstant).toHaveBeenCalledWith("s1"));
+  });
+
+  it("locks the composer right after sending, then auto-ends once the reply's correction lands — no manual 종료 tap", async () => {
+    vi.mocked(endSession).mockResolvedValue(true);
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "✏️ 인스턴트 대화" }));
+    act(() => emit({ type: "ready", turn: 0, session: "s1" }));
+
+    const textarea = await screen.findByPlaceholderText("…or type in English");
+    await user.type(textarea, "I are happy today.{Enter}");
+
+    // The composer locks the instant the one sentence is sent, before any
+    // reply has come back — nothing lets a second message sneak in while
+    // the room is waiting to wrap itself up.
+    expect(await screen.findByText(/답변을 기다리는 중이에요/)).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("…or type in English")).not.toBeInTheDocument();
+
+    act(() => emit({ type: "final_transcript", turn: 1, text: "I are happy today.", source: "text" }));
+    act(() => emit({ type: "assistant_done", turn: 1, text: "That's great to hear!" }));
+    expect(endSession).not.toHaveBeenCalled(); // reply landed, but the correction hasn't yet
+
+    act(() =>
+      emit({
+        type: "correction",
+        turn: 1,
+        correction: { original: "I are happy today.", corrected: "I am happy today.", issues: [] },
+      }),
+    );
+
+    await vi.waitFor(() => expect(endSession).toHaveBeenCalledWith("s1"));
+    expect(
+      await screen.findByText("인스턴트 대화를 완료했어요! 위 🎓 버튼에서 학습 피드백을 확인해보세요."),
+    ).toBeInTheDocument();
+  });
+
+  // Guards a real gap found while manually driving this flow: correct()
+  // always emits exactly one "correction" event, success or failure (see its
+  // doc comment), but translateAssistant can fail entirely silently — no
+  // event at all — when every translation candidate is unreachable. Gating
+  // auto-end on the translation-pending flags too (an earlier version of
+  // this effect did) meant a transient translation outage wedged a quick-mode
+  // room open forever, composer locked, with nothing to unstick it. It must
+  // only wait on the correction landing.
+  it("auto-ends even when the translation never arrives", async () => {
+    vi.mocked(endSession).mockResolvedValue(true);
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "✏️ 인스턴트 대화" }));
+    act(() => emit({ type: "ready", turn: 0, session: "s1" }));
+
+    const textarea = await screen.findByPlaceholderText("…or type in English");
+    await user.type(textarea, "I are happy today.{Enter}");
+    act(() => emit({ type: "final_transcript", turn: 1, text: "I are happy today.", source: "text" }));
+    act(() => emit({ type: "assistant_done", turn: 1, text: "That's great to hear!" }));
+    // No user_translation/assistant_translation event ever arrives for this
+    // turn (both translation passes failed silently) — the correction event
+    // alone must still be enough to wrap the room up.
+    act(() =>
+      emit({
+        type: "correction",
+        turn: 1,
+        correction: { original: "I are happy today.", corrected: "I am happy today.", issues: [] },
+      }),
+    );
+
+    await vi.waitFor(() => expect(endSession).toHaveBeenCalledWith("s1"));
+    expect(
+      await screen.findByText("인스턴트 대화를 완료했어요! 위 🎓 버튼에서 학습 피드백을 확인해보세요."),
+    ).toBeInTheDocument();
+  });
+
+  it("does not auto-end on the room's own opening greeting (turn 0), only on the learner's own turn", async () => {
+    vi.mocked(endSession).mockResolvedValue(true);
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "✏️ 인스턴트 대화" }));
+    act(() => emit({ type: "ready", turn: 0, session: "s1" }));
+    act(() => emit({ type: "assistant_done", turn: 0, text: "Hi! What's on your mind today?" }));
+
+    expect(endSession).not.toHaveBeenCalled();
+    expect(screen.getByPlaceholderText("…or type in English")).toBeInTheDocument();
+  });
+});
+
 describe("browser history", () => {
   it("pushes a history entry for a brand-new room", async () => {
     const user = userEvent.setup();
@@ -1504,6 +1623,14 @@ describe("hamburger menu", () => {
     await openMenu(user);
     await user.click(screen.getByRole("menuitem", { name: /단어 매칭 게임/ }));
     expect(location.assign).toHaveBeenCalledWith("match");
+  });
+
+  it("navigates to the relative instant-sessions page from the menu", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await openMenu(user);
+    await user.click(screen.getByRole("menuitem", { name: /인스턴트 대화 목록/ }));
+    expect(location.assign).toHaveBeenCalledWith("instant");
   });
 });
 

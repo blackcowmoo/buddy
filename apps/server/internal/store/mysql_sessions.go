@@ -144,11 +144,32 @@ func (s *MySQLStore) EndSession(ctx context.Context, userID, sessionID string) e
 	return nil
 }
 
+// ListSessions returns userID's normal chat rooms — instant/"오늘의 한 문장"
+// rooms (see MarkInstant) are deliberately excluded so they never clutter
+// the main room list; ListInstantSessions is their own separate list.
 func (s *MySQLStore) ListSessions(ctx context.Context, userID string) ([]SessionMeta, error) {
+	return s.listSessions(ctx, userID, false)
+}
+
+// ListInstantSessions returns userID's instant/"오늘의 한 문장" rooms (see
+// MarkInstant) — the mirror image of ListSessions' exclusion, for that
+// feature's own dedicated list page. Most recently active first, same as
+// ListSessions, since instant rooms are meant to be reviewed and pruned
+// (deleted, to keep a bad exchange out of future study material) rather than
+// browsed chronologically.
+func (s *MySQLStore) ListInstantSessions(ctx context.Context, userID string) ([]SessionMeta, error) {
+	return s.listSessions(ctx, userID, true)
+}
+
+func (s *MySQLStore) listSessions(ctx context.Context, userID string, instant bool) ([]SessionMeta, error) {
+	instantFlag := 0
+	if instant {
+		instantFlag = 1
+	}
 	rows, err := s.ro.QueryContext(ctx, `
 		SELECT id, title, created_at, updated_at, ended, study_summary, study_summary_status, quiz_status, quiz_completed FROM `+sessionsTable+`
-		WHERE user_id = ? ORDER BY updated_at DESC
-	`, userID)
+		WHERE user_id = ? AND instant = ? ORDER BY updated_at DESC
+	`, userID, instantFlag)
 	if err != nil {
 		return nil, fmt.Errorf("store: list sessions: %w", err)
 	}
@@ -168,6 +189,63 @@ func (s *MySQLStore) ListSessions(ctx context.Context, userID string) ([]Session
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// ListSessionsWithStudySummary returns every one of userID's ended sessions
+// that actually folded a study summary into the learner profile (see
+// UpdateLearnerProfile) — i.e. ended AND study_summary is non-empty — in the
+// order they were originally ended (updated_at ASC; EndSession is the only
+// write that ever touches updated_at on an already-ended row, so this is a
+// reliable end-order even though it's not a dedicated "ended_at" column).
+// Used by transport.runProfileRegenerate to rebuild the profile from scratch
+// after a session that had contributed to it gets deleted — replaying every
+// remaining contributor in the same order it was originally folded in.
+// Includes both normal and instant/"오늘의 한 문장" rooms: both fold into the
+// same profile via the exact same EndSession -> study-summary-job path (see
+// MarkInstant's doc comment — instant mode changes nothing about the
+// pipeline itself, only how the room is displayed), so both must be replayed.
+func (s *MySQLStore) ListSessionsWithStudySummary(ctx context.Context, userID string) ([]SessionMeta, error) {
+	rows, err := s.ro.QueryContext(ctx, `
+		SELECT id, title, created_at, updated_at, study_summary FROM `+sessionsTable+`
+		WHERE user_id = ? AND ended = 1 AND study_summary <> '' ORDER BY updated_at ASC
+	`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list sessions with study summary: %w", err)
+	}
+	defer rows.Close()
+
+	out := []SessionMeta{}
+	for rows.Next() {
+		var m SessionMeta
+		var studySummaryJSON string
+		if err := rows.Scan(&m.ID, &m.Title, &m.CreatedAt, &m.UpdatedAt, &studySummaryJSON); err != nil {
+			return nil, fmt.Errorf("store: list sessions with study summary: %w", err)
+		}
+		m.Ended = true
+		m.StudySummary = decodeStudySummary(studySummaryJSON)
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// MarkInstant flags a room as an instant/"오늘의 한 문장" conversation — called
+// once, right after the server mints a brand-new session's ID (see
+// httpserver.sessionMarkInstantHandler), so ListSessions excludes it and
+// ListInstantSessions picks it up from then on. An upsert, not a plain
+// UPDATE, for the same reason SaveGeneratedTitle is one: this races
+// SaveTurn's own row-creating upsert (ensureSessionRow) for the same brand-
+// new session, with no ordering guarantee between the two beyond "both
+// eventually run" — whichever lands first creates the row, the other just
+// updates the one column it owns, so the outcome is correct either way.
+func (s *MySQLStore) MarkInstant(ctx context.Context, userID, sessionID string) error {
+	if _, err := s.rw.ExecContext(ctx, `
+		INSERT INTO `+sessionsTable+` (user_id, id, title, summary, recent, created_at, updated_at, study_summary, quiz, instant)
+		VALUES (?, ?, '', '', '[]', UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), '', '', 1)
+		ON DUPLICATE KEY UPDATE instant = 1
+	`, userID, sessionID); err != nil {
+		return fmt.Errorf("store: mark instant: %w", err)
+	}
+	return nil
 }
 
 // SessionDetail loads the session's metadata and its full transcript. The

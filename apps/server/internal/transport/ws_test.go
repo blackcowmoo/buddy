@@ -123,6 +123,7 @@ type fakeSession struct {
 	userID         string
 	meta           store.SessionMeta
 	hasRow         bool // mirrors whether a buddy_sessions row exists yet (see SaveTurn)
+	instant        bool // mirrors buddy_sessions.instant — see MarkInstant
 	profile        store.Profile
 	turns          map[string]store.Turn // key: "<turn>|<role>"
 	titleGenerated bool
@@ -421,10 +422,53 @@ func (f *fakeStore) ListSessions(ctx context.Context, userID string) ([]store.Se
 	defer f.mu.Unlock()
 	out := []store.SessionMeta{}
 	for _, d := range f.sessions {
-		if d.userID == userID && d.hasRow {
+		if d.userID == userID && d.hasRow && !d.instant {
 			out = append(out, d.meta)
 		}
 	}
+	return out, nil
+}
+
+func (f *fakeStore) ListInstantSessions(ctx context.Context, userID string) ([]store.SessionMeta, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := []store.SessionMeta{}
+	for _, d := range f.sessions {
+		if d.userID == userID && d.hasRow && d.instant {
+			out = append(out, d.meta)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeStore) MarkInstant(ctx context.Context, userID, sessionID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := fakeStoreKey(userID, sessionID)
+	d := f.sessions[key]
+	if d == nil {
+		d = &fakeSession{userID: userID, turns: map[string]store.Turn{}, jobs: map[string]fakeJob{}}
+		f.sessions[key] = d
+	}
+	d.hasRow = true
+	d.instant = true
+	return nil
+}
+
+// ListSessionsWithStudySummary sorts by session ID rather than updated_at
+// (unlike MySQLStore's real end-order sort): this in-memory fake doesn't
+// simulate timestamps at all, so ID is the only deterministic order
+// available for a test to assert against.
+func (f *fakeStore) ListSessionsWithStudySummary(ctx context.Context, userID string) ([]store.SessionMeta, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := []store.SessionMeta{}
+	for _, d := range f.sessions {
+		if d.userID == userID && d.hasRow && d.meta.Ended && len(d.meta.StudySummary) > 0 {
+			out = append(out, d.meta)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
 }
 
