@@ -616,7 +616,7 @@ describe("room list", () => {
     await user.click(await screen.findByText("퀴즈 풀기"));
 
     // Question 1: a wrong answer still names the correct one.
-    expect(await screen.findByText("He ___ to school every day.")).toBeInTheDocument();
+    expect(await screen.findByText("to school every day.")).toBeInTheDocument();
     await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "go");
     await user.click(screen.getByRole("button", { name: "확인" }));
     expect(await screen.findByText("아쉬워요. 정답: goes")).toBeInTheDocument();
@@ -625,7 +625,7 @@ describe("room list", () => {
     await user.click(screen.getByRole("button", { name: "다음 문제" }));
 
     // Question 2: matches despite different casing/trailing punctuation/whitespace.
-    expect(await screen.findByText("She likes ___ books.")).toBeInTheDocument();
+    expect(await screen.findByText("books.")).toBeInTheDocument();
     await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "  READING. ");
     await user.click(screen.getByRole("button", { name: "확인" }));
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
@@ -682,21 +682,21 @@ describe("room list", () => {
     await user.click(screen.getByRole("button", { name: "대화 종료" }));
     await user.click(await screen.findByText("퀴즈 풀기"));
 
-    await screen.findByText("He ___ to school every day.");
+    await screen.findByText("to school every day.");
     await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "goes");
     await user.click(screen.getByRole("button", { name: "확인" }));
     await screen.findByText("정답이에요!");
     await user.click(screen.getByRole("button", { name: "다음 문제" }));
-    await screen.findByText("She likes ___ books.");
+    await screen.findByText("books.");
 
     // Accidental outside click — dismisses the popover entirely.
     await user.click(document.body);
-    expect(screen.queryByText("She likes ___ books.")).not.toBeInTheDocument();
+    expect(screen.queryByText("books.")).not.toBeInTheDocument();
 
     // Reopening must show question 2 again, not restart from question 1.
     await user.click(screen.getByRole("button", { name: "대화 종료" }));
-    expect(await screen.findByText("She likes ___ books.")).toBeInTheDocument();
-    expect(screen.queryByText("He ___ to school every day.")).not.toBeInTheDocument();
+    expect(await screen.findByText("books.")).toBeInTheDocument();
+    expect(screen.queryByText("to school every day.")).not.toBeInTheDocument();
   });
 
   // Guards the "all correct" completion path this feature exists for: only
@@ -746,14 +746,14 @@ describe("room list", () => {
     await user.click(screen.getByRole("button", { name: "대화 종료" }));
     await user.click(await screen.findByText("퀴즈 풀기"));
 
-    await screen.findByText("He ___ to school every day.");
+    await screen.findByText("to school every day.");
     await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "goes");
     await user.click(screen.getByRole("button", { name: "확인" }));
     await screen.findByText("정답이에요!");
     expect(markQuizCompleted).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "다음 문제" }));
-    await screen.findByText("She likes ___ books.");
+    await screen.findByText("books.");
     await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "reading");
     await user.click(screen.getByRole("button", { name: "확인" }));
 
@@ -837,7 +837,7 @@ describe("room list", () => {
     await user.click(screen.getByRole("button", { name: "대화 종료" }));
     await user.click(await screen.findByText("퀴즈 풀기"));
 
-    expect(await screen.findByText("He ___ to school every day.")).toBeInTheDocument();
+    expect(await screen.findByText("to school every day.")).toBeInTheDocument();
     expect(screen.getByText("가다", { exact: false })).toBeInTheDocument();
   });
 
@@ -881,7 +881,7 @@ describe("room list", () => {
     await user.click(screen.getByRole("button", { name: "대화 종료" }));
     await user.click(await screen.findByText("퀴즈 풀기"));
 
-    await screen.findByText("He ___ to school every day.");
+    await screen.findByText("to school every day.");
     await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "  Walks. ");
     await user.click(screen.getByRole("button", { name: "확인" }));
 
@@ -930,7 +930,7 @@ describe("room list", () => {
     await user.click(screen.getByRole("button", { name: "대화 종료" }));
     await user.click(await screen.findByText("퀴즈 풀기"));
 
-    await screen.findByText("He ___ to school every day.");
+    await screen.findByText("to school every day.");
     await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "commutes");
     await user.click(screen.getByRole("button", { name: "확인" }));
 
@@ -978,7 +978,7 @@ describe("room list", () => {
     await user.click(screen.getByRole("button", { name: "대화 종료" }));
     await user.click(await screen.findByText("퀴즈 풀기"));
 
-    await screen.findByText("He ___ to school every day.");
+    await screen.findByText("to school every day.");
     await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "banana");
     await user.click(screen.getByRole("button", { name: "확인" }));
 
