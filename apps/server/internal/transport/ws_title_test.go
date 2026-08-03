@@ -130,6 +130,45 @@ func TestWSReconnectDoesNotRegenerateTitle(t *testing.T) {
 	}
 }
 
+// TestShouldGenerateTitleExcludesTheOpeningGreeting is the direct regression
+// test for a real bug: turn 0 is the reserved sentinel for a room's own
+// opening greeting (see protocol.go), but 0 % TitleRegenerateEveryNTurns ==
+// 0 used to make shouldGenerateTitle (then still inlined into ws.go's emit)
+// wrongly return true for it too — spawning a spurious
+// `go h.generateTitle(...,0,...)` racing the real turn-1 one.
+// generateTitle's own hasUserTurn guard reads live session state whenever
+// that goroutine happens to actually run, not when it was queued, and
+// session.Session.AppendUser for the learner's real first message runs
+// synchronously well before the pipeline's own asynchronous work — so if
+// the spurious turn-0 goroutine got scheduled late enough to run after the
+// learner's first message had already landed, hasUserTurn would see
+// stale-but-true state and let a second, unwanted title generation through.
+//
+// That goroutine-scheduling race isn't reliably reproducible by an
+// integration-level test (an in-process test harness schedules far more
+// predictably than a loaded CI runner, which is where this was originally
+// caught) — shouldGenerateTitle was pulled out into its own named function
+// specifically so the actual boundary condition that was wrong (turn 0)
+// could be pinned down here, directly and deterministically, instead.
+func TestShouldGenerateTitleExcludesTheOpeningGreeting(t *testing.T) {
+	tests := []struct {
+		turn int
+		want bool
+	}{
+		{turn: 0, want: false}, // the reserved opening-greeting sentinel — the regression this guards
+		{turn: 1, want: true},
+		{turn: 2, want: false},
+		{turn: TitleRegenerateEveryNTurns, want: true},
+		{turn: TitleRegenerateEveryNTurns * 2, want: true},
+		{turn: TitleRegenerateEveryNTurns + 1, want: false},
+	}
+	for _, tt := range tests {
+		if got := shouldGenerateTitle(tt.turn); got != tt.want {
+			t.Errorf("shouldGenerateTitle(%d) = %v, want %v", tt.turn, got, tt.want)
+		}
+	}
+}
+
 // TestWSTitleRegeneratesEveryFiveTurns checks the periodic half of the title
 // trigger in ws.go's emit: after turn 1's placeholder-replacing title, the
 // title is left untouched through turns 2-4, then regenerated once turn 5's
