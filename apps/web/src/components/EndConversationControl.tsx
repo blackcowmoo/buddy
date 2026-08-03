@@ -354,22 +354,37 @@ function QuizPanel({
         <div className="quiz-progress">
           {index + 1} / {questions.length}
         </div>
-        <div className="quiz-prompt">{question.prompt}</div>
+        {/* The blank is typed directly in place inside the sentence rather
+            than in a separate box below it -- generation guarantees exactly
+            one "___" per prompt (see pipeline_study.go's quizSystemPrompt),
+            so a plain two-way split is enough here (see WordReview.tsx's
+            computeBlank for the multi-blank case that needs more). */}
+        <div className="quiz-prompt quiz-blank-sentence">
+          {(() => {
+            const [before, after] = question.prompt.split("___");
+            return (
+              <>
+                <span>{before}</span>
+                <input
+                  type="text"
+                  className={"quiz-blank-input" + (checked ? (correct ? " correct" : " incorrect") : "")}
+                  style={{ width: `${Math.min(16, Math.max(3, answer.length + 1))}ch` }}
+                  value={answer}
+                  onChange={(e) => setAnswer(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key !== "Enter") return;
+                    if (checked) next();
+                    else check();
+                  }}
+                  disabled={checked || checking}
+                  aria-label="정답 입력"
+                />
+                <span>{after}</span>
+              </>
+            );
+          })()}
+        </div>
         {question.answerMeaning && <div className="quiz-meaning-hint">💡 {question.answerMeaning}</div>}
-        <input
-          type="text"
-          className="quiz-answer-input"
-          value={answer}
-          onChange={(e) => setAnswer(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key !== "Enter") return;
-            if (checked) next();
-            else check();
-          }}
-          disabled={checked || checking}
-          placeholder="빈칸에 들어갈 단어를 입력하세요"
-          aria-label="정답 입력"
-        />
         {!checked && (
           <button type="button" className="quiz-check-btn" onClick={check} disabled={!answer.trim() || checking}>
             {checking ? "확인하는 중…" : "확인"}

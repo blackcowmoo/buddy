@@ -352,21 +352,30 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
    answerMeaning) — shown alongside quiz-prompt before the learner answers,
    since a blanked English sentence alone can fit many different words. */
 .quiz-meaning-hint { font-size: 13px; color: var(--muted); font-style: italic; }
-.quiz-answer-input {
+/* Recall-mode blanks, typed directly in place inside the sentence instead
+   of gathered into one separate input/textarea below it (see WordReview.tsx
+   computeBlank and EndConversationControl.tsx's QuizPanel). .quiz-blank-
+   sentence just needs to let its inline inputs wrap with the surrounding
+   text; .quiz-prompt/.word-search-example already set the font. */
+.quiz-blank-sentence { line-height: 1.8; }
+.quiz-blank-input {
   font: inherit;
+  font-style: normal;
   font-size: 16px; /* iOS Safari zoom threshold, same as .composer input */
-  background: var(--panel-2);
-  border: 1px solid var(--border-2);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid var(--border-2);
   color: var(--text);
-  border-radius: 10px;
-  padding: 8px 10px;
+  border-radius: 0;
+  padding: 0 2px;
+  margin: 0 2px;
   -webkit-appearance: none;
   appearance: none;
-  max-width: 100%;
-  resize: none;
-  overflow: hidden;
-  word-wrap: break-word;
+  text-align: center;
 }
+.quiz-blank-input:focus { outline: none; border-bottom-color: var(--accent, var(--text)); }
+.quiz-blank-input.correct { border-bottom-color: var(--ok); color: var(--ok); }
+.quiz-blank-input.incorrect { border-bottom-color: var(--err); color: var(--err); }
 .quiz-result { font-size: 13px; font-weight: 600; }
 .quiz-result.correct { color: var(--ok); }
 .quiz-result.incorrect { color: var(--err); }
