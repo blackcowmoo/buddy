@@ -1222,6 +1222,10 @@ export function App() {
     window.location.assign("instant");
   }, []);
 
+  const goToArticle = useCallback(() => {
+    window.location.assign("article");
+  }, []);
+
   // Click-outside / Escape closes the menu, same as any dropdown.
   const closeMenu = useCallback(() => setMenuOpen(false), []);
   useDismiss(menuOpen, menuRef, closeMenu);
@@ -1266,6 +1270,7 @@ export function App() {
     onGoToInstant: goToInstant,
     onGoToWords: goToWords,
     onGoToMatch: goToMatch,
+    onGoToArticle: goToArticle,
     wordDueCount,
     styleInput,
     onStyleInputChange: handleStyleInputChange,

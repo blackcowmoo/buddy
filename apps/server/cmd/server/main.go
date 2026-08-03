@@ -19,6 +19,7 @@ import (
 	"buddy/server/internal/httpserver"
 	"buddy/server/internal/identity"
 	"buddy/server/internal/llm"
+	"buddy/server/internal/newsarticle"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/recording"
 	"buddy/server/internal/store"
@@ -144,6 +145,11 @@ func main() {
 	wordReviews := buildWordReviewStore(context.Background(), st)
 	defer wordReviews.Close()
 
+	// "오늘의 아티클" (news article reading + quiz): same "no external
+	// dependency beyond MySQL, always on" convention as wordReviews above.
+	articles := buildNewsArticleStore(context.Background(), st)
+	defer articles.Close()
+
 	// Word verification: fact-checks a word/phrase right after "학습하기"
 	// saves it Pending (see httpserver.wordSaveHandler) or after a
 	// vocabulary/phrasing correction auto-captures it (see
@@ -235,7 +241,7 @@ func main() {
 		defer recordings.Close()
 	}
 
-	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, wordReviews, wordVerifyQueue, translateQueue, correctionBackfillQueue, studySummaryQueue, studyQuizQueue, profileRegenerateQueue)
+	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, wordReviews, articles, wordVerifyQueue, translateQueue, correctionBackfillQueue, studySummaryQueue, studyQuizQueue, profileRegenerateQueue)
 
 	go func() {
 		log.Printf("buddy up on %s  env=%s  stt=%v  feedback=%s",
@@ -354,6 +360,19 @@ func buildWordReviewStore(ctx context.Context, st *store.MySQLStore) *wordreview
 // stt.HTTPTranscriber). Falls back to the legacy fast+slow pair (mock/
 // subprocess whisper, internal/stt/whisper.go) as a two-member ensemble when
 // no server engine is configured at all.
+// buildNewsArticleStore builds the "오늘의 아티클" store (internal/newsarticle).
+// Unlike buildRecordingStore, this has no optional external dependency (no
+// S3, just MySQL) so it's constructed unconditionally — shares st's pools
+// the same way as buildWordReviewStore.
+func buildNewsArticleStore(ctx context.Context, st *store.MySQLStore) *newsarticle.MySQLStore {
+	rw, ro := st.DB()
+	articles, err := newsarticle.NewMySQL(ctx, rw, ro)
+	if err != nil {
+		log.Fatalf("news article store: %v", err)
+	}
+	return articles
+}
+
 func buildSTT(cfg config.Config) []stt.Recognizer {
 	if len(cfg.STTEngines) > 0 {
 		recs := make([]stt.Recognizer, len(cfg.STTEngines))
