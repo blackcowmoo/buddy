@@ -88,6 +88,20 @@ const (
 	// verified/rejected once this job finishes, independent of whether
 	// they're still looking at that screen.
 	KindWordVerify Kind = "word-verify"
+	// KindProfileRegenerate rebuilds a learner's persistent cross-session
+	// profile from scratch (payload: {UserID} — see
+	// transport.EnqueueProfileRegenerateJob), by replaying every remaining
+	// ended session's study summary back through pipeline.UpdateLearnerProfile
+	// in end-order. Unlike every other Kind above, this is user-scoped, not
+	// session/turn-scoped — there's no real session behind it, so its
+	// DedupeKey is just the userID (which also naturally collapses several
+	// deletions in quick succession into one rebuild, since the eventual run
+	// re-reads whatever sessions are left at execution time). Enqueued by
+	// httpserver.sessionDeleteHandler, but only when the deleted session had
+	// actually been folded into the profile (ended, with a non-empty study
+	// summary) — deleting a room that never got that far would otherwise
+	// trigger a needless full replay.
+	KindProfileRegenerate Kind = "profile-regenerate"
 )
 
 // Job is the durable Redis envelope for one unit of background work.

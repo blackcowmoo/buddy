@@ -90,11 +90,29 @@ export interface SessionCompaction {
   totalTurns: number;
 }
 
-// Fetches the caller's own chat rooms, most recently active first. Returns
-// [] on any failure so the room list can render an empty state instead of
-// throwing.
+// Fetches the caller's own chat rooms, most recently active first. Instant/
+// "오늘의 한 문장" rooms (see markInstant) are excluded — fetchInstantSessions
+// is their own separate list. Returns [] on any failure so the room list can
+// render an empty state instead of throwing.
 export async function fetchSessions(): Promise<SessionSummary[]> {
   return fetchJSON<SessionSummary[]>("api/sessions", []);
+}
+
+// Fetches the caller's own instant/"오늘의 한 문장" rooms, most recently active
+// first — the mirror image of fetchSessions' exclusion, for that feature's
+// own dedicated list page (pages/InstantSessions.tsx). Returns [] on any
+// failure, same as fetchSessions.
+export async function fetchInstantSessions(): Promise<SessionSummary[]> {
+  return fetchJSON<SessionSummary[]>("api/instant-sessions", []);
+}
+
+// Flags a brand-new room as an instant/"오늘의 한 문장" conversation — called
+// once, right after the "ready" WS event hands the client the server-minted
+// session ID for a room opened in quick mode (see App.tsx). Returns whether
+// the request succeeded; the caller treats this as fire-and-forget either
+// way (see the comment at its call site).
+export async function markInstant(id: string): Promise<boolean> {
+  return requestOK(`api/sessions/${encodeURIComponent(id)}/instant`, { method: "POST" });
 }
 
 // Fetches one page of a room's transcript for replay, most recent turns

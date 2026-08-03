@@ -37,4 +37,12 @@ describe("currentPage", () => {
   it("recognizes the word-match game page under a ROOT_PATH prefix", () => {
     expect(currentPage("/pr/14/match")).toBe("match");
   });
+
+  it("recognizes the instant-conversations page at root", () => {
+    expect(currentPage("/instant")).toBe("instant");
+  });
+
+  it("recognizes the instant-conversations page under a ROOT_PATH prefix", () => {
+    expect(currentPage("/pr/14/instant")).toBe("instant");
+  });
 });

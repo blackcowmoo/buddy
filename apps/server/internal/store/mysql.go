@@ -245,6 +245,16 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 	if err := addColumn(sessionsTable, "quiz_completed TINYINT(1) NOT NULL DEFAULT 0", "quiz_completed"); err != nil {
 		return nil, err
 	}
+	// Marks a room opened from "오늘의 한 문장"/instant mode (see MarkInstant) —
+	// set right after the server mints the session ID, independently of
+	// SaveTurn's own row-creating upsert (ensureSessionRow), since the two
+	// writes race the same way SaveGeneratedTitle already does against it.
+	// ListSessions excludes these (WHERE instant = 0) so they never clutter
+	// the main room list; ListInstantSessions is the one place that reads
+	// them back, for their own dedicated list page.
+	if err := addColumn(sessionsTable, "instant TINYINT(1) NOT NULL DEFAULT 0", "instant"); err != nil {
+		return nil, err
+	}
 	// One-time reset for rows written before GenerateStudySummary switched to
 	// the bilingual (English + native-translation, sentence-by-sentence) JSON
 	// shape decodeStudySummary now expects: a pre-existing "done" summary is

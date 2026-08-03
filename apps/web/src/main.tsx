@@ -4,6 +4,7 @@ import { App } from "./App";
 import { Recordings } from "./pages/Recordings";
 import { WordReview } from "./pages/WordReview";
 import { WordMatch } from "./pages/WordMatch";
+import { InstantSessions } from "./pages/InstantSessions";
 import { currentPage } from "./lib/route";
 import "./styles.css";
 
@@ -13,6 +14,7 @@ function renderPage() {
   if (page === "recordings") return <Recordings />;
   if (page === "words") return <WordReview />;
   if (page === "match") return <WordMatch />;
+  if (page === "instant") return <InstantSessions />;
   return <App />;
 }
 

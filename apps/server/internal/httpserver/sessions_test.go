@@ -107,6 +107,28 @@ type fakeSessionStore struct {
 	// SaveLearnerProfile for sessions_end_test.go.
 	learnerProfiles   map[string]string // userID -> profile
 	learnerProfileErr error
+
+	// instantSessions/instantSessionsErr back ListInstantSessions for
+	// sessions_instant_test.go; left zero for tests in this file, which
+	// don't call it.
+	instantSessions    []store.SessionMeta
+	instantSessionsErr error
+
+	// markInstantCalls/markInstantErr back MarkInstant for
+	// sessions_instant_test.go; left zero for tests in this file, which
+	// don't call it.
+	markInstantCalls []struct{ userID, sessionID string }
+	markInstantErr   error
+
+	// withStudySummary/withStudySummaryErr back ListSessionsWithStudySummary
+	// for sessions_delete_profile_regenerate_test.go; left zero for tests in
+	// this file, which don't call it. The rebuilt result itself lands in
+	// learnerProfiles above via the existing SaveLearnerProfile fake.
+	// withStudySummaryCalls counts calls, so a test can assert a rebuild was
+	// (or, more often, deliberately wasn't) even attempted.
+	withStudySummary      []store.SessionMeta
+	withStudySummaryErr   error
+	withStudySummaryCalls int
 }
 
 func (f *fakeSessionStore) Load(ctx context.Context, userID, sessionID string) (store.Profile, error) {
@@ -169,6 +191,39 @@ func (f *fakeSessionStore) LastTurn(ctx context.Context, userID, sessionID strin
 
 func (f *fakeSessionStore) ListSessions(ctx context.Context, userID string) ([]store.SessionMeta, error) {
 	return nil, errors.New("not used by these tests")
+}
+
+func (f *fakeSessionStore) ListInstantSessions(ctx context.Context, userID string) ([]store.SessionMeta, error) {
+	if f.instantSessionsErr != nil {
+		return nil, f.instantSessionsErr
+	}
+	return f.instantSessions, nil
+}
+
+func (f *fakeSessionStore) ListSessionsWithStudySummary(ctx context.Context, userID string) ([]store.SessionMeta, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.withStudySummaryCalls++
+	if f.withStudySummaryErr != nil {
+		return nil, f.withStudySummaryErr
+	}
+	return f.withStudySummary, nil
+}
+
+func (f *fakeSessionStore) snapshotWithStudySummaryCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.withStudySummaryCalls
+}
+
+func (f *fakeSessionStore) MarkInstant(ctx context.Context, userID, sessionID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.markInstantErr != nil {
+		return f.markInstantErr
+	}
+	f.markInstantCalls = append(f.markInstantCalls, struct{ userID, sessionID string }{userID, sessionID})
+	return nil
 }
 
 func (f *fakeSessionStore) SessionDetail(ctx context.Context, userID, sessionID string) (store.SessionMeta, []store.Turn, error) {
@@ -388,6 +443,12 @@ func (f *fakeSessionStore) snapshotLearnerProfile(userID string) string {
 	return f.learnerProfiles[userID]
 }
 
+func (f *fakeSessionStore) snapshotMarkInstantCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.markInstantCalls)
+}
+
 // waitForCondition polls cond until it's true or timeout elapses — needed
 // because sessionEndHandler's study-summary work runs on a background
 // goroutine (see EnqueueStudySummaryJob/RunStudySummaryInline), so a test
@@ -453,7 +514,7 @@ func (f *fakeAudioBackupStore) DeleteBySession(ctx context.Context, userID, sess
 
 func TestSessionDeleteRemovesTheSession(t *testing.T) {
 	st := &fakeSessionStore{}
-	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil)
+	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil, nil, nil)
 
 	req := httptest.NewRequest("DELETE", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")
@@ -469,7 +530,7 @@ func TestSessionDeleteRemovesTheSession(t *testing.T) {
 }
 
 func TestSessionDeleteUnauthorizedWhenIdentifyFails(t *testing.T) {
-	h := sessionDeleteHandler(fakeIdentifier{ok: false}, &fakeSessionStore{}, nil, nil)
+	h := sessionDeleteHandler(fakeIdentifier{ok: false}, &fakeSessionStore{}, nil, nil, nil, nil)
 
 	req := httptest.NewRequest("DELETE", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")
@@ -483,7 +544,7 @@ func TestSessionDeleteUnauthorizedWhenIdentifyFails(t *testing.T) {
 
 func TestSessionDeleteInternalErrorOnStoreFailure(t *testing.T) {
 	st := &fakeSessionStore{err: errors.New("mysql unreachable")}
-	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil)
+	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil, nil, nil)
 
 	req := httptest.NewRequest("DELETE", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")
@@ -508,7 +569,7 @@ func TestSessionDeleteCascadesToRecordings(t *testing.T) {
 			{ID: "rec-3", UserID: "alex", SessionID: "s2"},
 		},
 	}}
-	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, recStore)
+	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, recStore, nil, nil)
 
 	req := httptest.NewRequest("DELETE", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")
@@ -534,7 +595,7 @@ func TestSessionDeleteCascadesToAudioBackups(t *testing.T) {
 	audioStore := &fakeAudioBackupStore{byUser: map[string][]string{
 		"alex": {"s1/a.pcm", "s1/b.pcm", "s2/c.pcm"},
 	}}
-	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, audioStore, nil)
+	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, audioStore, nil, nil, nil)
 
 	req := httptest.NewRequest("DELETE", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")
@@ -555,7 +616,7 @@ func TestSessionDeleteCascadesToAudioBackups(t *testing.T) {
 // block deleting the session itself.
 func TestSessionDeleteSucceedsWhenRecordingsDisabled(t *testing.T) {
 	st := &fakeSessionStore{}
-	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil)
+	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil, nil, nil)
 
 	req := httptest.NewRequest("DELETE", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")
@@ -574,7 +635,7 @@ func TestSessionDeleteSucceedsWhenRecordingsDisabled(t *testing.T) {
 func TestSessionDeleteSucceedsWhenRecordingsCascadeFails(t *testing.T) {
 	st := &fakeSessionStore{}
 	recStore := &fakeRecordingStore{err: errors.New("s3 unreachable")}
-	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, recStore)
+	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, recStore, nil, nil)
 
 	req := httptest.NewRequest("DELETE", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")
@@ -595,7 +656,7 @@ func TestSessionDeleteSucceedsWhenRecordingsCascadeFails(t *testing.T) {
 func TestSessionDeleteSucceedsWhenAudioCascadeFails(t *testing.T) {
 	st := &fakeSessionStore{}
 	audioStore := &fakeAudioBackupStore{err: errors.New("s3 unreachable")}
-	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, audioStore, nil)
+	h := sessionDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st, audioStore, nil, nil, nil)
 
 	req := httptest.NewRequest("DELETE", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")

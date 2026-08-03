@@ -44,8 +44,11 @@ import (
 // nil the same optional way as studySummaryQueue/studyQuizQueue —
 // wordSaveHandler falls back to running the model-consensus check inline on
 // its own detached goroutine instead of durably queuing it (see
-// transport.EnqueueWordVerifyJob).
-func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, words wordreview.Store, wordVerifyQueue *asyncjob.Queue, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue, studySummaryQueue *asyncjob.Queue, studyQuizQueue *asyncjob.Queue) *http.Server {
+// transport.EnqueueWordVerifyJob). profileRegenerateQueue is nil the same
+// optional way — sessionDeleteHandler falls back to rebuilding the learner
+// profile inline, on its own detached goroutine, instead of durably queuing
+// it (see transport.EnqueueProfileRegenerateJob).
+func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, words wordreview.Store, wordVerifyQueue *asyncjob.Queue, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue, studySummaryQueue *asyncjob.Queue, studyQuizQueue *asyncjob.Queue, profileRegenerateQueue *asyncjob.Queue) *http.Server {
 	mux := http.NewServeMux()
 
 	// Realtime + API first (exact patterns win over the "/" catch-all).
@@ -64,6 +67,8 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	})
 	mux.HandleFunc("/api/me", meHandler(cfg.IdentityMode, ident))
 	mux.HandleFunc("GET /api/sessions", sessionsListHandler(ident, st))
+	mux.HandleFunc("GET /api/instant-sessions", instantSessionsListHandler(ident, st))
+	mux.HandleFunc("POST /api/sessions/{id}/instant", sessionMarkInstantHandler(ident, st))
 	mux.HandleFunc("GET /api/sessions/{id}", sessionDetailHandler(ident, st, translateQueue, correctionQueue, pipe, studySummaryQueue, studyQuizQueue))
 	mux.HandleFunc("GET /api/sessions/{id}/compaction", sessionCompactionHandler(ident, st))
 	mux.HandleFunc("POST /api/sessions/{id}/end", sessionEndHandler(ident, st, pipe, studySummaryQueue, studyQuizQueue))
@@ -71,7 +76,7 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux.HandleFunc("POST /api/sessions/{id}/quiz/complete", sessionQuizCompleteHandler(ident, st))
 	mux.HandleFunc("POST /api/sessions/{id}/quiz/reset", sessionQuizResetHandler(ident, st, pipe, studyQuizQueue))
 	mux.HandleFunc("POST /api/quiz/check-answer", quizAnswerCheckHandler(ident, pipe))
-	mux.HandleFunc("DELETE /api/sessions/{id}", sessionDeleteHandler(ident, st, audio, recordings))
+	mux.HandleFunc("DELETE /api/sessions/{id}", sessionDeleteHandler(ident, st, audio, recordings, pipe, profileRegenerateQueue))
 	mux.HandleFunc("GET /api/settings", settingsGetHandler(ident, st))
 	mux.HandleFunc("PUT /api/settings", settingsSaveHandler(ident, st))
 	mux.HandleFunc("POST /api/words/suggest", wordSuggestHandler(ident, pipe))

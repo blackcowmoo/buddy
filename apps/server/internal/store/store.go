@@ -321,7 +321,25 @@ type Store interface {
 
 	// ListSessions returns userID's chat rooms, most recently active first.
 	// Only sessions with at least one saved turn appear (see SaveTurn).
+	// Instant/"오늘의 한 문장" rooms (see MarkInstant) are excluded — they have
+	// their own separate list, ListInstantSessions.
 	ListSessions(ctx context.Context, userID string) ([]SessionMeta, error)
+	// ListInstantSessions returns userID's instant/"오늘의 한 문장" rooms, most
+	// recently active first — the mirror image of ListSessions' exclusion.
+	ListInstantSessions(ctx context.Context, userID string) ([]SessionMeta, error)
+	// MarkInstant flags a session as an instant/"오늘의 한 문장" conversation
+	// (see SessionMeta's doc and ListInstantSessions above), creating its row
+	// if this races SaveTurn's own row-creating write for the same brand-new
+	// session. A no-op in effect if sessionID doesn't exist yet under a
+	// different user — the row it creates is always scoped to userID.
+	MarkInstant(ctx context.Context, userID, sessionID string) error
+	// ListSessionsWithStudySummary returns every one of userID's ended
+	// sessions that folded a non-empty study summary into the learner
+	// profile, oldest-ended first — see MySQLStore.ListSessionsWithStudySummary
+	// for why that order matters (replaying a from-scratch profile rebuild
+	// after a contributing session is deleted — see
+	// transport.runProfileRegenerate).
+	ListSessionsWithStudySummary(ctx context.Context, userID string) ([]SessionMeta, error)
 	// SessionDetail returns one session's full transcript, in turn order.
 	// Returns ErrNotFound if it doesn't exist or belongs to a different user.
 	// Callers that need to reason about the whole session — translation

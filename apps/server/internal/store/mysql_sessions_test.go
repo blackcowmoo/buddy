@@ -415,6 +415,160 @@ func TestMySQLListSessionsOrderedByRecency(t *testing.T) {
 	}
 }
 
+// TestMySQLMarkInstantSeparatesTheTwoLists guards the core exclusion
+// contract: an instant/"오늘의 한 문장" room (see MarkInstant) must never show
+// up in ListSessions (the main room list), only in ListInstantSessions (its
+// own dedicated page) — and vice versa for a normal room.
+func TestMySQLMarkInstantSeparatesTheTwoLists(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	userID := "instant-split-user"
+	if err := st.SaveTurn(ctx, userID, "s-normal", 1, "user", "a normal room", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(normal) error = %v", err)
+	}
+	if err := st.MarkInstant(ctx, userID, "s-instant"); err != nil {
+		t.Fatalf("MarkInstant() error = %v", err)
+	}
+
+	normal, err := st.ListSessions(ctx, userID)
+	if err != nil {
+		t.Fatalf("ListSessions() error = %v", err)
+	}
+	if len(normal) != 1 || normal[0].ID != "s-normal" {
+		t.Fatalf("ListSessions() = %+v, want just [s-normal]", normal)
+	}
+
+	instant, err := st.ListInstantSessions(ctx, userID)
+	if err != nil {
+		t.Fatalf("ListInstantSessions() error = %v", err)
+	}
+	if len(instant) != 1 || instant[0].ID != "s-instant" {
+		t.Fatalf("ListInstantSessions() = %+v, want just [s-instant]", instant)
+	}
+}
+
+// TestMySQLMarkInstantAfterSaveTurnKeepsTheTitle guards MarkInstant's own
+// ON DUPLICATE KEY UPDATE against clobbering a title SaveTurn's
+// ensureSessionRow already set — MarkInstant only ever owns the `instant`
+// column, the same "each upsert only touches the column it's responsible
+// for" convention SaveGeneratedTitle already relies on against this same
+// row-creation race.
+func TestMySQLMarkInstantAfterSaveTurnKeepsTheTitle(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	userID := "instant-after-turn-user"
+	sessionID := "s-after-turn"
+	if err := st.SaveTurn(ctx, userID, sessionID, 1, "user", "hello there", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn() error = %v", err)
+	}
+	if err := st.MarkInstant(ctx, userID, sessionID); err != nil {
+		t.Fatalf("MarkInstant() error = %v", err)
+	}
+
+	instant, err := st.ListInstantSessions(ctx, userID)
+	if err != nil {
+		t.Fatalf("ListInstantSessions() error = %v", err)
+	}
+	if len(instant) != 1 || instant[0].Title != "hello there" {
+		t.Fatalf("ListInstantSessions() = %+v, want title %q preserved", instant, "hello there")
+	}
+}
+
+// TestMySQLMarkInstantBeforeSaveTurnStillGetsATitle covers the opposite
+// ordering of the race MarkInstant is meant to tolerate (see its doc
+// comment): the "ready" WS event (which triggers the client's MarkInstant
+// call) fires before StartConversation's greeting even starts generating,
+// so MarkInstant can easily land before SaveTurn creates the row at all.
+// ensureSessionRow's own ON DUPLICATE KEY UPDATE must not reset `instant`
+// back to 0 when it runs second.
+func TestMySQLMarkInstantBeforeSaveTurnStillGetsATitle(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	userID := "instant-before-turn-user"
+	sessionID := "s-before-turn"
+	if err := st.MarkInstant(ctx, userID, sessionID); err != nil {
+		t.Fatalf("MarkInstant() error = %v", err)
+	}
+	if err := st.SaveTurn(ctx, userID, sessionID, 1, "user", "hello there", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn() error = %v", err)
+	}
+
+	instant, err := st.ListInstantSessions(ctx, userID)
+	if err != nil {
+		t.Fatalf("ListInstantSessions() error = %v", err)
+	}
+	if len(instant) != 1 || instant[0].Title != "hello there" {
+		t.Fatalf("ListInstantSessions() = %+v, want title %q preserved", instant, "hello there")
+	}
+	normal, err := st.ListSessions(ctx, userID)
+	if err != nil {
+		t.Fatalf("ListSessions() error = %v", err)
+	}
+	if len(normal) != 0 {
+		t.Fatalf("ListSessions() = %+v, want empty (session stayed instant)", normal)
+	}
+}
+
+// TestMySQLListSessionsWithStudySummaryOrdersByEndTimeAndFiltersEmpty guards
+// the exact contract transport.runProfileRegenerate relies on to rebuild a
+// learner profile from scratch: only sessions that actually ended with a
+// non-empty study summary come back, oldest-ended first — a still-open
+// session and an ended-but-nothing-flagged session must both be excluded.
+func TestMySQLListSessionsWithStudySummaryOrdersByEndTimeAndFiltersEmpty(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	userID := "with-summary-user"
+
+	if err := st.SaveTurn(ctx, userID, "s-old", 1, "user", "old room", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(s-old) error = %v", err)
+	}
+	if err := st.EndSession(ctx, userID, "s-old"); err != nil {
+		t.Fatalf("EndSession(s-old) error = %v", err)
+	}
+	if err := st.CompleteStudySummary(ctx, userID, "s-old", []protocol.StudySummarySentence{{English: "Old.", Translation: "오래된."}}); err != nil {
+		t.Fatalf("CompleteStudySummary(s-old) error = %v", err)
+	}
+	time.Sleep(1100 * time.Millisecond) // updated_at has 1-second resolution (UNIX_TIMESTAMP())
+
+	if err := st.SaveTurn(ctx, userID, "s-new", 1, "user", "new room", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(s-new) error = %v", err)
+	}
+	if err := st.EndSession(ctx, userID, "s-new"); err != nil {
+		t.Fatalf("EndSession(s-new) error = %v", err)
+	}
+	if err := st.CompleteStudySummary(ctx, userID, "s-new", []protocol.StudySummarySentence{{English: "New.", Translation: "새로운."}}); err != nil {
+		t.Fatalf("CompleteStudySummary(s-new) error = %v", err)
+	}
+
+	// Ended, but nothing was ever flagged (empty study summary) — must be
+	// excluded, same as a session with no study summary job run at all.
+	if err := st.SaveTurn(ctx, userID, "s-clean", 1, "user", "clean room", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(s-clean) error = %v", err)
+	}
+	if err := st.EndSession(ctx, userID, "s-clean"); err != nil {
+		t.Fatalf("EndSession(s-clean) error = %v", err)
+	}
+	if err := st.CompleteStudySummary(ctx, userID, "s-clean", nil); err != nil {
+		t.Fatalf("CompleteStudySummary(s-clean) error = %v", err)
+	}
+
+	// Still open — never ended, so it never folded anything in.
+	if err := st.SaveTurn(ctx, userID, "s-open", 1, "user", "open room", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(s-open) error = %v", err)
+	}
+
+	got, err := st.ListSessionsWithStudySummary(ctx, userID)
+	if err != nil {
+		t.Fatalf("ListSessionsWithStudySummary() error = %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "s-old" || got[1].ID != "s-new" {
+		t.Fatalf("ListSessionsWithStudySummary() = %+v, want [s-old, s-new] in that order", got)
+	}
+	if got[0].StudySummary[0].English != "Old." || got[1].StudySummary[0].English != "New." {
+		t.Fatalf("ListSessionsWithStudySummary() study summaries = %+v, %+v", got[0].StudySummary, got[1].StudySummary)
+	}
+}
+
 func TestMySQLDeleteSessionRemovesSessionAndTurns(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()

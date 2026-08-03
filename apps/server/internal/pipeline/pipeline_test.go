@@ -234,6 +234,25 @@ func TestOpeningSystemPromptPersonalizesFromLearnerProfileWithVariety(t *testing
 	}
 }
 
+// TestOpeningSystemPromptCalibratesDifficultyToLearnerLevel guards the
+// "induce a question appropriate to the learner's level" requirement: the
+// opening question (asked for every brand-new room, whether started from the
+// normal "+ 새 대화" entry point or the "오늘의 한 문장" quick-mode one — both
+// call the same StartConversation) should scale its vocabulary/grammar to
+// whatever the learner profile says about proficiency, and fall back to
+// simple wording when nothing is known yet rather than guessing too hard.
+func TestOpeningSystemPromptCalibratesDifficultyToLearnerLevel(t *testing.T) {
+	if !strings.Contains(openingSystemPrompt, "proficiency level") {
+		t.Fatalf("opening prompt should calibrate to a proficiency level noted in the learner profile: %s", openingSystemPrompt)
+	}
+	if !strings.Contains(openingSystemPrompt, "beginner") || !strings.Contains(openingSystemPrompt, "advanced") {
+		t.Fatalf("opening prompt should give concrete beginner vs. advanced calibration guidance: %s", openingSystemPrompt)
+	}
+	if !strings.Contains(openingSystemPrompt, "default to simple") {
+		t.Fatalf("opening prompt should default to simple wording when nothing is known about the learner yet: %s", openingSystemPrompt)
+	}
+}
+
 // TestStartConversationSendsLearnerProfileAlongsideOpeningPrompt guards that
 // StartConversation's msgs actually carry whatever learner-profile context
 // BuildSystemPrompt layered into the session — the opening prompt's

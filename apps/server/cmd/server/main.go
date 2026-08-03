@@ -196,6 +196,15 @@ func main() {
 			transport.StudyQuizJobHandler(pipe, st))
 	}
 
+	// Learner-profile rebuild: enqueued by httpserver.sessionDeleteHandler
+	// when a deleted session had actually folded a study summary into the
+	// profile — same "optional feature, zero setup by default" convention.
+	var profileRegenerateQueue *asyncjob.Queue
+	if rdb != nil {
+		profileRegenerateQueue = startWorker(rdb, jobsCtx, asyncjob.KindProfileRegenerate, transport.ProfileRegenerateWorkerConcurrency, transport.ProfileRegenerateClaimTTL,
+			transport.ProfileRegenerateJobHandler(pipe, st))
+	}
+
 	// Temporary audio backup: only enabled once an endpoint is configured, so
 	// the server still boots with zero setup by default (see internal/audiostore).
 	// A second, independent feature (the recording archive below) archives
@@ -226,7 +235,7 @@ func main() {
 		defer recordings.Close()
 	}
 
-	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, wordReviews, wordVerifyQueue, translateQueue, correctionBackfillQueue, studySummaryQueue, studyQuizQueue)
+	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, wordReviews, wordVerifyQueue, translateQueue, correctionBackfillQueue, studySummaryQueue, studyQuizQueue, profileRegenerateQueue)
 
 	go func() {
 		log.Printf("buddy up on %s  env=%s  stt=%v  feedback=%s",

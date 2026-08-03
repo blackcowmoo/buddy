@@ -107,6 +107,7 @@ function MenuPanel({
   prError,
   onGoToPath,
   onGoToRecordings,
+  onGoToInstant,
   onGoToWords,
   onGoToMatch,
   wordDueCount,
@@ -128,6 +129,7 @@ function MenuPanel({
   prError: boolean;
   onGoToPath: (e: React.FormEvent) => void;
   onGoToRecordings: () => void;
+  onGoToInstant: () => void;
   onGoToWords: () => void;
   onGoToMatch: () => void;
   wordDueCount: number;
@@ -228,6 +230,9 @@ function MenuPanel({
       <div className="menu-divider" />
       <button className="ghost menu-item" onClick={onGoToRecordings} role="menuitem">
         🎧 녹음 목록
+      </button>
+      <button className="ghost menu-item" onClick={onGoToInstant} role="menuitem">
+        ⚡ 인스턴트 대화 목록
       </button>
       <button className="ghost menu-item" onClick={onGoToWords} role="menuitem">
         📚 단어 복습
