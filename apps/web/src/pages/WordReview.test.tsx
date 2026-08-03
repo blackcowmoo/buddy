@@ -222,9 +222,11 @@ describe("WordReview page", () => {
     await user.click(await screen.findByRole("button", { name: "복습 시작" }));
 
     // The prompt shows the meaning and the example with the target word
-    // masked out, not given away.
+    // masked out (replaced by an input to type directly into), not given
+    // away.
     expect(await screen.findByText("매우 행복한")).toBeInTheDocument();
-    expect(screen.getByText("She was ____.")).toBeInTheDocument();
+    expect(screen.getByText("She was")).toBeInTheDocument();
+    expect(screen.getByText(".")).toBeInTheDocument();
 
     await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "ecstatic");
     await user.click(screen.getByRole("button", { name: "확인" }));
@@ -262,19 +264,41 @@ describe("WordReview page", () => {
     await user.click(await screen.findByRole("button", { name: "복습 시작" }));
 
     // "do one's best" never appears verbatim in the example (it's "do my
-    // best") -- "my" stays visible, and only "do"/"best" are blanked, so
-    // the learner doesn't need to type "one's" (never itself blanked) or
-    // guess "my" is part of the answer.
+    // best") -- "my" stays visible, and only "do"/"best" are blanked (each
+    // with its own inline input to type directly into), so the learner
+    // doesn't need to type "one's" (never itself blanked) or guess "my" is
+    // part of the answer.
     expect(await screen.findByText("최선을 다하다")).toBeInTheDocument();
-    expect(screen.getByText("I will ____ my ____ to finish the project on time.")).toBeInTheDocument();
-    expect(
-      screen.getByPlaceholderText("빈칸에 들어갈 단어들을 띄어쓰기로 구분해 입력하세요"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("I will")).toBeInTheDocument();
+    expect(screen.getByText("my")).toBeInTheDocument();
+    expect(screen.getByText("to finish the project on time.")).toBeInTheDocument();
 
-    await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "do best");
+    const [firstBlank, secondBlank] = screen.getAllByRole("textbox");
+    expect(firstBlank).toHaveAccessibleName("빈칸 1 정답 입력");
+    expect(secondBlank).toHaveAccessibleName("빈칸 2 정답 입력");
+    await user.type(firstBlank, "do");
+    await user.type(secondBlank, "best");
     await user.click(screen.getByRole("button", { name: "확인" }));
 
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
+  });
+
+  it("marks each blank individually correct/incorrect when a multi-blank recall answer is only partly right", async () => {
+    vi.mocked(fetchWords).mockResolvedValue({ words: [idiomWord], dueCount: 1 });
+    vi.mocked(reviewWord).mockResolvedValue({ ...idiomWord, stage: 0, reviewCount: 1 });
+    const user = userEvent.setup();
+    render(<WordReview />);
+
+    await user.click(await screen.findByRole("button", { name: "복습 시작" }));
+
+    const [firstBlank, secondBlank] = await screen.findAllByRole("textbox");
+    await user.type(firstBlank, "do");
+    await user.type(secondBlank, "wrong");
+    await user.click(screen.getByRole("button", { name: "확인" }));
+
+    expect(await screen.findByText(/아쉬워요\. 정답: do best/)).toBeInTheDocument();
+    expect(firstBlank).toHaveClass("correct");
+    expect(secondBlank).toHaveClass("incorrect");
   });
 
   it("requeues a missed word for a same-session retry instead of ending the session on it", async () => {

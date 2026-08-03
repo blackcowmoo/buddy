@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { confirmThenDelete } from "../lib/confirmDelete";
 import { deleteWord, fetchWords, reviewWord, type WordReviewItem } from "../lib/wordReview";
 import { formatAbsoluteDateTime } from "../lib/time";
@@ -18,17 +18,26 @@ const maskStopWords = new Set([
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+// Placeholder swapped in for each blanked word before splitting the sentence
+// into typeable segments — a character that can never occur in the sentence
+// text itself.
+const BLANK = "\u0000";
+
 // Hides the target word/phrase inside its own example sentence so the
 // recall-mode review question doesn't just hand the learner the answer —
 // same spirit as QuizPanel's LLM-generated fill-in-the-blank prompts,
 // applied here to the plain example sentence saved alongside the word.
-// `answer` is what the learner is expected to type back: usually `word`
-// itself, but see the fallback branch below for the multi-blank case.
-function computeBlank(example: string, word: string): { masked: string; answer: string } {
-  if (!word) return { masked: example, answer: word };
-  const exact = new RegExp(escapeRegExp(word), "gi");
-  if (exact.test(example)) {
-    return { masked: example.replace(exact, "____"), answer: word };
+// Returns the sentence split around each blank (`parts.length ===
+// answers.length + 1`; `parts[i]` sits before blank `i`, `parts[i + 1]`
+// after it) so the caller can render a real input in place of each blank,
+// with `answers[i]` being what the learner is expected to type into it.
+function computeBlank(example: string, word: string): { parts: string[]; answers: string[] } {
+  if (!word) return { parts: [example], answers: [] };
+  const exact = new RegExp(escapeRegExp(word), "i");
+  const exactMatch = example.match(exact);
+  if (exactMatch && exactMatch.index !== undefined) {
+    const masked = example.slice(0, exactMatch.index) + BLANK + example.slice(exactMatch.index + exactMatch[0].length);
+    return { parts: masked.split(BLANK), answers: [word] };
   }
 
   // The saved example doesn't contain `word` verbatim — this happens when
@@ -38,24 +47,33 @@ function computeBlank(example: string, word: string): { masked: string; answer: 
   // like run → running), leaving words in between — "my" here — visible so
   // the learner can see where they fit, rather than one blank that either
   // hands over the whole answer or swallows unrelated sentence words. The
-  // learner types the blanked words back as one space-separated answer, so
-  // `answer` is built the same way rather than from the full dictionary
-  // form (which would require typing "one's", never itself blanked).
+  // dictionary form's "one's" is never itself blanked (filtered as a stop
+  // word below), so it never shows up in `answers` either.
   const tokens = word
     .split(/\s+/)
     .map((t) => t.replace(/[^a-zA-Z']/g, ""))
     .filter((t) => t.length > 1 && !maskStopWords.has(t.toLowerCase()));
 
   let masked = example;
-  const matched: string[] = [];
+  // Tokens are looked up (and blanked) in `word`'s own order, which doesn't
+  // always match the order the words fall in the sentence — track where
+  // each match actually landed so `answers` can be sorted back into
+  // left-to-right sentence order, lining up with the blanks in `parts`.
+  const matches: { index: number; token: string }[] = [];
   for (const token of tokens) {
     const regex = new RegExp(`\\b${escapeRegExp(token)}\\w*`, "i");
-    if (!regex.test(masked)) continue;
-    matched.push(token);
-    masked = masked.replace(regex, "____");
+    const m = masked.match(regex);
+    if (!m || m.index === undefined) continue;
+    matches.push({ index: m.index, token });
+    masked = masked.slice(0, m.index) + BLANK + masked.slice(m.index + m[0].length);
   }
-  if (matched.length === 0) return { masked: example, answer: word };
-  return { masked, answer: matched.join(" ") };
+  if (matches.length === 0) return { parts: [example], answers: [] };
+  matches.sort((a, b) => a.index - b.index);
+  return { parts: masked.split(BLANK), answers: matches.map((m) => m.token) };
+}
+
+function blanksMatch(expected: string[], given: string[]): boolean {
+  return expected.length === given.length && expected.every((exp, i) => normalizeAnswer(given[i] ?? "") === normalizeAnswer(exp));
 }
 
 // A review session mixes two question shapes so a learner practices both
@@ -89,11 +107,14 @@ export function WordReview() {
   // question order/mode stays stable even as answers update `words` below.
   const [quizQueue, setQuizQueue] = useState<QuizItem[] | null>(null);
   const [index, setIndex] = useState(0);
-  const [answer, setAnswer] = useState("");
+  // One entry per blank in the current recall question, typed directly into
+  // the input rendered inline at that blank's position (see recallBlank
+  // below) rather than one shared free-text box.
+  const [answers, setAnswers] = useState<string[]>([]);
   const [selectedChoice, setSelectedChoice] = useState<string | null>(null);
   const [checked, setChecked] = useState(false);
   const [correctCount, setCorrectCount] = useState(0);
-  const answerRef = useRef<HTMLTextAreaElement>(null);
+  const blankRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   useEffect(() => {
     fetchWords().then((result) => {
@@ -107,17 +128,10 @@ export function WordReview() {
     });
   }, []);
 
-  // Grow the answer box to fit multi-word answers (same trick as the
-  // message composer's textarea): reset to "auto" so scrollHeight reflects
-  // the content's natural height, not the previously-set pixel height.
-  useEffect(() => {
-    const el = answerRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
-  }, [answer]);
-
   const handleDelete = (id: string) => confirmThenDelete("이 단어를 삭제할까요?", deleteWord, id, setWords);
+
+  const answersForItem = (item: QuizItem | undefined): string[] =>
+    item && item.mode === "recall" ? new Array(computeBlank(item.word.example, item.word.word).answers.length).fill("") : [];
 
   const startQuiz = useCallback(() => {
     const now = Date.now() / 1000;
@@ -134,7 +148,7 @@ export function WordReview() {
     });
     setQuizQueue(queue);
     setIndex(0);
-    setAnswer("");
+    setAnswers(answersForItem(queue[0]));
     setSelectedChoice(null);
     setChecked(false);
     setCorrectCount(0);
@@ -148,7 +162,7 @@ export function WordReview() {
   const isCorrect =
     checked && currentItem
       ? currentItem.mode === "recall"
-        ? normalizeAnswer(answer) === normalizeAnswer(recallBlank!.answer)
+        ? blanksMatch(recallBlank!.answers, answers)
         : selectedChoice === currentItem.word.meaning
       : false;
 
@@ -175,10 +189,10 @@ export function WordReview() {
   );
 
   const checkRecall = useCallback(() => {
-    if (!currentItem || checked || currentItem.mode !== "recall" || !answer.trim()) return;
-    const expected = computeBlank(currentItem.word.example, currentItem.word.word).answer;
-    finishCheck(currentItem, normalizeAnswer(answer) === normalizeAnswer(expected));
-  }, [currentItem, checked, answer, finishCheck]);
+    if (!currentItem || checked || currentItem.mode !== "recall" || answers.some((a) => !a.trim())) return;
+    const expected = computeBlank(currentItem.word.example, currentItem.word.word).answers;
+    finishCheck(currentItem, blanksMatch(expected, answers));
+  }, [currentItem, checked, answers, finishCheck]);
 
   const chooseRecognition = useCallback(
     (choice: string) => {
@@ -190,11 +204,31 @@ export function WordReview() {
   );
 
   const next = useCallback(() => {
-    setIndex((i) => i + 1);
-    setAnswer("");
+    setIndex(index + 1);
+    setAnswers(answersForItem(quizQueue?.[index + 1]));
     setSelectedChoice(null);
     setChecked(false);
-  }, []);
+  }, [index, quizQueue]);
+
+  // Enter in a blank moves to the next blank, submits from the last blank,
+  // or (once checked) advances to the next question -- so the learner never
+  // has to reach for the mouse mid-question.
+  const handleBlankKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLInputElement>, i: number) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      if (checked) {
+        next();
+        return;
+      }
+      if (i < answers.length - 1) {
+        blankRefs.current[i + 1]?.focus();
+      } else {
+        checkRecall();
+      }
+    },
+    [checked, answers.length, next, checkRecall],
+  );
 
   const verifiedWords = words.filter((w) => w.status === "verified");
   const pendingWords = words.filter((w) => w.status === "pending");
@@ -335,38 +369,50 @@ export function WordReview() {
                 {currentItem.mode === "recall" ? (
                   <>
                     <div className="quiz-prompt">{current.meaning}</div>
-                    <div className="word-search-example">{recallBlank!.masked}</div>
-                    <textarea
-                      ref={answerRef}
-                      className="quiz-answer-input"
-                      // Width tracks what's actually been typed, not the
-                      // expected answer -- a box pre-sized to fit the
-                      // answer would give its length away before the
-                      // learner types anything. It stops growing wider past
-                      // 24ch and wraps at word boundaries instead (a
-                      // textarea's default line-break behavior), with the
-                      // height effect above growing the box to fit.
-                      style={{ width: `${Math.min(24, Math.max(8, answer.length + 2))}ch` }}
-                      rows={1}
-                      maxLength={100}
-                      value={answer}
-                      onChange={(e) => setAnswer(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key !== "Enter") return;
-                        e.preventDefault();
-                        if (checked) next();
-                        else checkRecall();
-                      }}
-                      disabled={checked}
-                      placeholder={
-                        recallBlank!.answer.includes(" ")
-                          ? "빈칸에 들어갈 단어들을 띄어쓰기로 구분해 입력하세요"
-                          : "빈칸에 들어갈 단어를 입력하세요"
-                      }
-                      aria-label="정답 입력"
-                    />
+                    {/* Blanks are typed directly in place inside the
+                        sentence rather than gathered into one separate
+                        textarea below -- each blank is its own input, sized
+                        to what's been typed into it (not the hidden
+                        answer's length, which would give it away). */}
+                    <div className="word-search-example quiz-blank-sentence">
+                      {recallBlank!.parts.map((part, i) => (
+                        <span key={i}>
+                          {part}
+                          {i < recallBlank!.answers.length && (
+                            <input
+                              ref={(el) => {
+                                blankRefs.current[i] = el;
+                              }}
+                              type="text"
+                              className={
+                                "quiz-blank-input" +
+                                (checked ? (normalizeAnswer(answers[i] ?? "") === normalizeAnswer(recallBlank!.answers[i]) ? " correct" : " incorrect") : "")
+                              }
+                              style={{ width: `${Math.min(16, Math.max(3, (answers[i]?.length ?? 0) + 1))}ch` }}
+                              maxLength={40}
+                              value={answers[i] ?? ""}
+                              onChange={(e) =>
+                                setAnswers((prev) => {
+                                  const next = [...prev];
+                                  next[i] = e.target.value;
+                                  return next;
+                                })
+                              }
+                              onKeyDown={(e) => handleBlankKeyDown(e, i)}
+                              disabled={checked}
+                              aria-label={recallBlank!.answers.length > 1 ? `빈칸 ${i + 1} 정답 입력` : "정답 입력"}
+                            />
+                          )}
+                        </span>
+                      ))}
+                    </div>
                     {!checked && (
-                      <button type="button" className="quiz-check-btn" onClick={checkRecall} disabled={!answer.trim()}>
+                      <button
+                        type="button"
+                        className="quiz-check-btn"
+                        onClick={checkRecall}
+                        disabled={answers.length === 0 || answers.some((a) => !a.trim())}
+                      >
                         확인
                       </button>
                     )}
@@ -406,7 +452,7 @@ export function WordReview() {
                     <div className={`quiz-result ${isCorrect ? "correct" : "incorrect"}`} role="status">
                       {isCorrect
                         ? "정답이에요!"
-                        : `아쉬워요. 정답: ${currentItem.mode === "recall" ? recallBlank!.answer : current.meaning}`}
+                        : `아쉬워요. 정답: ${currentItem.mode === "recall" ? recallBlank!.answers.join(" ") : current.meaning}`}
                     </div>
                     <button type="button" className="quiz-next-btn" onClick={next}>
                       {index + 1 < quizQueue.length ? "다음 단어" : "결과 보기"}

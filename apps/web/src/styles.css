@@ -367,6 +367,29 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
   overflow: hidden;
   word-wrap: break-word;
 }
+/* Recall-mode blanks, typed directly in place inside the sentence instead
+   of gathered into one textarea below it (see WordReview.tsx computeBlank).
+   .quiz-blank-sentence just needs to let its inline inputs wrap with the
+   surrounding text; .word-search-example already sets the font. */
+.quiz-blank-sentence { line-height: 1.8; }
+.quiz-blank-input {
+  font: inherit;
+  font-style: normal;
+  font-size: 16px; /* iOS Safari zoom threshold, same as .composer input */
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid var(--border-2);
+  color: var(--text);
+  border-radius: 0;
+  padding: 0 2px;
+  margin: 0 2px;
+  -webkit-appearance: none;
+  appearance: none;
+  text-align: center;
+}
+.quiz-blank-input:focus { outline: none; border-bottom-color: var(--accent, var(--text)); }
+.quiz-blank-input.correct { border-bottom-color: var(--ok); color: var(--ok); }
+.quiz-blank-input.incorrect { border-bottom-color: var(--err); color: var(--err); }
 .quiz-result { font-size: 13px; font-weight: 600; }
 .quiz-result.correct { color: var(--ok); }
 .quiz-result.incorrect { color: var(--err); }
