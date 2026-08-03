@@ -110,6 +110,7 @@ function MenuPanel({
   onGoToInstant,
   onGoToWords,
   onGoToMatch,
+  onGoToArticle,
   wordDueCount,
   styleInput,
   onStyleInputChange,
@@ -132,6 +133,7 @@ function MenuPanel({
   onGoToInstant: () => void;
   onGoToWords: () => void;
   onGoToMatch: () => void;
+  onGoToArticle: () => void;
   wordDueCount: number;
   styleInput: string;
   onStyleInputChange: (v: string) => void;
@@ -240,6 +242,9 @@ function MenuPanel({
       </button>
       <button className="ghost menu-item" onClick={onGoToMatch} role="menuitem">
         🎮 단어 매칭 게임
+      </button>
+      <button className="ghost menu-item" onClick={onGoToArticle} role="menuitem">
+        📰 오늘의 아티클
       </button>
       <div className="menu-divider" />
       <form className="path-form" onSubmit={onGoToPath}>

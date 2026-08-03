@@ -143,6 +143,30 @@ type WordSuggestion struct {
 	Example string `json:"example"` // one example English sentence using Word
 }
 
+// ArticleStudy is one LLM-synthesized "오늘의 아티클" study unit for a single
+// news article: an English summary paragraph, plus a native-language
+// multiple-choice reading-comprehension quiz testing whether the learner
+// actually understood it, not just recognized a keyword — see
+// pipeline.Pipeline.GenerateArticleStudy. Persisted as
+// newsarticle.Article once generated (cached by article URL, so every later
+// learner who draws the same story reads this exact result); this type is
+// just the JSON shape the LLM call itself returns and parses into.
+type ArticleStudy struct {
+	Summary string `json:"summary"` // English, self-contained, 3-5 sentences
+	// Choices are candidate native-language translations/interpretations of
+	// Summary, exactly one of them (at CorrectIndex) accurate — the rest
+	// must each contain a real, concrete inaccuracy (a swapped fact, a
+	// flipped negation, a wrong entity) rather than being obviously
+	// unrelated, so guessing without having actually read Summary is a real
+	// gamble.
+	Choices      []string `json:"choices"`
+	CorrectIndex int      `json:"correctIndex"`
+	// Explanation is a native-language note on why Choices[CorrectIndex] is
+	// the accurate one, contrasting it against what the wrong choices got
+	// wrong — shown to the learner only after they answer.
+	Explanation string `json:"explanation"`
+}
+
 // ---- client -> server (TEXT control frames) ---------------------------------
 
 type ClientMsg struct {

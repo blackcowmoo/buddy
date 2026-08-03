@@ -45,4 +45,12 @@ describe("currentPage", () => {
   it("recognizes the instant-conversations page under a ROOT_PATH prefix", () => {
     expect(currentPage("/pr/14/instant")).toBe("instant");
   });
+
+  it("recognizes the article-quiz page at root", () => {
+    expect(currentPage("/article")).toBe("article");
+  });
+
+  it("recognizes the article-quiz page under a ROOT_PATH prefix", () => {
+    expect(currentPage("/pr/14/article")).toBe("article");
+  });
 });
