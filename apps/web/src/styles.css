@@ -566,6 +566,7 @@ a.icon-btn.ghost {
   padding: 16px;
   display: flex;
   flex-direction: column;
+  justify-content: flex-end;
   gap: 14px;
 }
 .hint { color: var(--muted); line-height: 1.6; font-size: 15px; }
