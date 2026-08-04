@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { deleteWord, fetchWords, reviewWord, saveWord } from "./wordReview";
+import { autoAddWords, deleteWord, fetchWords, reviewWord, saveWord } from "./wordReview";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -86,6 +86,31 @@ describe("reviewWord", () => {
   it("returns null when fetch rejects", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
     await expect(reviewWord("w1", false)).resolves.toBeNull();
+  });
+});
+
+describe("autoAddWords", () => {
+  it("posts with no body and returns the saved words", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ words: [item] }) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(autoAddWords()).resolves.toEqual([item]);
+    expect(fetchMock).toHaveBeenCalledWith("api/words/auto-add", { method: "POST" });
+  });
+
+  it("returns an empty array when the server found nothing to add", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ words: [] }) }));
+    await expect(autoAddWords()).resolves.toEqual([]);
+  });
+
+  it("returns null on a non-ok response", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
+    await expect(autoAddWords()).resolves.toBeNull();
+  });
+
+  it("returns null when fetch rejects", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
+    await expect(autoAddWords()).resolves.toBeNull();
   });
 });
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { confirmThenDelete } from "../lib/confirmDelete";
-import { deleteWord, fetchWords, reviewWord, type WordReviewItem } from "../lib/wordReview";
+import { autoAddWords, deleteWord, fetchWords, reviewWord, type WordReviewItem } from "../lib/wordReview";
 import { formatAbsoluteDateTime } from "../lib/time";
 import { shuffled } from "../lib/shuffle";
 import { normalizeQuizAnswer as normalizeAnswer } from "../lib/quizCheck";
@@ -115,6 +115,8 @@ export function WordReview() {
   const [checked, setChecked] = useState(false);
   const [correctCount, setCorrectCount] = useState(0);
   const blankRefs = useRef<(HTMLInputElement | null)[]>([]);
+  const [autoAdding, setAutoAdding] = useState(false);
+  const [autoAddError, setAutoAddError] = useState<string | null>(null);
 
   useEffect(() => {
     fetchWords().then((result) => {
@@ -155,6 +157,27 @@ export function WordReview() {
   }, [words]);
 
   const backToList = useCallback(() => setQuizQueue(null), []);
+
+  // Backs the "새 단어 추가로 학습하기" button that takes over "복습 시작"'s
+  // slot once dueCount hits 0 — generates a batch of new words fit to the
+  // learner's profile and merges them in as "확인 중" (pending) rows,
+  // exactly the same lifecycle a manually search-and-saved word already has
+  // (see httpserver.wordAutoAddHandler for the validation it goes through).
+  const handleAutoAdd = useCallback(async () => {
+    setAutoAdding(true);
+    setAutoAddError(null);
+    const added = await autoAddWords();
+    setAutoAdding(false);
+    if (added === null) {
+      setAutoAddError("단어를 추가하지 못했어요. 잠시 후 다시 시도해주세요.");
+      return;
+    }
+    if (added.length === 0) {
+      setAutoAddError("추천할 새 단어를 찾지 못했어요. 잠시 후 다시 시도해주세요.");
+      return;
+    }
+    setWords((prev) => [...added, ...prev]);
+  }, []);
 
   const currentItem = quizQueue?.[index] ?? null;
   const current = currentItem?.word ?? null;
@@ -292,11 +315,16 @@ export function WordReview() {
             <p className="hint word-review-due-hint" role="status">
               {dueCount > 0 ? `복습할 단어 ${dueCount}개가 있어요.` : "지금 복습할 단어가 없어요."}
             </p>
-            {dueCount > 0 && (
+            {dueCount > 0 ? (
               <button type="button" className="quiz-start-btn" onClick={startQuiz}>
                 복습 시작
               </button>
+            ) : (
+              <button type="button" className="quiz-start-btn" onClick={() => void handleAutoAdd()} disabled={autoAdding}>
+                {autoAdding ? "새 단어 찾는 중…" : "새 단어 추가로 학습하기"}
+              </button>
             )}
+            {autoAddError && <p className="hint">{autoAddError}</p>}
             {words.length === 0 && (
               <p className="hint">
                 아직 학습 중인 단어가 없어요. 채팅에서 🔎로 단어를 찾아 "학습하기"를 눌러보세요.

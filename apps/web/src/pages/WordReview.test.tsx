@@ -8,11 +8,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/wordReview", async () => {
   const actual = await vi.importActual<typeof import("../lib/wordReview")>("../lib/wordReview");
-  return { ...actual, fetchWords: vi.fn(), deleteWord: vi.fn(), reviewWord: vi.fn() };
+  return { ...actual, fetchWords: vi.fn(), deleteWord: vi.fn(), reviewWord: vi.fn(), autoAddWords: vi.fn() };
 });
 
 import { WordReview } from "./WordReview";
-import { deleteWord, fetchWords, reviewWord, type WordReviewItem } from "../lib/wordReview";
+import { autoAddWords, deleteWord, fetchWords, reviewWord, type WordReviewItem } from "../lib/wordReview";
 import { formatAbsoluteDateTime } from "../lib/time";
 
 afterEach(() => {
@@ -111,6 +111,9 @@ describe("WordReview page", () => {
     expect(await screen.findByText(/아직 학습 중인 단어가 없어요/)).toBeInTheDocument();
     expect(screen.getByText("지금 복습할 단어가 없어요.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "복습 시작" })).not.toBeInTheDocument();
+    // The "복습 시작" slot is taken over by the auto-add button instead of
+    // being left empty, offering a second path besides manual 🔎 search.
+    expect(screen.getByRole("button", { name: "새 단어 추가로 학습하기" })).toBeInTheDocument();
   });
 
   it("shows the due count and a start button when words are due", async () => {
@@ -186,6 +189,78 @@ describe("WordReview page", () => {
 
     expect(await screen.findByText("지금 복습할 단어가 없어요.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "복습 시작" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "새 단어 추가로 학습하기" })).toBeInTheDocument();
+  });
+
+  describe("auto-adding new words when the queue is empty", () => {
+    it("shows the auto-add button instead of 복습 시작 once dueCount is 0, even with words already tracked", async () => {
+      vi.mocked(fetchWords).mockResolvedValue({ words: [futureWord], dueCount: 0 });
+      render(<WordReview />);
+
+      expect(await screen.findByRole("button", { name: "새 단어 추가로 학습하기" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "복습 시작" })).not.toBeInTheDocument();
+    });
+
+    it("adds the returned words into the 확인 중 section on click", async () => {
+      vi.mocked(fetchWords).mockResolvedValue({ words: [], dueCount: 0 });
+      const newWord: WordReviewItem = {
+        id: "w-new",
+        word: "resilient",
+        meaning: "회복력이 있는",
+        example: "She stayed resilient.",
+        stage: 0,
+        reviewCount: 0,
+        nextReviewAt: 0,
+        status: "pending",
+      };
+      vi.mocked(autoAddWords).mockResolvedValue([newWord]);
+      const user = userEvent.setup();
+      render(<WordReview />);
+
+      await user.click(await screen.findByRole("button", { name: "새 단어 추가로 학습하기" }));
+
+      expect(autoAddWords).toHaveBeenCalled();
+      expect(await screen.findByText("확인 중")).toBeInTheDocument();
+      expect(screen.getByText("resilient")).toBeInTheDocument();
+    });
+
+    it("shows an error hint when the request fails", async () => {
+      vi.mocked(fetchWords).mockResolvedValue({ words: [], dueCount: 0 });
+      vi.mocked(autoAddWords).mockResolvedValue(null);
+      const user = userEvent.setup();
+      render(<WordReview />);
+
+      await user.click(await screen.findByRole("button", { name: "새 단어 추가로 학습하기" }));
+
+      expect(await screen.findByText("단어를 추가하지 못했어요. 잠시 후 다시 시도해주세요.")).toBeInTheDocument();
+    });
+
+    it("shows a not-found hint when the server returns no suggestions", async () => {
+      vi.mocked(fetchWords).mockResolvedValue({ words: [], dueCount: 0 });
+      vi.mocked(autoAddWords).mockResolvedValue([]);
+      const user = userEvent.setup();
+      render(<WordReview />);
+
+      await user.click(await screen.findByRole("button", { name: "새 단어 추가로 학습하기" }));
+
+      expect(await screen.findByText("추천할 새 단어를 찾지 못했어요. 잠시 후 다시 시도해주세요.")).toBeInTheDocument();
+    });
+
+    it("disables and relabels the button while the request is in flight", async () => {
+      vi.mocked(fetchWords).mockResolvedValue({ words: [], dueCount: 0 });
+      let resolve!: (words: WordReviewItem[] | null) => void;
+      vi.mocked(autoAddWords).mockReturnValue(new Promise((r) => (resolve = r)));
+      const user = userEvent.setup();
+      render(<WordReview />);
+
+      await user.click(await screen.findByRole("button", { name: "새 단어 추가로 학습하기" }));
+
+      const pendingBtn = await screen.findByRole("button", { name: "새 단어 찾는 중…" });
+      expect(pendingBtn).toBeDisabled();
+
+      resolve([]);
+      expect(await screen.findByRole("button", { name: "새 단어 추가로 학습하기" })).toBeInTheDocument();
+    });
   });
 
   it("deletes a word after confirmation", async () => {
