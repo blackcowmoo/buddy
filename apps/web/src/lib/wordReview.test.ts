@@ -59,7 +59,22 @@ describe("reviewWord", () => {
     expect(fetchMock).toHaveBeenCalledWith("api/words/weird%20id%2F1/review", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ correct: true }),
+      body: JSON.stringify({ correct: true, repeat: false }),
+    });
+  });
+
+  // repeat marks a correct-but-forced-guess answer (the "억지로 맞췄어요"
+  // button) so the word gets rescheduled at the same interval instead of
+  // advancing — see httpserver.wordReviewHandler.
+  it("posts the repeat flag when set", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(item) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(reviewWord("w1", true, true)).resolves.toEqual(item);
+    expect(fetchMock).toHaveBeenCalledWith("api/words/w1/review", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ correct: true, repeat: true }),
     });
   });
 

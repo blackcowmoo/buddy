@@ -8,7 +8,7 @@ import (
 func TestNextScheduleAdvancesStageOnCorrectAnswer(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	newStage, nextReviewAt := nextSchedule(0, true, now)
+	newStage, nextReviewAt := nextSchedule(0, true, false, now)
 
 	if newStage != 1 {
 		t.Errorf("newStage = %d, want 1", newStage)
@@ -29,7 +29,7 @@ func TestNextScheduleKeepsGrowingPastTheHandTunedStages(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	lastStage := len(stageIntervals) - 1
 
-	newStage, nextReviewAt := nextSchedule(lastStage, true, now)
+	newStage, nextReviewAt := nextSchedule(lastStage, true, false, now)
 
 	wantStage := lastStage + 1
 	if newStage != wantStage {
@@ -47,7 +47,7 @@ func TestNextScheduleKeepsGrowingPastTheHandTunedStages(t *testing.T) {
 	prevInterval := wantInterval
 	for i := 0; i < 5; i++ {
 		var next time.Time
-		stage, next = nextSchedule(stage, true, now)
+		stage, next = nextSchedule(stage, true, false, now)
 		interval := next.Sub(now)
 		if interval <= prevInterval {
 			t.Fatalf("interval did not keep growing: prev=%v next=%v (stage %d)", prevInterval, interval, stage)
@@ -71,7 +71,7 @@ func TestIntervalForStageClampsToMaxIntervalInsteadOfOverflowing(t *testing.T) {
 func TestNextScheduleResetsToStageZeroOnMiss(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	newStage, nextReviewAt := nextSchedule(3, false, now)
+	newStage, nextReviewAt := nextSchedule(3, false, false, now)
 
 	if newStage != 0 {
 		t.Errorf("newStage = %d, want 0 (a miss resets progress, not just one step back)", newStage)
@@ -84,10 +84,74 @@ func TestNextScheduleResetsToStageZeroOnMiss(t *testing.T) {
 func TestNextScheduleMissAtStageZeroStaysAtZero(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	newStage, nextReviewAt := nextSchedule(0, false, now)
+	newStage, nextReviewAt := nextSchedule(0, false, false, now)
 
 	if newStage != 0 {
 		t.Errorf("newStage = %d, want 0 (never goes negative)", newStage)
+	}
+	if !nextReviewAt.Equal(now) {
+		t.Errorf("nextReviewAt = %v, want %v", nextReviewAt, now)
+	}
+}
+
+// TestNextScheduleRepeatHoldsStageAndRepeatsTheSameInterval mirrors the
+// learner-facing example driving the repeat flag: a word that took 30 days
+// (stageIntervals[5]) to come up for review, marked "forced guess" via
+// repeat, must come back in another 30 days — not advance to the 60-day
+// step a confident correct answer would earn.
+func TestNextScheduleRepeatHoldsStageAndRepeatsTheSameInterval(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	stage := 6 // reached via a prior correct answer from stage 5 (30-day interval)
+
+	newStage, nextReviewAt := nextSchedule(stage, true, true, now)
+
+	if newStage != stage {
+		t.Errorf("newStage = %d, want %d (repeat holds the stage instead of advancing)", newStage, stage)
+	}
+	want := now.Add(stageIntervals[5]) // the 30-day interval that just elapsed, not the 60-day next step
+	if !nextReviewAt.Equal(want) {
+		t.Errorf("nextReviewAt = %v, want %v (repeat re-uses the interval that just elapsed)", nextReviewAt, want)
+	}
+
+	// A later confident (non-repeat) correct answer, still at the same
+	// stage, resumes normal progress from exactly where repeat left it.
+	nextStage, laterReviewAt := nextSchedule(newStage, true, false, now)
+	if nextStage != stage+1 {
+		t.Errorf("newStage = %d, want %d (a non-repeat correct answer resumes normal advancement)", nextStage, stage+1)
+	}
+	wantLater := now.Add(stageIntervals[5] * 2) // doubles past the table -> 60 days
+	if !laterReviewAt.Equal(wantLater) {
+		t.Errorf("nextReviewAt = %v, want %v", laterReviewAt, wantLater)
+	}
+}
+
+// TestNextScheduleRepeatAtStageZeroStaysAtZero guards the prevStage
+// underflow clamp: a repeat on a word's very first review (stage 0, never
+// advanced past a miss) must not look up intervalForStage(-1).
+func TestNextScheduleRepeatAtStageZeroStaysAtZero(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	newStage, nextReviewAt := nextSchedule(0, true, true, now)
+
+	if newStage != 0 {
+		t.Errorf("newStage = %d, want 0", newStage)
+	}
+	want := now.Add(stageIntervals[0])
+	if !nextReviewAt.Equal(want) {
+		t.Errorf("nextReviewAt = %v, want %v", nextReviewAt, want)
+	}
+}
+
+// TestNextScheduleRepeatIsIgnoredWhenIncorrect makes sure repeat can't be
+// (ab)used to soften a miss — an incorrect answer always resets to stage 0
+// and reschedules due immediately, same as without the flag.
+func TestNextScheduleRepeatIsIgnoredWhenIncorrect(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	newStage, nextReviewAt := nextSchedule(4, false, true, now)
+
+	if newStage != 0 {
+		t.Errorf("newStage = %d, want 0 (repeat must not soften a miss)", newStage)
 	}
 	if !nextReviewAt.Equal(now) {
 		t.Errorf("nextReviewAt = %v, want %v", nextReviewAt, now)

@@ -154,7 +154,11 @@ func wordsListHandler(ident identity.Identifier, words wordreview.Store) http.Ha
 // wordReviewHandler records one review answer against a tracked word,
 // advancing or resetting its spaced-repetition schedule (see
 // wordreview.nextSchedule), and returns the updated item so the frontend can
-// show the learner when it'll come back around.
+// show the learner when it'll come back around. Repeat marks a
+// correct-but-forced-guess answer (the "억지로 맞췄어요" button — see
+// WordReview.tsx's markForced) so the word gets rescheduled at the same
+// interval instead of advancing; meaningless (and ignored by
+// nextSchedule) when Correct is false.
 func wordReviewHandler(ident identity.Identifier, words wordreview.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)
@@ -163,11 +167,12 @@ func wordReviewHandler(ident identity.Identifier, words wordreview.Store) http.H
 		}
 		var body struct {
 			Correct bool `json:"correct"`
+			Repeat  bool `json:"repeat"`
 		}
 		if !decodeJSON(w, r, &body) {
 			return
 		}
-		updated, err := words.Review(r.Context(), userID, r.PathValue("id"), body.Correct, time.Now())
+		updated, err := words.Review(r.Context(), userID, r.PathValue("id"), body.Correct, body.Repeat, time.Now())
 		if err != nil {
 			serverError(w, "words: review "+userID, err)
 			return

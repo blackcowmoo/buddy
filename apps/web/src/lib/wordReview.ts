@@ -58,13 +58,16 @@ export async function fetchWords(): Promise<{ words: WordReviewItem[]; dueCount:
 
 // Records one review answer against a tracked word, returning its updated
 // schedule (see httpserver.wordReviewHandler) so the caller can show when
-// it's next due. Returns null on any failure.
-export async function reviewWord(id: string, correct: boolean): Promise<WordReviewItem | null> {
+// it's next due. repeat marks a correct-but-forced-guess answer (the "억지로
+// 맞췄어요" button in WordReview.tsx) — the word gets rescheduled at the same
+// interval it just came from instead of advancing; meaningless when correct
+// is false. Returns null on any failure.
+export async function reviewWord(id: string, correct: boolean, repeat = false): Promise<WordReviewItem | null> {
   try {
     const res = await fetch(`api/words/${encodeURIComponent(id)}/review`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ correct }),
+      body: JSON.stringify({ correct, repeat }),
     });
     if (!res.ok) return null;
     return (await res.json()) as WordReviewItem;

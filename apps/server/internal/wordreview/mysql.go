@@ -186,7 +186,7 @@ func (s *MySQLStore) MarkRejected(ctx context.Context, userID, id string, reason
 // Review reads via rw (not ro) so a word saved or reviewed moments ago is
 // never missed because of replica lag, same reasoning as
 // internal/recording's Delete.
-func (s *MySQLStore) Review(ctx context.Context, userID, id string, correct bool, now time.Time) (Word, error) {
+func (s *MySQLStore) Review(ctx context.Context, userID, id string, correct, repeat bool, now time.Time) (Word, error) {
 	w, err := scanWord(s.rw.QueryRowContext(ctx, `SELECT `+wordColumns+` FROM `+table+` WHERE id = ? AND user_id = ?`, id, userID), userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Word{}, nil
@@ -195,7 +195,7 @@ func (s *MySQLStore) Review(ctx context.Context, userID, id string, correct bool
 		return Word{}, fmt.Errorf("wordreview: review: lookup: %w", err)
 	}
 
-	newStage, nextReviewAt := nextSchedule(w.Stage, correct, now)
+	newStage, nextReviewAt := nextSchedule(w.Stage, correct, repeat, now)
 	streak := 0
 	if correct {
 		streak = w.CorrectStreak + 1

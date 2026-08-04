@@ -170,16 +170,20 @@ export function WordReview() {
     (item: QuizItem, correct: boolean) => {
       setChecked(true);
       if (correct) {
+        // The review call for a correct answer is deferred until the
+        // learner advances (see advanceCorrect) rather than fired here,
+        // because "억지로 맞췄어요" needs to pick between two different
+        // outcomes (advance vs. repeat) before anything is sent.
         setCorrectCount((c) => c + 1);
-      } else {
-        // A miss resets the word's schedule to be due again today instead of
-        // tomorrow (see the backend's nextSchedule) -- requeue it here too,
-        // at the back of this session's queue, so the learner actually gets
-        // that same-day retry now rather than only next time they open
-        // review.
-        setQuizQueue((prev) => (prev ? [...prev, item] : prev));
+        return;
       }
-      void reviewWord(item.word.id, correct).then((updated) => {
+      // A miss resets the word's schedule to be due again today instead of
+      // tomorrow (see the backend's nextSchedule) -- requeue it here too,
+      // at the back of this session's queue, so the learner actually gets
+      // that same-day retry now rather than only next time they open
+      // review.
+      setQuizQueue((prev) => (prev ? [...prev, item] : prev));
+      void reviewWord(item.word.id, false).then((updated) => {
         if (!updated) return;
         setWords((prev) => prev.map((w) => (w.id === updated.id ? updated : w)));
         setDueCount((c) => Math.max(0, c - 1));
@@ -203,12 +207,43 @@ export function WordReview() {
     [currentItem, checked, finishCheck],
   );
 
-  const next = useCallback(() => {
+  const advanceToNext = useCallback(() => {
     setIndex(index + 1);
     setAnswers(answersForItem(quizQueue?.[index + 1]));
     setSelectedChoice(null);
     setChecked(false);
   }, [index, quizQueue]);
+
+  // Sends the deferred correct-answer review call, then moves on. repeat
+  // marks the learner flagging a technically-correct-but-forced guess (the
+  // "억지로 맞췄어요" button): the word gets rescheduled at the same interval
+  // it just came from instead of advancing to the next, wider one (see
+  // wordreview.nextSchedule server-side) -- so a word that took 30 days to
+  // come up stays on a 30-day cadence for as long as repeat keeps getting
+  // pressed, only moving to 60 once answered confidently.
+  const advanceCorrect = useCallback(
+    (repeat: boolean) => {
+      if (currentItem) {
+        void reviewWord(currentItem.word.id, true, repeat).then((updated) => {
+          if (!updated) return;
+          setWords((prev) => prev.map((w) => (w.id === updated.id ? updated : w)));
+          setDueCount((c) => Math.max(0, c - 1));
+        });
+      }
+      advanceToNext();
+    },
+    [currentItem, advanceToNext],
+  );
+
+  const next = useCallback(() => {
+    if (isCorrect) {
+      advanceCorrect(false);
+      return;
+    }
+    advanceToNext();
+  }, [isCorrect, advanceCorrect, advanceToNext]);
+
+  const markForced = useCallback(() => advanceCorrect(true), [advanceCorrect]);
 
   // Enter in a blank moves to the next blank, submits from the last blank,
   // or (once checked) advances to the next question -- so the learner never
@@ -454,9 +489,21 @@ export function WordReview() {
                         ? "정답이에요!"
                         : `아쉬워요. 정답: ${currentItem.mode === "recall" ? recallBlank!.answers.join(" ") : current.meaning}`}
                     </div>
-                    <button type="button" className="quiz-next-btn" onClick={next}>
-                      {index + 1 < quizQueue.length ? "다음 단어" : "결과 보기"}
-                    </button>
+                    <div className="quiz-next-actions">
+                      <button type="button" className="quiz-next-btn" onClick={next}>
+                        {index + 1 < quizQueue.length ? "다음 단어" : "결과 보기"}
+                      </button>
+                      {isCorrect && (
+                        <button
+                          type="button"
+                          className="ghost quiz-forced-btn"
+                          onClick={markForced}
+                          title="확신 없이 찍어서 맞춘 경우, 같은 간격으로 다시 복습해요"
+                        >
+                          😅 억지로 맞춘 것 같아요
+                        </button>
+                      )}
+                    </div>
                   </>
                 )}
               </div>
