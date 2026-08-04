@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -44,6 +45,62 @@ func TestSuggestWordsRejectsBadJSON(t *testing.T) {
 		return "not json", nil
 	}}, ChatModel: "m"}
 	if _, err := p.SuggestWords(context.Background(), "설명"); err == nil {
+		t.Fatal("expected an error when the model's reply isn't valid JSON")
+	}
+}
+
+// ---- SuggestNewWords() -------------------------------------------------------
+
+func TestSuggestNewWordsParsesSuggestions(t *testing.T) {
+	var gotInput string
+	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		gotInput = msgs[len(msgs)-1].Content
+		return `{"suggestions":[{"word":"resilient","meaning":"회복력이 있는","example":"She stayed resilient through the setback."}]}`, nil
+	}}, ChatModel: "m", FeedbackLang: "ko"}
+	got, err := p.SuggestNewWords(context.Background(), "loves cooking; struggles with articles", []string{"furious", "elated"})
+	if err != nil {
+		t.Fatalf("SuggestNewWords() error = %v", err)
+	}
+	if !strings.Contains(gotInput, "loves cooking; struggles with articles") {
+		t.Fatalf("input sent to the model = %q, want it to include the learner profile", gotInput)
+	}
+	if !strings.Contains(gotInput, "furious") || !strings.Contains(gotInput, "elated") {
+		t.Fatalf("input sent to the model = %q, want it to include the already-tracked words", gotInput)
+	}
+	want := []protocol.WordSuggestion{{Word: "resilient", Meaning: "회복력이 있는", Example: "She stayed resilient through the setback."}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("SuggestNewWords() = %+v, want %+v", got, want)
+	}
+}
+
+func TestSuggestNewWordsHandlesEmptyProfileAndExistingWords(t *testing.T) {
+	var gotInput string
+	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		gotInput = msgs[len(msgs)-1].Content
+		return `{"suggestions":[]}`, nil
+	}}, ChatModel: "m"}
+	if _, err := p.SuggestNewWords(context.Background(), "", nil); err != nil {
+		t.Fatalf("SuggestNewWords() error = %v", err)
+	}
+	if !strings.Contains(gotInput, "(none)") {
+		t.Fatalf("input sent to the model = %q, want an explicit (none) placeholder for both blank fields", gotInput)
+	}
+}
+
+func TestSuggestNewWordsPropagatesLLMError(t *testing.T) {
+	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		return "", errors.New("down")
+	}}, ChatModel: "m"}
+	if _, err := p.SuggestNewWords(context.Background(), "profile", nil); err == nil {
+		t.Fatal("expected an error when the LLM call fails")
+	}
+}
+
+func TestSuggestNewWordsRejectsBadJSON(t *testing.T) {
+	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		return "not json", nil
+	}}, ChatModel: "m"}
+	if _, err := p.SuggestNewWords(context.Background(), "profile", nil); err == nil {
 		t.Fatal("expected an error when the model's reply isn't valid JSON")
 	}
 }

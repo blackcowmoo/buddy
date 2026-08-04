@@ -11,6 +11,7 @@ import (
 	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/identity"
 	"buddy/server/internal/pipeline"
+	"buddy/server/internal/store"
 	"buddy/server/internal/transport"
 	"buddy/server/internal/wordreview"
 )
@@ -100,25 +101,39 @@ func wordSaveHandler(ident identity.Identifier, words wordreview.Store, pipe *pi
 			http.Error(w, "meaning/example is too long", http.StatusBadRequest)
 			return
 		}
-		saved, err := words.Save(r.Context(), userID, word, meaning, example)
+		saved, err := saveWordAndVerify(r.Context(), words, pipe, wordVerifyQueue, userID, word, meaning, example)
 		if err != nil {
 			serverError(w, "words: save "+userID, err)
 			return
 		}
-		if saved.Status == wordreview.StatusPending {
-			enqueueOrRunInline(wordVerifyQueue, r.Context(),
-				"words: enqueue verify "+userID+"/"+saved.ID,
-				func(ctx context.Context) error {
-					return transport.EnqueueWordVerifyJob(ctx, wordVerifyQueue, pipe, words, userID, saved.ID)
-				},
-				"words: verify "+userID+"/"+saved.ID,
-				func(ctx context.Context) error {
-					return transport.RunWordVerifyInline(ctx, pipe, words, userID, saved.ID)
-				},
-			)
-		}
 		writeJSON(w, toWordItem(saved))
 	}
+}
+
+// saveWordAndVerify saves one word/meaning/example for userID and, if it
+// came back freshly StatusPending, kicks off its model-consensus check —
+// the shared "save, then verify in the background" step both
+// wordSaveHandler (one learner-picked word) and wordAutoAddHandler (a batch
+// of system-suggested ones) need, so a system-suggested word is fact-checked
+// exactly the same way a manually picked one is, no shortcut.
+func saveWordAndVerify(ctx context.Context, words wordreview.Store, pipe *pipeline.Pipeline, wordVerifyQueue *asyncjob.Queue, userID, word, meaning, example string) (wordreview.Word, error) {
+	saved, err := words.Save(ctx, userID, word, meaning, example)
+	if err != nil {
+		return wordreview.Word{}, err
+	}
+	if saved.Status == wordreview.StatusPending {
+		enqueueOrRunInline(wordVerifyQueue, ctx,
+			"words: enqueue verify "+userID+"/"+saved.ID,
+			func(ctx context.Context) error {
+				return transport.EnqueueWordVerifyJob(ctx, wordVerifyQueue, pipe, words, userID, saved.ID)
+			},
+			"words: verify "+userID+"/"+saved.ID,
+			func(ctx context.Context) error {
+				return transport.RunWordVerifyInline(ctx, pipe, words, userID, saved.ID)
+			},
+		)
+	}
+	return saved, nil
 }
 
 // wordsListHandler returns the caller's full study list plus how many of
@@ -233,5 +248,71 @@ func wordSuggestHandler(ident identity.Identifier, pipe *pipeline.Pipeline) http
 			return
 		}
 		writeJSON(w, map[string]any{"suggestions": suggestions})
+	}
+}
+
+// maxAutoAddExclusionWords caps how many of the learner's already-tracked
+// words get listed in pipe.SuggestNewWords' prompt (words.List returns
+// most-recently-added first, so this keeps the newest ones — the likeliest
+// near-duplicates of a fresh suggestion) — bounds prompt size for a learner
+// with a very large tracked list, same "cap a field that grows with usage"
+// reasoning as maxWordQueryLen.
+const maxAutoAddExclusionWords = 200
+
+// wordAutoAddHandler generates and saves a batch of new words the learner
+// hasn't studied yet, picked to fit their persistent learner profile — the
+// "새 단어 추가로 학습하기" button WordReview.tsx shows once the learner's
+// review queue is empty (dueCount 0), replacing the "복습 시작" button in
+// that same slot. Every saved word goes through the exact same
+// StatusPending -> VerifyWord model-consensus check as a manually
+// search-and-picked word (see saveWordAndVerify) — being system-suggested
+// is not a shortcut around that fact-check.
+func wordAutoAddHandler(ident identity.Identifier, words wordreview.Store, st store.Store, pipe *pipeline.Pipeline, wordVerifyQueue *asyncjob.Queue) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := requireUser(w, r, ident)
+		if !ok {
+			return
+		}
+		profile, err := st.GetLearnerProfile(r.Context(), userID)
+		if err != nil {
+			serverError(w, "words: get learner profile "+userID, err)
+			return
+		}
+		tracked, err := words.List(r.Context(), userID)
+		if err != nil {
+			serverError(w, "words: list "+userID, err)
+			return
+		}
+		if len(tracked) > maxAutoAddExclusionWords {
+			tracked = tracked[:maxAutoAddExclusionWords]
+		}
+		existing := make([]string, len(tracked))
+		for i, t := range tracked {
+			existing[i] = t.Word
+		}
+		suggestions, err := pipe.SuggestNewWords(r.Context(), profile, existing)
+		if err != nil {
+			serverError(w, "words: suggest new words "+userID, err)
+			return
+		}
+		added := make([]wordItem, 0, len(suggestions))
+		for _, s := range suggestions {
+			word := strings.TrimSpace(s.Word)
+			meaning := strings.TrimSpace(s.Meaning)
+			example := strings.TrimSpace(s.Example)
+			if word == "" || utf8.RuneCountInString(word) > maxWordLen {
+				continue
+			}
+			if utf8.RuneCountInString(meaning) > maxWordFieldLen || utf8.RuneCountInString(example) > maxWordFieldLen {
+				continue
+			}
+			saved, err := saveWordAndVerify(r.Context(), words, pipe, wordVerifyQueue, userID, word, meaning, example)
+			if err != nil {
+				serverError(w, "words: auto-add save "+userID, err)
+				return
+			}
+			added = append(added, toWordItem(saved))
+		}
+		writeJSON(w, map[string]any{"words": added})
 	}
 }

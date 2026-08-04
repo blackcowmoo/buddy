@@ -48,6 +48,25 @@ export async function saveWord(s: WordSuggestion): Promise<WordReviewItem | null
   }
 }
 
+// Generates and saves a batch of new words picked to fit the caller's
+// learner profile, once their review queue is empty (the "새 단어 추가로
+// 학습하기" button in pages/WordReview.tsx, replacing "복습 시작" in that
+// slot) — see httpserver.wordAutoAddHandler. Every returned word comes back
+// "pending", same background-verification lifecycle as saveWord's result.
+// Returns an empty array (not null) when the model found nothing to add;
+// null is reserved for an actual request failure, same distinction fetchWords
+// makes.
+export async function autoAddWords(): Promise<WordReviewItem[] | null> {
+  try {
+    const res = await fetch("api/words/auto-add", { method: "POST" });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { words: WordReviewItem[] };
+    return body.words;
+  } catch {
+    return null;
+  }
+}
+
 // Fetches the caller's full study list plus how many of those words are due
 // for review right now (see httpserver.wordsListHandler) — one call for both
 // the word-review page's list and the menu badge's due count. Returns null on

@@ -488,6 +488,169 @@ func TestWordDeleteRemovesOnlyTheGivenWord(t *testing.T) {
 	}
 }
 
+// fakeWordAutoSuggestLLM is a minimal llm.Client double for exercising
+// pipeline.Pipeline.SuggestNewWords (called from wordAutoAddHandler) without
+// a real model.
+type fakeWordAutoSuggestLLM struct {
+	complete func(msgs []llm.Message) (string, error)
+}
+
+func (f *fakeWordAutoSuggestLLM) ChatStream(ctx context.Context, model string, msgs []llm.Message, onToken func(string)) (string, error) {
+	return "", nil
+}
+
+func (f *fakeWordAutoSuggestLLM) Complete(ctx context.Context, model string, msgs []llm.Message, jsonMode bool) (string, error) {
+	return f.complete(msgs)
+}
+
+func TestWordAutoAddSavesEachSuggestionAsPendingAndReturnsThem(t *testing.T) {
+	store := &fakeWordStore{}
+	settings := &fakeSessionStore{learnerProfiles: map[string]string{"alex": "loves cooking"}}
+	pipe := &pipeline.Pipeline{
+		LLM: &fakeWordAutoSuggestLLM{complete: func(msgs []llm.Message) (string, error) {
+			return `{"suggestions":[{"word":"resilient","meaning":"회복력이 있는","example":"She stayed resilient."},{"word":"savory","meaning":"짭짤한","example":"a savory dish"}]}`, nil
+		}},
+		ChatModel: "m",
+	}
+	h := wordAutoAddHandler(fakeIdentifier{id: "alex", ok: true}, store, settings, pipe, nil)
+
+	req := httptest.NewRequest("POST", "/api/words/auto-add", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Words []wordItem `json:"words"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("bad JSON body: %v", err)
+	}
+	if len(body.Words) != 2 {
+		t.Fatalf("words = %+v, want 2 saved suggestions", body.Words)
+	}
+	for _, w := range body.Words {
+		if w.Status != wordreview.StatusPending {
+			t.Errorf("word %q status = %q, want %q — verification runs in the background", w.Word, w.Status, wordreview.StatusPending)
+		}
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.byUser["alex"]) != 2 {
+		t.Fatalf("byUser[alex] = %+v, want both suggestions saved", store.byUser["alex"])
+	}
+}
+
+func TestWordAutoAddReturnsEmptyListWhenNoSuggestions(t *testing.T) {
+	store := &fakeWordStore{}
+	settings := &fakeSessionStore{}
+	pipe := &pipeline.Pipeline{
+		LLM:       &fakeWordAutoSuggestLLM{complete: func(msgs []llm.Message) (string, error) { return `{"suggestions":[]}`, nil }},
+		ChatModel: "m",
+	}
+	h := wordAutoAddHandler(fakeIdentifier{id: "alex", ok: true}, store, settings, pipe, nil)
+
+	req := httptest.NewRequest("POST", "/api/words/auto-add", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (no suggestions is not an error), body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Words []wordItem `json:"words"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("bad JSON body: %v", err)
+	}
+	if len(body.Words) != 0 {
+		t.Fatalf("words = %+v, want an empty (not null) list", body.Words)
+	}
+}
+
+func TestWordAutoAddExcludesAlreadyTrackedWordsFromThePrompt(t *testing.T) {
+	store := &fakeWordStore{byUser: map[string][]wordreview.Word{
+		"alex": {{ID: "w1", UserID: "alex", Word: "furious", Meaning: "화가 난", Status: wordreview.StatusVerified}},
+	}}
+	settings := &fakeSessionStore{}
+	var gotInput string
+	pipe := &pipeline.Pipeline{
+		LLM: &fakeWordAutoSuggestLLM{complete: func(msgs []llm.Message) (string, error) {
+			gotInput = msgs[len(msgs)-1].Content
+			return `{"suggestions":[]}`, nil
+		}},
+		ChatModel: "m",
+	}
+	h := wordAutoAddHandler(fakeIdentifier{id: "alex", ok: true}, store, settings, pipe, nil)
+
+	req := httptest.NewRequest("POST", "/api/words/auto-add", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(gotInput, "furious") {
+		t.Fatalf("prompt input = %q, want it to list the learner's already-tracked word", gotInput)
+	}
+}
+
+func TestWordAutoAddUnauthorizedWhenIdentifyFails(t *testing.T) {
+	h := wordAutoAddHandler(fakeIdentifier{ok: false}, &fakeWordStore{}, &fakeSessionStore{}, &pipeline.Pipeline{}, nil)
+
+	req := httptest.NewRequest("POST", "/api/words/auto-add", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestWordAutoAddInternalErrorWhenLearnerProfileLookupFails(t *testing.T) {
+	settings := &fakeSessionStore{learnerProfileErr: errors.New("db unreachable")}
+	h := wordAutoAddHandler(fakeIdentifier{id: "alex", ok: true}, &fakeWordStore{}, settings, &pipeline.Pipeline{}, nil)
+
+	req := httptest.NewRequest("POST", "/api/words/auto-add", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+}
+
+func TestWordAutoAddInternalErrorWhenWordListFails(t *testing.T) {
+	store := &fakeWordStore{err: errors.New("db unreachable")}
+	h := wordAutoAddHandler(fakeIdentifier{id: "alex", ok: true}, store, &fakeSessionStore{}, &pipeline.Pipeline{}, nil)
+
+	req := httptest.NewRequest("POST", "/api/words/auto-add", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+}
+
+func TestWordAutoAddInternalErrorWhenSuggestPipelineFails(t *testing.T) {
+	pipe := &pipeline.Pipeline{
+		LLM:       &fakeWordAutoSuggestLLM{complete: func(msgs []llm.Message) (string, error) { return "", errors.New("model unreachable") }},
+		ChatModel: "m",
+	}
+	h := wordAutoAddHandler(fakeIdentifier{id: "alex", ok: true}, &fakeWordStore{}, &fakeSessionStore{}, pipe, nil)
+
+	req := httptest.NewRequest("POST", "/api/words/auto-add", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+}
+
 func TestWordDeleteInternalErrorOnStoreFailure(t *testing.T) {
 	store := &fakeWordStore{err: errors.New("db unreachable")}
 	h := wordDeleteHandler(fakeIdentifier{id: "alex", ok: true}, store)

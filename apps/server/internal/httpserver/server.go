@@ -86,6 +86,7 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux.HandleFunc("PUT /api/settings", settingsSaveHandler(ident, st))
 	mux.HandleFunc("POST /api/words/suggest", wordSuggestHandler(ident, pipe))
 	mux.HandleFunc("POST /api/words/save", wordSaveHandler(ident, words, pipe, wordVerifyQueue))
+	mux.HandleFunc("POST /api/words/auto-add", wordAutoAddHandler(ident, words, st, pipe, wordVerifyQueue))
 	mux.HandleFunc("GET /api/words", wordsListHandler(ident, words))
 	mux.HandleFunc("POST /api/words/{id}/review", wordReviewHandler(ident, words))
 	mux.HandleFunc("DELETE /api/words/{id}", wordDeleteHandler(ident, words))

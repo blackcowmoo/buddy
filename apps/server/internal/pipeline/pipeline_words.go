@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 
 	"buddy/server/internal/llm"
 	"buddy/server/internal/protocol"
@@ -53,6 +54,84 @@ Rules:
 - "meaning" MUST be written in %[1]s.
 - "example" MUST be a natural English sentence that uses "word".
 - If the description is too vague to suggest anything meaningful, return an empty "suggestions" array rather than guessing wildly.`, native)
+}
+
+// autoAddSuggestionCount is how many candidates SuggestNewWords asks for —
+// fixed (unlike SuggestWords' "3-5", which hedges against a vague
+// description) since there's no learner query to hedge against here, and a
+// predictable count keeps httpserver.wordAutoAddHandler's response size
+// consistent from click to click.
+const autoAddSuggestionCount = 5
+
+// SuggestNewWords asks the chat model for new English word/phrase candidates
+// to add to a learner's study list on their own initiative — the "새 단어
+// 추가로 학습하기" button httpserver.wordAutoAddHandler backs, shown once
+// WordReview.tsx's due queue is empty. Unlike SuggestWords, there's no
+// learner-typed description to match: candidates are picked from
+// learnerProfile (the same persistent, cross-session profile
+// BuildSystemPrompt/UpdateLearnerProfile already use — interests,
+// proficiency, recurring mistakes) so suggestions land near the learner's
+// actual level instead of generic filler, and existingWords (the learner's
+// own already-tracked words, any status) is passed so the model doesn't
+// waste a pick re-suggesting something already on the list — real fact
+// checking and any residual duplicate still goes through VerifyWord/Store.Save
+// exactly like a manually picked word, this is just generation, same as
+// SuggestWords.
+func (p *Pipeline) SuggestNewWords(ctx context.Context, learnerProfile string, existingWords []string) ([]protocol.WordSuggestion, error) {
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: wordAutoSuggestSystemPrompt(p.FeedbackLang)},
+		{Role: llm.RoleUser, Content: renderAutoSuggestInput(learnerProfile, existingWords)},
+	}
+	raw, err := p.LLM.Complete(ctx, p.ChatModel, msgs, true)
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := parseJSON[struct {
+		Suggestions []protocol.WordSuggestion `json:"suggestions"`
+	}](raw, "word auto-suggestion")
+	if err != nil {
+		return nil, err
+	}
+	return parsed.Suggestions, nil
+}
+
+// wordAutoSuggestSystemPrompt builds SuggestNewWords' prompt, reusing the
+// same native-language config as wordSuggestionSystemPrompt.
+func wordAutoSuggestSystemPrompt(lang string) string {
+	native := languageName(lang)
+	return fmt.Sprintf(`You help a %[1]s-speaking English learner discover new English words/phrases
+worth studying, on their own initiative (not in response to a specific
+question they asked).
+You will be given the learner's profile (their interests, proficiency level,
+and recurring mistakes, in %[1]s — may be empty) and a list of words/phrases
+they are already tracking, which you must NOT repeat.
+Suggest exactly %[2]d new English word/phrase candidates that best fit this
+learner's level and interests. If the profile is empty or too vague to infer
+anything from, suggest common, generally useful intermediate-level words
+instead of guessing wildly.
+Return STRICT JSON only, no prose, in exactly this shape:
+{"suggestions":[{"word":"<English word or short phrase>","meaning":"<brief %[1]s gloss>","example":"<one example English sentence using it>"}]}
+Rules:
+- "word" MUST stay in English, and MUST NOT be one already in the learner's tracked list.
+- "meaning" MUST be written in %[1]s.
+- "example" MUST be a natural English sentence that uses "word".`, native, autoAddSuggestionCount)
+}
+
+func renderAutoSuggestInput(learnerProfile string, existingWords []string) string {
+	var b strings.Builder
+	b.WriteString("Learner profile:\n")
+	if learnerProfile == "" {
+		b.WriteString("(none)\n")
+	} else {
+		b.WriteString(learnerProfile + "\n")
+	}
+	b.WriteString("\nAlready tracked (do not repeat):\n")
+	if len(existingWords) == 0 {
+		b.WriteString("(none)\n")
+	} else {
+		b.WriteString(strings.Join(existingWords, ", ") + "\n")
+	}
+	return b.String()
 }
 
 // minWordVerifyJudges is the minimum number of independent judgments
