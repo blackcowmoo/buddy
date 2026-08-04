@@ -253,6 +253,32 @@ func (q *Queue) EnqueueAndRunInBackground(ctx context.Context, kind Kind, dedupe
 	return nil
 }
 
+// EnqueueOrRunInline is the shared "durable queue if Redis is configured,
+// otherwise a detached best-effort goroutine" fallback behind every caller
+// that wants a job to keep running after its own request/connection ends
+// without requiring Redis to do it (httpserver.sessionEndHandler,
+// sessionRestudyHandler, and transport.FinalizeSession, which both of those
+// — plus CorrectionJobHandler's own instant-session auto-finalize — funnel
+// through): when queue is non-nil, enqueue runs synchronously on ctx (cheap
+// — no LLM call — the queue's own EnqueueAndRunInBackground handles
+// backgrounding the actual work); otherwise inline runs the whole job
+// itself, so it must be backgrounded here on a detached context.Background()
+// goroutine to get the same "outlives this response" behavior without
+// Redis.
+func EnqueueOrRunInline(queue *Queue, ctx context.Context, enqueueErrLabel string, enqueue func(ctx context.Context) error, inlineErrLabel string, inline func(ctx context.Context) error) {
+	if queue != nil {
+		if err := enqueue(ctx); err != nil {
+			log.Printf("%s: %v", enqueueErrLabel, err)
+		}
+		return
+	}
+	go func() {
+		if err := inline(context.Background()); err != nil {
+			log.Printf("%s: %v", inlineErrLabel, err)
+		}
+	}()
+}
+
 // completeJob marks a claimed job done: removed from processing, its claim
 // released, and its dedupe entry cleared, so a later Enqueue with the same
 // dedupe key is treated as a fresh job rather than a duplicate of one

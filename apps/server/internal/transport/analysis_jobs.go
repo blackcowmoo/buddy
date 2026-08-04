@@ -83,7 +83,14 @@ type correctionJobPayload struct {
 // to emit onResult to, but still lands here), so it's where auto-capture
 // has to live to never miss a correction. words may be nil in tests that
 // don't care about word capture.
-func CorrectionJobHandler(pipe *pipeline.Pipeline, st store.Store, words wordreview.Store, wordVerifyQueue *asyncjob.Queue, onResult func(corrected string, issues []protocol.Issue, translation string)) asyncjob.Handler {
+//
+// studySummaryQueue/studyQuizQueue feed maybeFinalizeInstantSession (see
+// session_finalize.go), run right alongside word capture for the same
+// reason: this is the one call site guaranteed to run for every correction
+// regardless of deployment mode or whether the learner's own connection is
+// still around, so it's where an instant/"오늘의 한 문장" room's auto-end has
+// to live to never depend on a live browser tab.
+func CorrectionJobHandler(pipe *pipeline.Pipeline, st store.Store, words wordreview.Store, wordVerifyQueue *asyncjob.Queue, studySummaryQueue, studyQuizQueue *asyncjob.Queue, onResult func(corrected string, issues []protocol.Issue, translation string)) asyncjob.Handler {
 	return func(ctx context.Context, job asyncjob.Job) error {
 		var payload correctionJobPayload
 		if err := json.Unmarshal(job.Payload, &payload); err != nil {
@@ -101,6 +108,7 @@ func CorrectionJobHandler(pipe *pipeline.Pipeline, st store.Store, words wordrev
 			return fmt.Errorf("correction job: save: %w", err)
 		}
 		captureCorrectionWords(ctx, pipe, words, wordVerifyQueue, payload.UserID, result)
+		maybeFinalizeInstantSession(ctx, pipe, st, studySummaryQueue, studyQuizQueue, payload.UserID, payload.SessionID)
 		if strings.TrimSpace(translation) != "" {
 			if err := st.SaveTranslation(ctx, payload.UserID, payload.SessionID, payload.Turn, "user", translation); err != nil {
 				log.Printf("correction job: save translation %s/%s#%d: %v", payload.UserID, payload.SessionID, payload.Turn, err)
@@ -129,7 +137,7 @@ func CorrectionJobHandler(pipe *pipeline.Pipeline, st store.Store, words wordrev
 // signal. A dedup ("!ok") or lost-race ("!claimed") return deliberately
 // skips onFailure: another attempt already owns this job and will report
 // its own outcome.
-func NewCorrectHook(pipe *pipeline.Pipeline, st store.Store, words wordreview.Store, wordVerifyQueue *asyncjob.Queue, queue *asyncjob.Queue) pipeline.CorrectHook {
+func NewCorrectHook(pipe *pipeline.Pipeline, st store.Store, words wordreview.Store, wordVerifyQueue *asyncjob.Queue, studySummaryQueue, studyQuizQueue *asyncjob.Queue, queue *asyncjob.Queue) pipeline.CorrectHook {
 	if queue == nil {
 		return nil
 	}
@@ -139,7 +147,7 @@ func NewCorrectHook(pipe *pipeline.Pipeline, st store.Store, words wordreview.St
 		}
 		payload := correctionJobPayload{UserID: userID, SessionID: sessionID, Turn: turn, Text: text, ContextMsg: contextMsg}
 		logID := turnLogID(userID, sessionID, turn)
-		handler := CorrectionJobHandler(pipe, st, words, wordVerifyQueue, onResult)
+		handler := CorrectionJobHandler(pipe, st, words, wordVerifyQueue, studySummaryQueue, studyQuizQueue, onResult)
 		// A dedup or lost-race return (ran=false, err=nil) deliberately
 		// skips onFailure: another attempt already owns this job and will
 		// report its own outcome. An enqueue/claim/execute error (err != nil)

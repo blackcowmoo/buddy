@@ -52,6 +52,96 @@ func TestRunStudySummarySkipsLLMWhenNoIssuesFlagged(t *testing.T) {
 	}
 }
 
+// TestRunStudySummaryWaitsForPendingCorrection guards waitForPendingCorrections:
+// a correction job still running for the session's last turn when the
+// wrap-up starts must not be silently skipped — the summary must wait for
+// it to land and then include it, not race ahead with a partial issue set
+// (the exact race a learner ending mid-correction, manually or via an
+// instant room's auto-finalize, would otherwise hit).
+func TestRunStudySummaryWaitsForPendingCorrection(t *testing.T) {
+	origInterval, origMaxWait := pendingCorrectionPollInterval, pendingCorrectionMaxWait
+	pendingCorrectionPollInterval = 5 * time.Millisecond
+	pendingCorrectionMaxWait = time.Second
+	defer func() { pendingCorrectionPollInterval, pendingCorrectionMaxWait = origInterval, origMaxWait }()
+
+	pipe := &pipeline.Pipeline{
+		Analysis: []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{complete: `{"sentences":[{"english":"Watch your verb agreement.","translation":"동사 일치에 주의하세요."}]}`}}},
+	}
+	st := newFakeStore()
+	ctx := context.Background()
+	if err := st.SaveTurn(ctx, "alex", "sess-wait", 1, "user", "He go to school.", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn() error = %v", err)
+	}
+	if err := st.ReserveCorrectionJob(ctx, "alex", "sess-wait", 1); err != nil {
+		t.Fatalf("ReserveCorrectionJob() error = %v", err)
+	}
+	if err := st.EndSession(ctx, "alex", "sess-wait"); err != nil {
+		t.Fatalf("EndSession() error = %v", err)
+	}
+
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		_ = st.SaveCorrection(ctx, "alex", "sess-wait", 1, protocol.Correction{
+			Original: "He go to school.", Corrected: "He goes to school.",
+			Issues: []protocol.Issue{{Type: "grammar", Span: "He go", Suggestion: "He goes"}},
+		})
+	}()
+
+	if err := RunStudySummaryInline(ctx, pipe, st, "alex", "sess-wait"); err != nil {
+		t.Fatalf("RunStudySummaryInline() error = %v", err)
+	}
+
+	meta, _, err := st.SessionDetail(ctx, "alex", "sess-wait")
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if meta.StudySummaryStatus != store.JobStatusDone || len(meta.StudySummary) == 0 {
+		t.Fatalf("meta = %+v, want a non-empty summary once the pending correction landed", meta)
+	}
+}
+
+// TestRunStudySummaryGivesUpAfterMaxWait guards the other half: a correction
+// that never lands (e.g. its own job crashed and hasn't been reaped yet)
+// must not wedge the wrap-up forever — waitForPendingCorrections gives up
+// once pendingCorrectionMaxWait passes and the summary proceeds with
+// whatever's already there rather than never completing.
+func TestRunStudySummaryGivesUpAfterMaxWait(t *testing.T) {
+	origInterval, origMaxWait := pendingCorrectionPollInterval, pendingCorrectionMaxWait
+	pendingCorrectionPollInterval = 5 * time.Millisecond
+	pendingCorrectionMaxWait = 20 * time.Millisecond
+	defer func() { pendingCorrectionPollInterval, pendingCorrectionMaxWait = origInterval, origMaxWait }()
+
+	calls := 0
+	pipe := &pipeline.Pipeline{
+		Analysis: []pipeline.Candidate{{Model: "m", LLM: countingLLM{&calls, "should not be called"}}},
+	}
+	st := newFakeStore()
+	ctx := context.Background()
+	if err := st.SaveTurn(ctx, "alex", "sess-timeout", 1, "user", "He go to school.", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn() error = %v", err)
+	}
+	if err := st.ReserveCorrectionJob(ctx, "alex", "sess-timeout", 1); err != nil {
+		t.Fatalf("ReserveCorrectionJob() error = %v", err)
+	}
+	if err := st.EndSession(ctx, "alex", "sess-timeout"); err != nil {
+		t.Fatalf("EndSession() error = %v", err)
+	}
+	// Deliberately never resolved: simulates a correction job that crashed
+	// and hasn't been reaped yet.
+
+	if err := RunStudySummaryInline(ctx, pipe, st, "alex", "sess-timeout"); err != nil {
+		t.Fatalf("RunStudySummaryInline() error = %v", err)
+	}
+
+	meta, _, err := st.SessionDetail(ctx, "alex", "sess-timeout")
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if meta.StudySummaryStatus != store.JobStatusDone || len(meta.StudySummary) != 0 {
+		t.Fatalf("meta = %+v, want an empty-but-done summary once the wait gave up with no issues ever landing", meta)
+	}
+}
+
 // TestRunStudySummaryCollectsIssuesAndMergesProfile guards the primary flow:
 // every issue from every user turn's correction (not an assistant turn's)
 // reaches GenerateStudySummary, the result is persisted as done, and it's

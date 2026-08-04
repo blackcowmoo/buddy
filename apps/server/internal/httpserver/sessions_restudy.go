@@ -58,7 +58,7 @@ func sessionRestudyHandler(ident identity.Identifier, st store.Store, pipe *pipe
 			return
 		}
 
-		enqueueOrRunInline(studySummaryQueue, r.Context(),
+		asyncjob.EnqueueOrRunInline(studySummaryQueue, r.Context(),
 			fmt.Sprintf("restudy session: enqueue study summary %s/%s", userID, sessionID),
 			func(ctx context.Context) error {
 				return transport.EnqueueStudySummaryJob(ctx, studySummaryQueue, pipe, st, userID, sessionID)

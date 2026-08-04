@@ -447,6 +447,38 @@ func TestMySQLMarkInstantSeparatesTheTwoLists(t *testing.T) {
 	}
 }
 
+// TestMySQLSessionDetailReportsInstant guards SessionMeta.Instant, added so
+// transport.CorrectionJobHandler's own auto-finalize (maybeFinalizeInstantSession)
+// can tell a session is instant/"오늘의 한 문장" from the same SessionDetail
+// read it already does, without a second round trip.
+func TestMySQLSessionDetailReportsInstant(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	userID := "instant-detail-user"
+	if err := st.SaveTurn(ctx, userID, "s-normal-detail", 1, "user", "hi", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(normal) error = %v", err)
+	}
+	if err := st.MarkInstant(ctx, userID, "s-instant-detail"); err != nil {
+		t.Fatalf("MarkInstant() error = %v", err)
+	}
+
+	normalMeta, _, err := st.SessionDetail(ctx, userID, "s-normal-detail")
+	if err != nil {
+		t.Fatalf("SessionDetail(normal) error = %v", err)
+	}
+	if normalMeta.Instant {
+		t.Fatalf("SessionDetail(normal).Instant = true, want false")
+	}
+
+	instantMeta, _, err := st.SessionDetail(ctx, userID, "s-instant-detail")
+	if err != nil {
+		t.Fatalf("SessionDetail(instant) error = %v", err)
+	}
+	if !instantMeta.Instant {
+		t.Fatalf("SessionDetail(instant).Instant = false, want true")
+	}
+}
+
 // TestMySQLMarkInstantAfterSaveTurnKeepsTheTitle guards MarkInstant's own
 // ON DUPLICATE KEY UPDATE against clobbering a title SaveTurn's
 // ensureSessionRow already set — MarkInstant only ever owns the `instant`
