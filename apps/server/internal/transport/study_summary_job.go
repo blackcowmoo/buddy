@@ -34,6 +34,67 @@ type studySummaryJobPayload struct {
 	SessionID string
 }
 
+// pendingCorrectionPollInterval/pendingCorrectionMaxWait bound
+// waitForPendingCorrections: long enough to comfortably cover a normal
+// correction call, short enough that a stuck one doesn't delay the wrap-up
+// indefinitely. Vars, not consts, so tests can shrink them rather than
+// waiting out the production interval — same convention as
+// asyncjob.FailureRetryBackoff.
+var (
+	pendingCorrectionPollInterval = 2 * time.Second
+	pendingCorrectionMaxWait      = 90 * time.Second
+)
+
+// waitForPendingCorrections re-reads sessionID's turns until no user turn is
+// still mid-correction (store.Turn.CorrectionStatus == store.JobStatusPending)
+// or pendingCorrectionMaxWait elapses, so runStudySummary/runStudyQuiz never
+// silently fold an incomplete result when EndSession froze the room (or
+// maybeFinalizeInstantSession auto-finalized it) while the last turn's
+// asyncjob.KindCorrection job was still running — CollectStudyIssues only
+// ever sees what's already persisted, so without this wait a summary/quiz
+// generated the instant the room ended could quietly drop that turn's
+// feedback. Gives up and returns whatever's there (logged, not an error) if
+// the deadline passes, rather than blocking a session's wrap-up forever over
+// one stuck job — a timely, possibly-incomplete summary beats none at all.
+//
+// Runs inside the study-summary/quiz asyncjob itself
+// (context.Background()-scoped, not tied to whatever request triggered
+// End), so it's durable the same way the rest of the job is: if the process
+// dies mid-wait, the claim simply stays held until asyncjob.Worker's reaper
+// (see reapOnce) requeues it, and the retried attempt re-checks from
+// scratch — the same idempotency Handler's doc comment already requires of
+// every asyncjob.Handler.
+func waitForPendingCorrections(ctx context.Context, st store.Store, userID, sessionID string) ([]store.Turn, error) {
+	deadline := time.Now().Add(pendingCorrectionMaxWait)
+	for {
+		_, turns, err := st.SessionDetail(ctx, userID, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		if !anyCorrectionPending(turns) {
+			return turns, nil
+		}
+		if time.Now().After(deadline) {
+			log.Printf("study summary/quiz: %s/%s: gave up waiting on in-flight correction(s) after %s", userID, sessionID, pendingCorrectionMaxWait)
+			return turns, nil
+		}
+		select {
+		case <-ctx.Done():
+			return turns, ctx.Err()
+		case <-time.After(pendingCorrectionPollInterval):
+		}
+	}
+}
+
+func anyCorrectionPending(turns []store.Turn) bool {
+	for _, t := range turns {
+		if t.Role == "user" && t.CorrectionStatus == store.JobStatusPending {
+			return true
+		}
+	}
+	return false
+}
+
 // CollectStudyIssues gathers every grammar/vocabulary/phrasing/context issue
 // flagged across a session's transcript (from each user turn's persisted
 // correction, not an assistant turn's) into the raw material
@@ -64,7 +125,7 @@ func CollectStudyIssues(turns []store.Turn) []pipeline.StudyIssue {
 // RunStudySummaryInline (httpserver.sessionEndHandler's fallback when Redis
 // isn't configured) so both paths behave identically.
 func runStudySummary(ctx context.Context, pipe *pipeline.Pipeline, st store.Store, userID, sessionID string) error {
-	_, turns, err := st.SessionDetail(ctx, userID, sessionID)
+	turns, err := waitForPendingCorrections(ctx, st, userID, sessionID)
 	if err != nil {
 		return fmt.Errorf("study summary: session detail: %w", err)
 	}

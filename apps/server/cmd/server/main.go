@@ -174,14 +174,39 @@ func main() {
 			transport.ArticleStudyJobHandler(pipe, articles))
 	}
 
+	// End-of-conversation wrap-up: unlike the reply/correction/translation/
+	// title hooks below, this isn't wired onto pipe (nothing mid-conversation
+	// triggers it directly) — httpserver's sessionEndHandler and
+	// transport.CorrectionJobHandler's own instant-session auto-finalize
+	// (see transport.FinalizeSession) both call
+	// transport.EnqueueStudySummaryJob once a room is frozen, which is why
+	// this has to be built before the correction queue below. studySummaryQueue
+	// stays nil, same "optional feature, zero setup by default" convention,
+	// when Redis isn't configured; both callers fall back to running it
+	// inline on their own detached goroutine in that case.
+	var studySummaryQueue *asyncjob.Queue
+	if rdb != nil {
+		studySummaryQueue = startWorker(rdb, jobsCtx, asyncjob.KindStudySummary, transport.StudySummaryWorkerConcurrency, transport.StudySummaryClaimTTL,
+			transport.StudySummaryJobHandler(pipe, st))
+	}
+
+	// Practice-quiz pre-generation: runs independently of, but is enqueued
+	// alongside, the wrap-up above (see transport.FinalizeSession) — same
+	// "optional feature, zero setup by default" convention.
+	var studyQuizQueue *asyncjob.Queue
+	if rdb != nil {
+		studyQuizQueue = startWorker(rdb, jobsCtx, asyncjob.KindStudyQuiz, transport.StudyQuizWorkerConcurrency, transport.StudyQuizClaimTTL,
+			transport.StudyQuizJobHandler(pipe, st))
+	}
+
 	if rdb != nil {
 		replyQueue := startWorker(rdb, jobsCtx, asyncjob.KindReply, transport.ReplyWorkerConcurrency, transport.ReplyClaimTTL,
 			transport.ReplyJobHandler(pipe, st, nil, nil))
 		pipe.ReplyHook = transport.NewReplyHook(pipe, st, replyQueue)
 
 		correctionQueue := startWorker(rdb, jobsCtx, asyncjob.KindCorrection, transport.CorrectionWorkerConcurrency, transport.CorrectionClaimTTL,
-			transport.CorrectionJobHandler(pipe, st, wordReviews, wordVerifyQueue, nil))
-		pipe.CorrectHook = transport.NewCorrectHook(pipe, st, wordReviews, wordVerifyQueue, correctionQueue)
+			transport.CorrectionJobHandler(pipe, st, wordReviews, wordVerifyQueue, studySummaryQueue, studyQuizQueue, nil))
+		pipe.CorrectHook = transport.NewCorrectHook(pipe, st, wordReviews, wordVerifyQueue, studySummaryQueue, studyQuizQueue, correctionQueue)
 
 		liveTranslationQueue := startWorker(rdb, jobsCtx, asyncjob.KindLiveTranslation, transport.LiveTranslationWorkerConcurrency, transport.LiveTranslationClaimTTL,
 			transport.TranslationJobHandler(pipe, st, nil))
@@ -190,28 +215,6 @@ func main() {
 		titleQueue := startWorker(rdb, jobsCtx, asyncjob.KindTitle, transport.TitleWorkerConcurrency, transport.TitleClaimTTL,
 			transport.TitleJobHandler(pipe, st))
 		pipe.TitleHook = transport.NewTitleHook(pipe, st, titleQueue)
-	}
-
-	// End-of-conversation wrap-up: unlike the hooks above, this isn't wired
-	// onto pipe (nothing mid-conversation triggers it) — httpserver's
-	// sessionEndHandler calls transport.EnqueueStudySummaryJob directly once
-	// EndSession freezes a room. studySummaryQueue stays nil, same
-	// "optional feature, zero setup by default" convention, when Redis
-	// isn't configured; sessionEndHandler falls back to running it inline
-	// on its own detached goroutine in that case.
-	var studySummaryQueue *asyncjob.Queue
-	if rdb != nil {
-		studySummaryQueue = startWorker(rdb, jobsCtx, asyncjob.KindStudySummary, transport.StudySummaryWorkerConcurrency, transport.StudySummaryClaimTTL,
-			transport.StudySummaryJobHandler(pipe, st))
-	}
-
-	// Practice-quiz pre-generation: runs independently of, but is enqueued
-	// alongside, the wrap-up above (see httpserver.sessionEndHandler) — same
-	// "optional feature, zero setup by default" convention.
-	var studyQuizQueue *asyncjob.Queue
-	if rdb != nil {
-		studyQuizQueue = startWorker(rdb, jobsCtx, asyncjob.KindStudyQuiz, transport.StudyQuizWorkerConcurrency, transport.StudyQuizClaimTTL,
-			transport.StudyQuizJobHandler(pipe, st))
 	}
 
 	// Learner-profile rebuild: enqueued by httpserver.sessionDeleteHandler

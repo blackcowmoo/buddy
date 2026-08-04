@@ -179,7 +179,7 @@ func articleDrawHandler(ident identity.Identifier, articles newsarticle.Store, p
 			return
 		}
 		if article.Status == newsarticle.StatusPending {
-			enqueueOrRunInline(articleStudyQueue, r.Context(),
+			asyncjob.EnqueueOrRunInline(articleStudyQueue, r.Context(),
 				"articles: enqueue study "+article.ID,
 				func(ctx context.Context) error {
 					return transport.EnqueueArticleStudyJob(ctx, articleStudyQueue, pipe, articles, article.ID, pick.Source, pick.Title, pick.Description)

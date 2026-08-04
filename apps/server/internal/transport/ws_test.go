@@ -452,6 +452,7 @@ func (f *fakeStore) MarkInstant(ctx context.Context, userID, sessionID string) e
 	}
 	d.hasRow = true
 	d.instant = true
+	d.meta.Instant = true
 	return nil
 }
 
@@ -481,6 +482,16 @@ func (f *fakeStore) SessionDetail(ctx context.Context, userID, sessionID string)
 	}
 	turns := make([]store.Turn, 0, len(d.turns))
 	for _, t := range d.turns {
+		// Mirrors sessionTurns' LEFT JOIN against buddy_jobs (see
+		// mysql_turns.go): CorrectionStatus lives in the jobs map, not on
+		// the turn itself, so it has to be merged in at read time here too —
+		// needed for waitForPendingCorrections (study_summary_job.go) to see
+		// a still-pending correction the same way the real store would.
+		if t.Role == "user" {
+			if j, ok := d.jobs[fmt.Sprintf("%d|correction", t.Turn)]; ok {
+				t.CorrectionStatus = j.status
+			}
+		}
 		turns = append(turns, t)
 	}
 	sort.Slice(turns, func(i, j int) bool {

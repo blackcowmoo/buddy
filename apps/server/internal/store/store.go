@@ -80,6 +80,13 @@ type SessionMeta struct {
 	// button instead. Never cleared once set, so a later imperfect retry
 	// doesn't take the checkmark away.
 	QuizCompleted bool `json:"quizCompleted,omitempty"`
+	// Instant is true for a room flagged via MarkInstant (an "오늘의 한 문장"
+	// one-turn conversation). Populated by SessionDetail so
+	// transport.CorrectionJobHandler can tell, right when a turn's grammar
+	// correction lands, whether this session should auto-finalize itself
+	// (see maybeFinalizeInstantSession) instead of waiting for the learner
+	// to press the manual 종료 button.
+	Instant bool `json:"instant,omitempty"`
 }
 
 // Turn is one persisted message in a session's full transcript — the source

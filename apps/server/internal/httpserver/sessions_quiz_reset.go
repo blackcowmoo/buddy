@@ -52,7 +52,7 @@ func sessionQuizResetHandler(ident identity.Identifier, st store.Store, pipe *pi
 			return
 		}
 
-		enqueueOrRunInline(studyQuizQueue, r.Context(),
+		asyncjob.EnqueueOrRunInline(studyQuizQueue, r.Context(),
 			fmt.Sprintf("reset quiz: enqueue study quiz %s/%s", userID, sessionID),
 			func(ctx context.Context) error {
 				return transport.EnqueueStudyQuizJob(ctx, studyQuizQueue, pipe, st, userID, sessionID)

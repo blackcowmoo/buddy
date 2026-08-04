@@ -139,7 +139,7 @@ func sessionDeleteHandler(ident identity.Identifier, st store.Store, audio trans
 		}
 
 		if contributedToProfile {
-			enqueueOrRunInline(profileRegenerateQueue, r.Context(),
+			asyncjob.EnqueueOrRunInline(profileRegenerateQueue, r.Context(),
 				fmt.Sprintf("delete session: enqueue profile regenerate %s", userID),
 				func(ctx context.Context) error {
 					return transport.EnqueueProfileRegenerateJob(ctx, profileRegenerateQueue, pipe, st, userID)

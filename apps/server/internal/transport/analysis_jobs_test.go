@@ -18,7 +18,7 @@ import (
 
 func TestNewCorrectHookReturnsNilWithoutQueue(t *testing.T) {
 	pipe := &pipeline.Pipeline{}
-	if hook := NewCorrectHook(pipe, newFakeStore(), nil, nil, nil); hook != nil {
+	if hook := NewCorrectHook(pipe, newFakeStore(), nil, nil, nil, nil, nil); hook != nil {
 		t.Fatalf("NewCorrectHook(nil queue) = %v, want nil (so correct() falls back to the direct in-process path)", hook)
 	}
 }
@@ -36,7 +36,7 @@ func TestCorrectHookFastPathPersistsAndCallsOnResult(t *testing.T) {
 		}}},
 		FeedbackLang: "ko",
 	}
-	hook := NewCorrectHook(pipe, st, nil, nil, queue)
+	hook := NewCorrectHook(pipe, st, nil, nil, nil, nil, queue)
 
 	var gotCorrected, gotTranslation string
 	var gotIssues []protocol.Issue
@@ -101,7 +101,7 @@ func TestCorrectHookFastPathCapturesVocabularyWord(t *testing.T) {
 		FeedbackLang: "ko",
 	}
 	words := newFakeWordReviewStore()
-	hook := NewCorrectHook(pipe, st, words, nil, queue)
+	hook := NewCorrectHook(pipe, st, words, nil, nil, nil, queue)
 
 	hook(context.Background(), "alex", "sess-correct-capture", 1, "I was very angry", "",
 		func(corrected string, issues []protocol.Issue, translation string) {},
@@ -134,7 +134,7 @@ func TestCorrectHookFastPathCallsOnFailureAndMarksJobFailed(t *testing.T) {
 		Analysis:     []pipeline.Candidate{{Model: "m", LLM: failingAnalysisLLM{}}},
 		FeedbackLang: "ko",
 	}
-	hook := NewCorrectHook(pipe, st, nil, nil, queue)
+	hook := NewCorrectHook(pipe, st, nil, nil, nil, nil, queue)
 
 	var onResultCalled, onFailureCalled bool
 	hook(context.Background(), "alex", "sess-correct-fail", 1, "he go school", "",
@@ -165,6 +165,84 @@ func TestCorrectHookFastPathCallsOnFailureAndMarksJobFailed(t *testing.T) {
 		if tn.Turn == 1 && tn.Role == "user" && tn.Correction != nil {
 			t.Fatalf("persisted correction = %+v, want nil after a failed analysis", tn.Correction)
 		}
+	}
+}
+
+// TestCorrectionJobHandlerAutoFinalizesInstantSession guards
+// maybeFinalizeInstantSession (see session_finalize.go): once a room marked
+// instant/"오늘의 한 문장" gets its one real exchange's correction back, the
+// session must finalize itself (EndSession) without any client ever calling
+// the manual "종료" endpoint — the whole point being that this doesn't
+// depend on the learner's browser tab/connection still being around (unlike
+// apps/web/src/App.tsx's own client-side auto-end effect).
+func TestCorrectionJobHandlerAutoFinalizesInstantSession(t *testing.T) {
+	st := newFakeStore()
+	ctx := context.Background()
+	if err := st.SaveTurn(ctx, "alex", "sess-instant-auto", 1, "user", "he go school", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(user) error = %v", err)
+	}
+	if err := st.MarkInstant(ctx, "alex", "sess-instant-auto"); err != nil {
+		t.Fatalf("MarkInstant() error = %v", err)
+	}
+	pipe := &pipeline.Pipeline{
+		Analysis: []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{
+			complete: `{"corrected":"He goes to school.","translation":"","issues":[]}`,
+		}}},
+		FeedbackLang: "ko",
+	}
+	handler := CorrectionJobHandler(pipe, st, nil, nil, nil, nil, nil)
+
+	payload := correctionJobPayload{UserID: "alex", SessionID: "sess-instant-auto", Turn: 1, Text: "he go school"}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	if err := handler(ctx, asyncjob.Job{ID: "job-1", Kind: asyncjob.KindCorrection, Payload: raw}); err != nil {
+		t.Fatalf("handler() error = %v", err)
+	}
+
+	meta, _, err := st.SessionDetail(ctx, "alex", "sess-instant-auto")
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if !meta.Ended {
+		t.Fatalf("meta.Ended = false, want the instant session to auto-finalize once its correction lands")
+	}
+}
+
+// TestCorrectionJobHandlerLeavesNormalSessionOpen is the contrast case: a
+// non-instant room's correction landing must never auto-end it — only the
+// learner's own "종료" confirmation (httpserver.sessionEndHandler) may do
+// that for a regular conversation.
+func TestCorrectionJobHandlerLeavesNormalSessionOpen(t *testing.T) {
+	st := newFakeStore()
+	ctx := context.Background()
+	if err := st.SaveTurn(ctx, "alex", "sess-normal-auto", 1, "user", "he go school", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(user) error = %v", err)
+	}
+	pipe := &pipeline.Pipeline{
+		Analysis: []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{
+			complete: `{"corrected":"He goes to school.","translation":"","issues":[]}`,
+		}}},
+		FeedbackLang: "ko",
+	}
+	handler := CorrectionJobHandler(pipe, st, nil, nil, nil, nil, nil)
+
+	payload := correctionJobPayload{UserID: "alex", SessionID: "sess-normal-auto", Turn: 1, Text: "he go school"}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	if err := handler(ctx, asyncjob.Job{ID: "job-1", Kind: asyncjob.KindCorrection, Payload: raw}); err != nil {
+		t.Fatalf("handler() error = %v", err)
+	}
+
+	meta, _, err := st.SessionDetail(ctx, "alex", "sess-normal-auto")
+	if err != nil {
+		t.Fatalf("SessionDetail() error = %v", err)
+	}
+	if meta.Ended {
+		t.Fatalf("meta.Ended = true, want a normal (non-instant) session to stay open after its correction")
 	}
 }
 

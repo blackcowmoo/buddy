@@ -71,8 +71,8 @@ func toWordItem(w wordreview.Word) wordItem {
 // pipeline.minWordVerifyJudges) against a possibly slow local model. That
 // check is kicked off separately right after, the same "durable queue when
 // Redis is configured, detached inline goroutine otherwise"
-// enqueueOrRunInline pattern sessionEndHandler uses for the study-summary/
-// quiz jobs.
+// asyncjob.EnqueueOrRunInline pattern transport.FinalizeSession uses for the
+// study-summary/quiz jobs.
 func wordSaveHandler(ident identity.Identifier, words wordreview.Store, pipe *pipeline.Pipeline, wordVerifyQueue *asyncjob.Queue) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)
@@ -122,7 +122,7 @@ func saveWordAndVerify(ctx context.Context, words wordreview.Store, pipe *pipeli
 		return wordreview.Word{}, err
 	}
 	if saved.Status == wordreview.StatusPending {
-		enqueueOrRunInline(wordVerifyQueue, ctx,
+		asyncjob.EnqueueOrRunInline(wordVerifyQueue, ctx,
 			"words: enqueue verify "+userID+"/"+saved.ID,
 			func(ctx context.Context) error {
 				return transport.EnqueueWordVerifyJob(ctx, wordVerifyQueue, pipe, words, userID, saved.ID)

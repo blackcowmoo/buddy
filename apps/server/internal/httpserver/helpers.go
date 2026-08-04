@@ -1,13 +1,11 @@
 package httpserver
 
 import (
-	"context"
 	"encoding/json"
 	"log"
 	"net/http"
 	"unicode/utf8"
 
-	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/identity"
 	"buddy/server/internal/recording"
 )
@@ -65,26 +63,4 @@ func requireMaxRunes(w http.ResponseWriter, s string, max int, msg string) bool 
 		return false
 	}
 	return true
-}
-
-// enqueueOrRunInline is the shared "durable queue if Redis is configured,
-// otherwise a detached best-effort goroutine" fallback behind
-// sessionEndHandler's and sessionRestudyHandler's study-summary/quiz kickoff:
-// when queue is non-nil, enqueue runs synchronously on ctx (cheap — no LLM
-// call — the queue's own EnqueueAndRunInBackground handles backgrounding the
-// actual work); otherwise inline runs the whole job itself, so it must be
-// backgrounded here on a detached context.Background() goroutine to get the
-// same "outlives this response" behavior without Redis.
-func enqueueOrRunInline(queue *asyncjob.Queue, ctx context.Context, enqueueErrLabel string, enqueue func(ctx context.Context) error, inlineErrLabel string, inline func(ctx context.Context) error) {
-	if queue != nil {
-		if err := enqueue(ctx); err != nil {
-			log.Printf("%s: %v", enqueueErrLabel, err)
-		}
-		return
-	}
-	go func() {
-		if err := inline(context.Background()); err != nil {
-			log.Printf("%s: %v", inlineErrLabel, err)
-		}
-	}()
 }

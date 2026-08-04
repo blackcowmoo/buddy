@@ -281,7 +281,7 @@ func (s *MySQLStore) sessionDetail(ctx context.Context, userID, sessionID string
 	var metaErr, turnsErr error
 	var turns []Turn
 	var hasMore bool
-	var ended, quizCompleted int
+	var ended, quizCompleted, instant int
 	var studySummaryJSON, quizJSON string
 
 	var wg sync.WaitGroup
@@ -289,8 +289,8 @@ func (s *MySQLStore) sessionDetail(ctx context.Context, userID, sessionID string
 	go func() {
 		defer wg.Done()
 		metaErr = s.ro.QueryRowContext(ctx, `
-			SELECT title, created_at, updated_at, ended, study_summary, study_summary_status, quiz, quiz_status, quiz_completed FROM `+sessionsTable+` WHERE user_id = ? AND id = ?
-		`, userID, sessionID).Scan(&meta.Title, &meta.CreatedAt, &meta.UpdatedAt, &ended, &studySummaryJSON, &meta.StudySummaryStatus, &quizJSON, &meta.QuizStatus, &quizCompleted)
+			SELECT title, created_at, updated_at, ended, study_summary, study_summary_status, quiz, quiz_status, quiz_completed, instant FROM `+sessionsTable+` WHERE user_id = ? AND id = ?
+		`, userID, sessionID).Scan(&meta.Title, &meta.CreatedAt, &meta.UpdatedAt, &ended, &studySummaryJSON, &meta.StudySummaryStatus, &quizJSON, &meta.QuizStatus, &quizCompleted, &instant)
 	}()
 	go func() {
 		defer wg.Done()
@@ -311,6 +311,7 @@ func (s *MySQLStore) sessionDetail(ctx context.Context, userID, sessionID string
 	meta.StudySummary = decodeStudySummary(studySummaryJSON)
 	meta.Quiz = decodeQuiz(quizJSON)
 	meta.QuizCompleted = quizCompleted != 0
+	meta.Instant = instant != 0
 	return meta, turns, hasMore, nil
 }
 
