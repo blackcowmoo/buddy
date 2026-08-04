@@ -534,6 +534,17 @@ a.icon-btn.ghost {
   border: 1px solid var(--border-2);
   color: var(--text);
   font-weight: 400;
+  /* Restates the base `button` rule's box model (border-radius/padding/
+     min-height) instead of relying on it, since InstantSessions.tsx uses an
+     <a> here (real navigation to "#chat/<id>", not in-page state) rather
+     than a <button> — without these, that row rendered flat and cramped
+     next to the main room list's button-based rows. */
+  border-radius: 10px;
+  padding: 10px 14px;
+  min-height: 44px;
+  text-decoration: none;
+  cursor: pointer;
+  touch-action: manipulation;
 }
 .session-item .title {
   overflow: hidden;

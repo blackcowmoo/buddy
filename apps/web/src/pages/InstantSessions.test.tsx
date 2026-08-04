@@ -59,6 +59,20 @@ describe("InstantSessions page", () => {
     expect(await screen.findByText("how's the weather today")).toBeInTheDocument();
   });
 
+  // The only way back into a room's transcript/feedback once you've left
+  // this page — see App.tsx's mount effect, which reads this same
+  // "#chat/<id>" hash (lib/roomHistory.parseRoomHash) to reopen the room.
+  it("links each session's title to its chat transcript", async () => {
+    vi.mocked(fetchInstantSessions).mockResolvedValue([
+      { id: "i1", title: "how's the weather today", createdAt: 1700000000, updatedAt: 1700000000 },
+    ]);
+    render(<InstantSessions />);
+    expect(await screen.findByRole("link", { name: /how's the weather today/ })).toHaveAttribute(
+      "href",
+      ".#chat/i1",
+    );
+  });
+
   // Guards the date-grouping this page exists for (see its own doc comment):
   // two sessions on the same calendar day share one divider, not one each.
   it("groups sessions from the same day under a single date divider", async () => {
