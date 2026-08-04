@@ -1,5 +1,12 @@
 import { fetchJSON, requestOK } from "./fetchJSON";
 
+// Mirrors newsarticle.Article.Status's three values — "pending" while
+// asyncjob.KindArticleStudy is still generating the summary/quiz in the
+// background, "done" once it's ready, "failed" after an attempt errored
+// (the asyncjob reaper still retries it from scratch regardless, so this is
+// shown the same as "pending", not a dead end).
+export type ArticleStatus = "pending" | "done" | "failed";
+
 // Mirrors httpserver's articleListItem shape (apps/server/internal/httpserver/articles.go).
 // Never carries the quiz's Choices/CorrectIndex/Explanation — the list only
 // shows what a learner already saw plus their own outcome.
@@ -11,18 +18,22 @@ export interface ArticleInstance {
   answered: boolean;
   correct: boolean;
   createdAt: number; // unix seconds
+  status: ArticleStatus;
 }
 
 // Mirrors httpserver's articleDraw shape — enough to render the reading
 // view and, once the learner asks to see it, the quiz's Choices. Never
 // carries CorrectIndex/Explanation; the server only reveals those via
-// answerArticle, after the learner has actually picked one.
+// answerArticle, after the learner has actually picked one. Summary/choices
+// are empty while status is "pending"/"failed" — see fetchArticleInstance,
+// which polls this same shape until generation lands.
 export interface ArticleDraw {
   id: string;
   source: string;
   title: string;
   summary: string;
   choices: string[];
+  status: ArticleStatus;
 }
 
 // Mirrors httpserver's articleResult shape — the reveal shown right after
@@ -43,10 +54,15 @@ export type ArticleDrawResult =
   | { status: "noMore" }
   | { status: "error" };
 
-// Draws a fresh, never-before-seen (by this learner) news article,
-// generating its English summary + quiz on the server if this is the first
-// time anyone has drawn this exact story (see
-// newsarticle.Store.SaveArticle's cache) — otherwise near-instant. No daily
+// Draws a fresh, never-before-seen (by this learner) news article. Returns
+// the instant the server reserves it — status "pending" means its English
+// summary + quiz are still generating in the background (see
+// newsarticle.Store.ReserveArticle's URL-keyed cache and
+// asyncjob.KindArticleStudy), independent of this request; "done" means an
+// already-cached story was reused, near-instant. Either way, poll
+// fetchArticleInstance(draw.id) until status leaves "pending" — that keeps
+// working even if the learner navigated away and came back, since the
+// generation itself never depended on this request staying open. No daily
 // limit: only already-drawn articles are ever excluded.
 export async function drawArticle(): Promise<ArticleDrawResult> {
   try {
@@ -56,6 +72,22 @@ export async function drawArticle(): Promise<ArticleDrawResult> {
     return { status: "ok", draw: (await res.json()) as ArticleDraw };
   } catch {
     return { status: "error" };
+  }
+}
+
+// Re-fetches one of the caller's own draws by id — the poll target for a
+// draw whose study content was still generating (status "pending") when the
+// learner last saw it, whether they've been watching it the whole time or
+// just navigated back to a still-pending row in fetchArticleInstances' list.
+// Returns null on any failure (network error, non-200, bad JSON) so a poll
+// tick can just skip a beat and retry rather than tearing down the view.
+export async function fetchArticleInstance(id: string): Promise<ArticleDraw | null> {
+  try {
+    const res = await fetch(`api/articles/${encodeURIComponent(id)}`);
+    if (!res.ok) return null;
+    return (await res.json()) as ArticleDraw;
+  } catch {
+    return null;
   }
 }
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { answerArticle, deleteArticleInstance, drawArticle, fetchArticleInstances } from "./articles";
+import { answerArticle, deleteArticleInstance, drawArticle, fetchArticleInstance, fetchArticleInstances } from "./articles";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -7,7 +7,13 @@ afterEach(() => {
 
 describe("drawArticle", () => {
   it("returns status ok with the draw on a successful response", async () => {
-    const draw = { id: "i1", source: "BBC", title: "t", summary: "s", choices: ["a", "b", "c", "d"] };
+    const draw = { id: "i1", source: "BBC", title: "t", summary: "s", choices: ["a", "b", "c", "d"], status: "done" };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve(draw) }));
+    await expect(drawArticle()).resolves.toEqual({ status: "ok", draw });
+  });
+
+  it("returns status ok with a pending draw right after reserving a fresh article", async () => {
+    const draw = { id: "i1", source: "BBC", title: "t", summary: "", choices: [], status: "pending" };
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve(draw) }));
     await expect(drawArticle()).resolves.toEqual({ status: "ok", draw });
   });
@@ -35,9 +41,38 @@ describe("drawArticle", () => {
   });
 });
 
+describe("fetchArticleInstance", () => {
+  it("returns the draw on a successful response", async () => {
+    const draw = { id: "i1", source: "BBC", title: "t", summary: "s", choices: ["a", "b", "c", "d"], status: "done" };
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(draw) });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(fetchArticleInstance("i1")).resolves.toEqual(draw);
+    expect(fetchMock).toHaveBeenCalledWith("api/articles/i1");
+  });
+
+  it("returns null on a non-ok response", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
+    await expect(fetchArticleInstance("i1")).resolves.toBeNull();
+  });
+
+  it("returns null when fetch rejects", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
+    await expect(fetchArticleInstance("i1")).resolves.toBeNull();
+  });
+
+  it("URL-encodes the id", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false });
+    vi.stubGlobal("fetch", fetchMock);
+    await fetchArticleInstance("weird id/1");
+    expect(fetchMock).toHaveBeenCalledWith("api/articles/weird%20id%2F1");
+  });
+});
+
 describe("fetchArticleInstances", () => {
   it("returns the list on a successful response", async () => {
-    const list = [{ id: "i1", source: "BBC", title: "t", summary: "s", answered: false, correct: false, createdAt: 1 }];
+    const list = [
+      { id: "i1", source: "BBC", title: "t", summary: "s", answered: false, correct: false, createdAt: 1, status: "done" },
+    ];
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(list) }));
     await expect(fetchArticleInstances()).resolves.toEqual(list);
   });

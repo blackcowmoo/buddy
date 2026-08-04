@@ -15,10 +15,10 @@ import (
 
 // sharedStore backs every container test in this file, started once in
 // TestMain — same rationale as internal/wordreview's own mysql_test.go: real
-// SQL semantics (the UNIQUE-key upsert in SaveArticle, the join in List/Get)
-// need a real database, but a fresh container per test would needlessly
-// multiply CI time since every test below scopes its own writes by a unique
-// user ID or article URL.
+// SQL semantics (the UNIQUE-key upsert in ReserveArticle, the join in
+// List/Get) need a real database, but a fresh container per test would
+// needlessly multiply CI time since every test below scopes its own writes
+// by a unique user ID or article URL.
 var (
 	sharedStore    *MySQLStore
 	sharedStoreErr error
@@ -94,62 +94,118 @@ func requireStore(t *testing.T) *MySQLStore {
 	return sharedStore
 }
 
+// mustSaveArticle reserves a fresh Article row and immediately completes it
+// with study content — the two-step ReserveArticle + CompleteArticle
+// sequence httpserver.articleDrawHandler and asyncjob.KindArticleStudy
+// perform separately, collapsed into one helper for tests that just want an
+// already-StatusDone Article to build an Instance against.
 func mustSaveArticle(t *testing.T, st *MySQLStore, url string) Article {
 	t.Helper()
-	a, err := st.SaveArticle(context.Background(), Article{
-		Source:       "BBC",
-		Title:        "Test headline",
-		URL:          url,
-		Summary:      "A short English study paragraph about the test headline.",
-		Choices:      []string{"정확한 해석", "틀린 해석 1", "틀린 해석 2", "틀린 해석 3"},
-		CorrectIndex: 0,
-		Explanation:  "정확한 해석이 원문의 의미를 그대로 담고 있기 때문이다.",
-	})
+	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Test headline", url)
 	if err != nil {
-		t.Fatalf("SaveArticle() error = %v", err)
+		t.Fatalf("ReserveArticle() error = %v", err)
 	}
-	return a
+	completed, err := st.CompleteArticle(context.Background(), reserved.ID,
+		"A short English study paragraph about the test headline.",
+		[]string{"정확한 해석", "틀린 해석 1", "틀린 해석 2", "틀린 해석 3"}, 0,
+		"정확한 해석이 원문의 의미를 그대로 담고 있기 때문이다.")
+	if err != nil {
+		t.Fatalf("CompleteArticle() error = %v", err)
+	}
+	return completed
 }
 
-func TestSaveArticleDedupesByURL(t *testing.T) {
+func TestReserveArticleDedupesByURL(t *testing.T) {
 	st := requireStore(t)
 	url := "https://example.com/dedupe-test"
 
 	first := mustSaveArticle(t, st, url)
 
-	second, err := st.SaveArticle(context.Background(), Article{
-		Source: "NPR", Title: "A different title", URL: url,
-		Summary: "A different summary entirely.",
-		Choices: []string{"a", "b", "c", "d"}, CorrectIndex: 2,
-		Explanation: "different",
-	})
+	second, err := st.ReserveArticle(context.Background(), "NPR", "A different title", url)
 	if err != nil {
-		t.Fatalf("SaveArticle() #2 error = %v", err)
+		t.Fatalf("ReserveArticle() #2 error = %v", err)
 	}
 	if second.ID != first.ID {
-		t.Fatalf("SaveArticle() #2 ID = %q, want the same cached row %q", second.ID, first.ID)
+		t.Fatalf("ReserveArticle() #2 ID = %q, want the same cached row %q", second.ID, first.ID)
 	}
-	if second.Source != "BBC" || second.CorrectIndex != 0 {
-		t.Errorf("SaveArticle() #2 = %+v, want the original cached fields kept, not overwritten", second)
+	if second.Source != "BBC" || second.Status != StatusDone {
+		t.Errorf("ReserveArticle() #2 = %+v, want the original completed fields kept, not overwritten", second)
 	}
 
-	found, ok, err := st.FindArticleByURL(context.Background(), url)
+	found, ok, err := st.GetArticle(context.Background(), first.ID)
 	if err != nil {
-		t.Fatalf("FindArticleByURL() error = %v", err)
+		t.Fatalf("GetArticle() error = %v", err)
 	}
 	if !ok || found.ID != first.ID {
-		t.Fatalf("FindArticleByURL() = (%+v, %v), want the cached row", found, ok)
+		t.Fatalf("GetArticle() = (%+v, %v), want the cached row", found, ok)
 	}
 }
 
-func TestFindArticleByURLMissing(t *testing.T) {
+func TestReserveArticleStartsPendingForAFreshURL(t *testing.T) {
 	st := requireStore(t)
-	_, ok, err := st.FindArticleByURL(context.Background(), "https://example.com/never-saved")
+	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Brand new", "https://example.com/fresh-reserve")
 	if err != nil {
-		t.Fatalf("FindArticleByURL() error = %v", err)
+		t.Fatalf("ReserveArticle() error = %v", err)
+	}
+	if reserved.Status != StatusPending {
+		t.Fatalf("ReserveArticle() Status = %q, want %q for a never-seen URL", reserved.Status, StatusPending)
+	}
+	if reserved.Summary != "" || len(reserved.Choices) != 0 {
+		t.Errorf("ReserveArticle() = %+v, want empty study content while pending", reserved)
+	}
+}
+
+func TestCompleteArticleIsNoopIfNoLongerPending(t *testing.T) {
+	st := requireStore(t)
+	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Race", "https://example.com/complete-race")
+	if err != nil {
+		t.Fatalf("ReserveArticle() error = %v", err)
+	}
+	first, err := st.CompleteArticle(context.Background(), reserved.ID, "first summary", []string{"a", "b", "c", "d"}, 1, "e1")
+	if err != nil {
+		t.Fatalf("CompleteArticle() #1 error = %v", err)
+	}
+	second, err := st.CompleteArticle(context.Background(), reserved.ID, "second summary", []string{"w", "x", "y", "z"}, 3, "e2")
+	if err != nil {
+		t.Fatalf("CompleteArticle() #2 error = %v", err)
+	}
+	if second.Summary != first.Summary || second.CorrectIndex != first.CorrectIndex {
+		t.Fatalf("CompleteArticle() #2 = %+v, want the first completion's content kept unchanged", second)
+	}
+}
+
+func TestFailArticleMarksFailedOnlyWhilePending(t *testing.T) {
+	st := requireStore(t)
+	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Failure", "https://example.com/fail-article")
+	if err != nil {
+		t.Fatalf("ReserveArticle() error = %v", err)
+	}
+	if err := st.FailArticle(context.Background(), reserved.ID); err != nil {
+		t.Fatalf("FailArticle() error = %v", err)
+	}
+	failed, ok, err := st.GetArticle(context.Background(), reserved.ID)
+	if err != nil || !ok {
+		t.Fatalf("GetArticle() = (%+v, %v, %v)", failed, ok, err)
+	}
+	if failed.Status != StatusFailed {
+		t.Fatalf("Status after FailArticle() = %q, want %q", failed.Status, StatusFailed)
+	}
+
+	// A second FailArticle call is a no-op (the WHERE guards on
+	// StatusPending) — mirrors CompleteArticle's own idempotence.
+	if err := st.FailArticle(context.Background(), reserved.ID); err != nil {
+		t.Fatalf("FailArticle() #2 error = %v", err)
+	}
+}
+
+func TestGetArticleMissing(t *testing.T) {
+	st := requireStore(t)
+	_, ok, err := st.GetArticle(context.Background(), "never-reserved")
+	if err != nil {
+		t.Fatalf("GetArticle() error = %v", err)
 	}
 	if ok {
-		t.Fatal("FindArticleByURL() ok = true, want false for a URL never saved")
+		t.Fatal("GetArticle() ok = true, want false for an id never reserved")
 	}
 }
 
@@ -300,11 +356,11 @@ func TestDeleteRemovesInstanceOnly(t *testing.T) {
 
 	// The shared Article row must survive — other learners' instances may
 	// still reference it.
-	stillCached, ok, err := st.FindArticleByURL(ctx, article.URL)
+	stillCached, ok, err := st.GetArticle(ctx, article.ID)
 	if err != nil {
-		t.Fatalf("FindArticleByURL() error = %v", err)
+		t.Fatalf("GetArticle() error = %v", err)
 	}
 	if !ok || stillCached.ID != article.ID {
-		t.Fatalf("FindArticleByURL() after deleting the instance = (%+v, %v), want the article still cached", stillCached, ok)
+		t.Fatalf("GetArticle() after deleting the instance = (%+v, %v), want the article still cached", stillCached, ok)
 	}
 }

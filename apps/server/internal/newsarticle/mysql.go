@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"buddy/server/internal/mysqlerr"
 )
 
 // Tables carry a buddy_ prefix for the same reason as internal/store's and
@@ -29,8 +31,8 @@ type MySQLStore struct {
 // NewMySQL ensures buddy_articles/buddy_article_instances exist and returns
 // a Store backed by them.
 func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
-	// UNIQUE KEY on url is the cache key FindArticleByURL/SaveArticle rely
-	// on: one row per distinct story no matter how many learners draw it.
+	// UNIQUE KEY on url is the cache key ReserveArticle relies on: one row
+	// per distinct story no matter how many learners draw it.
 	const articlesSchema = `CREATE TABLE IF NOT EXISTS ` + articlesTable + ` (
 		id            VARCHAR(64)   NOT NULL,
 		source        VARCHAR(64)   NOT NULL,
@@ -40,12 +42,25 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 		choices_json  TEXT          NOT NULL,
 		correct_index INT           NOT NULL,
 		explanation   TEXT          NOT NULL,
+		status        VARCHAR(16)   NOT NULL DEFAULT '` + StatusDone + `',
 		created_at    BIGINT        NOT NULL,
 		PRIMARY KEY (id),
 		UNIQUE KEY idx_url (url(255))
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
 	if _, err := rw.ExecContext(ctx, articlesSchema); err != nil {
 		return nil, fmt.Errorf("newsarticle: schema: articles: %w", err)
+	}
+	// Predates asyncjob.KindArticleStudy, back when SaveArticle only ever
+	// inserted an already-fully-generated row (the LLM call ran synchronously
+	// in httpserver.articleDrawHandler's request path) — every pre-existing
+	// row is therefore already StatusDone, hence the DEFAULT above backfilling
+	// them automatically. See mysqlerr's doc for why this ADD COLUMN needs to
+	// swallow "already applied" rather than use IF NOT EXISTS.
+	if err := mysqlerr.ApplyAdditive(func() error {
+		_, err := rw.ExecContext(ctx, `ALTER TABLE `+articlesTable+` ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT '`+StatusDone+`'`)
+		return err
+	}, mysqlerr.DupFieldName); err != nil {
+		return nil, fmt.Errorf("newsarticle: schema: add status column: %w", err)
 	}
 
 	// selected_index defaults to -1 (not yet answered) rather than 0, which
@@ -77,13 +92,13 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
-const articleColumns = `id, source, title, url, summary, choices_json, correct_index, explanation, created_at`
+const articleColumns = `id, source, title, url, summary, choices_json, correct_index, explanation, status, created_at`
 
 func scanArticle(row scanner) (Article, error) {
 	var a Article
 	var choicesJSON string
 	var createdAt int64
-	if err := row.Scan(&a.ID, &a.Source, &a.Title, &a.URL, &a.Summary, &choicesJSON, &a.CorrectIndex, &a.Explanation, &createdAt); err != nil {
+	if err := row.Scan(&a.ID, &a.Source, &a.Title, &a.URL, &a.Summary, &choicesJSON, &a.CorrectIndex, &a.Explanation, &a.Status, &createdAt); err != nil {
 		return Article{}, err
 	}
 	if err := json.Unmarshal([]byte(choicesJSON), &a.Choices); err != nil {
@@ -93,40 +108,62 @@ func scanArticle(row scanner) (Article, error) {
 	return a, nil
 }
 
-func (s *MySQLStore) FindArticleByURL(ctx context.Context, url string) (Article, bool, error) {
-	a, err := scanArticle(s.ro.QueryRowContext(ctx, `SELECT `+articleColumns+` FROM `+articlesTable+` WHERE url = ?`, url))
+func (s *MySQLStore) ReserveArticle(ctx context.Context, source, title, url string) (Article, error) {
+	// INSERT IGNORE: the UNIQUE KEY on url makes this a no-op if two
+	// concurrent draws (by different learners, or a retry) reserved the same
+	// story at the same time — the loser's row is discarded in favor of
+	// whichever write landed first, and both callers end up reading the same
+	// row back, same shape as wordreview.MySQLStore.Save.
+	_, err := s.rw.ExecContext(ctx, `
+		INSERT IGNORE INTO `+articlesTable+` (id, source, title, url, summary, choices_json, correct_index, explanation, status, created_at)
+		VALUES (?, ?, ?, ?, '', '[]', 0, '', ?, ?)
+	`, uuid.New().String(), source, title, url, StatusPending, time.Now().Unix())
+	if err != nil {
+		return Article{}, fmt.Errorf("newsarticle: reserve article: insert: %w", err)
+	}
+	saved, err := scanArticle(s.rw.QueryRowContext(ctx, `SELECT `+articleColumns+` FROM `+articlesTable+` WHERE url = ?`, url))
+	if err != nil {
+		return Article{}, fmt.Errorf("newsarticle: reserve article: lookup: %w", err)
+	}
+	return saved, nil
+}
+
+func (s *MySQLStore) CompleteArticle(ctx context.Context, id, summary string, choices []string, correctIndex int, explanation string) (Article, error) {
+	choicesJSON, err := json.Marshal(choices)
+	if err != nil {
+		return Article{}, fmt.Errorf("newsarticle: encode choices: %w", err)
+	}
+	if _, err := s.rw.ExecContext(ctx, `
+		UPDATE `+articlesTable+` SET summary = ?, choices_json = ?, correct_index = ?, explanation = ?, status = ?
+		WHERE id = ? AND status = ?
+	`, summary, string(choicesJSON), correctIndex, explanation, StatusDone, id, StatusPending); err != nil {
+		return Article{}, fmt.Errorf("newsarticle: complete article: update: %w", err)
+	}
+	saved, err := scanArticle(s.rw.QueryRowContext(ctx, `SELECT `+articleColumns+` FROM `+articlesTable+` WHERE id = ?`, id))
+	if err != nil {
+		return Article{}, fmt.Errorf("newsarticle: complete article: lookup: %w", err)
+	}
+	return saved, nil
+}
+
+func (s *MySQLStore) FailArticle(ctx context.Context, id string) error {
+	if _, err := s.rw.ExecContext(ctx, `
+		UPDATE `+articlesTable+` SET status = ? WHERE id = ? AND status = ?
+	`, StatusFailed, id, StatusPending); err != nil {
+		return fmt.Errorf("newsarticle: fail article: %w", err)
+	}
+	return nil
+}
+
+func (s *MySQLStore) GetArticle(ctx context.Context, id string) (Article, bool, error) {
+	a, err := scanArticle(s.ro.QueryRowContext(ctx, `SELECT `+articleColumns+` FROM `+articlesTable+` WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Article{}, false, nil
 	}
 	if err != nil {
-		return Article{}, false, fmt.Errorf("newsarticle: find by url: %w", err)
+		return Article{}, false, fmt.Errorf("newsarticle: get article: %w", err)
 	}
 	return a, true, nil
-}
-
-func (s *MySQLStore) SaveArticle(ctx context.Context, a Article) (Article, error) {
-	choicesJSON, err := json.Marshal(a.Choices)
-	if err != nil {
-		return Article{}, fmt.Errorf("newsarticle: encode choices: %w", err)
-	}
-	// INSERT IGNORE: the UNIQUE KEY on url makes this a no-op if two
-	// concurrent draws (by different learners, or a retry) summarized the
-	// same story at the same time — the loser's freshly generated result is
-	// discarded in favor of whichever write landed first, and both callers
-	// end up reading the same cached row back, same shape as
-	// wordreview.MySQLStore.Save.
-	_, err = s.rw.ExecContext(ctx, `
-		INSERT IGNORE INTO `+articlesTable+` (id, source, title, url, summary, choices_json, correct_index, explanation, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, uuid.New().String(), a.Source, a.Title, a.URL, a.Summary, string(choicesJSON), a.CorrectIndex, a.Explanation, time.Now().Unix())
-	if err != nil {
-		return Article{}, fmt.Errorf("newsarticle: save article: insert: %w", err)
-	}
-	saved, err := scanArticle(s.rw.QueryRowContext(ctx, `SELECT `+articleColumns+` FROM `+articlesTable+` WHERE url = ?`, a.URL))
-	if err != nil {
-		return Article{}, fmt.Errorf("newsarticle: save article: lookup: %w", err)
-	}
-	return saved, nil
 }
 
 func (s *MySQLStore) UsedURLs(ctx context.Context, userID string) (map[string]bool, error) {
@@ -161,7 +198,7 @@ func (s *MySQLStore) CreateInstance(ctx context.Context, userID, articleID strin
 }
 
 const instanceColumns = `i.id, i.answered, i.selected_index, i.correct, i.created_at, ` +
-	`a.id, a.source, a.title, a.url, a.summary, a.choices_json, a.correct_index, a.explanation, a.created_at`
+	`a.id, a.source, a.title, a.url, a.summary, a.choices_json, a.correct_index, a.explanation, a.status, a.created_at`
 
 // scanInstance reads one instanceColumns row (Instance columns followed by
 // its joined Article columns, in that order) — answered/correct come off
@@ -177,7 +214,7 @@ func scanInstance(row scanner, userID string) (Instance, error) {
 	if err := row.Scan(
 		&inst.ID, &answered, &inst.SelectedIndex, &correct, &instCreatedAt,
 		&inst.Article.ID, &inst.Article.Source, &inst.Article.Title, &inst.Article.URL, &inst.Article.Summary,
-		&choicesJSON, &inst.Article.CorrectIndex, &inst.Article.Explanation, &articleCreatedAt,
+		&choicesJSON, &inst.Article.CorrectIndex, &inst.Article.Explanation, &inst.Article.Status, &articleCreatedAt,
 	); err != nil {
 		return Instance{}, err
 	}

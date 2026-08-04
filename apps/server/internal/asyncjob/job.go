@@ -102,6 +102,19 @@ const (
 	// summary) — deleting a room that never got that far would otherwise
 	// trigger a needless full replay.
 	KindProfileRegenerate Kind = "profile-regenerate"
+	// KindArticleStudy generates the English summary + native-language quiz
+	// for one "오늘의 아티클" news story (payload: {ArticleID, Source, Title,
+	// Description} — see transport.EnqueueArticleStudyJob), reserved
+	// StatusPending by newsarticle.Store.ReserveArticle the instant a fresh
+	// article URL is first drawn (see httpserver.articleDrawHandler).
+	// Deliberately queued rather than run inline in that request: same
+	// reasoning as KindStudySummary — an LLM call tied to the request's own
+	// context would be lost if the learner navigated away before it
+	// finished, whereas this Kind's context.Background()-scoped job keeps
+	// generating regardless — see newsarticle.Article.Status, the persisted
+	// state a reopened draw (or the article list) polls to show whether it's
+	// still in progress.
+	KindArticleStudy Kind = "article-study"
 )
 
 // Job is the durable Redis envelope for one unit of background work.

@@ -52,8 +52,11 @@ import (
 // it (see transport.EnqueueProfileRegenerateJob). articles is never nil —
 // same as words, "오늘의 아티클" (internal/newsarticle) has no optional external
 // dependency beyond the pipeline/newsfeed it already needs, so
-// cmd/server/main.go always constructs it.
-func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, words wordreview.Store, articles newsarticle.Store, wordVerifyQueue *asyncjob.Queue, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue, studySummaryQueue *asyncjob.Queue, studyQuizQueue *asyncjob.Queue, profileRegenerateQueue *asyncjob.Queue) *http.Server {
+// cmd/server/main.go always constructs it. articleStudyQueue is nil the same
+// optional way as wordVerifyQueue — articleDrawHandler falls back to running
+// pipeline.GenerateArticleStudy inline, on its own detached goroutine,
+// instead of durably queuing it (see transport.EnqueueArticleStudyJob).
+func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, words wordreview.Store, articles newsarticle.Store, wordVerifyQueue *asyncjob.Queue, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue, studySummaryQueue *asyncjob.Queue, studyQuizQueue *asyncjob.Queue, profileRegenerateQueue *asyncjob.Queue, articleStudyQueue *asyncjob.Queue) *http.Server {
 	mux := http.NewServeMux()
 
 	// Realtime + API first (exact patterns win over the "/" catch-all).
@@ -93,7 +96,8 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux.HandleFunc("GET /api/recordings/{id}/audio", recordingAudioHandler(ident, recordings))
 	mux.HandleFunc("DELETE /api/recordings/{id}", recordingDeleteHandler(ident, audio, recordings))
 	mux.HandleFunc("GET /api/articles", articleInstancesListHandler(ident, articles))
-	mux.HandleFunc("POST /api/articles/draw", articleDrawHandler(ident, articles, pipe, newsfeed.FetchCandidates))
+	mux.HandleFunc("POST /api/articles/draw", articleDrawHandler(ident, articles, pipe, newsfeed.FetchCandidates, articleStudyQueue))
+	mux.HandleFunc("GET /api/articles/{id}", articleInstanceHandler(ident, articles))
 	mux.HandleFunc("POST /api/articles/{id}/answer", articleAnswerHandler(ident, articles))
 	mux.HandleFunc("DELETE /api/articles/{id}", articleDeleteHandler(ident, articles))
 	registerStalePRRedirect(mux, cfg.RootPath)
