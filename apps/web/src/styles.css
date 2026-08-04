@@ -118,6 +118,8 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
   right: 0;
   width: 260px;
   max-width: calc(100vw - 32px);
+  max-height: calc(100vh - var(--sat) - 96px);
+  overflow-y: auto;
   background: var(--panel);
   border: 1px solid var(--border-2);
   border-radius: var(--radius);
