@@ -28,31 +28,71 @@ type fakeArticleStore struct {
 	usedURLErr error
 }
 
-func (f *fakeArticleStore) FindArticleByURL(ctx context.Context, url string) (newsarticle.Article, bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.err != nil {
-		return newsarticle.Article{}, false, f.err
-	}
-	a, ok := f.byURL[url]
-	return a, ok, nil
-}
-
-func (f *fakeArticleStore) SaveArticle(ctx context.Context, a newsarticle.Article) (newsarticle.Article, error) {
+func (f *fakeArticleStore) ReserveArticle(ctx context.Context, source, title, url string) (newsarticle.Article, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
 		return newsarticle.Article{}, f.err
 	}
-	if existing, ok := f.byURL[a.URL]; ok {
+	if existing, ok := f.byURL[url]; ok {
 		return existing, nil
 	}
-	a.ID = "article-" + a.URL
+	a := newsarticle.Article{ID: "article-" + url, Source: source, Title: title, URL: url, Status: newsarticle.StatusPending, CreatedAt: time.Now()}
 	if f.byURL == nil {
 		f.byURL = map[string]newsarticle.Article{}
 	}
-	f.byURL[a.URL] = a
+	f.byURL[url] = a
 	return a, nil
+}
+
+func (f *fakeArticleStore) CompleteArticle(ctx context.Context, id, summary string, choices []string, correctIndex int, explanation string) (newsarticle.Article, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return newsarticle.Article{}, f.err
+	}
+	for url, a := range f.byURL {
+		if a.ID != id || a.Status != newsarticle.StatusPending {
+			continue
+		}
+		a.Summary = summary
+		a.Choices = choices
+		a.CorrectIndex = correctIndex
+		a.Explanation = explanation
+		a.Status = newsarticle.StatusDone
+		f.byURL[url] = a
+		return a, nil
+	}
+	return newsarticle.Article{}, nil
+}
+
+func (f *fakeArticleStore) FailArticle(ctx context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	for url, a := range f.byURL {
+		if a.ID == id && a.Status == newsarticle.StatusPending {
+			a.Status = newsarticle.StatusFailed
+			f.byURL[url] = a
+		}
+	}
+	return nil
+}
+
+func (f *fakeArticleStore) GetArticle(ctx context.Context, id string) (newsarticle.Article, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return newsarticle.Article{}, false, f.err
+	}
+	for _, a := range f.byURL {
+		if a.ID == id {
+			return a, true, nil
+		}
+	}
+	return newsarticle.Article{}, false, nil
 }
 
 func (f *fakeArticleStore) UsedURLs(ctx context.Context, userID string) (map[string]bool, error) {
@@ -92,13 +132,36 @@ func (f *fakeArticleStore) CreateInstance(ctx context.Context, userID, articleID
 	return inst, nil
 }
 
+// refreshArticleLocked mirrors the real MySQL store's live join between
+// buddy_article_instances and buddy_articles: an Instance's embedded Article
+// always reflects the article row's *current* state (e.g. Status flipping
+// pending -> done via CompleteArticle after the Instance was created), not a
+// stale snapshot from CreateInstance time. Falls back to inst's own embedded
+// Article unchanged if its ID isn't in f.byURL — several handler tests build
+// an Instance{Article: ...} directly without ever calling ReserveArticle, so
+// there's nothing to re-join against for those. Caller must hold f.mu.
+func (f *fakeArticleStore) refreshArticleLocked(inst newsarticle.Instance) newsarticle.Instance {
+	for _, a := range f.byURL {
+		if a.ID == inst.Article.ID {
+			inst.Article = a
+			return inst
+		}
+	}
+	return inst
+}
+
 func (f *fakeArticleStore) List(ctx context.Context, userID string) ([]newsarticle.Instance, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
 		return nil, f.err
 	}
-	return f.byUser[userID], nil
+	out := make([]newsarticle.Instance, len(f.byUser[userID]))
+	for i, inst := range f.byUser[userID] {
+		inst = f.refreshArticleLocked(inst)
+		out[i] = inst
+	}
+	return out, nil
 }
 
 func (f *fakeArticleStore) Get(ctx context.Context, userID, id string) (newsarticle.Instance, error) {
@@ -109,6 +172,7 @@ func (f *fakeArticleStore) Get(ctx context.Context, userID, id string) (newsarti
 	}
 	for _, inst := range f.byUser[userID] {
 		if inst.ID == id {
+			inst = f.refreshArticleLocked(inst)
 			return inst, nil
 		}
 	}
@@ -125,6 +189,7 @@ func (f *fakeArticleStore) Answer(ctx context.Context, userID, id string, select
 		if inst.ID != id {
 			continue
 		}
+		inst = f.refreshArticleLocked(inst)
 		if inst.Answered {
 			return inst, nil
 		}
@@ -186,11 +251,17 @@ func fetchOneCandidate(c newsfeed.Candidate) func(context.Context) ([]newsfeed.C
 
 // ---- articleDrawHandler -----------------------------------------------------
 
-func TestArticleDrawHandlerGeneratesAndCachesOnFirstDraw(t *testing.T) {
+// TestArticleDrawHandlerReservesPendingAndCompletesInBackground guards the
+// core async requirement: the draw response comes back immediately with
+// Status "pending" — never blocking on the LLM call — and the article is
+// generated (and cached) on a detached goroutine that outlives the request,
+// via enqueueOrRunInline's inline fallback (articleStudyQueue is nil here,
+// same as when Redis isn't configured).
+func TestArticleDrawHandlerReservesPendingAndCompletesInBackground(t *testing.T) {
 	st := &fakeArticleStore{}
 	pipe := fakeArticlePipeline(fakeStudyJSON)
 	fetch := fetchOneCandidate(newsfeed.Candidate{Source: "BBC", Title: "Headline", URL: "https://example.com/a", Description: "snippet"})
-	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch)
+	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
@@ -202,21 +273,29 @@ func TestArticleDrawHandlerGeneratesAndCachesOnFirstDraw(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.Source != "BBC" || got.Summary == "" || len(got.Choices) != 4 {
-		t.Fatalf("draw = %+v, want a populated draw", got)
+	if got.Source != "BBC" || got.Status != newsarticle.StatusPending || got.Summary != "" || len(got.Choices) != 0 {
+		t.Fatalf("draw = %+v, want an immediate pending draw with no study content yet", got)
 	}
 	// The answer key must never be sent in the draw response.
 	if strings.Contains(rec.Body.String(), "correctIndex") || strings.Contains(rec.Body.String(), "explanation") {
 		t.Fatalf("draw response leaked the answer key: %s", rec.Body.String())
 	}
-	if _, ok, _ := st.FindArticleByURL(context.Background(), "https://example.com/a"); !ok {
-		t.Fatal("expected the article to be cached after generation")
+
+	// got.ID is the Instance ID (toArticleDraw's shape) — re-fetch it to
+	// learn the underlying Article's own ID to poll GetArticle by.
+	waitForCondition(t, 2*time.Second, func() bool {
+		inst, err := st.Get(context.Background(), "alex", got.ID)
+		return err == nil && inst.Article.Status == newsarticle.StatusDone
+	})
+	inst, err := st.Get(context.Background(), "alex", got.ID)
+	if err != nil || inst.Article.Summary == "" || len(inst.Article.Choices) != 4 {
+		t.Fatalf("Get() after background generation = (%+v, %v), want a completed article", inst, err)
 	}
 }
 
 func TestArticleDrawHandlerReusesCachedArticleWithoutCallingLLM(t *testing.T) {
 	st := &fakeArticleStore{byURL: map[string]newsarticle.Article{
-		"https://example.com/a": {ID: "a1", Source: "BBC", Title: "Headline", URL: "https://example.com/a", Summary: "cached summary", Choices: []string{"a", "b", "c", "d"}, CorrectIndex: 1, Explanation: "e"},
+		"https://example.com/a": {ID: "a1", Source: "BBC", Title: "Headline", URL: "https://example.com/a", Summary: "cached summary", Choices: []string{"a", "b", "c", "d"}, CorrectIndex: 1, Explanation: "e", Status: newsarticle.StatusDone},
 	}}
 	llmCalls := 0
 	pipe := &pipeline.Pipeline{Analysis: []pipeline.Candidate{{Model: "m", LLM: &fakeArticleLLM{complete: func(msgs []llm.Message) (string, error) {
@@ -224,7 +303,7 @@ func TestArticleDrawHandlerReusesCachedArticleWithoutCallingLLM(t *testing.T) {
 		return fakeStudyJSON, nil
 	}}}}}
 	fetch := fetchOneCandidate(newsfeed.Candidate{Source: "BBC", Title: "Headline", URL: "https://example.com/a", Description: "snippet"})
-	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch)
+	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
@@ -232,15 +311,19 @@ func TestArticleDrawHandlerReusesCachedArticleWithoutCallingLLM(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
 	}
-	if llmCalls != 0 {
-		t.Fatalf("LLM calls = %d, want 0 (cached article should be reused)", llmCalls)
-	}
 	var got articleDraw
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.Summary != "cached summary" {
-		t.Fatalf("Summary = %q, want the cached summary reused", got.Summary)
+	if got.Summary != "cached summary" || got.Status != newsarticle.StatusDone {
+		t.Fatalf("draw = %+v, want the cached, already-done article reused", got)
+	}
+	// Nothing gets enqueued for an already-StatusDone article, but the
+	// background fallback goroutine (if any were spawned) would still race
+	// this assertion — give it a moment to prove it never calls the LLM.
+	time.Sleep(50 * time.Millisecond)
+	if llmCalls != 0 {
+		t.Fatalf("LLM calls = %d, want 0 (cached article should be reused)", llmCalls)
 	}
 }
 
@@ -250,7 +333,7 @@ func TestArticleDrawHandlerReusesCachedArticleWithoutCallingLLM(t *testing.T) {
 func TestArticleDrawHandlerExcludesAlreadyUsedArticles(t *testing.T) {
 	st := &fakeArticleStore{
 		byURL: map[string]newsarticle.Article{
-			"https://example.com/used": {ID: "used", URL: "https://example.com/used"},
+			"https://example.com/used": {ID: "used", URL: "https://example.com/used", Status: newsarticle.StatusDone},
 		},
 		byUser: map[string][]newsarticle.Instance{
 			"alex": {{ID: "i1", UserID: "alex", Article: newsarticle.Article{ID: "used", URL: "https://example.com/used"}}},
@@ -260,7 +343,7 @@ func TestArticleDrawHandlerExcludesAlreadyUsedArticles(t *testing.T) {
 	fetch := func(context.Context) ([]newsfeed.Candidate, error) {
 		return []newsfeed.Candidate{{Source: "BBC", Title: "Old", URL: "https://example.com/used", Description: "d"}}, nil
 	}
-	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch)
+	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
@@ -271,7 +354,7 @@ func TestArticleDrawHandlerExcludesAlreadyUsedArticles(t *testing.T) {
 }
 
 func TestArticleDrawHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
-	h := articleDrawHandler(fakeIdentifier{ok: false}, &fakeArticleStore{}, fakeArticlePipeline(fakeStudyJSON), fetchOneCandidate(newsfeed.Candidate{URL: "https://example.com/a"}))
+	h := articleDrawHandler(fakeIdentifier{ok: false}, &fakeArticleStore{}, fakeArticlePipeline(fakeStudyJSON), fetchOneCandidate(newsfeed.Candidate{URL: "https://example.com/a"}), nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
@@ -283,7 +366,7 @@ func TestArticleDrawHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
 
 func TestArticleDrawHandlerInternalErrorOnFetchFailure(t *testing.T) {
 	fetch := func(context.Context) ([]newsfeed.Candidate, error) { return nil, errors.New("all feeds down") }
-	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, &fakeArticleStore{}, fakeArticlePipeline(fakeStudyJSON), fetch)
+	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, &fakeArticleStore{}, fakeArticlePipeline(fakeStudyJSON), fetch, nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
@@ -309,7 +392,7 @@ func postAnswerRequest(t *testing.T, id string, selectedIndex int) *http.Request
 func TestArticleAnswerHandlerComputesCorrectnessServerSide(t *testing.T) {
 	st := &fakeArticleStore{byUser: map[string][]newsarticle.Instance{
 		"alex": {{ID: "i1", UserID: "alex", SelectedIndex: -1, Article: newsarticle.Article{
-			Choices: []string{"a", "b", "c", "d"}, CorrectIndex: 2, Explanation: "왜냐하면",
+			Choices: []string{"a", "b", "c", "d"}, CorrectIndex: 2, Explanation: "왜냐하면", Status: newsarticle.StatusDone,
 		}}},
 	}}
 	h := articleAnswerHandler(fakeIdentifier{id: "alex", ok: true}, st)
@@ -332,7 +415,7 @@ func TestArticleAnswerHandlerComputesCorrectnessServerSide(t *testing.T) {
 func TestArticleAnswerHandlerMarksWrongChoiceIncorrect(t *testing.T) {
 	st := &fakeArticleStore{byUser: map[string][]newsarticle.Instance{
 		"alex": {{ID: "i1", UserID: "alex", SelectedIndex: -1, Article: newsarticle.Article{
-			Choices: []string{"a", "b", "c", "d"}, CorrectIndex: 2,
+			Choices: []string{"a", "b", "c", "d"}, CorrectIndex: 2, Status: newsarticle.StatusDone,
 		}}},
 	}}
 	h := articleAnswerHandler(fakeIdentifier{id: "alex", ok: true}, st)
@@ -346,6 +429,24 @@ func TestArticleAnswerHandlerMarksWrongChoiceIncorrect(t *testing.T) {
 	}
 	if got.Correct {
 		t.Fatalf("result = %+v, want Correct=false for a wrong choice", got)
+	}
+}
+
+// TestArticleAnswerHandlerConflictWhileStillPending guards the panic-avoidance
+// guard: an instance whose Article hasn't finished generating yet
+// (Choices is empty) must be rejected with 409, never reach
+// Store.Answer/toArticleResult's Choices[CorrectIndex] index.
+func TestArticleAnswerHandlerConflictWhileStillPending(t *testing.T) {
+	st := &fakeArticleStore{byUser: map[string][]newsarticle.Instance{
+		"alex": {{ID: "i1", UserID: "alex", SelectedIndex: -1, Article: newsarticle.Article{Status: newsarticle.StatusPending}}},
+	}}
+	h := articleAnswerHandler(fakeIdentifier{id: "alex", ok: true}, st)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, postAnswerRequest(t, "i1", 0))
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 for a still-pending article", rec.Code)
 	}
 }
 
@@ -365,6 +466,61 @@ func TestArticleAnswerHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postAnswerRequest(t, "i1", 0))
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
+// ---- articleInstanceHandler --------------------------------------------------
+
+// TestArticleInstanceHandlerReturnsCurrentStatus guards the poll contract: a
+// learner who navigated away mid-generation and comes back can re-fetch the
+// same draw and see its current status, exactly like articleDrawHandler's
+// own response shape.
+func TestArticleInstanceHandlerReturnsCurrentStatus(t *testing.T) {
+	st := &fakeArticleStore{byUser: map[string][]newsarticle.Instance{
+		"alex": {{ID: "i1", UserID: "alex", Article: newsarticle.Article{Source: "BBC", Title: "t", Status: newsarticle.StatusPending}, CreatedAt: time.Now()}},
+	}}
+	h := articleInstanceHandler(fakeIdentifier{id: "alex", ok: true}, st)
+
+	req := httptest.NewRequest("GET", "/api/articles/i1", nil)
+	req.SetPathValue("id", "i1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	var got articleDraw
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Status != newsarticle.StatusPending {
+		t.Fatalf("Status = %q, want %q", got.Status, newsarticle.StatusPending)
+	}
+}
+
+func TestArticleInstanceHandlerNotFoundForMissingOrOtherUsersInstance(t *testing.T) {
+	h := articleInstanceHandler(fakeIdentifier{id: "alex", ok: true}, &fakeArticleStore{})
+
+	req := httptest.NewRequest("GET", "/api/articles/missing", nil)
+	req.SetPathValue("id", "missing")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestArticleInstanceHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
+	h := articleInstanceHandler(fakeIdentifier{ok: false}, &fakeArticleStore{})
+
+	req := httptest.NewRequest("GET", "/api/articles/i1", nil)
+	req.SetPathValue("id", "i1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)

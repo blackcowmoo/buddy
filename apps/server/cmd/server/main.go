@@ -162,6 +162,18 @@ func main() {
 			transport.WordVerifyJobHandler(pipe, wordReviews))
 	}
 
+	// Article-study generation: summarizes + quizzes a freshly drawn "오늘의
+	// 아티클" story in the background (see httpserver.articleDrawHandler),
+	// same "optional durable queue, inline-goroutine fallback when Redis
+	// isn't configured" convention as wordVerifyQueue above — this is what
+	// lets the draw survive the learner navigating away before generation
+	// finishes.
+	var articleStudyQueue *asyncjob.Queue
+	if rdb != nil {
+		articleStudyQueue = startWorker(rdb, jobsCtx, asyncjob.KindArticleStudy, transport.ArticleStudyWorkerConcurrency, transport.ArticleStudyClaimTTL,
+			transport.ArticleStudyJobHandler(pipe, articles))
+	}
+
 	if rdb != nil {
 		replyQueue := startWorker(rdb, jobsCtx, asyncjob.KindReply, transport.ReplyWorkerConcurrency, transport.ReplyClaimTTL,
 			transport.ReplyJobHandler(pipe, st, nil, nil))
@@ -241,7 +253,7 @@ func main() {
 		defer recordings.Close()
 	}
 
-	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, wordReviews, articles, wordVerifyQueue, translateQueue, correctionBackfillQueue, studySummaryQueue, studyQuizQueue, profileRegenerateQueue)
+	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, wordReviews, articles, wordVerifyQueue, translateQueue, correctionBackfillQueue, studySummaryQueue, studyQuizQueue, profileRegenerateQueue, articleStudyQueue)
 
 	go func() {
 		log.Printf("buddy up on %s  env=%s  stt=%v  feedback=%s",

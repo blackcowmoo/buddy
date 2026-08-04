@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -11,6 +11,7 @@ vi.mock("../lib/articles", async () => {
   return {
     ...actual,
     fetchArticleInstances: vi.fn(),
+    fetchArticleInstance: vi.fn(),
     drawArticle: vi.fn(),
     answerArticle: vi.fn(),
     deleteArticleInstance: vi.fn(),
@@ -32,6 +33,7 @@ import {
   answerArticle,
   deleteArticleInstance,
   drawArticle,
+  fetchArticleInstance,
   fetchArticleInstances,
   type ArticleDraw,
 } from "../lib/articles";
@@ -40,6 +42,7 @@ import { formatDateDivider } from "../lib/time";
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.useRealTimers();
 });
 
 const sampleDraw: ArticleDraw = {
@@ -48,7 +51,10 @@ const sampleDraw: ArticleDraw = {
   title: "Scientists make discovery",
   summary: "Scientists announced a new discovery today.",
   choices: ["정확한 해석", "틀린 해석 1", "틀린 해석 2", "틀린 해석 3"],
+  status: "done",
 };
+
+const pendingDraw: ArticleDraw = { ...sampleDraw, summary: "", choices: [], status: "pending" };
 
 describe("ArticleQuiz page — list view", () => {
   it("links back to the chat page with a relative href", () => {
@@ -71,7 +77,7 @@ describe("ArticleQuiz page — list view", () => {
 
   it("shows each past attempt's source, title, and correctness", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([
-      { id: "i1", source: "BBC", title: "Old story", summary: "s", answered: true, correct: true, createdAt: 1700000000 },
+      { id: "i1", source: "BBC", title: "Old story", summary: "s", answered: true, correct: true, createdAt: 1700000000, status: "done" as const },
     ]);
     render(<ArticleQuiz />);
     expect(await screen.findByText("[BBC] Old story")).toBeInTheDocument();
@@ -82,8 +88,8 @@ describe("ArticleQuiz page — list view", () => {
     const morning = 1700000000;
     const laterSameDay = morning + 3600;
     vi.mocked(fetchArticleInstances).mockResolvedValue([
-      { id: "i1", source: "BBC", title: "first", summary: "s", answered: false, correct: false, createdAt: morning },
-      { id: "i2", source: "NPR", title: "second", summary: "s", answered: false, correct: false, createdAt: laterSameDay },
+      { id: "i1", source: "BBC", title: "first", summary: "s", answered: false, correct: false, createdAt: morning, status: "done" as const },
+      { id: "i2", source: "NPR", title: "second", summary: "s", answered: false, correct: false, createdAt: laterSameDay, status: "done" as const },
     ]);
     render(<ArticleQuiz />);
 
@@ -93,7 +99,7 @@ describe("ArticleQuiz page — list view", () => {
 
   it("asks for confirmation, deletes, and removes the row on confirmed success", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([
-      { id: "i1", source: "BBC", title: "Old story", summary: "s", answered: false, correct: false, createdAt: 1700000000 },
+      { id: "i1", source: "BBC", title: "Old story", summary: "s", answered: false, correct: false, createdAt: 1700000000, status: "done" as const },
     ]);
     vi.mocked(deleteArticleInstance).mockResolvedValue(true);
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -176,6 +182,48 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     expect(answerArticle).toHaveBeenCalledWith("i1", 0);
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
     expect(screen.getByText("원문의 의미를 정확히 반영하기 때문입니다.")).toBeInTheDocument();
+  });
+
+  it("shows a generating hint for a pending draw, then the summary once polling reports done", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: pendingDraw });
+    vi.mocked(fetchArticleInstance).mockResolvedValue(sampleDraw);
+    const user = userEvent.setup({ delay: null });
+    render(<ArticleQuiz />);
+    const drawButton = await screen.findByRole("button", { name: "새 아티클 뽑기" });
+
+    // Fake timers only from here: pollDraw's setTimeout must be one vi
+    // tracks, so it needs to be scheduled (by the click below) after this,
+    // not before — an already-real-scheduled timer wouldn't be affected by
+    // advanceTimersByTimeAsync later. shouldAdvanceTime keeps React's own
+    // internal (also setTimeout-based) scheduler unstuck, since it isn't
+    // ever explicitly advanced below — only the poll interval is.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    await user.click(drawButton);
+    expect(screen.getByText(/아티클을 요약하고 문제를 만드는 중이에요/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "문제풀기" })).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+
+    expect(fetchArticleInstance).toHaveBeenCalledWith(pendingDraw.id);
+    expect(screen.getByText(sampleDraw.summary)).toBeInTheDocument();
+  });
+
+  it("resumes polling a still-generating draw reopened from the list", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([
+      { id: "i1", source: "BBC", title: "Scientists make discovery", summary: "", answered: false, correct: false, createdAt: 1700000000, status: "pending" },
+    ]);
+    vi.mocked(fetchArticleInstance).mockResolvedValue(pendingDraw);
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+
+    expect(await screen.findByText("생성 중")).toBeInTheDocument();
+    await user.click(screen.getByText("[BBC] Scientists make discovery"));
+
+    expect(fetchArticleInstance).toHaveBeenCalledWith("i1");
+    expect(await screen.findByText(/아티클을 요약하고 문제를 만드는 중이에요/)).toBeInTheDocument();
   });
 
   it("shows an incorrect reveal when the wrong choice was picked", async () => {

@@ -4,6 +4,7 @@ import {
   answerArticle,
   deleteArticleInstance,
   drawArticle,
+  fetchArticleInstance,
   fetchArticleInstances,
   type ArticleAnswerResult,
   type ArticleDraw,
@@ -11,6 +12,12 @@ import {
 } from "../lib/articles";
 import { formatDateDivider, formatMessageTime, isSameDay } from "../lib/time";
 import { KokoroSpeaker } from "../tts/kokoro";
+
+// How often to re-check a draw that's still generating in the background
+// (see asyncjob.KindArticleStudy) — a poll, not a push, since nothing on the
+// server tells an already-open client "it's ready now" (same reasoning as
+// App.tsx's pollStudySummary).
+const articleStudyPollIntervalMs = 3000;
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -42,9 +49,55 @@ export function ArticleQuiz() {
   const [tts, setTts] = useState<TtsState>("idle");
   const speakerRef = useRef<KokoroSpeaker | null>(null);
 
-  useEffect(() => {
-    speakerRef.current = new KokoroSpeaker();
+  // Poll scaffolding for a draw still generating in the background — same
+  // "setTimeout chain tracked for unmount cleanup, guarded by a token so a
+  // stale tick can't clobber a different draw's state" pattern as App.tsx's
+  // pollStudySummary. Losing this component (navigating away, or the tab
+  // closing) only stops *watching* — asyncjob.KindArticleStudy keeps
+  // generating regardless (see lib/articles.ts's drawArticle doc comment);
+  // reopening this page and tapping the still-pending row resumes watching.
+  const pollTokenRef = useRef<object | null>(null);
+  const pollTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+
+  const schedulePoll = useCallback((tick: () => void, ms: number) => {
+    const id = setTimeout(() => {
+      pollTimersRef.current.delete(id);
+      tick();
+    }, ms);
+    pollTimersRef.current.add(id);
   }, []);
+
+  useEffect(() => {
+    const timers = pollTimersRef.current;
+    return () => {
+      for (const id of timers) clearTimeout(id);
+      timers.clear();
+      pollTokenRef.current = null;
+    };
+  }, []);
+
+  // Polls one draw's status until it leaves "pending"/"failed" — started
+  // right after a fresh draw, or when reopening a still-generating row from
+  // the list (see openInstance). "failed" keeps polling rather than giving
+  // up: the asyncjob reaper retries the job from scratch on its own (see
+  // asyncjob.Queue.Execute), so a later attempt can still land.
+  const pollDraw = useCallback(
+    (id: string, token: object) => {
+      const tick = async () => {
+        if (pollTokenRef.current !== token) return; // left this draw, or started another
+        const updated = await fetchArticleInstance(id);
+        if (pollTokenRef.current !== token) return;
+        if (!updated) {
+          schedulePoll(tick, articleStudyPollIntervalMs); // transient fetch failure — keep trying
+          return;
+        }
+        setDraw(updated);
+        if (updated.status !== "done") schedulePoll(tick, articleStudyPollIntervalMs);
+      };
+      schedulePoll(tick, articleStudyPollIntervalMs);
+    },
+    [schedulePoll],
+  );
 
   const loadInstances = useCallback(() => {
     fetchArticleInstances().then((list) => {
@@ -66,10 +119,37 @@ export function ArticleQuiz() {
       setResult(null);
       setView("reading");
       setDrawState("idle");
+      if (res.draw.status !== "done") {
+        const token = {};
+        pollTokenRef.current = token;
+        pollDraw(res.draw.id, token);
+      }
     } else {
       setDrawState(res.status);
     }
-  }, []);
+  }, [pollDraw]);
+
+  // Reopens one of the caller's own draws from the list — the only ones
+  // worth tapping back into are still-generating ones (see the instances.map
+  // below), so a learner who navigated away mid-generation and came back can
+  // resume watching it finish instead of it looking abandoned.
+  const openInstance = useCallback(
+    async (id: string) => {
+      const found = await fetchArticleInstance(id);
+      if (!found) return;
+      setDraw(found);
+      setSelected(null);
+      setResult(null);
+      setDrawState("idle");
+      setView("reading");
+      if (found.status !== "done") {
+        const token = {};
+        pollTokenRef.current = token;
+        pollDraw(found.id, token);
+      }
+    },
+    [pollDraw],
+  );
 
   // Lazy-loads the kokoro-82M model on first use (same pattern as App.tsx's
   // playMessage/loadVoice), then reads the English summary aloud at native
@@ -105,6 +185,7 @@ export function ArticleQuiz() {
   );
 
   const backToList = useCallback(() => {
+    pollTokenRef.current = null; // stop watching; generation itself keeps going server-side
     setView(null);
     setDraw(null);
     setResult(null);
@@ -164,7 +245,19 @@ export function ArticleQuiz() {
                     </div>
                   )}
                   <div className="session-row article-instance-row">
-                    <div className="session-item article-instance-item">
+                    <div
+                      className="session-item article-instance-item"
+                      // Only a still-generating draw is worth tapping back
+                      // into — a "done" row is just a read-only past attempt,
+                      // same as InstantSessions.tsx's list (see openInstance's
+                      // doc comment).
+                      onClick={inst.status !== "done" ? () => void openInstance(inst.id) : undefined}
+                    >
+                      {inst.status !== "done" && (
+                        <span className="study-summary-pending-badge" title="아티클을 만드는 중">
+                          <span className="spinning">⏳</span> 생성 중
+                        </span>
+                      )}
                       <span className="title">
                         [{inst.source}] {inst.title}
                       </span>
@@ -194,18 +287,31 @@ export function ArticleQuiz() {
             <div className="article-meta">
               [{draw.source}] {draw.title}
             </div>
-            <p className="article-summary">{draw.summary}</p>
-            <button
-              type="button"
-              className="ghost article-read-aloud-btn"
-              onClick={() => void handleRead()}
-              disabled={tts !== "idle"}
-            >
-              {tts === "loading" ? "불러오는 중…" : tts === "speaking" ? "재생 중…" : "🔊 읽어주기"}
-            </button>
-            <button type="button" className="quiz-start-btn" onClick={startQuiz}>
-              문제풀기
-            </button>
+            {draw.status === "done" ? (
+              <>
+                <p className="article-summary">{draw.summary}</p>
+                <button
+                  type="button"
+                  className="ghost article-read-aloud-btn"
+                  onClick={() => void handleRead()}
+                  disabled={tts !== "idle"}
+                >
+                  {tts === "loading" ? "불러오는 중…" : tts === "speaking" ? "재생 중…" : "🔊 읽어주기"}
+                </button>
+                <button type="button" className="quiz-start-btn" onClick={startQuiz}>
+                  문제풀기
+                </button>
+              </>
+            ) : (
+              // Still generating (see asyncjob.KindArticleStudy) — this view
+              // polls in the background (see pollDraw) whether the learner
+              // just drew this or reopened a pending row from the list; no
+              // action needed here beyond waiting or leaving.
+              <p className="hint">
+                <span className="spinning">⏳</span> 아티클을 요약하고 문제를 만드는 중이에요. 이 화면을 나갔다 와도
+                계속 진행돼요.
+              </p>
+            )}
             <button type="button" className="ghost quiz-back-btn" onClick={backToList}>
               ← 목록으로
             </button>
