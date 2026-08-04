@@ -143,6 +143,9 @@ type fakeWordStore struct {
 	mu     sync.Mutex
 	byUser map[string][]wordreview.Word
 	err    error
+	// lastReviewRepeat records the repeat flag from the most recent Review
+	// call so tests can assert wordReviewHandler decoded and forwarded it.
+	lastReviewRepeat bool
 }
 
 func (f *fakeWordStore) Save(ctx context.Context, userID, word, meaning, example string) (wordreview.Word, error) {
@@ -235,12 +238,13 @@ func (f *fakeWordStore) MarkRejected(ctx context.Context, userID, id string, rea
 	return wordreview.Word{}, nil
 }
 
-func (f *fakeWordStore) Review(ctx context.Context, userID, id string, correct bool, now time.Time) (wordreview.Word, error) {
+func (f *fakeWordStore) Review(ctx context.Context, userID, id string, correct, repeat bool, now time.Time) (wordreview.Word, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
 		return wordreview.Word{}, f.err
 	}
+	f.lastReviewRepeat = repeat
 	for i, w := range f.byUser[userID] {
 		if w.ID == id {
 			w.ReviewCount++
@@ -451,6 +455,30 @@ func TestWordReviewUpdatesAndReturnsWord(t *testing.T) {
 	}
 	if out.ReviewCount != 1 {
 		t.Fatalf("reviewCount = %d, want 1", out.ReviewCount)
+	}
+}
+
+// TestWordReviewForwardsRepeatFlag guards the "억지로 맞췄어요" (forced-guess)
+// wiring at the transport layer: the handler must decode `repeat` from the
+// request body and pass it through to Store.Review untouched, rather than
+// dropping it or always sending false.
+func TestWordReviewForwardsRepeatFlag(t *testing.T) {
+	store := &fakeWordStore{byUser: map[string][]wordreview.Word{
+		"alex": {{ID: "w1", UserID: "alex", Word: "ecstatic"}},
+	}}
+	h := wordReviewHandler(fakeIdentifier{id: "alex", ok: true}, store)
+
+	body, _ := json.Marshal(map[string]bool{"correct": true, "repeat": true})
+	req := httptest.NewRequest("POST", "/api/words/w1/review", bytes.NewReader(body))
+	req.SetPathValue("id", "w1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	if !store.lastReviewRepeat {
+		t.Error("Store.Review was not called with repeat = true")
 	}
 }
 

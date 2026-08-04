@@ -82,12 +82,29 @@ func intervalForStage(stage int) time.Duration {
 // now instead of a day out — a miss means the forgetting curve reset, not
 // just slowed by a step, and the word should be retryable the same day
 // rather than pushed to tomorrow.
-func nextSchedule(stage int, correct bool, now time.Time) (newStage int, nextReviewAt time.Time) {
-	if correct {
-		newStage = stage + 1
-		return newStage, now.Add(intervalForStage(stage))
+//
+// repeat (only meaningful when correct) is the learner flagging a "forced"
+// guess — technically correct, but not confidently recalled, so it shouldn't
+// earn the usual step forward. Instead of advancing to stage+1 and the wider
+// interval that implies, the stage holds and the word is rescheduled using
+// intervalForStage(stage-1) — the same interval that just elapsed to bring
+// it up for review, not a fresh stage-0 restart. That way a repeated forced
+// guess keeps coming back at that same spacing indefinitely, and only a
+// confident (non-repeat) correct answer resumes normal progress from
+// wherever it left off.
+func nextSchedule(stage int, correct, repeat bool, now time.Time) (newStage int, nextReviewAt time.Time) {
+	if !correct {
+		return 0, now
 	}
-	return 0, now
+	if repeat {
+		prevStage := stage - 1
+		if prevStage < 0 {
+			prevStage = 0
+		}
+		return stage, now.Add(intervalForStage(prevStage))
+	}
+	newStage = stage + 1
+	return newStage, now.Add(intervalForStage(stage))
 }
 
 // Status values for Word.Status — see the package doc for the
@@ -162,9 +179,11 @@ type Store interface {
 	// user.
 	MarkRejected(ctx context.Context, userID, id string, reason string) (Word, error)
 	// Review applies one review answer's outcome (see nextSchedule) to word
-	// id and returns the updated row. A no-op — zero Word, nil error — if id
-	// doesn't exist or belongs to a different user.
-	Review(ctx context.Context, userID, id string, correct bool, now time.Time) (Word, error)
+	// id and returns the updated row. repeat marks a correct-but-forced-guess
+	// answer — see nextSchedule's doc — and is ignored when correct is false.
+	// A no-op — zero Word, nil error — if id doesn't exist or belongs to a
+	// different user.
+	Review(ctx context.Context, userID, id string, correct, repeat bool, now time.Time) (Word, error)
 	// Delete removes one tracked word, any status — used both for an active
 	// word and for clearing a rejected/pending one out of the list. A no-op
 	// if id doesn't exist or belongs to a different user.

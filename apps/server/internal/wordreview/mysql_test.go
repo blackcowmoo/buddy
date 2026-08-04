@@ -134,7 +134,7 @@ func TestSaveIsIdempotentForSameWordAndMeaning(t *testing.T) {
 	if _, err := st.MarkVerified(ctx, "alex-idempotent", first.ID, time.Now()); err != nil {
 		t.Fatalf("MarkVerified() error = %v", err)
 	}
-	advanced, err := st.Review(ctx, "alex-idempotent", first.ID, true, time.Now())
+	advanced, err := st.Review(ctx, "alex-idempotent", first.ID, true, false, time.Now())
 	if err != nil {
 		t.Fatalf("Review() error = %v", err)
 	}
@@ -183,7 +183,7 @@ func TestSaveTracksSameWordDifferentMeaningsIndependently(t *testing.T) {
 	if _, err := st.MarkVerified(ctx, "alex-multimeaning", riverbank.ID, time.Now()); err != nil {
 		t.Fatalf("MarkVerified() error = %v", err)
 	}
-	if _, err := st.Review(ctx, "alex-multimeaning", riverbank.ID, true, time.Now()); err != nil {
+	if _, err := st.Review(ctx, "alex-multimeaning", riverbank.ID, true, false, time.Now()); err != nil {
 		t.Fatalf("Review() error = %v", err)
 	}
 
@@ -313,7 +313,7 @@ func TestReviewAdvancesScheduleAndIsReflectedInList(t *testing.T) {
 		t.Fatalf("Save() error = %v", err)
 	}
 
-	updated, err := st.Review(ctx, "alex-review", saved.ID, true, time.Now())
+	updated, err := st.Review(ctx, "alex-review", saved.ID, true, false, time.Now())
 	if err != nil {
 		t.Fatalf("Review() error = %v", err)
 	}
@@ -333,11 +333,45 @@ func TestReviewAdvancesScheduleAndIsReflectedInList(t *testing.T) {
 	}
 }
 
+// TestReviewRepeatHoldsStageInsteadOfAdvancing exercises the "억지로
+// 맞췄어요" (forced-guess) flow end to end against a real row: a correct
+// answer with repeat=true must not advance Stage, and a later correct
+// answer without repeat must resume normal advancement from that same
+// stage — see nextSchedule's doc for why.
+func TestReviewRepeatHoldsStageInsteadOfAdvancing(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+
+	saved, err := st.Save(ctx, "alex-repeat", "wistful", "아쉬워하는", "a wistful smile")
+	if err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	forced, err := st.Review(ctx, "alex-repeat", saved.ID, true, true, time.Now())
+	if err != nil {
+		t.Fatalf("Review(repeat) error = %v", err)
+	}
+	if forced.Stage != 0 {
+		t.Errorf("Stage = %d, want 0 (repeat holds the stage instead of advancing)", forced.Stage)
+	}
+	if forced.ReviewCount != 1 {
+		t.Errorf("ReviewCount = %d, want 1 (repeat still counts as an attempt)", forced.ReviewCount)
+	}
+
+	confident, err := st.Review(ctx, "alex-repeat", saved.ID, true, false, time.Now())
+	if err != nil {
+		t.Fatalf("Review() error = %v", err)
+	}
+	if confident.Stage != 1 {
+		t.Errorf("Stage = %d, want 1 (a non-repeat correct answer resumes normal advancement)", confident.Stage)
+	}
+}
+
 func TestReviewIsNoopForUnknownID(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
 
-	got, err := st.Review(ctx, "alex-review-missing", "does-not-exist", true, time.Now())
+	got, err := st.Review(ctx, "alex-review-missing", "does-not-exist", true, false, time.Now())
 	if err != nil {
 		t.Fatalf("Review() error = %v, want nil (no-op)", err)
 	}
@@ -355,7 +389,7 @@ func TestReviewDoesNotAffectOtherUsersWord(t *testing.T) {
 		t.Fatalf("Save() error = %v", err)
 	}
 
-	got, err := st.Review(ctx, "someone-else-review", owner.ID, true, time.Now())
+	got, err := st.Review(ctx, "someone-else-review", owner.ID, true, false, time.Now())
 	if err != nil {
 		t.Fatalf("Review() error = %v", err)
 	}
@@ -399,7 +433,7 @@ func TestDueCountOnlyCountsVerifiedWordsPastDue(t *testing.T) {
 	if _, err := st.MarkVerified(ctx, "alex-due", overdue.ID, now); err != nil {
 		t.Fatalf("MarkVerified(overdue) error = %v", err)
 	}
-	if _, err := st.Review(ctx, "alex-due", overdue.ID, false, now.Add(-48*time.Hour)); err != nil {
+	if _, err := st.Review(ctx, "alex-due", overdue.ID, false, false, now.Add(-48*time.Hour)); err != nil {
 		t.Fatalf("Review() error = %v", err)
 	}
 	if _, err := st.MarkVerified(ctx, "alex-due", notYet.ID, now); err != nil {

@@ -111,7 +111,7 @@ func (s *fakeWordReviewStore) MarkRejected(ctx context.Context, userID, id strin
 	return w, nil
 }
 
-func (s *fakeWordReviewStore) Review(ctx context.Context, userID, id string, correct bool, now time.Time) (wordreview.Word, error) {
+func (s *fakeWordReviewStore) Review(ctx context.Context, userID, id string, correct, repeat bool, now time.Time) (wordreview.Word, error) {
 	return wordreview.Word{}, nil
 }
 

@@ -381,6 +381,8 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 .quiz-result.incorrect { color: var(--err); }
 .quiz-translation { margin-top: -4px; }
 .quiz-next-btn, .quiz-check-btn { width: 100%; }
+.quiz-next-actions { display: flex; flex-direction: column; gap: 6px; }
+.quiz-forced-btn { width: 100%; font-size: 12px; }
 .quiz-score { font-size: 13px; font-weight: 600; text-align: center; padding: 4px 0; }
 
 .spinning { display: inline-block; animation: spin 1s linear infinite; }

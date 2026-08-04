@@ -232,10 +232,54 @@ describe("WordReview page", () => {
     await user.click(screen.getByRole("button", { name: "확인" }));
 
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
-    expect(reviewWord).toHaveBeenCalledWith("w1", true);
+    // The review call is deferred until the learner advances -- not sent
+    // the instant the answer is checked -- so "억지로 맞췄어요" has a chance
+    // to redirect it to a repeat instead (see the dedicated test below).
+    expect(reviewWord).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "결과 보기" }));
+    expect(reviewWord).toHaveBeenCalledWith("w1", true, false);
     expect(await screen.findByText("1개 중 1개 맞혔어요!")).toBeInTheDocument();
+  });
+
+  // The "억지로 맞췄어요" (forced-guess) button: even after answering
+  // correctly, the learner can flag it as a lucky/forced guess so the word
+  // comes back at the same interval instead of the wider one a confident
+  // correct answer would earn (see wordreview.nextSchedule's repeat doc
+  // server-side).
+  it("sends repeat=true and still advances when the forced-guess button is pressed on a correct answer", async () => {
+    vi.mocked(fetchWords).mockResolvedValue({ words: [dueWord], dueCount: 1 });
+    vi.mocked(reviewWord).mockResolvedValue({ ...dueWord, stage: 0, reviewCount: 1 });
+    const user = userEvent.setup();
+    render(<WordReview />);
+
+    await user.click(await screen.findByRole("button", { name: "복습 시작" }));
+    await user.type(await screen.findByRole("textbox", { name: "정답 입력" }), "ecstatic");
+    await user.click(screen.getByRole("button", { name: "확인" }));
+
+    expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
+    const forcedBtn = screen.getByRole("button", { name: "😅 억지로 맞춘 것 같아요" });
+    await user.click(forcedBtn);
+
+    expect(reviewWord).toHaveBeenCalledWith("w1", true, true);
+    expect(await screen.findByText("1개 중 1개 맞혔어요!")).toBeInTheDocument();
+  });
+
+  // The forced-guess button only makes sense for a correct answer -- an
+  // incorrect one already resets to stage 0 unconditionally (see
+  // nextSchedule), so there's nothing for "repeat" to soften.
+  it("does not show the forced-guess button after an incorrect answer", async () => {
+    vi.mocked(fetchWords).mockResolvedValue({ words: [dueWord], dueCount: 1 });
+    vi.mocked(reviewWord).mockResolvedValue({ ...dueWord, stage: 0, reviewCount: 1 });
+    const user = userEvent.setup();
+    render(<WordReview />);
+
+    await user.click(await screen.findByRole("button", { name: "복습 시작" }));
+    await user.type(await screen.findByRole("textbox", { name: "정답 입력" }), "wrong answer");
+    await user.click(screen.getByRole("button", { name: "확인" }));
+
+    expect(await screen.findByText(/아쉬워요\. 정답: ecstatic/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "😅 억지로 맞춘 것 같아요" })).not.toBeInTheDocument();
   });
 
   it("grows the answer input to fit what's typed, not the length of the hidden answer", async () => {
@@ -364,7 +408,10 @@ describe("WordReview page", () => {
     await user.click(screen.getByRole("button", { name: "매우 행복한" }));
 
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
-    expect(reviewWord).toHaveBeenCalledWith("w1", true);
+    expect(reviewWord).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "결과 보기" }));
+    expect(reviewWord).toHaveBeenCalledWith("w1", true, false);
   });
 
   it("marks a recognition-mode question incorrect when the wrong meaning is picked", async () => {
