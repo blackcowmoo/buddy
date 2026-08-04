@@ -4,10 +4,12 @@ import { deleteSession, fetchInstantSessions, type SessionSummary } from "../lib
 import { formatDateDivider, formatMessageTime, isSameDay } from "../lib/time";
 
 // Every "인스턴트 대화" room (see App.tsx's markInstant) lives here instead of
-// the main room list — one exchange each, so this page exists purely to
-// review and, if a reply came back wrong, delete the transcript outright
-// (the one way to keep a bad exchange out of future study material — see
-// deleteSession/sessionDeleteHandler) rather than to replay a conversation.
+// the main room list — one exchange each, so this page exists to review a
+// room's title/time, reopen it (read-only, since it's always already ended
+// by the time it shows up here — see App.tsx's quickEndingRef) to see its
+// transcript and grammar feedback, and, if a reply came back wrong, delete
+// the transcript outright (the one way to keep a bad exchange out of future
+// study material — see deleteSession/sessionDeleteHandler).
 // Grouped by day (see formatDateDivider), same convention the chat
 // transcript itself uses, since these rooms are short and numerous rather
 // than few and long. Like the main room list (fetchSessions), a failed
@@ -62,10 +64,17 @@ export function InstantSessions() {
                 </div>
               )}
               <div className="session-row instant-session-row">
-                <div className="session-item instant-session-item">
+                {/* Relative href (not "/"), same reasoning as the back link
+                    above: resolves to the chat page's own URL regardless of
+                    ROOT_PATH, and the "#chat/<id>" hash is what App.tsx's
+                    mount effect reads (see lib/roomHistory.parseRoomHash) to
+                    open this exact room read-only instead of the list —
+                    the one way back into a room's transcript/feedback once
+                    you've left this page. */}
+                <a className="session-item" href={`.#chat/${encodeURIComponent(s.id)}`}>
                   <span className="title">{s.title}</span>
                   <span className="time">{formatMessageTime(s.createdAt)}</span>
-                </div>
+                </a>
                 <button
                   type="button"
                   className="ghost icon-btn session-delete"
