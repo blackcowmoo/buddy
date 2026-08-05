@@ -37,7 +37,7 @@ import {
   fetchArticleInstances,
   type ArticleDraw,
 } from "../lib/articles";
-import { formatDateDivider } from "../lib/time";
+import { formatAbsoluteDate, formatDateDivider } from "../lib/time";
 import { KokoroSpeaker } from "../tts/kokoro";
 
 afterEach(() => {
@@ -52,6 +52,7 @@ const sampleDraw: ArticleDraw = {
   title: "Scientists make discovery",
   summary: "Scientists announced a new discovery today.",
   choices: ["정확한 해석", "틀린 해석 1", "틀린 해석 2", "틀린 해석 3"],
+  publishedAt: 1710494400,
   status: "done",
 };
 
@@ -78,7 +79,7 @@ describe("ArticleQuiz page — list view", () => {
 
   it("shows each past attempt's source, title, and correctness", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([
-      { id: "i1", source: "BBC", title: "Old story", summary: "s", answered: true, correct: true, createdAt: 1700000000, status: "done" as const },
+      { id: "i1", source: "BBC", title: "Old story", summary: "s", answered: true, correct: true, createdAt: 1700000000, publishedAt: 0, status: "done" as const },
     ]);
     render(<ArticleQuiz />);
     expect(await screen.findByText("[BBC] Old story")).toBeInTheDocument();
@@ -89,8 +90,8 @@ describe("ArticleQuiz page — list view", () => {
     const morning = 1700000000;
     const laterSameDay = morning + 3600;
     vi.mocked(fetchArticleInstances).mockResolvedValue([
-      { id: "i1", source: "BBC", title: "first", summary: "s", answered: false, correct: false, createdAt: morning, status: "done" as const },
-      { id: "i2", source: "NPR", title: "second", summary: "s", answered: false, correct: false, createdAt: laterSameDay, status: "done" as const },
+      { id: "i1", source: "BBC", title: "first", summary: "s", answered: false, correct: false, createdAt: morning, publishedAt: 0, status: "done" as const },
+      { id: "i2", source: "NPR", title: "second", summary: "s", answered: false, correct: false, createdAt: laterSameDay, publishedAt: 0, status: "done" as const },
     ]);
     render(<ArticleQuiz />);
 
@@ -100,7 +101,7 @@ describe("ArticleQuiz page — list view", () => {
 
   it("asks for confirmation, deletes, and removes the row on confirmed success", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([
-      { id: "i1", source: "BBC", title: "Old story", summary: "s", answered: false, correct: false, createdAt: 1700000000, status: "done" as const },
+      { id: "i1", source: "BBC", title: "Old story", summary: "s", answered: false, correct: false, createdAt: 1700000000, publishedAt: 0, status: "done" as const },
     ]);
     vi.mocked(deleteArticleInstance).mockResolvedValue(true);
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -126,6 +127,19 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
 
     expect(await screen.findByText(sampleDraw.summary)).toBeInTheDocument();
     expect(screen.getByText("[BBC] Scientists make discovery")).toBeInTheDocument();
+    expect(screen.getByText(formatAbsoluteDate(new Date(sampleDraw.publishedAt * 1000)))).toBeInTheDocument();
+  });
+
+  it("omits the date line when publishedAt is unknown", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: { ...sampleDraw, publishedAt: 0 } });
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+
+    await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
+
+    expect(await screen.findByText(sampleDraw.summary)).toBeInTheDocument();
+    expect(screen.queryByText(formatAbsoluteDate(new Date(sampleDraw.publishedAt * 1000)))).not.toBeInTheDocument();
   });
 
   it("shows a hint and stays on the list when there's nothing new to draw", async () => {
@@ -214,7 +228,7 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
 
   it("resumes polling a still-generating draw reopened from the list", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([
-      { id: "i1", source: "BBC", title: "Scientists make discovery", summary: "", answered: false, correct: false, createdAt: 1700000000, status: "pending" },
+      { id: "i1", source: "BBC", title: "Scientists make discovery", summary: "", answered: false, correct: false, createdAt: 1700000000, publishedAt: 0, status: "pending" },
     ]);
     vi.mocked(fetchArticleInstance).mockResolvedValue(pendingDraw);
     const user = userEvent.setup();
@@ -229,7 +243,7 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
 
   it("reopens a finished past attempt into the reading view", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([
-      { id: "i1", source: "BBC", title: "Old story", summary: "s", answered: true, correct: true, createdAt: 1700000000, status: "done" as const },
+      { id: "i1", source: "BBC", title: "Old story", summary: "s", answered: true, correct: true, createdAt: 1700000000, publishedAt: 0, status: "done" as const },
     ]);
     vi.mocked(fetchArticleInstance).mockResolvedValue(sampleDraw);
     const user = userEvent.setup();
