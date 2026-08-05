@@ -2,7 +2,6 @@ package httpserver
 
 import (
 	"context"
-	"math/rand"
 	"net/http"
 
 	"buddy/server/internal/asyncjob"
@@ -122,14 +121,17 @@ func articleInstancesListHandler(ident identity.Identifier, articles newsarticle
 	}
 }
 
-// articleDrawHandler draws a fresh news article the caller hasn't drawn
-// before, reserving a StatusPending row (see newsarticle.Store.
-// ReserveArticle's URL-keyed cache) and kicking off its English summary +
-// quiz generation in the background on first-ever draw across every
-// learner, or reusing an already-cached/in-flight result. Responds 204 with
-// no body if every candidate from internal/newsfeed has already been drawn
-// by this learner — the frontend's cue that there's nothing new to offer
-// right now, distinct from an actual fetch/generation failure (a 5xx).
+// articleDrawHandler draws the most recent news article the caller hasn't
+// drawn before — internal/newsfeed.FetchCandidates already returns every
+// outlet's items sorted newest-first, so this just takes the first one left
+// after excluding already-drawn URLs — reserving a StatusPending row (see
+// newsarticle.Store.ReserveArticle's URL-keyed cache) and kicking off its
+// English summary + quiz generation in the background on first-ever draw
+// across every learner, or reusing an already-cached/in-flight result.
+// Responds 204 with no body if every candidate from internal/newsfeed has
+// already been drawn by this learner — the frontend's cue that there's
+// nothing new to offer right now, distinct from an actual fetch/generation
+// failure (a 5xx).
 //
 // The response comes back the instant the row is reserved — it never waits
 // on pipe.GenerateArticleStudy, which (like pipeline.VerifyWord) can be slow
@@ -161,6 +163,9 @@ func articleDrawHandler(ident identity.Identifier, articles newsarticle.Store, p
 			serverError(w, "articles: fetch candidates", err)
 			return
 		}
+		// candidates is already sorted newest-first (see
+		// newsfeed.FetchCandidates), and filtering here preserves that order,
+		// so fresh[0] is the most recent story this learner hasn't drawn yet.
 		fresh := make([]newsfeed.Candidate, 0, len(candidates))
 		for _, c := range candidates {
 			if !used[c.URL] {
@@ -171,9 +176,9 @@ func articleDrawHandler(ident identity.Identifier, articles newsarticle.Store, p
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		pick := fresh[rand.Intn(len(fresh))]
+		pick := fresh[0]
 
-		article, err := articles.ReserveArticle(r.Context(), pick.Source, pick.Title, pick.URL)
+		article, err := articles.ReserveArticle(r.Context(), pick.Source, pick.Title, pick.URL, pick.Description)
 		if err != nil {
 			serverError(w, "articles: reserve "+userID, err)
 			return

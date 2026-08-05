@@ -101,7 +101,7 @@ func requireStore(t *testing.T) *MySQLStore {
 // already-StatusDone Article to build an Instance against.
 func mustSaveArticle(t *testing.T, st *MySQLStore, url string) Article {
 	t.Helper()
-	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Test headline", url)
+	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Test headline", url, "A short test snippet.")
 	if err != nil {
 		t.Fatalf("ReserveArticle() error = %v", err)
 	}
@@ -121,7 +121,7 @@ func TestReserveArticleDedupesByURL(t *testing.T) {
 
 	first := mustSaveArticle(t, st, url)
 
-	second, err := st.ReserveArticle(context.Background(), "NPR", "A different title", url)
+	second, err := st.ReserveArticle(context.Background(), "NPR", "A different title", url, "A different snippet.")
 	if err != nil {
 		t.Fatalf("ReserveArticle() #2 error = %v", err)
 	}
@@ -143,7 +143,7 @@ func TestReserveArticleDedupesByURL(t *testing.T) {
 
 func TestReserveArticleStartsPendingForAFreshURL(t *testing.T) {
 	st := requireStore(t)
-	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Brand new", "https://example.com/fresh-reserve")
+	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Brand new", "https://example.com/fresh-reserve", "A fresh snippet.")
 	if err != nil {
 		t.Fatalf("ReserveArticle() error = %v", err)
 	}
@@ -157,7 +157,7 @@ func TestReserveArticleStartsPendingForAFreshURL(t *testing.T) {
 
 func TestCompleteArticleIsNoopIfNoLongerPending(t *testing.T) {
 	st := requireStore(t)
-	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Race", "https://example.com/complete-race")
+	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Race", "https://example.com/complete-race", "A race snippet.")
 	if err != nil {
 		t.Fatalf("ReserveArticle() error = %v", err)
 	}
@@ -176,7 +176,7 @@ func TestCompleteArticleIsNoopIfNoLongerPending(t *testing.T) {
 
 func TestFailArticleMarksFailedOnlyWhilePending(t *testing.T) {
 	st := requireStore(t)
-	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Failure", "https://example.com/fail-article")
+	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Failure", "https://example.com/fail-article", "A failure snippet.")
 	if err != nil {
 		t.Fatalf("ReserveArticle() error = %v", err)
 	}
@@ -206,6 +206,170 @@ func TestGetArticleMissing(t *testing.T) {
 	}
 	if ok {
 		t.Fatal("GetArticle() ok = true, want false for an id never reserved")
+	}
+}
+
+// backdateClaim directly rewrites id's claimed_at column, simulating a
+// generation attempt abandoned age ago — StalePending has no other way to
+// observe staleness than the wall clock, so tests need this rather than
+// sleeping out a real ArticleStudyStaleAfter-sized window.
+func backdateClaim(t *testing.T, st *MySQLStore, id string, age time.Duration) {
+	t.Helper()
+	if _, err := st.rw.ExecContext(context.Background(),
+		`UPDATE `+articlesTable+` SET claimed_at = ? WHERE id = ?`, time.Now().Add(-age).UnixNano(), id,
+	); err != nil {
+		t.Fatalf("backdateClaim(%s): %v", id, err)
+	}
+}
+
+func TestReserveArticlePersistsDescription(t *testing.T) {
+	st := requireStore(t)
+	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Has description", "https://example.com/description-test", "The feed's own short snippet.")
+	if err != nil {
+		t.Fatalf("ReserveArticle() error = %v", err)
+	}
+	if reserved.Description != "The feed's own short snippet." {
+		t.Fatalf("ReserveArticle() Description = %q, want the snippet passed in", reserved.Description)
+	}
+}
+
+// TestStalePendingExcludesFreshlyReservedRows guards against the sweep
+// (transport.SweepStaleArticleStudies) firing on a draw that's simply still
+// legitimately generating: a row's claimed_at starts equal to created_at, so
+// it must not show up as stale immediately.
+func TestStalePendingExcludesFreshlyReservedRows(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	fresh, err := st.ReserveArticle(ctx, "BBC", "Fresh", "https://example.com/stale-fresh", "fresh snippet")
+	if err != nil {
+		t.Fatalf("ReserveArticle() error = %v", err)
+	}
+
+	stale, err := st.StalePending(ctx, 10*time.Minute)
+	if err != nil {
+		t.Fatalf("StalePending() error = %v", err)
+	}
+	for _, a := range stale {
+		if a.ID == fresh.ID {
+			t.Fatalf("StalePending() unexpectedly included a freshly reserved article %s", fresh.ID)
+		}
+	}
+}
+
+// TestStalePendingIncludesRowsClaimedLongAgo guards the actual orphan-sweep
+// signal: a StatusPending row whose claimed_at is old enough (simulating a
+// generation attempt killed mid-job by a crash or redeploy, which never got
+// to call CompleteArticle/FailArticle) must be reported, with its
+// Description intact so the caller can regenerate without the original
+// newsfeed.Candidate.
+func TestStalePendingIncludesRowsClaimedLongAgo(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	old, err := st.ReserveArticle(ctx, "BBC", "Old", "https://example.com/stale-old", "old snippet")
+	if err != nil {
+		t.Fatalf("ReserveArticle() error = %v", err)
+	}
+	backdateClaim(t, st, old.ID, time.Hour)
+
+	stale, err := st.StalePending(ctx, 10*time.Minute)
+	if err != nil {
+		t.Fatalf("StalePending() error = %v", err)
+	}
+	var found bool
+	for _, a := range stale {
+		if a.ID != old.ID {
+			continue
+		}
+		found = true
+		if a.Description != "old snippet" {
+			t.Errorf("StalePending() Description = %q, want the persisted snippet", a.Description)
+		}
+	}
+	if !found {
+		t.Fatalf("StalePending() = %+v, want it to include the backdated article %s", stale, old.ID)
+	}
+}
+
+func TestClaimArticleReportsWhetherStillPending(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	reserved, err := st.ReserveArticle(ctx, "BBC", "Claim", "https://example.com/claim-test", "claim snippet")
+	if err != nil {
+		t.Fatalf("ReserveArticle() error = %v", err)
+	}
+
+	claimed, err := st.ClaimArticle(ctx, reserved.ID)
+	if err != nil {
+		t.Fatalf("ClaimArticle() error = %v", err)
+	}
+	if !claimed {
+		t.Fatal("ClaimArticle() on a StatusPending article = false, want true")
+	}
+
+	if _, err := st.CompleteArticle(ctx, reserved.ID, "s", []string{"a", "b", "c", "d"}, 0, "e"); err != nil {
+		t.Fatalf("CompleteArticle() error = %v", err)
+	}
+
+	claimedAfterDone, err := st.ClaimArticle(ctx, reserved.ID)
+	if err != nil {
+		t.Fatalf("ClaimArticle() #2 error = %v", err)
+	}
+	if claimedAfterDone {
+		t.Fatal("ClaimArticle() after CompleteArticle = true, want false")
+	}
+}
+
+func TestClaimArticleMissingID(t *testing.T) {
+	st := requireStore(t)
+	claimed, err := st.ClaimArticle(context.Background(), "never-reserved")
+	if err != nil {
+		t.Fatalf("ClaimArticle() error = %v", err)
+	}
+	if claimed {
+		t.Fatal("ClaimArticle() for a never-reserved id = true, want false")
+	}
+}
+
+// TestClaimArticleRefreshesClaimedAtSoItLeavesStalePending is the
+// re-claim-then-un-stale round trip SweepStaleArticleStudies relies on: once
+// a sweep successfully claims a stale row to retry it, that row must not be
+// reported stale again by the very next sweep tick.
+func TestClaimArticleRefreshesClaimedAtSoItLeavesStalePending(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	reserved, err := st.ReserveArticle(ctx, "BBC", "Reclaim", "https://example.com/reclaim-test", "reclaim snippet")
+	if err != nil {
+		t.Fatalf("ReserveArticle() error = %v", err)
+	}
+	backdateClaim(t, st, reserved.ID, time.Hour)
+
+	staleBefore, err := st.StalePending(ctx, 10*time.Minute)
+	if err != nil {
+		t.Fatalf("StalePending() error = %v", err)
+	}
+	var foundBefore bool
+	for _, a := range staleBefore {
+		if a.ID == reserved.ID {
+			foundBefore = true
+		}
+	}
+	if !foundBefore {
+		t.Fatalf("StalePending() before claim = %+v, want it to include %s", staleBefore, reserved.ID)
+	}
+
+	claimed, err := st.ClaimArticle(ctx, reserved.ID)
+	if err != nil || !claimed {
+		t.Fatalf("ClaimArticle() = (%v, %v), want (true, nil)", claimed, err)
+	}
+
+	staleAfter, err := st.StalePending(ctx, 10*time.Minute)
+	if err != nil {
+		t.Fatalf("StalePending() error = %v", err)
+	}
+	for _, a := range staleAfter {
+		if a.ID == reserved.ID {
+			t.Fatalf("StalePending() after ClaimArticle still includes %s, want the claim to refresh claimed_at", reserved.ID)
+		}
 	}
 }
 
