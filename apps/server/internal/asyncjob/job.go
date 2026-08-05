@@ -115,6 +115,18 @@ const (
 	// state a reopened draw (or the article list) polls to show whether it's
 	// still in progress.
 	KindArticleStudy Kind = "article-study"
+	// KindWordAutoAdd generates a batch of new words fit to a learner's
+	// profile on their own initiative (payload: {UserID} — see
+	// transport.EnqueueWordAutoAddJob), started the instant
+	// httpserver.wordAutoAddHandler marks the learner's settings row
+	// JobStatusPending (see store.Store.StartWordAutoAdd). Deliberately
+	// queued rather than run inline in that request: same reasoning as
+	// KindArticleStudy — pipeline.Pipeline.SuggestNewWords is one more slow
+	// local-model call on top of each saved word's own KindWordVerify
+	// fact-check, and must survive the learner navigating away before it
+	// finishes — see store.SessionMeta's sibling status fields' doc
+	// comments for the general pattern this follows.
+	KindWordAutoAdd Kind = "word-auto-add"
 )
 
 // Job is the durable Redis envelope for one unit of background work.

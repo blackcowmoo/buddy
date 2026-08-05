@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { autoAddWords, deleteWord, fetchWords, reviewWord, saveWord } from "./wordReview";
+import { deleteWord, fetchAutoAddStatus, fetchWords, reviewWord, saveWord, startAutoAddWords } from "./wordReview";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -89,28 +89,41 @@ describe("reviewWord", () => {
   });
 });
 
-describe("autoAddWords", () => {
-  it("posts with no body and returns the saved words", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ words: [item] }) });
+describe("startAutoAddWords", () => {
+  it("posts with no body and returns the job status", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ status: "pending", count: 0 }) });
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(autoAddWords()).resolves.toEqual([item]);
+    await expect(startAutoAddWords()).resolves.toEqual({ status: "pending", count: 0 });
     expect(fetchMock).toHaveBeenCalledWith("api/words/auto-add", { method: "POST" });
-  });
-
-  it("returns an empty array when the server found nothing to add", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ words: [] }) }));
-    await expect(autoAddWords()).resolves.toEqual([]);
   });
 
   it("returns null on a non-ok response", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
-    await expect(autoAddWords()).resolves.toBeNull();
+    await expect(startAutoAddWords()).resolves.toBeNull();
   });
 
   it("returns null when fetch rejects", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
-    await expect(autoAddWords()).resolves.toBeNull();
+    await expect(startAutoAddWords()).resolves.toBeNull();
+  });
+});
+
+describe("fetchAutoAddStatus", () => {
+  it("returns the current job status on a successful response", async () => {
+    const body = { status: "done", count: 2 };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(body) }));
+    await expect(fetchAutoAddStatus()).resolves.toEqual(body);
+  });
+
+  it("returns null on a non-ok response", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
+    await expect(fetchAutoAddStatus()).resolves.toBeNull();
+  });
+
+  it("returns null when fetch rejects", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
+    await expect(fetchAutoAddStatus()).resolves.toBeNull();
   });
 });
 

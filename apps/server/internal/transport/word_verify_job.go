@@ -101,3 +101,30 @@ func EnqueueWordVerifyJob(ctx context.Context, queue *asyncjob.Queue, pipe *pipe
 	return queue.EnqueueAndRunInBackground(ctx, asyncjob.KindWordVerify, key,
 		key, payload, WordVerifyClaimTTL, WordVerifyJobHandler(pipe, words))
 }
+
+// SaveWordAndVerify saves one word/meaning/example for userID and, if it
+// came back freshly StatusPending, kicks off its model-consensus check — the
+// shared "save, then verify in the background" step every path that adds a
+// word needs, whether it's one learner-picked word (httpserver.
+// wordSaveHandler) or a batch of system-suggested ones (runWordAutoAdd in
+// word_auto_add_job.go), so a system-suggested word is fact-checked exactly
+// the same way a manually picked one is, no shortcut.
+func SaveWordAndVerify(ctx context.Context, words wordreview.Store, pipe *pipeline.Pipeline, wordVerifyQueue *asyncjob.Queue, userID, word, meaning, example string) (wordreview.Word, error) {
+	saved, err := words.Save(ctx, userID, word, meaning, example)
+	if err != nil {
+		return wordreview.Word{}, err
+	}
+	if saved.Status == wordreview.StatusPending {
+		asyncjob.EnqueueOrRunInline(wordVerifyQueue, ctx,
+			"words: enqueue verify "+userID+"/"+saved.ID,
+			func(ctx context.Context) error {
+				return EnqueueWordVerifyJob(ctx, wordVerifyQueue, pipe, words, userID, saved.ID)
+			},
+			"words: verify "+userID+"/"+saved.ID,
+			func(ctx context.Context) error {
+				return RunWordVerifyInline(ctx, pipe, words, userID, saved.ID)
+			},
+		)
+	}
+	return saved, nil
+}

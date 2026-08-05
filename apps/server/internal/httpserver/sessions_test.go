@@ -108,6 +108,13 @@ type fakeSessionStore struct {
 	learnerProfiles   map[string]string // userID -> profile
 	learnerProfileErr error
 
+	// wordAutoAddStatus/wordAutoAddCount/wordAutoAddErr back
+	// GetWordAutoAddStatus/StartWordAutoAdd/CompleteWordAutoAdd/
+	// FailWordAutoAdd for words_test.go and word_auto_add_job_test.go.
+	wordAutoAddStatus map[string]string // userID -> status
+	wordAutoAddCount  map[string]int    // userID -> addedCount
+	wordAutoAddErr    error
+
 	// instantSessions/instantSessionsErr back ListInstantSessions for
 	// sessions_instant_test.go; left zero for tests in this file, which
 	// don't call it.
@@ -381,6 +388,71 @@ func (f *fakeSessionStore) SaveLearnerProfile(ctx context.Context, userID, profi
 	}
 	f.learnerProfiles[userID] = profile
 	return nil
+}
+
+func (f *fakeSessionStore) GetWordAutoAddStatus(ctx context.Context, userID string) (string, int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.wordAutoAddErr != nil {
+		return "", 0, f.wordAutoAddErr
+	}
+	return f.wordAutoAddStatus[userID], f.wordAutoAddCount[userID], nil
+}
+
+func (f *fakeSessionStore) StartWordAutoAdd(ctx context.Context, userID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.wordAutoAddErr != nil {
+		return f.wordAutoAddErr
+	}
+	if f.wordAutoAddStatus == nil {
+		f.wordAutoAddStatus = map[string]string{}
+	}
+	if f.wordAutoAddCount == nil {
+		f.wordAutoAddCount = map[string]int{}
+	}
+	f.wordAutoAddStatus[userID] = store.JobStatusPending
+	f.wordAutoAddCount[userID] = 0
+	return nil
+}
+
+func (f *fakeSessionStore) CompleteWordAutoAdd(ctx context.Context, userID string, addedCount int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.wordAutoAddErr != nil {
+		return f.wordAutoAddErr
+	}
+	if f.wordAutoAddStatus == nil {
+		f.wordAutoAddStatus = map[string]string{}
+	}
+	if f.wordAutoAddCount == nil {
+		f.wordAutoAddCount = map[string]int{}
+	}
+	f.wordAutoAddStatus[userID] = store.JobStatusDone
+	f.wordAutoAddCount[userID] = addedCount
+	return nil
+}
+
+func (f *fakeSessionStore) FailWordAutoAdd(ctx context.Context, userID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.wordAutoAddErr != nil {
+		return f.wordAutoAddErr
+	}
+	if f.wordAutoAddStatus == nil {
+		f.wordAutoAddStatus = map[string]string{}
+	}
+	f.wordAutoAddStatus[userID] = store.JobStatusFailed
+	return nil
+}
+
+// snapshotWordAutoAddStatus gives tests a lock-protected read of state a
+// background auto-add job (see transport.runWordAutoAdd) may still be
+// writing to concurrently — see waitForCondition.
+func (f *fakeSessionStore) snapshotWordAutoAddStatus(userID string) (string, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.wordAutoAddStatus[userID], f.wordAutoAddCount[userID]
 }
 
 func (f *fakeSessionStore) Close() error { return nil }

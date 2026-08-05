@@ -213,6 +213,19 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 	if err := addColumn(settingsTable, "learner_profile TEXT NOT NULL", "learner_profile"); err != nil {
 		return nil, err
 	}
+	// Predates asyncjob.KindWordAutoAdd: lets httpserver.wordAutoAddHandler
+	// return immediately after marking this row JobStatusPending, before
+	// pipeline.Pipeline.SuggestNewWords' LLM call even starts, with these two
+	// columns tracking that background job's progress for a reopened word-
+	// review page to poll — see store.MySQLStore.StartWordAutoAdd/
+	// CompleteWordAutoAdd/FailWordAutoAdd. VARCHAR (not TEXT) so it can carry
+	// a DEFAULT, same reasoning as quiz_status above.
+	if err := addColumn(settingsTable, "word_auto_add_status VARCHAR(16) NOT NULL DEFAULT ''", "word_auto_add_status"); err != nil {
+		return nil, err
+	}
+	if err := addColumn(settingsTable, "word_auto_add_count INT NOT NULL DEFAULT 0", "word_auto_add_count"); err != nil {
+		return nil, err
+	}
 	// Predates asyncjob.KindStudySummary: lets EndSession freeze a room and
 	// return immediately, before the wrap-up LLM call even starts, with this
 	// column tracking that background job's progress (JobStatusPending/Done/

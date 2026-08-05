@@ -15,6 +15,7 @@ import (
 	"buddy/server/internal/llm"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/protocol"
+	"buddy/server/internal/store"
 	"buddy/server/internal/wordreview"
 )
 
@@ -531,8 +532,16 @@ func (f *fakeWordAutoSuggestLLM) Complete(ctx context.Context, model string, msg
 	return f.complete(msgs)
 }
 
-func TestWordAutoAddSavesEachSuggestionAsPendingAndReturnsThem(t *testing.T) {
-	store := &fakeWordStore{}
+// wordAutoAddHandler now only reserves/enqueues the job and returns
+// immediately (see word_auto_add_job.go's runWordAutoAdd) — these tests pass
+// a nil wordAutoAddQueue, the same "Redis not configured" inline-goroutine
+// fallback wordSaveHandler's tests already exercise for word-verify, so the
+// actual pipe.SuggestNewWords call and every save happen on a detached
+// goroutine the test has to waitForCondition on, exactly like
+// TestArticleDrawHandlerReservesPendingAndCompletesInBackground.
+
+func TestWordAutoAddReservesPendingAndCompletesInBackground(t *testing.T) {
+	wordStore := &fakeWordStore{}
 	settings := &fakeSessionStore{learnerProfiles: map[string]string{"alex": "loves cooking"}}
 	pipe := &pipeline.Pipeline{
 		LLM: &fakeWordAutoSuggestLLM{complete: func(msgs []llm.Message) (string, error) {
@@ -540,7 +549,7 @@ func TestWordAutoAddSavesEachSuggestionAsPendingAndReturnsThem(t *testing.T) {
 		}},
 		ChatModel: "m",
 	}
-	h := wordAutoAddHandler(fakeIdentifier{id: "alex", ok: true}, store, settings, pipe, nil)
+	h := wordAutoAddHandler(fakeIdentifier{id: "alex", ok: true}, wordStore, settings, pipe, nil, nil)
 
 	req := httptest.NewRequest("POST", "/api/words/auto-add", nil)
 	rec := httptest.NewRecorder()
@@ -549,69 +558,77 @@ func TestWordAutoAddSavesEachSuggestionAsPendingAndReturnsThem(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
 	}
-	var body struct {
-		Words []wordItem `json:"words"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+	var got wordAutoAddStatus
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("bad JSON body: %v", err)
 	}
-	if len(body.Words) != 2 {
-		t.Fatalf("words = %+v, want 2 saved suggestions", body.Words)
+	if got.Status != store.JobStatusPending {
+		t.Fatalf("status = %+v, want an immediate pending response, never blocking on SuggestNewWords", got)
 	}
-	for _, w := range body.Words {
+
+	waitForCondition(t, 2*time.Second, func() bool {
+		status, _ := settings.snapshotWordAutoAddStatus("alex")
+		return status == store.JobStatusDone
+	})
+	_, count := settings.snapshotWordAutoAddStatus("alex")
+	if count != 2 {
+		t.Fatalf("addedCount = %d, want 2", count)
+	}
+
+	wordStore.mu.Lock()
+	defer wordStore.mu.Unlock()
+	if len(wordStore.byUser["alex"]) != 2 {
+		t.Fatalf("byUser[alex] = %+v, want both suggestions saved", wordStore.byUser["alex"])
+	}
+	for _, w := range wordStore.byUser["alex"] {
 		if w.Status != wordreview.StatusPending {
 			t.Errorf("word %q status = %q, want %q — verification runs in the background", w.Word, w.Status, wordreview.StatusPending)
 		}
 	}
+}
 
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if len(store.byUser["alex"]) != 2 {
-		t.Fatalf("byUser[alex] = %+v, want both suggestions saved", store.byUser["alex"])
+func TestWordAutoAddAlreadyPendingReturnsCurrentStatusWithoutStartingAnotherRun(t *testing.T) {
+	wordStore := &fakeWordStore{}
+	settings := &fakeSessionStore{wordAutoAddStatus: map[string]string{"alex": "pending"}, wordAutoAddCount: map[string]int{"alex": 0}}
+	llmCalls := 0
+	pipe := &pipeline.Pipeline{
+		LLM: &fakeWordAutoSuggestLLM{complete: func(msgs []llm.Message) (string, error) {
+			llmCalls++
+			return `{"suggestions":[]}`, nil
+		}},
+		ChatModel: "m",
+	}
+	h := wordAutoAddHandler(fakeIdentifier{id: "alex", ok: true}, wordStore, settings, pipe, nil, nil)
+
+	req := httptest.NewRequest("POST", "/api/words/auto-add", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	var got wordAutoAddStatus
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("bad JSON body: %v", err)
+	}
+	if got.Status != store.JobStatusPending {
+		t.Fatalf("status = %+v, want pending (an existing run, not a fresh one)", got)
+	}
+	// The already-pending short-circuit returns before ever spawning the
+	// background goroutine, so this is safe to assert synchronously.
+	if llmCalls != 0 {
+		t.Fatalf("llmCalls = %d, want 0 — a second click while one run is already in flight must not start another", llmCalls)
 	}
 }
 
-func TestWordAutoAddReturnsEmptyListWhenNoSuggestions(t *testing.T) {
-	store := &fakeWordStore{}
+func TestWordAutoAddReturnsDoneWithZeroCountWhenNoSuggestions(t *testing.T) {
+	wordStore := &fakeWordStore{}
 	settings := &fakeSessionStore{}
 	pipe := &pipeline.Pipeline{
 		LLM:       &fakeWordAutoSuggestLLM{complete: func(msgs []llm.Message) (string, error) { return `{"suggestions":[]}`, nil }},
 		ChatModel: "m",
 	}
-	h := wordAutoAddHandler(fakeIdentifier{id: "alex", ok: true}, store, settings, pipe, nil)
-
-	req := httptest.NewRequest("POST", "/api/words/auto-add", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (no suggestions is not an error), body=%s", rec.Code, rec.Body.String())
-	}
-	var body struct {
-		Words []wordItem `json:"words"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("bad JSON body: %v", err)
-	}
-	if len(body.Words) != 0 {
-		t.Fatalf("words = %+v, want an empty (not null) list", body.Words)
-	}
-}
-
-func TestWordAutoAddExcludesAlreadyTrackedWordsFromThePrompt(t *testing.T) {
-	store := &fakeWordStore{byUser: map[string][]wordreview.Word{
-		"alex": {{ID: "w1", UserID: "alex", Word: "furious", Meaning: "화가 난", Status: wordreview.StatusVerified}},
-	}}
-	settings := &fakeSessionStore{}
-	var gotInput string
-	pipe := &pipeline.Pipeline{
-		LLM: &fakeWordAutoSuggestLLM{complete: func(msgs []llm.Message) (string, error) {
-			gotInput = msgs[len(msgs)-1].Content
-			return `{"suggestions":[]}`, nil
-		}},
-		ChatModel: "m",
-	}
-	h := wordAutoAddHandler(fakeIdentifier{id: "alex", ok: true}, store, settings, pipe, nil)
+	h := wordAutoAddHandler(fakeIdentifier{id: "alex", ok: true}, wordStore, settings, pipe, nil, nil)
 
 	req := httptest.NewRequest("POST", "/api/words/auto-add", nil)
 	rec := httptest.NewRecorder()
@@ -620,13 +637,55 @@ func TestWordAutoAddExcludesAlreadyTrackedWordsFromThePrompt(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
 	}
+
+	waitForCondition(t, 2*time.Second, func() bool {
+		status, _ := settings.snapshotWordAutoAddStatus("alex")
+		return status == store.JobStatusDone
+	})
+	_, count := settings.snapshotWordAutoAddStatus("alex")
+	if count != 0 {
+		t.Fatalf("addedCount = %d, want 0 (no suggestions is not an error)", count)
+	}
+}
+
+func TestWordAutoAddExcludesAlreadyTrackedWordsFromThePrompt(t *testing.T) {
+	wordStore := &fakeWordStore{byUser: map[string][]wordreview.Word{
+		"alex": {{ID: "w1", UserID: "alex", Word: "furious", Meaning: "화가 난", Status: wordreview.StatusVerified}},
+	}}
+	settings := &fakeSessionStore{}
+	var mu sync.Mutex
+	var gotInput string
+	pipe := &pipeline.Pipeline{
+		LLM: &fakeWordAutoSuggestLLM{complete: func(msgs []llm.Message) (string, error) {
+			mu.Lock()
+			gotInput = msgs[len(msgs)-1].Content
+			mu.Unlock()
+			return `{"suggestions":[]}`, nil
+		}},
+		ChatModel: "m",
+	}
+	h := wordAutoAddHandler(fakeIdentifier{id: "alex", ok: true}, wordStore, settings, pipe, nil, nil)
+
+	req := httptest.NewRequest("POST", "/api/words/auto-add", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	waitForCondition(t, 2*time.Second, func() bool {
+		status, _ := settings.snapshotWordAutoAddStatus("alex")
+		return status == store.JobStatusDone
+	})
+	mu.Lock()
+	defer mu.Unlock()
 	if !strings.Contains(gotInput, "furious") {
 		t.Fatalf("prompt input = %q, want it to list the learner's already-tracked word", gotInput)
 	}
 }
 
 func TestWordAutoAddUnauthorizedWhenIdentifyFails(t *testing.T) {
-	h := wordAutoAddHandler(fakeIdentifier{ok: false}, &fakeWordStore{}, &fakeSessionStore{}, &pipeline.Pipeline{}, nil)
+	h := wordAutoAddHandler(fakeIdentifier{ok: false}, &fakeWordStore{}, &fakeSessionStore{}, &pipeline.Pipeline{}, nil, nil)
 
 	req := httptest.NewRequest("POST", "/api/words/auto-add", nil)
 	rec := httptest.NewRecorder()
@@ -637,45 +696,118 @@ func TestWordAutoAddUnauthorizedWhenIdentifyFails(t *testing.T) {
 	}
 }
 
-func TestWordAutoAddInternalErrorWhenLearnerProfileLookupFails(t *testing.T) {
+// TestWordAutoAddFailsJobWhenLearnerProfileLookupFails guards that a lookup
+// failure inside the background job (see runWordAutoAdd) never surfaces as a
+// synchronous 500 from wordAutoAddHandler — the request already succeeded
+// with "pending" before the profile lookup even starts — and instead lands
+// as JobStatusFailed for the frontend's poll to observe.
+func TestWordAutoAddFailsJobWhenLearnerProfileLookupFails(t *testing.T) {
 	settings := &fakeSessionStore{learnerProfileErr: errors.New("db unreachable")}
-	h := wordAutoAddHandler(fakeIdentifier{id: "alex", ok: true}, &fakeWordStore{}, settings, &pipeline.Pipeline{}, nil)
+	h := wordAutoAddHandler(fakeIdentifier{id: "alex", ok: true}, &fakeWordStore{}, settings, &pipeline.Pipeline{}, nil, nil)
 
 	req := httptest.NewRequest("POST", "/api/words/auto-add", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (the job starting, not the LLM finishing), body=%s", rec.Code, rec.Body.String())
 	}
+	waitForCondition(t, 2*time.Second, func() bool {
+		status, _ := settings.snapshotWordAutoAddStatus("alex")
+		return status == store.JobStatusFailed
+	})
 }
 
-func TestWordAutoAddInternalErrorWhenWordListFails(t *testing.T) {
-	store := &fakeWordStore{err: errors.New("db unreachable")}
-	h := wordAutoAddHandler(fakeIdentifier{id: "alex", ok: true}, store, &fakeSessionStore{}, &pipeline.Pipeline{}, nil)
+func TestWordAutoAddFailsJobWhenWordListFails(t *testing.T) {
+	wordStore := &fakeWordStore{err: errors.New("db unreachable")}
+	settings := &fakeSessionStore{}
+	h := wordAutoAddHandler(fakeIdentifier{id: "alex", ok: true}, wordStore, settings, &pipeline.Pipeline{}, nil, nil)
 
 	req := httptest.NewRequest("POST", "/api/words/auto-add", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
 	}
+	waitForCondition(t, 2*time.Second, func() bool {
+		status, _ := settings.snapshotWordAutoAddStatus("alex")
+		return status == store.JobStatusFailed
+	})
 }
 
-func TestWordAutoAddInternalErrorWhenSuggestPipelineFails(t *testing.T) {
+func TestWordAutoAddFailsJobWhenSuggestPipelineFails(t *testing.T) {
 	pipe := &pipeline.Pipeline{
 		LLM:       &fakeWordAutoSuggestLLM{complete: func(msgs []llm.Message) (string, error) { return "", errors.New("model unreachable") }},
 		ChatModel: "m",
 	}
-	h := wordAutoAddHandler(fakeIdentifier{id: "alex", ok: true}, &fakeWordStore{}, &fakeSessionStore{}, pipe, nil)
+	settings := &fakeSessionStore{}
+	h := wordAutoAddHandler(fakeIdentifier{id: "alex", ok: true}, &fakeWordStore{}, settings, pipe, nil, nil)
 
 	req := httptest.NewRequest("POST", "/api/words/auto-add", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	waitForCondition(t, 2*time.Second, func() bool {
+		status, _ := settings.snapshotWordAutoAddStatus("alex")
+		return status == store.JobStatusFailed
+	})
+}
+
+// ---- wordAutoAddStatusHandler ----------------------------------------------
+
+func TestWordAutoAddStatusHandlerReturnsIdleWhenNoRunHasEverStarted(t *testing.T) {
+	h := wordAutoAddStatusHandler(fakeIdentifier{id: "alex", ok: true}, &fakeSessionStore{})
+
+	req := httptest.NewRequest("GET", "/api/words/auto-add", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	var got wordAutoAddStatus
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("bad JSON body: %v", err)
+	}
+	if got.Status != "" {
+		t.Fatalf("status = %q, want \"\" (idle — no run has ever started)", got.Status)
+	}
+}
+
+// TestWordAutoAddStatusHandlerSurvivesReopeningThePage guards the actual
+// point of this endpoint: a learner who pressed "새 단어 추가로 학습하기",
+// navigated away mid-generation, and came back polls this same status the
+// original request would have — no state is lost by leaving.
+func TestWordAutoAddStatusHandlerSurvivesReopeningThePage(t *testing.T) {
+	settings := &fakeSessionStore{wordAutoAddStatus: map[string]string{"alex": store.JobStatusDone}, wordAutoAddCount: map[string]int{"alex": 3}}
+	h := wordAutoAddStatusHandler(fakeIdentifier{id: "alex", ok: true}, settings)
+
+	req := httptest.NewRequest("GET", "/api/words/auto-add", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var got wordAutoAddStatus
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("bad JSON body: %v", err)
+	}
+	if got.Status != store.JobStatusDone || got.Count != 3 {
+		t.Fatalf("status = %+v, want {done 3}", got)
+	}
+}
+
+func TestWordAutoAddStatusHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
+	h := wordAutoAddStatusHandler(fakeIdentifier{ok: false}, &fakeSessionStore{})
+
+	req := httptest.NewRequest("GET", "/api/words/auto-add", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
 	}
 }
 

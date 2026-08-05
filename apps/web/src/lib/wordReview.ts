@@ -48,23 +48,42 @@ export async function saveWord(s: WordSuggestion): Promise<WordReviewItem | null
   }
 }
 
-// Generates and saves a batch of new words picked to fit the caller's
-// learner profile, once their review queue is empty (the "새 단어 추가로
-// 학습하기" button in pages/WordReview.tsx, replacing "복습 시작" in that
-// slot) — see httpserver.wordAutoAddHandler. Every returned word comes back
-// "pending", same background-verification lifecycle as saveWord's result.
-// Returns an empty array (not null) when the model found nothing to add;
-// null is reserved for an actual request failure, same distinction fetchWords
-// makes.
-export async function autoAddWords(): Promise<WordReviewItem[] | null> {
+// Mirrors httpserver's wordAutoAddStatus shape. status is "" (no run has
+// ever started, treated as idle), "pending" (still generating in the
+// background), "done", or "failed" — see store.JobStatusPending/Done/Failed
+// server-side. count is only meaningful once status is "done": how many
+// words that run actually added (0 means the model found nothing new).
+export type WordAutoAddJobStatus = "" | "pending" | "done" | "failed";
+export interface WordAutoAddStatus {
+  status: WordAutoAddJobStatus;
+  count: number;
+}
+
+// Starts (or, if one is already running, just reports) the "새 단어 추가로
+// 학습하기" background job that generates and saves a batch of new words
+// fit to the caller's learner profile — see httpserver.wordAutoAddHandler.
+// Comes back the instant the job is durably marked pending — it never waits
+// on the LLM generation, which keeps running server-side even if the caller
+// navigates away. Poll fetchAutoAddStatus() until status leaves "pending" —
+// that keeps working even after a reload, since generation itself never
+// depended on this request staying open. Returns null on any failure
+// (network error, non-200, bad JSON).
+export async function startAutoAddWords(): Promise<WordAutoAddStatus | null> {
   try {
     const res = await fetch("api/words/auto-add", { method: "POST" });
     if (!res.ok) return null;
-    const body = (await res.json()) as { words: WordReviewItem[] };
-    return body.words;
+    return (await res.json()) as WordAutoAddStatus;
   } catch {
     return null;
   }
+}
+
+// Re-fetches the caller's own auto-add job status — the poll target for a
+// run still generating in the background, whether the caller has been
+// watching it the whole time or just reopened the word-review page while it
+// was still going (see startAutoAddWords). Returns null on any failure.
+export async function fetchAutoAddStatus(): Promise<WordAutoAddStatus | null> {
+  return fetchJSON<WordAutoAddStatus | null>("api/words/auto-add", null);
 }
 
 // Fetches the caller's full study list plus how many of those words are due
