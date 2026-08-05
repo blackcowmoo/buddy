@@ -174,9 +174,21 @@ export function EndConversationControl({
               )}
               {studySummary.length > 0 && quiz.length > 0 && (
                 <div className="quiz-actions">
-                  <button type="button" className="quiz-start-btn" onClick={startQuiz}>
-                    퀴즈 풀기
-                  </button>
+                  {/* Once quizCompleted is set, this quiz is done for good —
+                      finishing it (right or wrong, see QuizPanel's finalize)
+                      is what a learner leaving and coming back later must
+                      see as "already studied", not a dangling invitation to
+                      redo it. The only way to get a fresh attempt is
+                      regenerating a new question set below. */}
+                  {quizCompleted ? (
+                    <div className="quiz-acknowledged" role="status">
+                      학습 완료로 표시했어요.
+                    </div>
+                  ) : (
+                    <button type="button" className="quiz-start-btn" onClick={startQuiz}>
+                      퀴즈 풀기
+                    </button>
+                  )}
                   <button type="button" className="ghost quiz-reset-btn" onClick={onQuizReset}>
                     퀴즈 다시 만들기
                   </button>
@@ -248,11 +260,13 @@ function isQuizAnswerAccepted(question: QuizQuestion, raw: string): boolean {
 // the wrap-up, so there's nothing left to fetch or wait on here). One
 // question at a time; typing an answer and confirming reveals whether it
 // matched (see isQuizAnswerAccepted) plus the explanation/translation, then
-// advances — ending on a plain right/total score. Answering every question
-// correctly calls onCompleted (see markQuizCompleted) so the room list can
-// show the same "all correct" checkmark a session with nothing left to quiz
-// gets via "내가 읽었음" — a single wrong answer anywhere must never trigger
-// it.
+// advances — ending on a plain right/total score. Finishing the last
+// question — right or wrong, since going back to reread the wrap-up and
+// retaking the same questions later is exactly the wasted trip this
+// checkmark exists to avoid — calls onCompleted (see markQuizCompleted) so
+// the room list can show the same "studied this" checkmark a session with
+// nothing left to quiz gets via "내가 읽었음", and so EndConversationControl
+// hides "퀴즈 풀기" in favor of "퀴즈 다시 만들기" from then on.
 function QuizPanel({
   sessionId,
   questions,
@@ -298,22 +312,21 @@ function QuizPanel({
   // finalize records one question's outcome once it's fully settled — either
   // immediately (an exact/listed-synonym match) or after checkQuizAnswer's
   // LLM fallback resolves — so check()'s two paths share the exact same
-  // "advance score, complete the quiz if this was the last correct answer"
-  // logic instead of duplicating it.
+  // "advance score, complete the quiz if this was the last question" logic
+  // instead of duplicating it. Reaching the last question at all marks the
+  // quiz completed, regardless of whether this particular answer was right —
+  // the checkmark means "studied this", not "aced this".
   const finalize = useCallback(
     (isAnswerCorrect: boolean) => {
       setChecked(true);
       setChecking(false);
       setCorrect(isAnswerCorrect);
-      setCorrectCount((c) => {
-        const next = c + (isAnswerCorrect ? 1 : 0);
-        if (index + 1 === questions.length && next === questions.length) {
-          void markQuizCompleted(sessionId).then((ok) => {
-            if (ok) onCompleted();
-          });
-        }
-        return next;
-      });
+      if (index + 1 === questions.length) {
+        void markQuizCompleted(sessionId).then((ok) => {
+          if (ok) onCompleted();
+        });
+      }
+      setCorrectCount((c) => c + (isAnswerCorrect ? 1 : 0));
     },
     [index, questions.length, sessionId, onCompleted],
   );

@@ -72,6 +72,11 @@ export function InstantSessions() {
                     the one way back into a room's transcript/feedback once
                     you've left this page. */}
                 <a className="session-item" href={`.#chat/${encodeURIComponent(s.id)}`}>
+                  {s.quizCompleted && (
+                    <span className="quiz-completed-badge" title="퀴즈까지 모두 완료했어요">
+                      ✅
+                    </span>
+                  )}
                   <span className="title">{s.title}</span>
                   <span className="time">{formatMessageTime(s.createdAt)}</span>
                 </a>

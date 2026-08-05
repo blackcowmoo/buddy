@@ -59,6 +59,21 @@ describe("InstantSessions page", () => {
     expect(await screen.findByText("how's the weather today")).toBeInTheDocument();
   });
 
+  // Guards the "studied this" badge these rooms get too (see
+  // store.SessionMeta.QuizCompleted/markQuizCompleted) — an instant session
+  // is a SessionSummary like any other, so it can carry quizCompleted the
+  // same way the main room list does (see App.test.tsx's equivalent test).
+  it("shows a quiz-completed badge only for a session whose quiz was marked completed", async () => {
+    vi.mocked(fetchInstantSessions).mockResolvedValue([
+      { id: "i1", title: "done studying", createdAt: 1700000000, updatedAt: 1700000000, quizCompleted: true },
+      { id: "i2", title: "not yet studied", createdAt: 1700000000, updatedAt: 1700000000, quizCompleted: false },
+    ]);
+    render(<InstantSessions />);
+    await screen.findByText("done studying");
+    expect(screen.getByText("done studying").closest("a")?.textContent).toContain("✅");
+    expect(screen.getByText("not yet studied").closest("a")?.textContent).not.toContain("✅");
+  });
+
   // The only way back into a room's transcript/feedback once you've left
   // this page — see App.tsx's mount effect, which reads this same
   // "#chat/<id>" hash (lib/roomHistory.parseRoomHash) to reopen the room.
