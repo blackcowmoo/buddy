@@ -292,6 +292,12 @@ func (f *fakeSessionStore) EndSession(ctx context.Context, userID, sessionID str
 	return nil
 }
 
+func (f *fakeSessionStore) SessionEnded(ctx context.Context, userID, sessionID string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.detailMeta.Ended, nil
+}
+
 func (f *fakeSessionStore) CompleteStudySummary(ctx context.Context, userID, sessionID string, summary []protocol.StudySummarySentence) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

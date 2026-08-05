@@ -144,6 +144,25 @@ func (s *MySQLStore) EndSession(ctx context.Context, userID, sessionID string) e
 	return nil
 }
 
+// SessionEnded is a single-column read of the same `ended` flag EndSession
+// sets — see the Store interface doc for why callers on a hot path (the WS
+// read loop) want this instead of SessionDetail's full transcript fetch. A
+// missing/foreign-user row reads the same as a fresh, un-ended session
+// (false, nil), matching Load's zero-value-not-error contract.
+func (s *MySQLStore) SessionEnded(ctx context.Context, userID, sessionID string) (bool, error) {
+	var ended int
+	err := s.ro.QueryRowContext(ctx, `
+		SELECT ended FROM `+sessionsTable+` WHERE user_id = ? AND id = ?
+	`, userID, sessionID).Scan(&ended)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store: session ended: %w", err)
+	}
+	return ended != 0, nil
+}
+
 // ListSessions returns userID's normal chat rooms — instant/"오늘의 한 문장"
 // rooms (see MarkInstant) are deliberately excluded so they never clutter
 // the main room list; ListInstantSessions is their own separate list.
