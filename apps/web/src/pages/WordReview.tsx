@@ -30,6 +30,18 @@ const maskStopWords = new Set([
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+// A token's dictionary spelling doesn't always survive inflection verbatim
+// (optimize -> optimizing drops the "e"; study -> studied swaps "y" for
+// "i"), so `\btoken\w*` alone misses those forms. Try the token as-is first,
+// then progressively shorter stems that match how English spelling changes
+// before "-ing"/"-ed"/"-ies", so e.g. "optimize" also matches via "optimiz".
+function candidateStems(token: string): string[] {
+  const stems = [token];
+  if (/[a-zA-Z]e$/i.test(token)) stems.push(token.slice(0, -1)); // optimize -> optimiz
+  if (/[^aeiou]y$/i.test(token)) stems.push(token.slice(0, -1)); // study -> stud
+  return stems;
+}
+
 // Placeholder swapped in for each blanked word before splitting the sentence
 // into typeable segments — a character that can never occur in the sentence
 // text itself.
@@ -56,7 +68,8 @@ function computeBlank(example: string, word: string): { parts: string[]; answers
   // the LLM inflects a phrase for the sentence's subject/tense (e.g. word
   // "do one's best" → example "do my best"). Fall back to masking each
   // significant word of the phrase on its own (tolerant of suffix changes
-  // like run → running), leaving words in between — "my" here — visible so
+  // like run → running and spelling changes like optimize → optimizing, via
+  // candidateStems), leaving words in between — "my" here — visible so
   // the learner can see where they fit, rather than one blank that either
   // hands over the whole answer or swallows unrelated sentence words. The
   // dictionary form's "one's" is never itself blanked (filtered as a stop
@@ -73,8 +86,12 @@ function computeBlank(example: string, word: string): { parts: string[]; answers
   // left-to-right sentence order, lining up with the blanks in `parts`.
   const matches: { index: number; token: string }[] = [];
   for (const token of tokens) {
-    const regex = new RegExp(`\\b${escapeRegExp(token)}\\w*`, "i");
-    const m = masked.match(regex);
+    let m: RegExpMatchArray | null = null;
+    for (const stem of candidateStems(token)) {
+      const regex = new RegExp(`\\b${escapeRegExp(stem)}\\w*`, "i");
+      m = masked.match(regex);
+      if (m) break;
+    }
     if (!m || m.index === undefined) continue;
     matches.push({ index: m.index, token });
     masked = masked.slice(0, m.index) + BLANK + masked.slice(m.index + m[0].length);
