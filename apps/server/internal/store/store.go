@@ -262,6 +262,15 @@ type Store interface {
 	// outcome once that background job finishes. A no-op (nil error) if
 	// sessionID doesn't exist or belongs to a different user, same as Save.
 	EndSession(ctx context.Context, userID, sessionID string) error
+	// SessionEnded reports whether a session is already frozen (see
+	// EndSession) — false, nil if sessionID doesn't exist or belongs to a
+	// different user. A narrow single-column read for transport's WS read
+	// loop, called on every incoming message to skip dispatching a reply/
+	// correction for a room that's already read-only (e.g. maybeFinalizeInstantSession
+	// closed it out from under a still-open connection) — same
+	// over-fetch-avoidance reasoning as AssistantTurnText: SessionDetail
+	// would pull the whole transcript to answer this one boolean.
+	SessionEnded(ctx context.Context, userID, sessionID string) (bool, error)
 	// CompleteStudySummary saves the wrap-up an asyncjob.KindStudySummary
 	// job generated for an already-ended session — StudySummary becomes
 	// summary and StudySummaryStatus becomes JobStatusDone, the terminal

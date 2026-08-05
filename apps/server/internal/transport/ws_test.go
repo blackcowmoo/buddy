@@ -553,6 +553,16 @@ func (f *fakeStore) EndSession(ctx context.Context, userID, sessionID string) er
 	return nil
 }
 
+func (f *fakeStore) SessionEnded(ctx context.Context, userID, sessionID string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.sessions[fakeStoreKey(userID, sessionID)]
+	if d == nil {
+		return false, nil
+	}
+	return d.meta.Ended, nil
+}
+
 func (f *fakeStore) CompleteStudySummary(ctx context.Context, userID, sessionID string, summary []protocol.StudySummarySentence) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1065,6 +1075,40 @@ func TestWSTextTurnRoundTrip(t *testing.T) {
 	done := readUntilTurn(t, c, protocol.EvAssistantDone, 1)
 	if done.Text == "" {
 		t.Fatalf("assistant_done had empty text")
+	}
+}
+
+// TestWSSkipsReplyForAlreadyEndedSession guards the fix for a room finalized
+// (see transport.FinalizeSession — e.g. maybeFinalizeInstantSession, which
+// runs from a background correction job, not this connection) while the
+// learner's socket is still open: a message arriving afterward must not
+// dispatch HandleText and burn an LLM reply call for a room that's already
+// read-only. EndConversationControl already hides this client-side; this
+// guards the server not wasting the call in the first place.
+func TestWSSkipsReplyForAlreadyEndedSession(t *testing.T) {
+	st := newTestStore(t)
+	srv := newTestServer(t, st)
+	c, _ := dial(t, srv, "end-user", "")
+	ready := readEvent(t, c) // ready
+	sessionID := ready.Session
+
+	sendText(t, c, "Hello Buddy")
+	readUntilTurn(t, c, protocol.EvAssistantDone, 1)
+	// Correction runs in its own goroutine after the reply (see
+	// pipeline.HandleText) and would otherwise still be in flight when
+	// EndSession below fires, leaking a turn-1 correction event into the
+	// post-end assertion window below and producing a false failure that has
+	// nothing to do with the second message this test actually cares about.
+	readUntilTurn(t, c, protocol.EvCorrection, 1)
+
+	if err := st.EndSession(context.Background(), "end-user", sessionID); err != nil {
+		t.Fatalf("EndSession() error = %v", err)
+	}
+
+	sendText(t, c, "Are you still there?")
+
+	if ev, ok := tryReadEvent(t, c, 500*time.Millisecond); ok {
+		t.Fatalf("got event %+v after session ended, want none — the ended session's message should have been dropped before dispatch", ev)
 	}
 }
 

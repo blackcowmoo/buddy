@@ -229,6 +229,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			break
 		}
+
+		// A room can be finalized out from under a still-open connection —
+		// e.g. maybeFinalizeInstantSession, triggered server-side by a
+		// background correction job rather than anything on this socket —
+		// so re-check on every message rather than trusting whatever was
+		// true at connect time. Skipping here, before HandleText/
+		// HandleUtterance ever run, is what actually saves the LLM call;
+		// the client finding out the room is read-only is a separate,
+		// already-handled concern (EndConversationControl).
+		if ended, err := h.store.SessionEnded(ctx, userID, sessionID); err != nil {
+			log.Printf("store: session ended %s/%s: %v", userID, sessionID, err)
+		} else if ended {
+			continue
+		}
+
 		turnCancel()
 		var tctx context.Context
 		tctx, turnCancel = context.WithCancel(ctx)
