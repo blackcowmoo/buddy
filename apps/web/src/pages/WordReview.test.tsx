@@ -43,6 +43,17 @@ const idiomWord: WordReviewItem = {
   status: "verified",
 };
 
+const optimizeWord: WordReviewItem = {
+  id: "w-optimize",
+  word: "optimize",
+  meaning: "최적화하다",
+  example: "We are optimizing the search algorithm for faster results.",
+  stage: 0,
+  reviewCount: 0,
+  nextReviewAt: Math.floor(Date.now() / 1000) - 3600, // 1 hour ago: due
+  status: "verified",
+};
+
 const futureWord: WordReviewItem = {
   id: "w2",
   word: "elated",
@@ -397,6 +408,29 @@ describe("WordReview page", () => {
     expect(secondBlank).toHaveAccessibleName("빈칸 2 정답 입력");
     await user.type(firstBlank, "do");
     await user.type(secondBlank, "best");
+    await user.click(screen.getByRole("button", { name: "확인" }));
+
+    expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
+  });
+
+  // The saved example inflects "optimize" to "optimizing" (drops the
+  // trailing "e" before "-ing"), which isn't a literal substring of the
+  // dictionary word, so this exercises the stem-matching fallback rather
+  // than the exact-match path.
+  it("masks the word even when the example spells it as an inflected form (optimize -> optimizing)", async () => {
+    vi.mocked(fetchWords).mockResolvedValue({ words: [optimizeWord], dueCount: 1 });
+    vi.mocked(reviewWord).mockResolvedValue({ ...optimizeWord, stage: 1, reviewCount: 1 });
+    const user = userEvent.setup();
+    render(<WordReview />);
+
+    await user.click(await screen.findByRole("button", { name: "복습 시작" }));
+
+    expect(await screen.findByText("최적화하다")).toBeInTheDocument();
+    expect(screen.getByText("We are")).toBeInTheDocument();
+    expect(screen.getByText("the search algorithm for faster results.")).toBeInTheDocument();
+    expect(screen.queryByText(/optimizing/i)).not.toBeInTheDocument();
+
+    await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "optimize");
     await user.click(screen.getByRole("button", { name: "확인" }));
 
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
