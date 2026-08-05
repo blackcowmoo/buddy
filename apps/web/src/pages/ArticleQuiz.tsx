@@ -69,6 +69,7 @@ export function ArticleQuiz() {
 
   useEffect(() => {
     const timers = pollTimersRef.current;
+    speakerRef.current = new KokoroSpeaker();
     return () => {
       for (const id of timers) clearTimeout(id);
       timers.clear();
