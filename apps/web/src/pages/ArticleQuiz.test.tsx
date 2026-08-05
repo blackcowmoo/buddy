@@ -38,6 +38,7 @@ import {
   type ArticleDraw,
 } from "../lib/articles";
 import { formatDateDivider } from "../lib/time";
+import { KokoroSpeaker } from "../tts/kokoro";
 
 afterEach(() => {
   cleanup();
@@ -239,6 +240,22 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     expect(fetchArticleInstance).toHaveBeenCalledWith("i1");
     expect(await screen.findByText(sampleDraw.summary)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "문제풀기" })).toBeInTheDocument();
+  });
+
+  it("reads the summary aloud through a real speaker instance when 읽어주기 is tapped", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+
+    await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
+    await user.click(screen.getByRole("button", { name: "🔊 읽어주기" }));
+
+    // Regression guard: the speaker ref must actually be constructed (see the
+    // mount effect that assigns speakerRef.current), otherwise handleRead's
+    // `if (!sp) return` bails out silently and the button does nothing.
+    const speakerInstance = vi.mocked(KokoroSpeaker).mock.instances[0];
+    await vi.waitFor(() => expect(speakerInstance.speak).toHaveBeenCalledWith(sampleDraw.summary));
   });
 
   it("shows an incorrect reveal when the wrong choice was picked", async () => {
