@@ -39,7 +39,7 @@ func newFakeNewsArticleStore(articles ...newsarticle.Article) *fakeNewsArticleSt
 	return s
 }
 
-func (s *fakeNewsArticleStore) ReserveArticle(ctx context.Context, source, title, url, description string) (newsarticle.Article, error) {
+func (s *fakeNewsArticleStore) ReserveArticle(ctx context.Context, source, title, url, description string, publishedAt time.Time) (newsarticle.Article, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, a := range s.articles {
@@ -47,7 +47,7 @@ func (s *fakeNewsArticleStore) ReserveArticle(ctx context.Context, source, title
 			return a, nil
 		}
 	}
-	a := newsarticle.Article{ID: uuid.New().String(), Source: source, Title: title, URL: url, Description: description, Status: newsarticle.StatusPending, CreatedAt: time.Now()}
+	a := newsarticle.Article{ID: uuid.New().String(), Source: source, Title: title, URL: url, Description: description, PublishedAt: publishedAt, Status: newsarticle.StatusPending, CreatedAt: time.Now()}
 	s.articles[a.ID] = a
 	return a, nil
 }

@@ -85,6 +85,17 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 	}, mysqlerr.DupFieldName); err != nil {
 		return nil, fmt.Errorf("newsarticle: schema: add claimed_at column: %w", err)
 	}
+	// published_at backs Article.PublishedAt — the source feed's own <pubDate>
+	// (see newsfeed.Candidate.PublishedAt), separate from created_at (when
+	// this row was reserved). DEFAULT 0 leaves every pre-existing row with a
+	// zero PublishedAt, same "unknown, render nothing" fallback a fresh row
+	// gets if its feed item had no parseable pubDate.
+	if err := mysqlerr.ApplyAdditive(func() error {
+		_, err := rw.ExecContext(ctx, `ALTER TABLE `+articlesTable+` ADD COLUMN published_at BIGINT NOT NULL DEFAULT 0`)
+		return err
+	}, mysqlerr.DupFieldName); err != nil {
+		return nil, fmt.Errorf("newsarticle: schema: add published_at column: %w", err)
+	}
 
 	// selected_index defaults to -1 (not yet answered) rather than 0, which
 	// would be indistinguishable from an actual "chose choice 0" answer.
@@ -115,23 +126,26 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
-const articleColumns = `id, source, title, url, summary, choices_json, correct_index, explanation, description, status, created_at`
+const articleColumns = `id, source, title, url, summary, choices_json, correct_index, explanation, description, status, created_at, published_at`
 
 func scanArticle(row scanner) (Article, error) {
 	var a Article
 	var choicesJSON string
-	var createdAt int64
-	if err := row.Scan(&a.ID, &a.Source, &a.Title, &a.URL, &a.Summary, &choicesJSON, &a.CorrectIndex, &a.Explanation, &a.Description, &a.Status, &createdAt); err != nil {
+	var createdAt, publishedAt int64
+	if err := row.Scan(&a.ID, &a.Source, &a.Title, &a.URL, &a.Summary, &choicesJSON, &a.CorrectIndex, &a.Explanation, &a.Description, &a.Status, &createdAt, &publishedAt); err != nil {
 		return Article{}, err
 	}
 	if err := json.Unmarshal([]byte(choicesJSON), &a.Choices); err != nil {
 		return Article{}, fmt.Errorf("decode choices: %w", err)
 	}
 	a.CreatedAt = time.Unix(createdAt, 0)
+	if publishedAt > 0 {
+		a.PublishedAt = time.Unix(publishedAt, 0)
+	}
 	return a, nil
 }
 
-func (s *MySQLStore) ReserveArticle(ctx context.Context, source, title, url, description string) (Article, error) {
+func (s *MySQLStore) ReserveArticle(ctx context.Context, source, title, url, description string, publishedAt time.Time) (Article, error) {
 	// INSERT IGNORE: the UNIQUE KEY on url makes this a no-op if two
 	// concurrent draws (by different learners, or a retry) reserved the same
 	// story at the same time — the loser's row is discarded in favor of
@@ -143,10 +157,18 @@ func (s *MySQLStore) ReserveArticle(ctx context.Context, source, title, url, des
 	// immediately after reserving, in the same request, so "just reserved"
 	// and "just claimed" really are the same moment for a fresh row.
 	now := time.Now().Unix()
+	// publishedAt.Unix() on a zero time.Time is a large negative number, not
+	// 0 — normalize so an unknown pubDate (see newsfeed.Candidate.
+	// PublishedAt's doc comment) round-trips as "no date" through scanArticle
+	// the same way a pre-existing row's DEFAULT 0 does.
+	var publishedAtUnix int64
+	if !publishedAt.IsZero() {
+		publishedAtUnix = publishedAt.Unix()
+	}
 	_, err := s.rw.ExecContext(ctx, `
-		INSERT IGNORE INTO `+articlesTable+` (id, source, title, url, summary, choices_json, correct_index, explanation, description, status, created_at, claimed_at)
-		VALUES (?, ?, ?, ?, '', '[]', 0, '', ?, ?, ?, ?)
-	`, uuid.New().String(), source, title, url, description, StatusPending, now, time.Now().UnixNano())
+		INSERT IGNORE INTO `+articlesTable+` (id, source, title, url, summary, choices_json, correct_index, explanation, description, status, created_at, claimed_at, published_at)
+		VALUES (?, ?, ?, ?, '', '[]', 0, '', ?, ?, ?, ?, ?)
+	`, uuid.New().String(), source, title, url, description, StatusPending, now, time.Now().UnixNano(), publishedAtUnix)
 	if err != nil {
 		return Article{}, fmt.Errorf("newsarticle: reserve article: insert: %w", err)
 	}
@@ -271,7 +293,7 @@ func (s *MySQLStore) CreateInstance(ctx context.Context, userID, articleID strin
 }
 
 const instanceColumns = `i.id, i.answered, i.selected_index, i.correct, i.created_at, ` +
-	`a.id, a.source, a.title, a.url, a.summary, a.choices_json, a.correct_index, a.explanation, a.description, a.status, a.created_at`
+	`a.id, a.source, a.title, a.url, a.summary, a.choices_json, a.correct_index, a.explanation, a.description, a.status, a.created_at, a.published_at`
 
 // scanInstance reads one instanceColumns row (Instance columns followed by
 // its joined Article columns, in that order) — answered/correct come off
@@ -283,11 +305,11 @@ func scanInstance(row scanner, userID string) (Instance, error) {
 	var answered, correct int
 	var instCreatedAt int64
 	var choicesJSON string
-	var articleCreatedAt int64
+	var articleCreatedAt, articlePublishedAt int64
 	if err := row.Scan(
 		&inst.ID, &answered, &inst.SelectedIndex, &correct, &instCreatedAt,
 		&inst.Article.ID, &inst.Article.Source, &inst.Article.Title, &inst.Article.URL, &inst.Article.Summary,
-		&choicesJSON, &inst.Article.CorrectIndex, &inst.Article.Explanation, &inst.Article.Description, &inst.Article.Status, &articleCreatedAt,
+		&choicesJSON, &inst.Article.CorrectIndex, &inst.Article.Explanation, &inst.Article.Description, &inst.Article.Status, &articleCreatedAt, &articlePublishedAt,
 	); err != nil {
 		return Instance{}, err
 	}
@@ -299,6 +321,9 @@ func scanInstance(row scanner, userID string) (Instance, error) {
 	inst.Correct = correct != 0
 	inst.CreatedAt = time.Unix(instCreatedAt, 0)
 	inst.Article.CreatedAt = time.Unix(articleCreatedAt, 0)
+	if articlePublishedAt > 0 {
+		inst.Article.PublishedAt = time.Unix(articlePublishedAt, 0)
+	}
 	return inst, nil
 }
 

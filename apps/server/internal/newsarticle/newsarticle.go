@@ -56,6 +56,11 @@ type Article struct {
 	// newsfeed.Candidate or a durable Redis job payload. Never sent to the
 	// learner.
 	Description string
+	// PublishedAt is the source feed's own publish time (newsfeed.Candidate.
+	// PublishedAt) — the real-world date the story went out, not when this
+	// row was reserved (see CreatedAt). Zero Time if the feed had no usable
+	// <pubDate>.
+	PublishedAt time.Time
 	// Status is StatusPending/StatusDone/StatusFailed — see those constants'
 	// doc comments. Every Article starts StatusPending, reserved by
 	// ReserveArticle the instant a fresh URL is first drawn, before
@@ -108,8 +113,9 @@ type Store interface {
 	// row (see Article.Description's doc comment) even though a fresh draw
 	// also passes it straight to the same-request generation call — it's the
 	// only way a later orphan-sweep retry (see StalePending) can regenerate
-	// without the original newsfeed.Candidate.
-	ReserveArticle(ctx context.Context, source, title, url, description string) (Article, error)
+	// without the original newsfeed.Candidate. publishedAt is persisted onto
+	// the reserved row as Article.PublishedAt — see its doc comment.
+	ReserveArticle(ctx context.Context, source, title, url, description string, publishedAt time.Time) (Article, error)
 	// CompleteArticle fills in a StatusPending Article's generated study
 	// content and flips Status to StatusDone. A no-op that just re-reads the
 	// row if it's no longer StatusPending (e.g. another attempt already

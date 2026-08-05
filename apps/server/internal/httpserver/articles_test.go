@@ -28,7 +28,7 @@ type fakeArticleStore struct {
 	usedURLErr error
 }
 
-func (f *fakeArticleStore) ReserveArticle(ctx context.Context, source, title, url, description string) (newsarticle.Article, error) {
+func (f *fakeArticleStore) ReserveArticle(ctx context.Context, source, title, url, description string, publishedAt time.Time) (newsarticle.Article, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
@@ -37,7 +37,7 @@ func (f *fakeArticleStore) ReserveArticle(ctx context.Context, source, title, ur
 	if existing, ok := f.byURL[url]; ok {
 		return existing, nil
 	}
-	a := newsarticle.Article{ID: "article-" + url, Source: source, Title: title, URL: url, Description: description, Status: newsarticle.StatusPending, CreatedAt: time.Now()}
+	a := newsarticle.Article{ID: "article-" + url, Source: source, Title: title, URL: url, Description: description, PublishedAt: publishedAt, Status: newsarticle.StatusPending, CreatedAt: time.Now()}
 	if f.byURL == nil {
 		f.byURL = map[string]newsarticle.Article{}
 	}
@@ -301,6 +301,30 @@ func TestArticleDrawHandlerReservesPendingAndCompletesInBackground(t *testing.T)
 	inst, err := st.Get(context.Background(), "alex", got.ID)
 	if err != nil || inst.Article.Summary == "" || len(inst.Article.Choices) != 4 {
 		t.Fatalf("Get() after background generation = (%+v, %v), want a completed article", inst, err)
+	}
+}
+
+// TestArticleDrawHandlerCarriesPublishedAtFromTheCandidate guards that the
+// feed's own pubDate (newsfeed.Candidate.PublishedAt) reaches the draw
+// response immediately at reserve time — not just once generation finishes —
+// since the reading view needs it to show a date even while status is still
+// "pending".
+func TestArticleDrawHandlerCarriesPublishedAtFromTheCandidate(t *testing.T) {
+	st := &fakeArticleStore{}
+	pipe := fakeArticlePipeline(fakeStudyJSON)
+	published := time.Date(2024, 3, 15, 9, 30, 0, 0, time.UTC)
+	fetch := fetchOneCandidate(newsfeed.Candidate{Source: "BBC", Title: "Headline", URL: "https://example.com/a", Description: "snippet", PublishedAt: published})
+	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
+
+	var got articleDraw
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.PublishedAt != published.Unix() {
+		t.Fatalf("PublishedAt = %d, want %d", got.PublishedAt, published.Unix())
 	}
 }
 

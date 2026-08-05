@@ -25,6 +25,10 @@ type articleListItem struct {
 	Answered  bool   `json:"answered"`
 	Correct   bool   `json:"correct"`
 	CreatedAt int64  `json:"createdAt"`
+	// PublishedAt is the source feed's own publish time (newsarticle.Article.
+	// PublishedAt), unix seconds, 0 if unknown — distinct from CreatedAt,
+	// which is when this learner drew the story.
+	PublishedAt int64 `json:"publishedAt"`
 	// Status is "pending" (still being generated in the background), "done",
 	// or "failed" (see newsarticle.Article.Status) — lets a reopened list
 	// show a draw that's still generating instead of an empty summary, and
@@ -35,14 +39,15 @@ type articleListItem struct {
 
 func toArticleListItem(inst newsarticle.Instance) articleListItem {
 	return articleListItem{
-		ID:        inst.ID,
-		Source:    inst.Article.Source,
-		Title:     inst.Article.Title,
-		Summary:   inst.Article.Summary,
-		Answered:  inst.Answered,
-		Correct:   inst.Correct,
-		CreatedAt: inst.CreatedAt.Unix(),
-		Status:    inst.Article.Status,
+		ID:          inst.ID,
+		Source:      inst.Article.Source,
+		Title:       inst.Article.Title,
+		Summary:     inst.Article.Summary,
+		Answered:    inst.Answered,
+		Correct:     inst.Correct,
+		CreatedAt:   inst.CreatedAt.Unix(),
+		PublishedAt: articlePublishedAtUnix(inst.Article),
+		Status:      inst.Article.Status,
 	}
 }
 
@@ -58,6 +63,11 @@ type articleDraw struct {
 	Title   string   `json:"title"`
 	Summary string   `json:"summary"`
 	Choices []string `json:"choices"`
+	// PublishedAt is the source feed's own publish time, unix seconds, 0 if
+	// unknown — see articleListItem.PublishedAt's doc comment. Present from
+	// the very first draw response, even while Status is still "pending":
+	// it's captured at ReserveArticle time, not once generation finishes.
+	PublishedAt int64 `json:"publishedAt"`
 	// Status is "pending" (the study content is still generating in the
 	// background — Summary/Choices are empty) or "done"/"failed" — see
 	// newsarticle.Article.Status. The frontend polls articleInstanceHandler
@@ -69,13 +79,25 @@ type articleDraw struct {
 
 func toArticleDraw(inst newsarticle.Instance) articleDraw {
 	return articleDraw{
-		ID:      inst.ID,
-		Source:  inst.Article.Source,
-		Title:   inst.Article.Title,
-		Summary: inst.Article.Summary,
-		Choices: inst.Article.Choices,
-		Status:  inst.Article.Status,
+		ID:          inst.ID,
+		Source:      inst.Article.Source,
+		Title:       inst.Article.Title,
+		Summary:     inst.Article.Summary,
+		Choices:     inst.Article.Choices,
+		PublishedAt: articlePublishedAtUnix(inst.Article),
+		Status:      inst.Article.Status,
 	}
+}
+
+// articlePublishedAtUnix reports a.PublishedAt as unix seconds, or 0 for the
+// zero time.Time (an unknown/unparsed feed pubDate — see
+// newsarticle.Article.PublishedAt's doc comment) rather than the large
+// negative number time.Time{}.Unix() would otherwise produce.
+func articlePublishedAtUnix(a newsarticle.Article) int64 {
+	if a.PublishedAt.IsZero() {
+		return 0
+	}
+	return a.PublishedAt.Unix()
 }
 
 // articleResult is what articleAnswerHandler returns — the reveal a learner
@@ -178,7 +200,7 @@ func articleDrawHandler(ident identity.Identifier, articles newsarticle.Store, p
 		}
 		pick := fresh[0]
 
-		article, err := articles.ReserveArticle(r.Context(), pick.Source, pick.Title, pick.URL, pick.Description)
+		article, err := articles.ReserveArticle(r.Context(), pick.Source, pick.Title, pick.URL, pick.Description, pick.PublishedAt)
 		if err != nil {
 			serverError(w, "articles: reserve "+userID, err)
 			return

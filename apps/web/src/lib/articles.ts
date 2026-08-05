@@ -18,6 +18,7 @@ export interface ArticleInstance {
   answered: boolean;
   correct: boolean;
   createdAt: number; // unix seconds
+  publishedAt: number; // unix seconds; 0 if the source feed had no usable pubDate
   status: ArticleStatus;
 }
 
@@ -33,6 +34,9 @@ export interface ArticleDraw {
   title: string;
   summary: string;
   choices: string[];
+  // unix seconds; 0 if the source feed had no usable pubDate. Present from
+  // the very first draw response, even while status is still "pending".
+  publishedAt: number;
   status: ArticleStatus;
 }
 

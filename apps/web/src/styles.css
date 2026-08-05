@@ -346,6 +346,11 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 .quiz-preparing, .quiz-acknowledged { font-size: 13px; color: var(--muted); padding: 2px 4px; }
 .quiz-acknowledged { color: var(--ok); }
 .quiz-panel { display: flex; flex-direction: column; gap: 8px; }
+/* Article reading view header: title, then a small muted publish date (see
+   newsarticle.Article.PublishedAt) right above the summary — same small/
+   muted convention as .session-item .time and .recording-sub. */
+.article-meta { font-weight: 600; line-height: 1.4; }
+.article-date { font-size: 12px; color: var(--muted); margin-top: -4px; }
 .quiz-back-btn { align-self: flex-start; padding: 2px 4px; font-size: 12px; }
 .quiz-question { display: flex; flex-direction: column; gap: 8px; }
 .quiz-progress { font-size: 12px; color: var(--muted); }

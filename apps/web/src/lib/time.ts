@@ -53,7 +53,11 @@ export function formatMessageTime(unixSeconds: number): string {
   return `${period} ${h12}:${mm}`;
 }
 
-function formatAbsoluteDate(d: Date): string {
+// A fixed, unambiguous calendar date with no clock time (e.g.
+// "2024. 05. 20. (화)") — for anchoring a real-world event (a news article's
+// publish date) in time, unlike formatDateDivider's relative "오늘"/"어제"
+// shorthand, which is tuned for a live conversation instead.
+export function formatAbsoluteDate(d: Date): string {
   const weekday = WEEKDAYS_KO[d.getDay()];
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
