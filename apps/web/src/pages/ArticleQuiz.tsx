@@ -129,10 +129,9 @@ export function ArticleQuiz() {
     }
   }, [pollDraw]);
 
-  // Reopens one of the caller's own draws from the list — the only ones
-  // worth tapping back into are still-generating ones (see the instances.map
-  // below), so a learner who navigated away mid-generation and came back can
-  // resume watching it finish instead of it looking abandoned.
+  // Reopens one of the caller's own draws from the list, whether it's done
+  // (read the past summary/quiz result) or still generating (resume
+  // watching it finish instead of it looking abandoned).
   const openInstance = useCallback(
     async (id: string) => {
       const found = await fetchArticleInstance(id);
@@ -247,11 +246,7 @@ export function ArticleQuiz() {
                   <div className="session-row article-instance-row">
                     <div
                       className="session-item article-instance-item"
-                      // Only a still-generating draw is worth tapping back
-                      // into — a "done" row is just a read-only past attempt,
-                      // same as InstantSessions.tsx's list (see openInstance's
-                      // doc comment).
-                      onClick={inst.status !== "done" ? () => void openInstance(inst.id) : undefined}
+                      onClick={() => void openInstance(inst.id)}
                     >
                       {inst.status !== "done" && (
                         <span className="study-summary-pending-badge" title="아티클을 만드는 중">

@@ -226,6 +226,21 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     expect(await screen.findByText(/아티클을 요약하고 문제를 만드는 중이에요/)).toBeInTheDocument();
   });
 
+  it("reopens a finished past attempt into the reading view", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([
+      { id: "i1", source: "BBC", title: "Old story", summary: "s", answered: true, correct: true, createdAt: 1700000000, status: "done" as const },
+    ]);
+    vi.mocked(fetchArticleInstance).mockResolvedValue(sampleDraw);
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+
+    await user.click(await screen.findByText("[BBC] Old story"));
+
+    expect(fetchArticleInstance).toHaveBeenCalledWith("i1");
+    expect(await screen.findByText(sampleDraw.summary)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "문제풀기" })).toBeInTheDocument();
+  });
+
   it("shows an incorrect reveal when the wrong choice was picked", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
