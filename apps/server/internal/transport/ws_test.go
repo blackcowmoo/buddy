@@ -113,10 +113,12 @@ func (f *capturingLLM) systemPrompt() string {
 // land before the session row exists (hasRow) and still be readable later
 // once that row is created by turn 1.
 type fakeStore struct {
-	mu       sync.Mutex
-	sessions map[string]*fakeSession // key: userID + "\x00" + sessionID
-	styles   map[string]string       // userID -> interlocutorStyle
-	profiles map[string]string       // userID -> learnerProfile
+	mu                sync.Mutex
+	sessions          map[string]*fakeSession // key: userID + "\x00" + sessionID
+	styles            map[string]string       // userID -> interlocutorStyle
+	profiles          map[string]string       // userID -> learnerProfile
+	wordAutoAddStatus map[string]string       // userID -> status
+	wordAutoAddCount  map[string]int          // userID -> addedCount
 }
 
 type fakeSession struct {
@@ -137,9 +139,11 @@ type fakeJob struct {
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		sessions: make(map[string]*fakeSession),
-		styles:   make(map[string]string),
-		profiles: make(map[string]string),
+		sessions:          make(map[string]*fakeSession),
+		styles:            make(map[string]string),
+		profiles:          make(map[string]string),
+		wordAutoAddStatus: make(map[string]string),
+		wordAutoAddCount:  make(map[string]int),
 	}
 }
 
@@ -166,6 +170,35 @@ func (f *fakeStore) SaveLearnerProfile(ctx context.Context, userID, profile stri
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.profiles[userID] = profile
+	return nil
+}
+
+func (f *fakeStore) GetWordAutoAddStatus(ctx context.Context, userID string) (string, int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.wordAutoAddStatus[userID], f.wordAutoAddCount[userID], nil
+}
+
+func (f *fakeStore) StartWordAutoAdd(ctx context.Context, userID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.wordAutoAddStatus[userID] = store.JobStatusPending
+	f.wordAutoAddCount[userID] = 0
+	return nil
+}
+
+func (f *fakeStore) CompleteWordAutoAdd(ctx context.Context, userID string, addedCount int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.wordAutoAddStatus[userID] = store.JobStatusDone
+	f.wordAutoAddCount[userID] = addedCount
+	return nil
+}
+
+func (f *fakeStore) FailWordAutoAdd(ctx context.Context, userID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.wordAutoAddStatus[userID] = store.JobStatusFailed
 	return nil
 }
 

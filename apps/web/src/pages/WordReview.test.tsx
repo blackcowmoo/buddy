@@ -2,23 +2,46 @@
  * @vitest-environment jsdom
  */
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/wordReview", async () => {
   const actual = await vi.importActual<typeof import("../lib/wordReview")>("../lib/wordReview");
-  return { ...actual, fetchWords: vi.fn(), deleteWord: vi.fn(), reviewWord: vi.fn(), autoAddWords: vi.fn() };
+  return {
+    ...actual,
+    fetchWords: vi.fn(),
+    deleteWord: vi.fn(),
+    reviewWord: vi.fn(),
+    startAutoAddWords: vi.fn(),
+    fetchAutoAddStatus: vi.fn(),
+  };
 });
 
 import { WordReview } from "./WordReview";
-import { autoAddWords, deleteWord, fetchWords, reviewWord, type WordReviewItem } from "../lib/wordReview";
+import {
+  deleteWord,
+  fetchAutoAddStatus,
+  fetchWords,
+  reviewWord,
+  startAutoAddWords,
+  type WordReviewItem,
+} from "../lib/wordReview";
 import { formatAbsoluteDateTime } from "../lib/time";
+
+// WordReview.tsx checks for an in-flight auto-add job on every mount (so
+// reopening the page resumes watching one — see the mount effect), so every
+// test needs some default here or that unconditional call would reject
+// against an unmocked vi.fn(). Individual tests below override it.
+beforeEach(() => {
+  vi.mocked(fetchAutoAddStatus).mockResolvedValue({ status: "", count: 0 });
+});
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 const dueWord: WordReviewItem = {
@@ -201,32 +224,50 @@ describe("WordReview page", () => {
       expect(screen.queryByRole("button", { name: "복습 시작" })).not.toBeInTheDocument();
     });
 
-    it("adds the returned words into the 확인 중 section on click", async () => {
-      vi.mocked(fetchWords).mockResolvedValue({ words: [], dueCount: 0 });
-      const newWord: WordReviewItem = {
-        id: "w-new",
-        word: "resilient",
-        meaning: "회복력이 있는",
-        example: "She stayed resilient.",
-        stage: 0,
-        reviewCount: 0,
-        nextReviewAt: 0,
-        status: "pending",
-      };
-      vi.mocked(autoAddWords).mockResolvedValue([newWord]);
-      const user = userEvent.setup();
+    const newWord: WordReviewItem = {
+      id: "w-new",
+      word: "resilient",
+      meaning: "회복력이 있는",
+      example: "She stayed resilient.",
+      stage: 0,
+      reviewCount: 0,
+      nextReviewAt: 0,
+      status: "pending",
+    };
+
+    // startAutoAddWords only ever reserves the background job (see
+    // asyncjob.KindWordAutoAdd) — it comes back "pending" immediately, and
+    // the actual generation/save is only visible once pollAutoAdd's next
+    // tick reads fetchAutoAddStatus() as "done", so these tests drive that
+    // poll with fake timers, the same pattern as ArticleQuiz.test.tsx's
+    // "generating hint" test.
+    it("starts the background job and adds the returned words into the 확인 중 section once it completes", async () => {
+      vi.mocked(fetchWords)
+        .mockResolvedValueOnce({ words: [], dueCount: 0 }) // initial load
+        .mockResolvedValueOnce({ words: [newWord], dueCount: 0 }); // re-fetched once the job completes
+      vi.mocked(startAutoAddWords).mockResolvedValue({ status: "pending", count: 0 });
+      const user = userEvent.setup({ delay: null });
       render(<WordReview />);
+      const button = await screen.findByRole("button", { name: "새 단어 추가로 학습하기" });
 
-      await user.click(await screen.findByRole("button", { name: "새 단어 추가로 학습하기" }));
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      await user.click(button);
+      expect(screen.getByRole("button", { name: "새 단어 찾는 중…" })).toBeDisabled();
+      expect(screen.getByText(/이 화면을 나갔다 와도 계속 진행돼요/)).toBeInTheDocument();
 
-      expect(autoAddWords).toHaveBeenCalled();
-      expect(await screen.findByText("확인 중")).toBeInTheDocument();
+      vi.mocked(fetchAutoAddStatus).mockResolvedValue({ status: "done", count: 1 });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+
+      expect(screen.getByText("확인 중")).toBeInTheDocument();
       expect(screen.getByText("resilient")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "새 단어 추가로 학습하기" })).toBeInTheDocument();
     });
 
-    it("shows an error hint when the request fails", async () => {
+    it("shows an error hint immediately when starting the job fails", async () => {
       vi.mocked(fetchWords).mockResolvedValue({ words: [], dueCount: 0 });
-      vi.mocked(autoAddWords).mockResolvedValue(null);
+      vi.mocked(startAutoAddWords).mockResolvedValue(null);
       const user = userEvent.setup();
       render(<WordReview />);
 
@@ -235,31 +276,54 @@ describe("WordReview page", () => {
       expect(await screen.findByText("단어를 추가하지 못했어요. 잠시 후 다시 시도해주세요.")).toBeInTheDocument();
     });
 
-    it("shows a not-found hint when the server returns no suggestions", async () => {
+    it("shows a not-found hint once the job completes with no suggestions", async () => {
       vi.mocked(fetchWords).mockResolvedValue({ words: [], dueCount: 0 });
-      vi.mocked(autoAddWords).mockResolvedValue([]);
-      const user = userEvent.setup();
+      vi.mocked(startAutoAddWords).mockResolvedValue({ status: "pending", count: 0 });
+      const user = userEvent.setup({ delay: null });
       render(<WordReview />);
+      const button = await screen.findByRole("button", { name: "새 단어 추가로 학습하기" });
 
-      await user.click(await screen.findByRole("button", { name: "새 단어 추가로 학습하기" }));
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      await user.click(button);
 
-      expect(await screen.findByText("추천할 새 단어를 찾지 못했어요. 잠시 후 다시 시도해주세요.")).toBeInTheDocument();
+      vi.mocked(fetchAutoAddStatus).mockResolvedValue({ status: "done", count: 0 });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+
+      expect(screen.getByText("추천할 새 단어를 찾지 못했어요. 잠시 후 다시 시도해주세요.")).toBeInTheDocument();
     });
 
-    it("disables and relabels the button while the request is in flight", async () => {
+    it("shows an error hint once the job fails in the background", async () => {
       vi.mocked(fetchWords).mockResolvedValue({ words: [], dueCount: 0 });
-      let resolve!: (words: WordReviewItem[] | null) => void;
-      vi.mocked(autoAddWords).mockReturnValue(new Promise((r) => (resolve = r)));
-      const user = userEvent.setup();
+      vi.mocked(startAutoAddWords).mockResolvedValue({ status: "pending", count: 0 });
+      const user = userEvent.setup({ delay: null });
+      render(<WordReview />);
+      const button = await screen.findByRole("button", { name: "새 단어 추가로 학습하기" });
+
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      await user.click(button);
+
+      vi.mocked(fetchAutoAddStatus).mockResolvedValue({ status: "failed", count: 0 });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+
+      expect(screen.getByText("단어를 추가하지 못했어요. 잠시 후 다시 시도해주세요.")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "새 단어 추가로 학습하기" })).toBeInTheDocument();
+    });
+
+    // The actual point of making this a background job: a learner who
+    // pressed the button, navigated away mid-generation, and comes back
+    // (a fresh mount, in test terms) must see it's still going instead of
+    // the button looking untouched — see the mount effect in WordReview.tsx.
+    it("resumes watching a job that was already in progress when the page loads", async () => {
+      vi.mocked(fetchWords).mockResolvedValue({ words: [], dueCount: 0 });
+      vi.mocked(fetchAutoAddStatus).mockResolvedValue({ status: "pending", count: 0 });
       render(<WordReview />);
 
-      await user.click(await screen.findByRole("button", { name: "새 단어 추가로 학습하기" }));
-
-      const pendingBtn = await screen.findByRole("button", { name: "새 단어 찾는 중…" });
-      expect(pendingBtn).toBeDisabled();
-
-      resolve([]);
-      expect(await screen.findByRole("button", { name: "새 단어 추가로 학습하기" })).toBeInTheDocument();
+      expect(await screen.findByRole("button", { name: "새 단어 찾는 중…" })).toBeDisabled();
+      expect(startAutoAddWords).not.toHaveBeenCalled();
     });
   });
 

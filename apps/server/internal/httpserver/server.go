@@ -56,7 +56,11 @@ import (
 // optional way as wordVerifyQueue — articleDrawHandler falls back to running
 // pipeline.GenerateArticleStudy inline, on its own detached goroutine,
 // instead of durably queuing it (see transport.EnqueueArticleStudyJob).
-func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, words wordreview.Store, articles newsarticle.Store, wordVerifyQueue *asyncjob.Queue, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue, studySummaryQueue *asyncjob.Queue, studyQuizQueue *asyncjob.Queue, profileRegenerateQueue *asyncjob.Queue, articleStudyQueue *asyncjob.Queue) *http.Server {
+// wordAutoAddQueue is nil the same optional way as wordVerifyQueue —
+// wordAutoAddHandler falls back to running pipeline.SuggestNewWords inline,
+// on its own detached goroutine, instead of durably queuing it (see
+// transport.EnqueueWordAutoAddJob).
+func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, words wordreview.Store, articles newsarticle.Store, wordVerifyQueue *asyncjob.Queue, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue, studySummaryQueue *asyncjob.Queue, studyQuizQueue *asyncjob.Queue, profileRegenerateQueue *asyncjob.Queue, articleStudyQueue *asyncjob.Queue, wordAutoAddQueue *asyncjob.Queue) *http.Server {
 	mux := http.NewServeMux()
 
 	// Realtime + API first (exact patterns win over the "/" catch-all).
@@ -89,7 +93,8 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux.HandleFunc("PUT /api/settings", settingsSaveHandler(ident, st))
 	mux.HandleFunc("POST /api/words/suggest", wordSuggestHandler(ident, pipe))
 	mux.HandleFunc("POST /api/words/save", wordSaveHandler(ident, words, pipe, wordVerifyQueue))
-	mux.HandleFunc("POST /api/words/auto-add", wordAutoAddHandler(ident, words, st, pipe, wordVerifyQueue))
+	mux.HandleFunc("POST /api/words/auto-add", wordAutoAddHandler(ident, words, st, pipe, wordVerifyQueue, wordAutoAddQueue))
+	mux.HandleFunc("GET /api/words/auto-add", wordAutoAddStatusHandler(ident, st))
 	mux.HandleFunc("GET /api/words", wordsListHandler(ident, words))
 	mux.HandleFunc("POST /api/words/{id}/review", wordReviewHandler(ident, words))
 	mux.HandleFunc("DELETE /api/words/{id}", wordDeleteHandler(ident, words))

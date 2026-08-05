@@ -328,6 +328,34 @@ type Store interface {
 	// any previous value.
 	SaveLearnerProfile(ctx context.Context, userID, profile string) error
 
+	// GetWordAutoAddStatus returns userID's current "새 단어 추가로 학습하기"
+	// job status (JobStatusPending/JobStatusDone/JobStatusFailed) and, once
+	// JobStatusDone, how many words that run actually added — see
+	// StartWordAutoAdd/CompleteWordAutoAdd. "" means no run has ever started
+	// (or MySQL's column default for a settings row created before this
+	// feature existed) — httpserver.wordAutoAddHandler and its frontend poll
+	// treat that the same as an idle, not-in-progress state.
+	GetWordAutoAddStatus(ctx context.Context, userID string) (status string, addedCount int, err error)
+	// StartWordAutoAdd marks userID's auto-add job JobStatusPending and
+	// resets addedCount to 0, right when "새 단어 추가로 학습하기" is pressed —
+	// httpserver.wordAutoAddHandler returns as soon as this call lands,
+	// before transport.EnqueueWordAutoAddJob's SuggestNewWords call even
+	// starts, so the request survives the learner navigating away (see
+	// asyncjob.KindWordAutoAdd).
+	StartWordAutoAdd(ctx context.Context, userID string) error
+	// CompleteWordAutoAdd marks userID's auto-add job JobStatusDone with how
+	// many words it actually added (0 if the model suggested nothing new, or
+	// everything it suggested failed validation) — see
+	// transport.runWordAutoAdd.
+	CompleteWordAutoAdd(ctx context.Context, userID string, addedCount int) error
+	// FailWordAutoAdd marks userID's auto-add job JobStatusFailed after
+	// pipeline.Pipeline.SuggestNewWords itself errored (an individual
+	// suggestion failing validation is just skipped, not a failure of the
+	// whole run — see transport.runWordAutoAdd). Terminal for this run: the
+	// learner has to press the button again to retry, same as
+	// newsarticle.Article's StatusFailed.
+	FailWordAutoAdd(ctx context.Context, userID string) error
+
 	// ListSessions returns userID's chat rooms, most recently active first.
 	// Only sessions with at least one saved turn appear (see SaveTurn).
 	// Instant/"오늘의 한 문장" rooms (see MarkInstant) are excluded — they have

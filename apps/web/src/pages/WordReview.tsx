@@ -1,11 +1,23 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { confirmThenDelete } from "../lib/confirmDelete";
-import { autoAddWords, deleteWord, fetchWords, reviewWord, type WordReviewItem } from "../lib/wordReview";
+import {
+  deleteWord,
+  fetchAutoAddStatus,
+  fetchWords,
+  reviewWord,
+  startAutoAddWords,
+  type WordReviewItem,
+} from "../lib/wordReview";
 import { formatAbsoluteDateTime } from "../lib/time";
 import { shuffled } from "../lib/shuffle";
 import { normalizeQuizAnswer as normalizeAnswer } from "../lib/quizCheck";
 
 type LoadState = "loading" | "ready" | "error";
+
+// How often to re-check an auto-add job that's still generating in the
+// background (see asyncjob.KindWordAutoAdd) — a poll, not a push, same
+// reasoning as ArticleQuiz.tsx's articleStudyPollIntervalMs.
+const wordAutoAddPollIntervalMs = 3000;
 
 // Phrase words that carry no meaning of their own and are often swapped
 // out by the LLM's example sentence (e.g. "one's" → "my"/"his"), so they
@@ -118,6 +130,70 @@ export function WordReview() {
   const [autoAdding, setAutoAdding] = useState(false);
   const [autoAddError, setAutoAddError] = useState<string | null>(null);
 
+  // Poll scaffolding for an auto-add job still generating in the background
+  // — same "setTimeout chain tracked for unmount cleanup, guarded by a
+  // token so a stale tick can't clobber newer state" pattern as
+  // ArticleQuiz.tsx's pollDraw. Losing this component (navigating away, or
+  // the tab closing) only stops *watching* — asyncjob.KindWordAutoAdd keeps
+  // generating regardless (see lib/wordReview.ts's startAutoAddWords doc
+  // comment); reopening this page resumes watching via the mount effect
+  // below.
+  const pollTokenRef = useRef<object | null>(null);
+  const pollTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+
+  const schedulePoll = useCallback((tick: () => void, ms: number) => {
+    const id = setTimeout(() => {
+      pollTimersRef.current.delete(id);
+      tick();
+    }, ms);
+    pollTimersRef.current.add(id);
+  }, []);
+
+  useEffect(() => {
+    const timers = pollTimersRef.current;
+    return () => {
+      for (const id of timers) clearTimeout(id);
+      timers.clear();
+      pollTokenRef.current = null;
+    };
+  }, []);
+
+  // Polls the auto-add job's status until it leaves "pending" — started
+  // either right after pressing "새 단어 추가로 학습하기" or, on mount, when
+  // reopening this page finds one already in flight (see the mount effect
+  // below).
+  const pollAutoAdd = useCallback((token: object) => {
+    const tick = async () => {
+      if (pollTokenRef.current !== token) return; // a newer run took over
+      const status = await fetchAutoAddStatus();
+      if (pollTokenRef.current !== token) return;
+      if (!status) {
+        schedulePoll(tick, wordAutoAddPollIntervalMs); // transient fetch failure — keep trying
+        return;
+      }
+      if (status.status === "pending") {
+        schedulePoll(tick, wordAutoAddPollIntervalMs);
+        return;
+      }
+      setAutoAdding(false);
+      if (status.status === "failed") {
+        setAutoAddError("단어를 추가하지 못했어요. 잠시 후 다시 시도해주세요.");
+        return;
+      }
+      // "done" (or "" — treated the same as an already-finished idle state).
+      if (status.count === 0) {
+        setAutoAddError("추천할 새 단어를 찾지 못했어요. 잠시 후 다시 시도해주세요.");
+      }
+      fetchWords().then((result) => {
+        if (result) {
+          setWords(result.words);
+          setDueCount(result.dueCount);
+        }
+      });
+    };
+    schedulePoll(tick, wordAutoAddPollIntervalMs);
+  }, [schedulePoll]);
+
   useEffect(() => {
     fetchWords().then((result) => {
       if (result === null) {
@@ -128,7 +204,17 @@ export function WordReview() {
       setDueCount(result.dueCount);
       setState("ready");
     });
-  }, []);
+    // Resume watching an auto-add job that was already running when this
+    // page loads — e.g. the learner pressed "새 단어 추가로 학습하기",
+    // navigated away, and just came back.
+    fetchAutoAddStatus().then((status) => {
+      if (status?.status !== "pending") return;
+      setAutoAdding(true);
+      const token = {};
+      pollTokenRef.current = token;
+      pollAutoAdd(token);
+    });
+  }, [pollAutoAdd]);
 
   const handleDelete = (id: string) => confirmThenDelete("이 단어를 삭제할까요?", deleteWord, id, setWords);
 
@@ -159,25 +245,27 @@ export function WordReview() {
   const backToList = useCallback(() => setQuizQueue(null), []);
 
   // Backs the "새 단어 추가로 학습하기" button that takes over "복습 시작"'s
-  // slot once dueCount hits 0 — generates a batch of new words fit to the
-  // learner's profile and merges them in as "확인 중" (pending) rows,
-  // exactly the same lifecycle a manually search-and-saved word already has
-  // (see httpserver.wordAutoAddHandler for the validation it goes through).
+  // slot once dueCount hits 0 — starts a background job that generates a
+  // batch of new words fit to the learner's profile and saves them as
+  // "확인 중" (pending) rows, exactly the same lifecycle a manually
+  // search-and-saved word already has (see httpserver.wordAutoAddHandler
+  // for the validation it goes through). Generation itself runs
+  // server-side (see asyncjob.KindWordAutoAdd) — this only starts it and
+  // hands off to pollAutoAdd, so navigating away and back finds it still
+  // going (see the mount effect above).
   const handleAutoAdd = useCallback(async () => {
     setAutoAdding(true);
     setAutoAddError(null);
-    const added = await autoAddWords();
-    setAutoAdding(false);
-    if (added === null) {
+    const status = await startAutoAddWords();
+    if (!status || status.status === "failed") {
+      setAutoAdding(false);
       setAutoAddError("단어를 추가하지 못했어요. 잠시 후 다시 시도해주세요.");
       return;
     }
-    if (added.length === 0) {
-      setAutoAddError("추천할 새 단어를 찾지 못했어요. 잠시 후 다시 시도해주세요.");
-      return;
-    }
-    setWords((prev) => [...added, ...prev]);
-  }, []);
+    const token = {};
+    pollTokenRef.current = token;
+    pollAutoAdd(token);
+  }, [pollAutoAdd]);
 
   const currentItem = quizQueue?.[index] ?? null;
   const current = currentItem?.word ?? null;
@@ -323,6 +411,11 @@ export function WordReview() {
               <button type="button" className="quiz-start-btn" onClick={() => void handleAutoAdd()} disabled={autoAdding}>
                 {autoAdding ? "새 단어 찾는 중…" : "새 단어 추가로 학습하기"}
               </button>
+            )}
+            {autoAdding && (
+              <p className="hint">
+                <span className="spinning">⏳</span> 새 단어를 찾는 중이에요. 이 화면을 나갔다 와도 계속 진행돼요.
+              </p>
             )}
             {autoAddError && <p className="hint">{autoAddError}</p>}
             {words.length === 0 && (

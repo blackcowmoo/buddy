@@ -174,6 +174,18 @@ func main() {
 			transport.ArticleStudyJobHandler(pipe, articles))
 	}
 
+	// Word auto-add generation: generates a batch of new words fit to the
+	// learner's profile in the background (see httpserver.wordAutoAddHandler),
+	// same "optional durable queue, inline-goroutine fallback when Redis
+	// isn't configured" convention as wordVerifyQueue above — this is what
+	// lets "새 단어 추가로 학습하기" survive the learner navigating away before
+	// generation finishes.
+	var wordAutoAddQueue *asyncjob.Queue
+	if rdb != nil {
+		wordAutoAddQueue = startWorker(rdb, jobsCtx, asyncjob.KindWordAutoAdd, transport.WordAutoAddWorkerConcurrency, transport.WordAutoAddClaimTTL,
+			transport.WordAutoAddJobHandler(pipe, wordReviews, st, wordVerifyQueue))
+	}
+
 	// End-of-conversation wrap-up: unlike the reply/correction/translation/
 	// title hooks below, this isn't wired onto pipe (nothing mid-conversation
 	// triggers it directly) — httpserver's sessionEndHandler and
@@ -256,7 +268,7 @@ func main() {
 		defer recordings.Close()
 	}
 
-	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, wordReviews, articles, wordVerifyQueue, translateQueue, correctionBackfillQueue, studySummaryQueue, studyQuizQueue, profileRegenerateQueue, articleStudyQueue)
+	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, wordReviews, articles, wordVerifyQueue, translateQueue, correctionBackfillQueue, studySummaryQueue, studyQuizQueue, profileRegenerateQueue, articleStudyQueue, wordAutoAddQueue)
 
 	go func() {
 		log.Printf("buddy up on %s  env=%s  stt=%v  feedback=%s",

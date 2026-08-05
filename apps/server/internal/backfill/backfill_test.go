@@ -283,6 +283,22 @@ func (f *fakeStore) SaveLearnerProfile(ctx context.Context, userID, profile stri
 	return errors.New("not used by these tests")
 }
 
+func (f *fakeStore) GetWordAutoAddStatus(ctx context.Context, userID string) (string, int, error) {
+	return "", 0, errors.New("not used by these tests")
+}
+
+func (f *fakeStore) StartWordAutoAdd(ctx context.Context, userID string) error {
+	return errors.New("not used by these tests")
+}
+
+func (f *fakeStore) CompleteWordAutoAdd(ctx context.Context, userID string, addedCount int) error {
+	return errors.New("not used by these tests")
+}
+
+func (f *fakeStore) FailWordAutoAdd(ctx context.Context, userID string) error {
+	return errors.New("not used by these tests")
+}
+
 func (f *fakeStore) Close() error { return nil }
 
 func newTestPipeline(complete func(msgs []llm.Message) (string, error)) *pipeline.Pipeline {
