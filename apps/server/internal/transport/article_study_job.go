@@ -22,6 +22,20 @@ import (
 const (
 	ArticleStudyClaimTTL          = 25 * time.Hour
 	ArticleStudyWorkerConcurrency = 4
+
+	// ArticleStudyStaleAfter/ArticleStudySweepInterval bound
+	// RunArticleStudySweepLoop's DB-only orphan sweep — see its doc comment.
+	// Deliberately much shorter than ArticleStudyClaimTTL: that TTL exists so
+	// asyncjob's own Redis-backed reaper never reaps a call that's still
+	// legitimately (if slowly) running, whereas this sweep is the *only*
+	// recovery path at all when Redis isn't configured (see
+	// asyncjob.EnqueueOrRunInline's fallback), so it errs toward retrying
+	// sooner. A duplicate retry of a call that's actually still running slow
+	// is wasted work, not a correctness problem — runArticleStudy's
+	// StatusPending check and CompleteArticle's own guard make two
+	// concurrent attempts for the same article converge safely.
+	ArticleStudyStaleAfter    = 10 * time.Minute
+	ArticleStudySweepInterval = 2 * time.Minute
 )
 
 // articleStudyJobPayload carries what pipeline.GenerateArticleStudy needs —
@@ -97,4 +111,63 @@ func EnqueueArticleStudyJob(ctx context.Context, queue *asyncjob.Queue, pipe *pi
 	payload := articleStudyJobPayload{ArticleID: articleID, Source: source, Title: title, Description: description}
 	return queue.EnqueueAndRunInBackground(ctx, asyncjob.KindArticleStudy, articleID,
 		articleID, payload, ArticleStudyClaimTTL, ArticleStudyJobHandler(pipe, articles))
+}
+
+// SweepStaleArticleStudies resumes generation for every StatusPending
+// article newsarticle.Store.StalePending reports abandoned — the DB-only
+// safety net behind RunArticleStudySweepLoop. Each candidate is re-claimed
+// via ClaimArticle first, atomically: if that fails (already completed/
+// failed by the attempt this sweep thought was abandoned, or claimed a
+// moment ago by a racing sweep on another replica), it's skipped rather than
+// redispatched, so at most one redundant generation ever runs per truly
+// abandoned article per sweep tick.
+func SweepStaleArticleStudies(ctx context.Context, queue *asyncjob.Queue, pipe *pipeline.Pipeline, articles newsarticle.Store) error {
+	stale, err := articles.StalePending(ctx, ArticleStudyStaleAfter)
+	if err != nil {
+		return fmt.Errorf("article study: sweep: list stale: %w", err)
+	}
+	for _, a := range stale {
+		claimed, err := articles.ClaimArticle(ctx, a.ID)
+		if err != nil {
+			log.Printf("article study: sweep: claim %s: %v", a.ID, err)
+			continue
+		}
+		if !claimed {
+			continue
+		}
+		log.Printf("article study: sweep: resuming abandoned generation %s", a.ID)
+		asyncjob.EnqueueOrRunInline(queue, ctx,
+			"articles: sweep enqueue study "+a.ID,
+			func(ctx context.Context) error {
+				return EnqueueArticleStudyJob(ctx, queue, pipe, articles, a.ID, a.Source, a.Title, a.Description)
+			},
+			"articles: sweep study "+a.ID,
+			func(ctx context.Context) error {
+				return RunArticleStudyInline(ctx, pipe, articles, a.ID, a.Source, a.Title, a.Description)
+			},
+		)
+	}
+	return nil
+}
+
+// RunArticleStudySweepLoop runs SweepStaleArticleStudies every
+// ArticleStudySweepInterval until ctx is canceled — started unconditionally
+// at server startup (see cmd/server/main.go), regardless of whether Redis is
+// configured, because it's what makes a redeploy- or crash-abandoned "오늘의
+// 아티클" draw resume automatically even when articleStudyQueue is nil and
+// the original generation was only ever a best-effort in-process goroutine
+// with no durability of its own (see asyncjob.EnqueueOrRunInline).
+func RunArticleStudySweepLoop(ctx context.Context, queue *asyncjob.Queue, pipe *pipeline.Pipeline, articles newsarticle.Store) {
+	ticker := time.NewTicker(ArticleStudySweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := SweepStaleArticleStudies(context.Background(), queue, pipe, articles); err != nil {
+				log.Printf("article study: sweep: %v", err)
+			}
+		}
+	}
 }

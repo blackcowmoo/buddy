@@ -173,6 +173,13 @@ func main() {
 		articleStudyQueue = startWorker(rdb, jobsCtx, asyncjob.KindArticleStudy, transport.ArticleStudyWorkerConcurrency, transport.ArticleStudyClaimTTL,
 			transport.ArticleStudyJobHandler(pipe, articles))
 	}
+	// DB-only orphan sweep for article-study generation: runs regardless of
+	// whether Redis/articleStudyQueue is configured, since it's the only
+	// thing that resumes a draw abandoned mid-generation (crash, OOM, or a
+	// redeploy killing the in-process fallback goroutine EnqueueOrRunInline
+	// uses when articleStudyQueue is nil) when there's no durable Redis claim
+	// to reap in the first place — see transport.RunArticleStudySweepLoop.
+	go transport.RunArticleStudySweepLoop(jobsCtx, articleStudyQueue, pipe, articles)
 
 	// Word auto-add generation: generates a batch of new words fit to the
 	// learner's profile in the background (see httpserver.wordAutoAddHandler),

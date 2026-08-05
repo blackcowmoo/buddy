@@ -28,7 +28,7 @@ type fakeArticleStore struct {
 	usedURLErr error
 }
 
-func (f *fakeArticleStore) ReserveArticle(ctx context.Context, source, title, url string) (newsarticle.Article, error) {
+func (f *fakeArticleStore) ReserveArticle(ctx context.Context, source, title, url, description string) (newsarticle.Article, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
@@ -37,12 +37,23 @@ func (f *fakeArticleStore) ReserveArticle(ctx context.Context, source, title, ur
 	if existing, ok := f.byURL[url]; ok {
 		return existing, nil
 	}
-	a := newsarticle.Article{ID: "article-" + url, Source: source, Title: title, URL: url, Status: newsarticle.StatusPending, CreatedAt: time.Now()}
+	a := newsarticle.Article{ID: "article-" + url, Source: source, Title: title, URL: url, Description: description, Status: newsarticle.StatusPending, CreatedAt: time.Now()}
 	if f.byURL == nil {
 		f.byURL = map[string]newsarticle.Article{}
 	}
 	f.byURL[url] = a
 	return a, nil
+}
+
+// StalePending/ClaimArticle are unused by these handler tests (the sweep is
+// exercised in internal/transport's own tests) — minimal stubs to satisfy
+// newsarticle.Store.
+func (f *fakeArticleStore) StalePending(ctx context.Context, olderThan time.Duration) ([]newsarticle.Article, error) {
+	return nil, nil
+}
+
+func (f *fakeArticleStore) ClaimArticle(ctx context.Context, id string) (bool, error) {
+	return false, nil
 }
 
 func (f *fakeArticleStore) CompleteArticle(ctx context.Context, id, summary string, choices []string, correctIndex int, explanation string) (newsarticle.Article, error) {
@@ -324,6 +335,36 @@ func TestArticleDrawHandlerReusesCachedArticleWithoutCallingLLM(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if llmCalls != 0 {
 		t.Fatalf("LLM calls = %d, want 0 (cached article should be reused)", llmCalls)
+	}
+}
+
+// TestArticleDrawHandlerPicksTheMostRecentCandidate guards the ordering
+// contract with newsfeed.FetchCandidates (which sorts newest-first): the
+// handler must take fetchCandidates' first not-yet-drawn entry as-is rather
+// than picking randomly among them.
+func TestArticleDrawHandlerPicksTheMostRecentCandidate(t *testing.T) {
+	st := &fakeArticleStore{}
+	pipe := fakeArticlePipeline(fakeStudyJSON)
+	fetch := func(context.Context) ([]newsfeed.Candidate, error) {
+		return []newsfeed.Candidate{
+			{Source: "BBC", Title: "Newest", URL: "https://example.com/newest", Description: "d"},
+			{Source: "NPR", Title: "Older", URL: "https://example.com/older", Description: "d"},
+		}, nil
+	}
+	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	var got articleDraw
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Title != "Newest" {
+		t.Fatalf("draw picked %q, want the first (most recent) candidate", got.Title)
 	}
 }
 

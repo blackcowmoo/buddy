@@ -16,7 +16,9 @@ import (
 	"html"
 	"io"
 	"net/http"
+	"net/mail"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +32,11 @@ type Candidate struct {
 	Title       string
 	URL         string // canonical link; used as the de-dupe/cache key throughout
 	Description string // the feed's own short snippet, not the full article body
+	// PublishedAt is the feed's own <pubDate>, parsed for FetchCandidates to
+	// sort by — the zero Time if the item had no pubDate or it didn't parse,
+	// which sorts as older than everything else (see FetchCandidates) rather
+	// than crashing or dropping the item.
+	PublishedAt time.Time
 }
 
 // feeds is the curated list of outlets polled for candidates — every entry a
@@ -59,17 +66,22 @@ type rssXML struct {
 			Title       string `xml:"title"`
 			Link        string `xml:"link"`
 			Description string `xml:"description"`
+			PubDate     string `xml:"pubDate"`
 		} `xml:"item"`
 	} `xml:"channel"`
 }
 
 // FetchCandidates polls every configured feed concurrently and returns every
 // item found, deduped by URL (the same story is often syndicated with an
-// identical link across an outlet's own sections). Best-effort per feed: one
+// identical link across an outlet's own sections), sorted newest-first by
+// PublishedAt — so httpserver's article-draw handler, which excludes
+// already-drawn URLs but otherwise just takes the first remaining entry,
+// naturally favors the most recent story across every feed rather than
+// whatever order the feeds happened to answer in. Best-effort per feed: one
 // feed timing out, 404ing, or failing to parse doesn't fail the whole call —
-// the pool only needs to be non-empty, not complete, so a caller (see
-// httpserver's article-draw handler) can still draw from whichever feeds
-// answered. Only an empty result across every feed is treated as an error.
+// the pool only needs to be non-empty, not complete, so a caller can still
+// draw from whichever feeds answered. Only an empty result across every feed
+// is treated as an error.
 func FetchCandidates(ctx context.Context) ([]Candidate, error) {
 	var (
 		wg  sync.WaitGroup
@@ -100,6 +112,7 @@ func FetchCandidates(ctx context.Context) ([]Candidate, error) {
 	if len(all) == 0 {
 		return nil, fmt.Errorf("newsfeed: no candidates from %d configured feed(s)", len(feeds))
 	}
+	sort.SliceStable(all, func(i, j int) bool { return all[i].PublishedAt.After(all[j].PublishedAt) })
 	return all, nil
 }
 
@@ -138,9 +151,28 @@ func parseRSS(source string, body []byte) ([]Candidate, error) {
 			Title:       cleanText(it.Title),
 			URL:         strings.TrimSpace(it.Link),
 			Description: cleanText(it.Description),
+			PublishedAt: parsePubDate(it.PubDate),
 		})
 	}
 	return out, nil
+}
+
+// parsePubDate parses an RSS <pubDate> value — conventionally RFC822-ish
+// (e.g. "Mon, 02 Jan 2006 15:04:05 MST"), but outlets vary in zone format and
+// padding — via net/mail.ParseDate, which already handles that whole family
+// of RFC 5322/822 date variants rather than this package hand-rolling a list
+// of time.Parse layouts. Returns the zero Time (sorts as oldest, never
+// errors) if s is empty or doesn't parse, since a missing/malformed date on
+// one item shouldn't drop that item or fail the whole feed.
+func parsePubDate(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	t, err := mail.ParseDate(s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
 
 var htmlTagRegexp = regexp.MustCompile(`<[^>]*>`)
