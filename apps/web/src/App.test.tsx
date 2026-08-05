@@ -304,7 +304,7 @@ describe("room list", () => {
     expect(screen.getByText("already done").closest("li")?.textContent).not.toContain("정리 중");
   });
 
-  // Guards the "all correct" checkmark this feature adds to the room list
+  // Guards the "studied this" checkmark this feature adds to the room list
   // (see store.SessionMeta.QuizCompleted/markQuizCompleted): only a session
   // with quizCompleted true shows it, distinguishing it from an ended room
   // that hasn't (yet) studied its quiz.
@@ -571,8 +571,10 @@ describe("room list", () => {
   // opens the panel with no fetch of its own. Grades a wrong answer as wrong
   // while still surfacing the correct one, grades a matching answer as right
   // even with different casing/whitespace (see normalizeQuizAnswer), advances
-  // across questions, lands on a final score, and — since one answer here is
-  // wrong — must never mark the quiz completed (see markQuizCompleted).
+  // across questions, lands on a final score, and — since the quiz was
+  // finished, even with a wrong answer along the way — marks it completed
+  // (see markQuizCompleted): this is a "studied it" checkmark, not "aced
+  // it".
   it("opens the pre-generated quiz from the study feedback panel, grades answers, and shows a final score", async () => {
     vi.mocked(fetchSessions).mockResolvedValue([
       { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: true, studySummaryStatus: "done" },
@@ -631,7 +633,7 @@ describe("room list", () => {
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
 
     expect(screen.getByText("2문제 중 1개 맞혔어요!")).toBeInTheDocument();
-    expect(markQuizCompleted).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(markQuizCompleted).toHaveBeenCalledWith("s1"));
   });
 
   // Guards against the popover's own outside-click dismissal (see useDismiss)
@@ -699,12 +701,11 @@ describe("room list", () => {
     expect(screen.queryByText("to school every day.")).not.toBeInTheDocument();
   });
 
-  // Guards the "all correct" completion path this feature exists for: only
-  // once every question in the quiz is answered correctly does it call
-  // markQuizCompleted — a single wrong answer anywhere (covered above) must
-  // never trigger it, and it must not fire after just the first of several
-  // correct answers either.
-  it("marks the quiz completed once every question is answered correctly", async () => {
+  // Guards the completion path this feature exists for: markQuizCompleted
+  // fires once the *last* question is answered, not after just the first of
+  // several — and, per the test above, firing there doesn't depend on that
+  // last answer being correct either.
+  it("marks the quiz completed once every question has been answered", async () => {
     vi.mocked(fetchSessions).mockResolvedValue([
       { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: true, studySummaryStatus: "done" },
     ]);
@@ -942,7 +943,8 @@ describe("room list", () => {
   // Guards the "biased toward wrong" default: when checkQuizAnswer resolves
   // false (the beforeEach default, matching quizAnswerCheckSystemPrompt's own
   // bias), an unlisted answer is graded wrong, same as before this fallback
-  // existed.
+  // existed — and, since this is the quiz's only/last question, it still
+  // marks the quiz completed despite being wrong (see markQuizCompleted).
   it("grades an unlisted answer wrong when checkQuizAnswer doesn't confirm it", async () => {
     vi.mocked(fetchSessions).mockResolvedValue([
       { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: true, studySummaryStatus: "done" },
@@ -983,7 +985,52 @@ describe("room list", () => {
     await user.click(screen.getByRole("button", { name: "확인" }));
 
     expect(await screen.findByText("아쉬워요. 정답: goes")).toBeInTheDocument();
-    expect(markQuizCompleted).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(markQuizCompleted).toHaveBeenCalledWith("s1"));
+  });
+
+  // Guards the "don't let a studied quiz be retaken" rule this feature adds
+  // (see store.SessionMeta.QuizCompleted's doc comment): a session that
+  // already has quizCompleted true when the room is (re)opened must not show
+  // "퀴즈 풀기" at all — only "퀴즈 다시 만들기" (a fresh question set) can
+  // start a new attempt.
+  it("hides the quiz start button and shows the completed state for a session whose quiz is already completed", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, ended: true, studySummaryStatus: "done" },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
+      session: {
+        id: "s1",
+        title: "hello there",
+        createdAt: 1,
+        updatedAt: 2,
+        ended: true,
+        studySummary: [{ english: "Focus on third-person -s.", translation: "3인칭 단수 -s에 집중하세요." }],
+        studySummaryStatus: "done",
+        quiz: [
+          {
+            prompt: "He ___ to school every day.",
+            answer: "goes",
+            translation: "그는 매일 학교에 가요.",
+            explanation: "Third person singular needs -s.",
+            explanationTranslation: "3인칭 단수는 -s가 필요해요.",
+          },
+        ],
+        quizStatus: "done",
+        quizCompleted: true,
+      },
+      turns: [{ turn: 1, role: "user", text: "hi", refined: false }],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+    await screen.findByText("hi");
+
+    await user.click(screen.getByRole("button", { name: "대화 종료" }));
+
+    expect(await screen.findByText("학습 완료로 표시했어요.")).toBeInTheDocument();
+    expect(screen.queryByText("퀴즈 풀기")).not.toBeInTheDocument();
+    expect(screen.getByText("퀴즈 다시 만들기")).toBeInTheDocument();
   });
 
   // Guards the "퀴즈 다시 만들기" reset button (see

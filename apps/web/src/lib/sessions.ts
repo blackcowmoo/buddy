@@ -40,10 +40,11 @@ export interface SessionSummary {
   // run independently, in parallel, not one after the other.
   quizStatus?: "pending" | "done" | "failed";
   // Whether the learner has studied this session's quiz — either by
-  // answering every question correctly, or (when quiz is empty) by
-  // acknowledging it via "내가 읽었음" instead (see markQuizCompleted). A
-  // one-way checkmark: never cleared once set. Drives the room list's
-  // "all correct" badge.
+  // finishing every question (right or wrong; this isn't a "got it right"
+  // flag), or (when quiz is empty) by acknowledging it via "내가 읽었음"
+  // instead (see markQuizCompleted). A one-way checkmark: never cleared once
+  // set. Drives the room list's "studied this" badge, and — once true —
+  // EndConversationControl hides "퀴즈 풀기" in favor of "퀴즈 다시 만들기".
   quizCompleted?: boolean;
 }
 
@@ -151,13 +152,13 @@ export async function fetchSessionCompaction(id: string): Promise<SessionCompact
 }
 
 // Marks an ended session's quiz as studied (see
-// httpserver.sessionQuizCompleteHandler) — called once a learner answers
-// every quiz question correctly (see QuizPanel), or, for a session whose
-// pre-generated quiz came back with no questions at all, when the learner
-// taps "내가 읽었음" instead (see EndConversationControl). Drives the room
-// list's "all correct" badge (see quizCompleted on SessionSummary) once the
-// room is left and the list refreshes. Returns whether the request itself
-// succeeded.
+// httpserver.sessionQuizCompleteHandler) — called once a learner finishes
+// every quiz question, right or wrong (see QuizPanel), or, for a session
+// whose pre-generated quiz came back with no questions at all, when the
+// learner taps "내가 읽었음" instead (see EndConversationControl). Drives the
+// room list's "studied this" badge (see quizCompleted on SessionSummary)
+// once the room is left and the list refreshes. Returns whether the request
+// itself succeeded.
 export async function markQuizCompleted(id: string): Promise<boolean> {
   return requestOK(`api/sessions/${encodeURIComponent(id)}/quiz/complete`, { method: "POST" });
 }

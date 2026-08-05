@@ -138,8 +138,8 @@ func (s *MySQLStore) failSessionJob(ctx context.Context, userID, sessionID, stat
 // MarkQuizCompleted sets quiz_completed — see SessionMeta.QuizCompleted's
 // doc comment. A plain UPDATE, not conditional on quiz_status/quiz content:
 // callers (sessionQuizCompleteHandler) are what decide when this is the
-// right call to make (either every question answered correctly, or the "내가
-// 읽었음" acknowledgment for a quiz with nothing to answer).
+// right call to make (either every question answered, right or wrong, or
+// the "내가 읽었음" acknowledgment for a quiz with nothing to answer).
 func (s *MySQLStore) MarkQuizCompleted(ctx context.Context, userID, sessionID string) error {
 	if _, err := s.rw.ExecContext(ctx, `
 		UPDATE `+sessionsTable+` SET quiz_completed = 1

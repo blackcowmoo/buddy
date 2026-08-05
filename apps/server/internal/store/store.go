@@ -75,10 +75,12 @@ type SessionMeta struct {
 	QuizStatus string `json:"quizStatus,omitempty"`
 	// QuizCompleted is a one-way "studied this" checkmark for the room list
 	// (see ListSessions): set by MarkQuizCompleted once the learner either
-	// answers every quiz question correctly, or — for a session with no
-	// quiz-worthy issues (Quiz empty) — acknowledges it via the "내가 읽었음"
-	// button instead. Never cleared once set, so a later imperfect retry
-	// doesn't take the checkmark away.
+	// finishes every quiz question — right or wrong, this isn't a "got it
+	// right" flag — or, for a session with no quiz-worthy issues (Quiz
+	// empty), acknowledges it via the "내가 읽었음" button instead. Never
+	// cleared once set (the frontend hides the "퀴즈 풀기" button once this is
+	// true, offering "퀴즈 다시 만들기" — a fresh question set — instead of
+	// letting the same quiz be retaken).
 	QuizCompleted bool `json:"quizCompleted,omitempty"`
 	// Instant is true for a room flagged via MarkInstant (an "오늘의 한 문장"
 	// one-turn conversation). Populated by SessionDetail so
