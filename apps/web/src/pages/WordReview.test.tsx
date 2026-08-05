@@ -480,7 +480,9 @@ describe("WordReview page", () => {
   // The saved example inflects "optimize" to "optimizing" (drops the
   // trailing "e" before "-ing"), which isn't a literal substring of the
   // dictionary word, so this exercises the stem-matching fallback rather
-  // than the exact-match path.
+  // than the exact-match path. The blank sits right after "are", so only
+  // the inflected spelling actually fits grammatically -- the dictionary
+  // base form must NOT be accepted.
   it("masks the word even when the example spells it as an inflected form (optimize -> optimizing)", async () => {
     vi.mocked(fetchWords).mockResolvedValue({ words: [optimizeWord], dueCount: 1 });
     vi.mocked(reviewWord).mockResolvedValue({ ...optimizeWord, stage: 1, reviewCount: 1 });
@@ -494,10 +496,24 @@ describe("WordReview page", () => {
     expect(screen.getByText("the search algorithm for faster results.")).toBeInTheDocument();
     expect(screen.queryByText(/optimizing/i)).not.toBeInTheDocument();
 
-    await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "optimize");
+    await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "optimizing");
     await user.click(screen.getByRole("button", { name: "확인" }));
 
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
+  });
+
+  it("rejects the dictionary base form when the sentence grammar requires the inflected spelling", async () => {
+    vi.mocked(fetchWords).mockResolvedValue({ words: [optimizeWord], dueCount: 1 });
+    vi.mocked(reviewWord).mockResolvedValue({ ...optimizeWord, stage: 0, reviewCount: 1 });
+    const user = userEvent.setup();
+    render(<WordReview />);
+
+    await user.click(await screen.findByRole("button", { name: "복습 시작" }));
+
+    await user.type(await screen.findByRole("textbox", { name: "정답 입력" }), "optimize");
+    await user.click(screen.getByRole("button", { name: "확인" }));
+
+    expect(await screen.findByText("아쉬워요. 정답: optimizing")).toBeInTheDocument();
   });
 
   it("marks each blank individually correct/incorrect when a multi-blank recall answer is only partly right", async () => {

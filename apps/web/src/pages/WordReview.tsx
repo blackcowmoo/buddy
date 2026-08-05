@@ -84,7 +84,7 @@ function computeBlank(example: string, word: string): { parts: string[]; answers
   // always match the order the words fall in the sentence — track where
   // each match actually landed so `answers` can be sorted back into
   // left-to-right sentence order, lining up with the blanks in `parts`.
-  const matches: { index: number; token: string }[] = [];
+  const matches: { index: number; matched: string }[] = [];
   for (const token of tokens) {
     let m: RegExpMatchArray | null = null;
     for (const stem of candidateStems(token)) {
@@ -93,12 +93,17 @@ function computeBlank(example: string, word: string): { parts: string[]; answers
       if (m) break;
     }
     if (!m || m.index === undefined) continue;
-    matches.push({ index: m.index, token });
+    // Grade against the inflected spelling that's actually in the sentence
+    // (e.g. "optimizing"), not the dictionary form passed in as `word`
+    // ("optimize") — the blank sits where the sentence's grammar demands
+    // the inflected form, so that's the only spelling a learner can
+    // correctly type there.
+    matches.push({ index: m.index, matched: m[0] });
     masked = masked.slice(0, m.index) + BLANK + masked.slice(m.index + m[0].length);
   }
   if (matches.length === 0) return { parts: [example], answers: [] };
   matches.sort((a, b) => a.index - b.index);
-  return { parts: masked.split(BLANK), answers: matches.map((m) => m.token) };
+  return { parts: masked.split(BLANK), answers: matches.map((m) => m.matched) };
 }
 
 function blanksMatch(expected: string[], given: string[]): boolean {
