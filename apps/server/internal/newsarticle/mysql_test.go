@@ -101,7 +101,7 @@ func requireStore(t *testing.T) *MySQLStore {
 // already-StatusDone Article to build an Instance against.
 func mustSaveArticle(t *testing.T, st *MySQLStore, url string) Article {
 	t.Helper()
-	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Test headline", url, "A short test snippet.")
+	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Test headline", url, "A short test snippet.", time.Time{})
 	if err != nil {
 		t.Fatalf("ReserveArticle() error = %v", err)
 	}
@@ -121,7 +121,7 @@ func TestReserveArticleDedupesByURL(t *testing.T) {
 
 	first := mustSaveArticle(t, st, url)
 
-	second, err := st.ReserveArticle(context.Background(), "NPR", "A different title", url, "A different snippet.")
+	second, err := st.ReserveArticle(context.Background(), "NPR", "A different title", url, "A different snippet.", time.Time{})
 	if err != nil {
 		t.Fatalf("ReserveArticle() #2 error = %v", err)
 	}
@@ -143,7 +143,7 @@ func TestReserveArticleDedupesByURL(t *testing.T) {
 
 func TestReserveArticleStartsPendingForAFreshURL(t *testing.T) {
 	st := requireStore(t)
-	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Brand new", "https://example.com/fresh-reserve", "A fresh snippet.")
+	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Brand new", "https://example.com/fresh-reserve", "A fresh snippet.", time.Time{})
 	if err != nil {
 		t.Fatalf("ReserveArticle() error = %v", err)
 	}
@@ -157,7 +157,7 @@ func TestReserveArticleStartsPendingForAFreshURL(t *testing.T) {
 
 func TestCompleteArticleIsNoopIfNoLongerPending(t *testing.T) {
 	st := requireStore(t)
-	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Race", "https://example.com/complete-race", "A race snippet.")
+	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Race", "https://example.com/complete-race", "A race snippet.", time.Time{})
 	if err != nil {
 		t.Fatalf("ReserveArticle() error = %v", err)
 	}
@@ -176,7 +176,7 @@ func TestCompleteArticleIsNoopIfNoLongerPending(t *testing.T) {
 
 func TestFailArticleMarksFailedOnlyWhilePending(t *testing.T) {
 	st := requireStore(t)
-	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Failure", "https://example.com/fail-article", "A failure snippet.")
+	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Failure", "https://example.com/fail-article", "A failure snippet.", time.Time{})
 	if err != nil {
 		t.Fatalf("ReserveArticle() error = %v", err)
 	}
@@ -224,12 +224,55 @@ func backdateClaim(t *testing.T, st *MySQLStore, id string, age time.Duration) {
 
 func TestReserveArticlePersistsDescription(t *testing.T) {
 	st := requireStore(t)
-	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Has description", "https://example.com/description-test", "The feed's own short snippet.")
+	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Has description", "https://example.com/description-test", "The feed's own short snippet.", time.Time{})
 	if err != nil {
 		t.Fatalf("ReserveArticle() error = %v", err)
 	}
 	if reserved.Description != "The feed's own short snippet." {
 		t.Fatalf("ReserveArticle() Description = %q, want the snippet passed in", reserved.Description)
+	}
+}
+
+// TestReserveArticlePersistsPublishedAt guards the round trip this feature's
+// UI date display depends on: the source feed's own publish time must
+// survive ReserveArticle -> GetArticle/List/Get, distinct from CreatedAt
+// (when the row was reserved, not when the story was actually published).
+func TestReserveArticlePersistsPublishedAt(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	published := time.Date(2024, 3, 15, 9, 30, 0, 0, time.UTC)
+
+	reserved, err := st.ReserveArticle(ctx, "BBC", "Has a pub date", "https://example.com/published-at-test", "snippet", published)
+	if err != nil {
+		t.Fatalf("ReserveArticle() error = %v", err)
+	}
+	if !reserved.PublishedAt.Equal(published) {
+		t.Fatalf("ReserveArticle() PublishedAt = %v, want %v", reserved.PublishedAt, published)
+	}
+
+	fetched, ok, err := st.GetArticle(ctx, reserved.ID)
+	if err != nil || !ok {
+		t.Fatalf("GetArticle() = (%+v, %v, %v)", fetched, ok, err)
+	}
+	if !fetched.PublishedAt.Equal(published) {
+		t.Fatalf("GetArticle() PublishedAt = %v, want %v", fetched.PublishedAt, published)
+	}
+}
+
+// TestReserveArticleZeroPublishedAtStaysZero guards the "feed had no
+// parseable <pubDate>" case (see newsfeed.Candidate.PublishedAt's doc
+// comment): a zero time.Time must round-trip as zero, not as some large
+// negative unix timestamp from time.Time{}.Unix().
+func TestReserveArticleZeroPublishedAtStaysZero(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+
+	reserved, err := st.ReserveArticle(ctx, "BBC", "No pub date", "https://example.com/no-published-at-test", "snippet", time.Time{})
+	if err != nil {
+		t.Fatalf("ReserveArticle() error = %v", err)
+	}
+	if !reserved.PublishedAt.IsZero() {
+		t.Fatalf("ReserveArticle() PublishedAt = %v, want the zero time.Time", reserved.PublishedAt)
 	}
 }
 
@@ -240,7 +283,7 @@ func TestReserveArticlePersistsDescription(t *testing.T) {
 func TestStalePendingExcludesFreshlyReservedRows(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
-	fresh, err := st.ReserveArticle(ctx, "BBC", "Fresh", "https://example.com/stale-fresh", "fresh snippet")
+	fresh, err := st.ReserveArticle(ctx, "BBC", "Fresh", "https://example.com/stale-fresh", "fresh snippet", time.Time{})
 	if err != nil {
 		t.Fatalf("ReserveArticle() error = %v", err)
 	}
@@ -265,7 +308,7 @@ func TestStalePendingExcludesFreshlyReservedRows(t *testing.T) {
 func TestStalePendingIncludesRowsClaimedLongAgo(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
-	old, err := st.ReserveArticle(ctx, "BBC", "Old", "https://example.com/stale-old", "old snippet")
+	old, err := st.ReserveArticle(ctx, "BBC", "Old", "https://example.com/stale-old", "old snippet", time.Time{})
 	if err != nil {
 		t.Fatalf("ReserveArticle() error = %v", err)
 	}
@@ -293,7 +336,7 @@ func TestStalePendingIncludesRowsClaimedLongAgo(t *testing.T) {
 func TestClaimArticleReportsWhetherStillPending(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
-	reserved, err := st.ReserveArticle(ctx, "BBC", "Claim", "https://example.com/claim-test", "claim snippet")
+	reserved, err := st.ReserveArticle(ctx, "BBC", "Claim", "https://example.com/claim-test", "claim snippet", time.Time{})
 	if err != nil {
 		t.Fatalf("ReserveArticle() error = %v", err)
 	}
@@ -337,7 +380,7 @@ func TestClaimArticleMissingID(t *testing.T) {
 func TestClaimArticleRefreshesClaimedAtSoItLeavesStalePending(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
-	reserved, err := st.ReserveArticle(ctx, "BBC", "Reclaim", "https://example.com/reclaim-test", "reclaim snippet")
+	reserved, err := st.ReserveArticle(ctx, "BBC", "Reclaim", "https://example.com/reclaim-test", "reclaim snippet", time.Time{})
 	if err != nil {
 		t.Fatalf("ReserveArticle() error = %v", err)
 	}

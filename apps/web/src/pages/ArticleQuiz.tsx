@@ -10,7 +10,7 @@ import {
   type ArticleDraw,
   type ArticleInstance,
 } from "../lib/articles";
-import { formatDateDivider, formatMessageTime, isSameDay } from "../lib/time";
+import { formatAbsoluteDate, formatDateDivider, formatMessageTime, isSameDay } from "../lib/time";
 import { KokoroSpeaker } from "../tts/kokoro";
 
 // How often to re-check a draw that's still generating in the background
@@ -283,6 +283,9 @@ export function ArticleQuiz() {
             <div className="article-meta">
               [{draw.source}] {draw.title}
             </div>
+            {draw.publishedAt > 0 && (
+              <div className="article-date">{formatAbsoluteDate(new Date(draw.publishedAt * 1000))}</div>
+            )}
             {draw.status === "done" ? (
               <>
                 <p className="article-summary">{draw.summary}</p>
