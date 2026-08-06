@@ -165,7 +165,7 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     expect(await screen.findByText("아티클을 가져오지 못했습니다. 네트워크 문제일 수 있습니다.")).toBeInTheDocument();
   });
 
-  it("reveals the quiz choices only after tapping 문제풀기", async () => {
+  it("reveals the quiz choices only after tapping 문제풀기, alongside the English original", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
     const user = userEvent.setup();
@@ -176,6 +176,7 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
 
     await user.click(screen.getByRole("button", { name: "문제풀기" }));
     expect(screen.getByText("틀린 해석 1")).toBeInTheDocument();
+    expect(screen.getByText(sampleDraw.summary)).toBeInTheDocument();
   });
 
   it("submits the selected choice and shows the correct reveal", async () => {
@@ -197,6 +198,7 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     expect(answerArticle).toHaveBeenCalledWith("i1", 0);
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
     expect(screen.getByText("원문의 의미를 정확히 반영하기 때문입니다.")).toBeInTheDocument();
+    expect(screen.getByText(sampleDraw.summary)).toBeInTheDocument();
   });
 
   it("shows a generating hint for a pending draw, then the summary once polling reports done", async () => {
