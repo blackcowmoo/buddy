@@ -8,6 +8,22 @@ const MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
 // (af_* American female, am_* American male, bf_*/bm_* British, etc.).
 export type KokoroVoice = "af_heart" | "af_bella" | "af_sarah" | "am_adam" | "am_echo";
 
+// Minimal valid 1-sample 8-bit PCM WAV (44-byte header + 1 silent byte).
+// unlock() needs a *real* source: an <audio> with no src rejects play()
+// immediately on iOS Safari ("no supported source") without ever entering a
+// playing state, so it doesn't count as a genuine gesture-backed play and
+// grants nothing for the later async .play() call.
+const SILENT_WAV_URL = (() => {
+  const bytes = new Uint8Array([
+    0x52, 0x49, 0x46, 0x46, 0x25, 0x00, 0x00, 0x00, 0x57, 0x41, 0x56, 0x45, 0x66, 0x6d, 0x74,
+    0x20, 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x40, 0x1f, 0x00, 0x00, 0x40, 0x1f,
+    0x00, 0x00, 0x01, 0x00, 0x08, 0x00, 0x64, 0x61, 0x74, 0x61, 0x01, 0x00, 0x00, 0x00, 0x80,
+  ]);
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return `data:audio/wav;base64,${btoa(binary)}`;
+})();
+
 export class KokoroSpeaker {
   private ttsPromise: Promise<KokoroTTS> | null = null;
   private queue: Promise<void> = Promise.resolve();
@@ -31,7 +47,7 @@ export class KokoroSpeaker {
    */
   unlock() {
     if (this.audioEl) return;
-    const el = new Audio();
+    const el = new Audio(SILENT_WAV_URL);
     el.play().catch(() => {});
     el.pause();
     this.audioEl = el;

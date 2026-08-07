@@ -29,8 +29,9 @@ beforeEach(() => {
   audioInstances = [];
   vi.stubGlobal(
     "Audio",
-    vi.fn().mockImplementation(function (this: FakeAudio) {
+    vi.fn().mockImplementation(function (this: FakeAudio, src?: string) {
       const el = Object.assign(this, new FakeAudio());
+      if (src) el.src = src;
       audioInstances.push(el);
       return el;
     }),
@@ -54,6 +55,16 @@ describe("KokoroSpeaker.unlock", () => {
     expect(audioInstances).toHaveLength(1);
     expect(audioInstances[0].play).toHaveBeenCalled();
     expect(audioInstances[0].pause).toHaveBeenCalled();
+  });
+
+  it("primes the element with a real (silent) source, not an empty one", () => {
+    // Regression guard: an <audio> with no src rejects play() immediately on
+    // iOS Safari without ever entering a playing state, so it doesn't count
+    // as a genuine gesture-backed play and the unlock is a no-op.
+    const speaker = new KokoroSpeaker();
+    speaker.unlock();
+
+    expect(audioInstances[0].src).toMatch(/^data:audio\/wav;base64,/);
   });
 
   it("is a no-op on a second call, so the same primed element keeps being reused", () => {
