@@ -319,6 +319,7 @@ export function ArticleQuiz() {
 
         {view === "quiz" && draw && (
           <div className="quiz-panel">
+            <p className="article-summary">{draw.summary}</p>
             <div className="quiz-prompt">이 문단의 내용과 일치하는 해석을 고르세요.</div>
             <div className="quiz-choices">
               {draw.choices.map((choice, i) => (
@@ -341,6 +342,7 @@ export function ArticleQuiz() {
             <div className={`quiz-result ${result.correct ? "correct" : "incorrect"}`} role="status">
               {result.correct ? "정답이에요!" : "아쉬워요, 오답이에요."}
             </div>
+            <p className="article-summary">{draw.summary}</p>
             <div className="quiz-choices">
               {draw.choices.map((choice, i) => {
                 const isAnswer = i === result.correctIndex;
