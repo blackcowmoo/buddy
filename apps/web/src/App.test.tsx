@@ -46,6 +46,7 @@ vi.mock("./tts/kokoro", () => ({
   KokoroSpeaker: vi.fn().mockImplementation(function KokoroSpeaker(this: object) {
     return Object.assign(this, {
       loaded: false,
+      unlock: vi.fn(),
       load: vi.fn(),
       speak: vi.fn(),
     });
@@ -2241,9 +2242,16 @@ describe("per-message tts playback", () => {
     await openStudyPopover(user);
     await user.click(await screen.findByRole("button", { name: "0.5배속으로 재생" }));
     const speaker = vi.mocked(KokoroSpeaker).mock.instances[0] as unknown as {
+      unlock: ReturnType<typeof vi.fn>;
       speak: ReturnType<typeof vi.fn>;
     };
     expect(speaker.speak).toHaveBeenCalledWith("Hello there", 0.5);
+
+    // Regression guard: unlock() must run synchronously in this click,
+    // before loadVoice()'s await — otherwise iOS Safari silently drops
+    // playback once the async model load has pushed the eventual .play()
+    // call outside the user-gesture window (see KokoroSpeaker.unlock).
+    expect(speaker.unlock).toHaveBeenCalled();
   });
 });
 
