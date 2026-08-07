@@ -22,6 +22,7 @@ vi.mock("../tts/kokoro", () => ({
   KokoroSpeaker: vi.fn().mockImplementation(function KokoroSpeaker(this: object) {
     return Object.assign(this, {
       loaded: false,
+      unlock: vi.fn(),
       load: vi.fn().mockResolvedValue(undefined),
       speak: vi.fn().mockResolvedValue(undefined),
     });
@@ -270,8 +271,21 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     // Regression guard: the speaker ref must actually be constructed (see the
     // mount effect that assigns speakerRef.current), otherwise handleRead's
     // `if (!sp) return` bails out silently and the button does nothing.
-    const speakerInstance = vi.mocked(KokoroSpeaker).mock.instances[0];
+    const speakerInstance = vi.mocked(KokoroSpeaker).mock.instances[0] as unknown as {
+      unlock: ReturnType<typeof vi.fn>;
+      speak: ReturnType<typeof vi.fn>;
+    };
     await vi.waitFor(() => expect(speakerInstance.speak).toHaveBeenCalledWith(sampleDraw.summary));
+
+    // Regression guard: unlock() must run before speak()'s internal
+    // load()/generate() awaits, in the same synchronous click — otherwise
+    // iOS Safari silently drops playback once the async work has pushed the
+    // eventual .play() call outside the user-gesture window (see
+    // KokoroSpeaker.unlock's doc comment).
+    expect(speakerInstance.unlock).toHaveBeenCalled();
+    expect(speakerInstance.unlock.mock.invocationCallOrder[0]).toBeLessThan(
+      speakerInstance.speak.mock.invocationCallOrder[0],
+    );
   });
 
   it("shows an incorrect reveal when the wrong choice was picked", async () => {

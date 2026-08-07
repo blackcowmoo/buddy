@@ -1135,6 +1135,7 @@ export function App() {
     async (text: string, rate: number) => {
       const sp = speakerRef.current;
       if (!sp) return;
+      sp.unlock(); // must run synchronously in this click, before loadVoice()/speak() await
       if (!sp.loaded) await loadVoice();
       void sp.speak(text, rate);
     },

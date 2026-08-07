@@ -157,6 +157,7 @@ export function ArticleQuiz() {
   const handleRead = useCallback(async () => {
     const sp = speakerRef.current;
     if (!sp || !draw) return;
+    sp.unlock(); // must run synchronously in this click, before load()/speak() await
     setTts("loading");
     try {
       if (!sp.loaded) await sp.load();
