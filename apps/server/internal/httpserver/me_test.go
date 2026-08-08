@@ -23,9 +23,7 @@ func TestMeHandlerReturnsResolvedIdentity(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusOK)
 	var body map[string]string
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("bad JSON body: %v", err)
@@ -55,10 +53,5 @@ func TestMeHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
 	h := meHandler("oidc", fakeIdentifier{ok: false})
 
 	req := httptest.NewRequest("GET", "/api/me", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
-	}
+	assertUnauthorized(t, h, req)
 }

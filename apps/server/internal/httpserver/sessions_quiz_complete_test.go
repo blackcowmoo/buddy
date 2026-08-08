@@ -26,9 +26,7 @@ func TestSessionQuizCompleteHandlerMarksCompleted(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postQuizCompleteRequest(t))
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNoContent)
 	if st.snapshotMarkQuizCompletedCalls() != 1 {
 		t.Fatalf("MarkQuizCompleted calls = %d, want 1", st.snapshotMarkQuizCompletedCalls())
 	}
@@ -41,18 +39,11 @@ func TestSessionQuizCompleteHandlerInternalErrorOnStoreFailure(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postQuizCompleteRequest(t))
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusInternalServerError)
 }
 
 func TestSessionQuizCompleteHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
 	h := sessionQuizCompleteHandler(fakeIdentifier{ok: false}, &fakeSessionStore{})
 
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, postQuizCompleteRequest(t))
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
-	}
+	assertUnauthorized(t, h, postQuizCompleteRequest(t))
 }

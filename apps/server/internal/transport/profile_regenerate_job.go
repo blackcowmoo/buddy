@@ -2,7 +2,6 @@ package transport
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -80,13 +79,9 @@ func runProfileRegenerate(ctx context.Context, pipe *pipeline.Pipeline, st store
 // ProfileRegenerateJobHandler builds the asyncjob.Handler that runs one
 // queued profile-rebuild job — mirrors StudySummaryJobHandler's shape.
 func ProfileRegenerateJobHandler(pipe *pipeline.Pipeline, st store.Store) asyncjob.Handler {
-	return func(ctx context.Context, job asyncjob.Job) error {
-		var payload profileRegenerateJobPayload
-		if err := json.Unmarshal(job.Payload, &payload); err != nil {
-			return fmt.Errorf("profile regenerate job: bad payload: %w", err)
-		}
+	return asyncjob.DecodePayloadHandler(asyncjob.KindProfileRegenerate, func(ctx context.Context, payload profileRegenerateJobPayload) error {
 		return runProfileRegenerate(ctx, pipe, st, payload.UserID)
-	}
+	})
 }
 
 // RunProfileRegenerateInline runs the exact same work as

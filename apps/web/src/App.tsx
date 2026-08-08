@@ -10,6 +10,7 @@ import { PCMRecorder } from "./audio/recorder";
 import { KokoroSpeaker } from "./tts/kokoro";
 import { prPath } from "./lib/rootPath";
 import { useDismiss } from "./hooks/useDismiss";
+import { usePollScaffold } from "./hooks/usePollScaffold";
 import { confirmThenDelete } from "./lib/confirmDelete";
 import {
   currentRoomHistoryState,
@@ -32,7 +33,7 @@ import {
 } from "./lib/sessions";
 import { fetchSettings, saveSettings, MAX_INTERLOCUTOR_STYLE_LEN } from "./lib/settings";
 import { applyTheme, getStoredTheme, onSystemThemeChange, setStoredTheme, type Theme } from "./lib/theme";
-import { formatDateDivider, formatMessageTime, formatRelativeTime, isSameDay } from "./lib/time";
+import { formatDateDivider, formatMessageTime, formatRelativeTime, shouldShowDateDivider } from "./lib/time";
 import { clearDraft, loadDraft, saveDraft } from "./lib/draftCache";
 import { fetchWords } from "./lib/wordReview";
 import {
@@ -288,18 +289,6 @@ export function App() {
   // handler, never rendered, so it's a ref rather than state — setting it
   // shouldn't force a re-render on every page load.
   const hasMoreHistoryRef = useRef(false);
-  // Identifies the most recent translation/correction poll (see
-  // pollMissingFeedback) so a slow fetch that resolves after the learner
-  // already left the room, or opened a different one, doesn't apply its
-  // (now stale) result to the wrong room's state.
-  const pollTokenRef = useRef<object | null>(null);
-  // Every not-yet-fired poll tick (see pollMissingFeedback/pollStudySummary),
-  // so unmounting can cancel them. The token above only stops a tick that
-  // actually runs from *applying* its result; the tick itself still fires,
-  // and each one that finds work outstanding schedules the next — so without
-  // this a poll chain outlives the component that started it, keeping up to
-  // maxAttempts × intervalMs worth of fetches going after the app is gone.
-  const pollTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
   // True once the open room's history entry sits on top of a "list" entry
   // this app itself pushed — set on every list->chat transition (enterChat's
   // push, or popping forward into a room) and cleared back on the list, so
@@ -538,29 +527,12 @@ export function App() {
     await confirmThenDelete("이 대화를 삭제할까요? 저장된 녹음도 함께 삭제됩니다.", deleteSession, id, setSessions);
   }, []);
 
-  // setTimeout for a poll tick, tracked in pollTimersRef so the unmount
-  // cleanup below can cancel it. Every poll tick in this component must go
-  // through this rather than calling setTimeout directly, otherwise its
-  // chain keeps running past unmount.
-  const schedulePoll = useCallback((tick: () => void, ms: number) => {
-    const id = setTimeout(() => {
-      pollTimersRef.current.delete(id);
-      tick();
-    }, ms);
-    pollTimersRef.current.add(id);
-  }, []);
-
-  useEffect(() => {
-    const timers = pollTimersRef.current;
-    return () => {
-      for (const id of timers) clearTimeout(id);
-      timers.clear();
-      // A tick already awaiting its fetch can't be cancelled, only ignored —
-      // dropping the token makes it bail on the way out (see the guards in
-      // the pollers below) instead of setting state on a gone component.
-      pollTokenRef.current = null;
-    };
-  }, []);
+  // Poll scaffolding for pollMissingFeedback/pollStudySummary/pollQuizStatus
+  // below (see usePollScaffold's doc comment). pollTokenRef identifies the
+  // most recent poll chain so a slow fetch that resolves after the learner
+  // already left the room, or opened a different one, doesn't apply its
+  // (now stale) result to the wrong room's state.
+  const { tokenRef: pollTokenRef, schedulePoll } = usePollScaffold();
 
   // Polls a room's transcript for translations, grammar corrections, and
   // assistant replies the server is still working on in the background —
@@ -1412,8 +1384,7 @@ export function App() {
           const translationPending =
             m.role === "user" ? meta?.userTranslationPending : meta?.assistantTranslationPending;
           const prev = msgs[i - 1];
-          const showDivider =
-            m.timestamp != null && (!prev || prev.timestamp == null || !isSameDay(prev.timestamp, m.timestamp));
+          const showDivider = shouldShowDateDivider(prev?.timestamp, m.timestamp);
           const grammarOpen = isPanelOpen(openPanel, i, "grammar");
           const rateOpen = isPanelOpen(openPanel, i, "rate");
           return (

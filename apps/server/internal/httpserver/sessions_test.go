@@ -599,9 +599,7 @@ func TestSessionDeleteRemovesTheSession(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNoContent)
 	if len(st.deleted) != 1 || st.deleted[0].userID != "alex" || st.deleted[0].sessionID != "s1" {
 		t.Fatalf("deleted = %+v, want exactly one (alex, s1)", st.deleted)
 	}
@@ -612,12 +610,7 @@ func TestSessionDeleteUnauthorizedWhenIdentifyFails(t *testing.T) {
 
 	req := httptest.NewRequest("DELETE", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
-	}
+	assertUnauthorized(t, h, req)
 }
 
 func TestSessionDeleteInternalErrorOnStoreFailure(t *testing.T) {
@@ -629,9 +622,7 @@ func TestSessionDeleteInternalErrorOnStoreFailure(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusInternalServerError)
 }
 
 // TestSessionDeleteCascadesToRecordings is the key behavior this handler
@@ -654,9 +645,7 @@ func TestSessionDeleteCascadesToRecordings(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNoContent)
 	remaining := recStore.byUser["alex"]
 	if len(remaining) != 1 || remaining[0].ID != "rec-3" {
 		t.Fatalf("byUser[alex] = %+v, want only rec-3 (session s2) left", remaining)
@@ -680,9 +669,7 @@ func TestSessionDeleteCascadesToAudioBackups(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNoContent)
 	remaining := audioStore.byUser["alex"]
 	if len(remaining) != 1 || remaining[0] != "s2/c.pcm" {
 		t.Fatalf("byUser[alex] = %+v, want only s2/c.pcm left", remaining)
@@ -701,9 +688,7 @@ func TestSessionDeleteSucceedsWhenRecordingsDisabled(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNoContent)
 }
 
 // TestSessionDeleteSucceedsWhenRecordingsCascadeFails documents the

@@ -16,7 +16,11 @@
 // deliberate, accepted retry semantics — see Handler's doc comment.
 package asyncjob
 
-import "encoding/json"
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+)
 
 // Kind identifies what a Job's Payload contains and which Handler processes
 // it. Each Kind gets its own Redis queue/processing/dedupe/claim keyspace
@@ -143,4 +147,17 @@ type Job struct {
 	// worker. Observability only; Handlers don't need to consult it since
 	// every attempt is expected to redo the full job.
 	Attempts int `json:"attempts"`
+}
+
+// DecodePayloadHandler builds a Handler that JSON-decodes job.Payload into a P
+// and hands it to work — the "unmarshal payload, wrap decode errors" shell
+// every Kind's own XJobHandler constructor otherwise repeats verbatim.
+func DecodePayloadHandler[P any](kind Kind, work func(context.Context, P) error) Handler {
+	return func(ctx context.Context, job Job) error {
+		var payload P
+		if err := json.Unmarshal(job.Payload, &payload); err != nil {
+			return fmt.Errorf("%s job: bad payload: %w", kind, err)
+		}
+		return work(ctx, payload)
+	}
 }

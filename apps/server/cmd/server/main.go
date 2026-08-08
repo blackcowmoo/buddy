@@ -386,14 +386,6 @@ func buildWordReviewStore(ctx context.Context, st *store.MySQLStore) *wordreview
 	return words
 }
 
-// buildSTT builds the STT ensemble for pipeline.Pipeline.STT: one Recognizer
-// per configured server engine (cfg.STTEngines — WHISPER_SERVER_URLS,
-// PARAKEET_SERVER_URLS, ...; see config.sttEngines), all called concurrently
-// per utterance (see pipeline.Pipeline.transcribe) — each engine's own
-// entries still round-robin internally across that engine's replicas (see
-// stt.HTTPTranscriber). Falls back to the legacy fast+slow pair (mock/
-// subprocess whisper, internal/stt/whisper.go) as a two-member ensemble when
-// no server engine is configured at all.
 // buildNewsArticleStore builds the "오늘의 아티클" store (internal/newsarticle).
 // Unlike buildRecordingStore, this has no optional external dependency (no
 // S3, just MySQL) so it's constructed unconditionally — shares st's pools
@@ -407,6 +399,14 @@ func buildNewsArticleStore(ctx context.Context, st *store.MySQLStore) *newsartic
 	return articles
 }
 
+// buildSTT builds the STT ensemble for pipeline.Pipeline.STT: one Recognizer
+// per configured server engine (cfg.STTEngines — WHISPER_SERVER_URLS,
+// PARAKEET_SERVER_URLS, ...; see config.sttEngines), all called concurrently
+// per utterance (see pipeline.Pipeline.transcribe) — each engine's own
+// entries still round-robin internally across that engine's replicas (see
+// stt.HTTPTranscriber). Falls back to the legacy fast+slow pair (mock/
+// subprocess whisper, internal/stt/whisper.go) as a two-member ensemble when
+// no server engine is configured at all.
 func buildSTT(cfg config.Config) []stt.Recognizer {
 	if len(cfg.STTEngines) > 0 {
 		recs := make([]stt.Recognizer, len(cfg.STTEngines))

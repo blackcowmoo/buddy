@@ -43,9 +43,7 @@ func TestQuizAnswerCheckHandlerReturnsCorrectVerdict(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
-	}
+	requireStatus(t, rec, http.StatusOK)
 	var out struct {
 		Correct bool `json:"correct"`
 	}
@@ -69,9 +67,7 @@ func TestQuizAnswerCheckHandlerReturnsFalseVerdict(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
-	}
+	requireStatus(t, rec, http.StatusOK)
 	var out struct {
 		Correct bool `json:"correct"`
 	}
@@ -87,12 +83,7 @@ func TestQuizAnswerCheckHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
 	h := quizAnswerCheckHandler(fakeIdentifier{ok: false}, &pipeline.Pipeline{})
 
 	req := httptest.NewRequest("POST", "/api/quiz/check-answer", strings.NewReader(`{"prompt":"x","answer":"y","learnerAnswer":"z"}`))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
-	}
+	assertUnauthorized(t, h, req)
 }
 
 func TestQuizAnswerCheckHandlerBadRequestOnMalformedJSON(t *testing.T) {
@@ -102,9 +93,7 @@ func TestQuizAnswerCheckHandlerBadRequestOnMalformedJSON(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusBadRequest)
 }
 
 // TestQuizAnswerCheckHandlerRejectsMissingFields covers prompt/answer/
@@ -142,9 +131,7 @@ func TestQuizAnswerCheckHandlerRejectsOverlongLearnerAnswer(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusBadRequest)
 }
 
 func TestQuizAnswerCheckHandlerInternalErrorOnPipelineFailure(t *testing.T) {
@@ -159,7 +146,5 @@ func TestQuizAnswerCheckHandlerInternalErrorOnPipelineFailure(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusInternalServerError)
 }

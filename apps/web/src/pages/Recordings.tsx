@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { confirmThenDelete } from "../lib/confirmDelete";
 import { deleteRecording, fetchRecordings, recordingAudioURL, type Recording } from "../lib/recordings";
 import { formatAbsoluteDateTime } from "../lib/time";
+import { SubPageHeader } from "../components/SubPageHeader";
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -24,17 +25,7 @@ export function Recordings() {
 
   return (
     <div className="app">
-      <header className="topbar">
-        <div className="brand">
-          <h1>녹음 목록</h1>
-        </div>
-        {/* Relative link (not "/"): resolves against the current page URL,
-            same reasoning as PCMRecorder's worklet URL, so this still works
-            under a ROOT_PATH prefix like "/pr/14/recordings". */}
-        <a className="ghost icon-btn" href="." aria-label="대화로 돌아가기" title="대화로 돌아가기">
-          ←
-        </a>
-      </header>
+      <SubPageHeader title="녹음 목록" />
 
       <main className="convo recordings-list">
         {state === "loading" && <p className="hint">불러오는 중…</p>}

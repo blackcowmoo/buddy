@@ -48,9 +48,7 @@ func TestSessionDeleteRegeneratesProfileWhenDeletedSessionContributed(t *testing
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, deleteSessionRequest(t, "s1"))
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNoContent)
 	waitForCondition(t, 2*time.Second, func() bool {
 		return st.snapshotWithStudySummaryCalls() > 0
 	})
@@ -74,9 +72,7 @@ func TestSessionDeleteDoesNotRegenerateProfileWhenDeletedSessionNeverEnded(t *te
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, deleteSessionRequest(t, "s1"))
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNoContent)
 	// Nothing async was even kicked off (contributedToProfile is false, so
 	// the handler never reaches enqueueOrRunInline at all) — safe to assert
 	// synchronously right away, unlike the "did regenerate" test above.
@@ -103,9 +99,7 @@ func TestSessionDeleteDoesNotRegenerateProfileWhenDeletedSessionHadNoStudySummar
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, deleteSessionRequest(t, "s1"))
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNoContent)
 	if calls := st.snapshotWithStudySummaryCalls(); calls != 0 {
 		t.Fatalf("ListSessionsWithStudySummary calls = %d, want 0 (nothing was ever folded in)", calls)
 	}

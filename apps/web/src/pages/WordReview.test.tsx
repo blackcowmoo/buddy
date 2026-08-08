@@ -120,6 +120,19 @@ const otherVerifiedWords: WordReviewItem[] = [
   { id: "w5", word: "content", meaning: "만족하는", example: "feeling content", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(Date.now() / 1000) + 999999, status: "verified" },
 ];
 
+// Mocks fetchWords to return `words` (always dueCount: 1 — every quiz test
+// below cares about exactly one due word, even when the list also carries
+// extra non-due entries for recognition-mode distractors), renders
+// WordReview, and starts the quiz — the shared preamble every quiz test
+// below needs before it can get to what it's actually testing.
+async function startQuiz(words: WordReviewItem[] = [dueWord]) {
+  vi.mocked(fetchWords).mockResolvedValue({ words, dueCount: 1 });
+  const user = userEvent.setup();
+  render(<WordReview />);
+  await user.click(await screen.findByRole("button", { name: "복습 시작" }));
+  return user;
+}
+
 describe("WordReview page", () => {
   it("links back to the chat page with a relative href", () => {
     vi.mocked(fetchWords).mockReturnValue(new Promise(() => {}));
@@ -287,7 +300,11 @@ describe("WordReview page", () => {
       expect(await screen.findByText("단어를 추가하지 못했어요. 잠시 후 다시 시도해주세요.")).toBeInTheDocument();
     });
 
-    it("shows a not-found hint once the job completes with no suggestions", async () => {
+    // Shared by the two tests below: starts the background job, then drives
+    // pollAutoAdd's next tick to observe fetchAutoAddStatus as `finalStatus`
+    // — same fake-timer pattern as the "starts the background job" test
+    // above, just without that test's extra mid-flight assertions.
+    async function startAutoAddAndAdvance(finalStatus: "done" | "failed") {
       vi.mocked(fetchWords).mockResolvedValue({ words: [], dueCount: 0 });
       vi.mocked(startAutoAddWords).mockResolvedValue({ status: "pending", count: 0 });
       const user = userEvent.setup({ delay: null });
@@ -297,28 +314,20 @@ describe("WordReview page", () => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
       await user.click(button);
 
-      vi.mocked(fetchAutoAddStatus).mockResolvedValue({ status: "done", count: 0 });
+      vi.mocked(fetchAutoAddStatus).mockResolvedValue({ status: finalStatus, count: 0 });
       await act(async () => {
         await vi.advanceTimersByTimeAsync(3000);
       });
+    }
+
+    it("shows a not-found hint once the job completes with no suggestions", async () => {
+      await startAutoAddAndAdvance("done");
 
       expect(screen.getByText("추천할 새 단어를 찾지 못했어요. 잠시 후 다시 시도해주세요.")).toBeInTheDocument();
     });
 
     it("shows an error hint once the job fails in the background", async () => {
-      vi.mocked(fetchWords).mockResolvedValue({ words: [], dueCount: 0 });
-      vi.mocked(startAutoAddWords).mockResolvedValue({ status: "pending", count: 0 });
-      const user = userEvent.setup({ delay: null });
-      render(<WordReview />);
-      const button = await screen.findByRole("button", { name: "새 단어 추가로 학습하기" });
-
-      vi.useFakeTimers({ shouldAdvanceTime: true });
-      await user.click(button);
-
-      vi.mocked(fetchAutoAddStatus).mockResolvedValue({ status: "failed", count: 0 });
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(3000);
-      });
+      await startAutoAddAndAdvance("failed");
 
       expect(screen.getByText("단어를 추가하지 못했어요. 잠시 후 다시 시도해주세요.")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "새 단어 추가로 학습하기" })).toBeInTheDocument();
@@ -364,12 +373,8 @@ describe("WordReview page", () => {
   });
 
   it("runs a review quiz: masks the word in the example, checks the answer, and shows the score", async () => {
-    vi.mocked(fetchWords).mockResolvedValue({ words: [dueWord], dueCount: 1 });
     vi.mocked(reviewWord).mockResolvedValue({ ...dueWord, stage: 1, reviewCount: 1 });
-    const user = userEvent.setup();
-    render(<WordReview />);
-
-    await user.click(await screen.findByRole("button", { name: "복습 시작" }));
+    const user = await startQuiz();
 
     // The prompt shows the meaning and the example with the target word
     // masked out (replaced by an input to type directly into), not given
@@ -398,12 +403,8 @@ describe("WordReview page", () => {
   // correct answer would earn (see wordreview.nextSchedule's repeat doc
   // server-side).
   it("sends repeat=true and still advances when the forced-guess button is pressed on a correct answer", async () => {
-    vi.mocked(fetchWords).mockResolvedValue({ words: [dueWord], dueCount: 1 });
     vi.mocked(reviewWord).mockResolvedValue({ ...dueWord, stage: 0, reviewCount: 1 });
-    const user = userEvent.setup();
-    render(<WordReview />);
-
-    await user.click(await screen.findByRole("button", { name: "복습 시작" }));
+    const user = await startQuiz();
     await user.type(await screen.findByRole("textbox", { name: "정답 입력" }), "ecstatic");
     await user.click(screen.getByRole("button", { name: "확인" }));
 
@@ -419,12 +420,8 @@ describe("WordReview page", () => {
   // incorrect one already resets to stage 0 unconditionally (see
   // nextSchedule), so there's nothing for "repeat" to soften.
   it("does not show the forced-guess button after an incorrect answer", async () => {
-    vi.mocked(fetchWords).mockResolvedValue({ words: [dueWord], dueCount: 1 });
     vi.mocked(reviewWord).mockResolvedValue({ ...dueWord, stage: 0, reviewCount: 1 });
-    const user = userEvent.setup();
-    render(<WordReview />);
-
-    await user.click(await screen.findByRole("button", { name: "복습 시작" }));
+    const user = await startQuiz();
     await user.type(await screen.findByRole("textbox", { name: "정답 입력" }), "wrong answer");
     await user.click(screen.getByRole("button", { name: "확인" }));
 
@@ -433,11 +430,7 @@ describe("WordReview page", () => {
   });
 
   it("grows the answer input to fit what's typed, not the length of the hidden answer", async () => {
-    vi.mocked(fetchWords).mockResolvedValue({ words: [dueWord], dueCount: 1 });
-    const user = userEvent.setup();
-    render(<WordReview />);
-
-    await user.click(await screen.findByRole("button", { name: "복습 시작" }));
+    const user = await startQuiz();
 
     const input = screen.getByRole("textbox", { name: "정답 입력" });
     const widthBefore = input.style.width;
@@ -450,12 +443,8 @@ describe("WordReview page", () => {
   });
 
   it("masks each significant word of a phrase separately, keeping words in between visible, when the example inflects it", async () => {
-    vi.mocked(fetchWords).mockResolvedValue({ words: [idiomWord], dueCount: 1 });
     vi.mocked(reviewWord).mockResolvedValue({ ...idiomWord, stage: 1, reviewCount: 1 });
-    const user = userEvent.setup();
-    render(<WordReview />);
-
-    await user.click(await screen.findByRole("button", { name: "복습 시작" }));
+    const user = await startQuiz([idiomWord]);
 
     // "do one's best" never appears verbatim in the example (it's "do my
     // best") -- "my" stays visible, and only "do"/"best" are blanked (each
@@ -484,12 +473,8 @@ describe("WordReview page", () => {
   // the inflected spelling actually fits grammatically -- the dictionary
   // base form must NOT be accepted.
   it("masks the word even when the example spells it as an inflected form (optimize -> optimizing)", async () => {
-    vi.mocked(fetchWords).mockResolvedValue({ words: [optimizeWord], dueCount: 1 });
     vi.mocked(reviewWord).mockResolvedValue({ ...optimizeWord, stage: 1, reviewCount: 1 });
-    const user = userEvent.setup();
-    render(<WordReview />);
-
-    await user.click(await screen.findByRole("button", { name: "복습 시작" }));
+    const user = await startQuiz([optimizeWord]);
 
     expect(await screen.findByText("최적화하다")).toBeInTheDocument();
     expect(screen.getByText("We are")).toBeInTheDocument();
@@ -503,12 +488,8 @@ describe("WordReview page", () => {
   });
 
   it("rejects the dictionary base form when the sentence grammar requires the inflected spelling", async () => {
-    vi.mocked(fetchWords).mockResolvedValue({ words: [optimizeWord], dueCount: 1 });
     vi.mocked(reviewWord).mockResolvedValue({ ...optimizeWord, stage: 0, reviewCount: 1 });
-    const user = userEvent.setup();
-    render(<WordReview />);
-
-    await user.click(await screen.findByRole("button", { name: "복습 시작" }));
+    const user = await startQuiz([optimizeWord]);
 
     await user.type(await screen.findByRole("textbox", { name: "정답 입력" }), "optimize");
     await user.click(screen.getByRole("button", { name: "확인" }));
@@ -517,12 +498,8 @@ describe("WordReview page", () => {
   });
 
   it("marks each blank individually correct/incorrect when a multi-blank recall answer is only partly right", async () => {
-    vi.mocked(fetchWords).mockResolvedValue({ words: [idiomWord], dueCount: 1 });
     vi.mocked(reviewWord).mockResolvedValue({ ...idiomWord, stage: 0, reviewCount: 1 });
-    const user = userEvent.setup();
-    render(<WordReview />);
-
-    await user.click(await screen.findByRole("button", { name: "복습 시작" }));
+    const user = await startQuiz([idiomWord]);
 
     const [firstBlank, secondBlank] = await screen.findAllByRole("textbox");
     await user.type(firstBlank, "do");
@@ -535,12 +512,8 @@ describe("WordReview page", () => {
   });
 
   it("requeues a missed word for a same-session retry instead of ending the session on it", async () => {
-    vi.mocked(fetchWords).mockResolvedValue({ words: [dueWord], dueCount: 1 });
     vi.mocked(reviewWord).mockResolvedValue({ ...dueWord, stage: 0, reviewCount: 1 });
-    const user = userEvent.setup();
-    render(<WordReview />);
-
-    await user.click(await screen.findByRole("button", { name: "복습 시작" }));
+    const user = await startQuiz();
     await user.type(await screen.findByRole("textbox", { name: "정답 입력" }), "wrong answer");
     await user.click(screen.getByRole("button", { name: "확인" }));
 
@@ -568,11 +541,7 @@ describe("WordReview page", () => {
   // flip, is what's preventing it.
   it("falls back to recall mode when there aren't enough other verified words for a multiple-choice question", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0);
-    vi.mocked(fetchWords).mockResolvedValue({ words: [dueWord], dueCount: 1 });
-    const user = userEvent.setup();
-    render(<WordReview />);
-
-    await user.click(await screen.findByRole("button", { name: "복습 시작" }));
+    await startQuiz();
 
     expect(await screen.findByRole("textbox", { name: "정답 입력" })).toBeInTheDocument();
   });
@@ -582,12 +551,8 @@ describe("WordReview page", () => {
   // asked for, alongside the existing recall ("쓰기") mode above.
   it("runs a recognition-mode question: shows the word, offers multiple-choice meanings, and checks a correct pick", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0); // forces recognition mode when eligible
-    vi.mocked(fetchWords).mockResolvedValue({ words: [dueWord, ...otherVerifiedWords], dueCount: 1 });
     vi.mocked(reviewWord).mockResolvedValue({ ...dueWord, stage: 1, reviewCount: 1 });
-    const user = userEvent.setup();
-    render(<WordReview />);
-
-    await user.click(await screen.findByRole("button", { name: "복습 시작" }));
+    const user = await startQuiz([dueWord, ...otherVerifiedWords]);
 
     // The word (not the meaning) and its plain, un-masked example are given
     // — nothing to hide, since recognizing the word is what's being tested.
@@ -605,12 +570,8 @@ describe("WordReview page", () => {
 
   it("marks a recognition-mode question incorrect when the wrong meaning is picked", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0);
-    vi.mocked(fetchWords).mockResolvedValue({ words: [dueWord, ...otherVerifiedWords], dueCount: 1 });
     vi.mocked(reviewWord).mockResolvedValue({ ...dueWord, stage: 0, reviewCount: 1 });
-    const user = userEvent.setup();
-    render(<WordReview />);
-
-    await user.click(await screen.findByRole("button", { name: "복습 시작" }));
+    const user = await startQuiz([dueWord, ...otherVerifiedWords]);
     await screen.findByText("ecstatic");
     await user.click(screen.getByRole("button", { name: "우울한" })); // a distractor, not the correct meaning
 
@@ -619,11 +580,7 @@ describe("WordReview page", () => {
   });
 
   it("returns to the list from the quiz view", async () => {
-    vi.mocked(fetchWords).mockResolvedValue({ words: [dueWord], dueCount: 1 });
-    const user = userEvent.setup();
-    render(<WordReview />);
-
-    await user.click(await screen.findByRole("button", { name: "복습 시작" }));
+    const user = await startQuiz();
     await user.click(await screen.findByRole("button", { name: "← 목록으로" }));
 
     expect(await screen.findByRole("button", { name: "복습 시작" })).toBeInTheDocument();

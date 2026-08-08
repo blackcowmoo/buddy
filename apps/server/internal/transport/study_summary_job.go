@@ -2,7 +2,6 @@ package transport
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -208,13 +207,9 @@ func studySummaryEnglish(summary []protocol.StudySummarySentence) string {
 // failure durable for a poller/reload in the meantime; the reaper still
 // retries the job from scratch regardless (see asyncjob.Queue.Execute).
 func StudySummaryJobHandler(pipe *pipeline.Pipeline, st store.Store) asyncjob.Handler {
-	return func(ctx context.Context, job asyncjob.Job) error {
-		var payload studySummaryJobPayload
-		if err := json.Unmarshal(job.Payload, &payload); err != nil {
-			return fmt.Errorf("study summary job: bad payload: %w", err)
-		}
+	return asyncjob.DecodePayloadHandler(asyncjob.KindStudySummary, func(ctx context.Context, payload studySummaryJobPayload) error {
 		return runStudySummary(ctx, pipe, st, payload.UserID, payload.SessionID)
-	}
+	})
 }
 
 // RunStudySummaryInline runs the exact same work as StudySummaryJobHandler,

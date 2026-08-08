@@ -29,9 +29,7 @@ func TestSessionMarkInstantHandlerCallsMarkInstant(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postMarkInstantRequest(t))
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNoContent)
 	if st.snapshotMarkInstantCalls() != 1 {
 		t.Fatalf("MarkInstant calls = %d, want 1", st.snapshotMarkInstantCalls())
 	}
@@ -44,20 +42,13 @@ func TestSessionMarkInstantHandlerInternalErrorOnStoreFailure(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postMarkInstantRequest(t))
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusInternalServerError)
 }
 
 func TestSessionMarkInstantHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
 	h := sessionMarkInstantHandler(fakeIdentifier{ok: false}, &fakeSessionStore{})
 
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, postMarkInstantRequest(t))
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
-	}
+	assertUnauthorized(t, h, postMarkInstantRequest(t))
 }
 
 // TestInstantSessionsListHandlerReturnsStoreResult guards the mirror-image
@@ -72,9 +63,7 @@ func TestInstantSessionsListHandlerReturnsStoreResult(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/instant-sessions", nil))
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusOK)
 	var got []store.SessionMeta
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -91,18 +80,11 @@ func TestInstantSessionsListHandlerInternalErrorOnStoreFailure(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/instant-sessions", nil))
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusInternalServerError)
 }
 
 func TestInstantSessionsListHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
 	h := instantSessionsListHandler(fakeIdentifier{ok: false}, &fakeSessionStore{})
 
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/instant-sessions", nil))
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
-	}
+	assertUnauthorized(t, h, httptest.NewRequest("GET", "/api/instant-sessions", nil))
 }

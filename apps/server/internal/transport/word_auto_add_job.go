@@ -2,7 +2,6 @@ package transport
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -137,13 +136,9 @@ func runWordAutoAdd(ctx context.Context, pipe *pipeline.Pipeline, words wordrevi
 // word-auto-add job, independent of any connection or its context — see
 // ArticleStudyJobHandler's doc comment for the shared durability rationale.
 func WordAutoAddJobHandler(pipe *pipeline.Pipeline, words wordreview.Store, st store.Store, wordVerifyQueue *asyncjob.Queue) asyncjob.Handler {
-	return func(ctx context.Context, job asyncjob.Job) error {
-		var payload wordAutoAddJobPayload
-		if err := json.Unmarshal(job.Payload, &payload); err != nil {
-			return fmt.Errorf("word auto-add job: bad payload: %w", err)
-		}
+	return asyncjob.DecodePayloadHandler(asyncjob.KindWordAutoAdd, func(ctx context.Context, payload wordAutoAddJobPayload) error {
 		return runWordAutoAdd(ctx, pipe, words, st, wordVerifyQueue, payload.UserID)
-	}
+	})
 }
 
 // RunWordAutoAddInline runs the exact same work as WordAutoAddJobHandler,

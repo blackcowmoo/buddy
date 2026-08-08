@@ -94,9 +94,7 @@ func TestSessionEndHandlerNoQueueEventuallyCompletesStudySummary(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postEndRequest(t))
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNoContent)
 
 	waitForCondition(t, 2*time.Second, func() bool { return st.snapshotCompleteSummaryCalls() == 1 })
 	if got := st.snapshotLearnerProfile("alex"); got == "old profile" || got == "" {
@@ -125,9 +123,7 @@ func TestSessionEndHandlerWithQueueEnqueuesDurableJob(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postEndRequest(t))
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNoContent)
 
 	waitForCondition(t, 2*time.Second, func() bool { return st.snapshotCompleteSummaryCalls() == 1 })
 }
@@ -151,9 +147,7 @@ func TestSessionEndHandlerNoQueueEventuallyCompletesStudyQuiz(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postEndRequest(t))
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNoContent)
 
 	waitForCondition(t, 2*time.Second, func() bool { return st.snapshotCompleteQuizCalls() == 1 })
 }
@@ -177,9 +171,7 @@ func TestSessionEndHandlerWithQueueEnqueuesQuizDurableJob(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postEndRequest(t))
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNoContent)
 
 	waitForCondition(t, 2*time.Second, func() bool { return st.snapshotCompleteQuizCalls() == 1 })
 }
@@ -191,18 +183,11 @@ func TestSessionEndHandlerNotFoundPropagatesStoreErrNotFound(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postEndRequest(t))
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNotFound)
 }
 
 func TestSessionEndHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
 	h := sessionEndHandler(fakeIdentifier{ok: false}, &fakeSessionStore{}, &pipeline.Pipeline{}, nil, nil)
 
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, postEndRequest(t))
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
-	}
+	assertUnauthorized(t, h, postEndRequest(t))
 }

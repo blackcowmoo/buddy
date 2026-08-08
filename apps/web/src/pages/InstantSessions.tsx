@@ -1,7 +1,8 @@
 import { Fragment, useEffect, useState } from "react";
 import { confirmThenDelete } from "../lib/confirmDelete";
 import { deleteSession, fetchInstantSessions, type SessionSummary } from "../lib/sessions";
-import { formatDateDivider, formatMessageTime, isSameDay } from "../lib/time";
+import { formatDateDivider, formatMessageTime, shouldShowDateDivider } from "../lib/time";
+import { SubPageHeader } from "../components/SubPageHeader";
 
 // Every "인스턴트 대화" room (see App.tsx's markInstant) lives here instead of
 // the main room list — one exchange each, so this page exists to review a
@@ -33,17 +34,7 @@ export function InstantSessions() {
 
   return (
     <div className="app">
-      <header className="topbar">
-        <div className="brand">
-          <h1>인스턴트 대화</h1>
-        </div>
-        {/* Relative link (not "/"): resolves against the current page URL,
-            same reasoning as PCMRecorder's worklet URL, so this still works
-            under a ROOT_PATH prefix like "/pr/14/instant". */}
-        <a className="ghost icon-btn" href="." aria-label="대화로 돌아가기" title="대화로 돌아가기">
-          ←
-        </a>
-      </header>
+      <SubPageHeader title="인스턴트 대화" />
 
       <main className="convo instant-sessions-list">
         {!loaded && <p className="hint">불러오는 중…</p>}
@@ -55,7 +46,7 @@ export function InstantSessions() {
         {loaded && sessions.length === 0 && <p className="hint">아직 인스턴트 대화가 없습니다.</p>}
         {sessions.map((s, i) => {
           const prev = sessions[i - 1];
-          const showDivider = !prev || !isSameDay(prev.createdAt, s.createdAt);
+          const showDivider = shouldShowDateDivider(prev?.createdAt, s.createdAt);
           return (
             <Fragment key={s.id}>
               {showDivider && (

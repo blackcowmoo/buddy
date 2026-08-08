@@ -115,9 +115,7 @@ func TestSessionDetailEnqueuesBackfillWhenATurnIsMissingTranslation(t *testing.T
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusOK)
 	awaitQueueLength(t, rdb, 1)
 }
 
@@ -139,9 +137,7 @@ func TestSessionDetailDoesNotEnqueueWhenEveryTurnIsTranslated(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusOK)
 	// Nothing should show up even after waiting past the async goroutine's
 	// normal completion time.
 	time.Sleep(200 * time.Millisecond)
@@ -178,9 +174,7 @@ func TestSessionDetailEnqueuesCorrectionBackfillWhenAUserTurnHasNoCorrectionStat
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusOK)
 	awaitNamedQueueLength(t, rdb, "buddy:job:{correction-backfill}:queue", 1)
 }
 
@@ -208,9 +202,7 @@ func TestSessionDetailDoesNotEnqueueCorrectionBackfillWhenAlreadyTrackedOrDone(t
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusOK)
 	time.Sleep(200 * time.Millisecond)
 	n, err := rdb.LLen(context.Background(), "buddy:job:{correction-backfill}:queue").Result()
 	if err != nil {
@@ -250,9 +242,7 @@ func TestSessionDetailEnqueuesStudySummaryBackfillWhenLegacyResetLeftIssuesUnrec
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusOK)
 	waitForCondition(t, 2*time.Second, func() bool { return st.snapshotCompleteSummaryCalls() == 1 })
 }
 
@@ -276,9 +266,7 @@ func TestSessionDetailDoesNotEnqueueStudySummaryBackfillWhenNoIssuesFlagged(t *t
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusOK)
 	time.Sleep(200 * time.Millisecond)
 	n, err := rdb.LLen(context.Background(), "buddy:job:{study-summary}:queue").Result()
 	if err != nil {
@@ -315,9 +303,7 @@ func TestSessionDetailEnqueuesStudyQuizBackfillWhenNeverAttempted(t *testing.T) 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusOK)
 	waitForCondition(t, 2*time.Second, func() bool { return st.snapshotCompleteQuizCalls() == 1 })
 }
 
@@ -339,9 +325,7 @@ func TestSessionDetailDoesNotEnqueueStudyQuizBackfillWhenAlreadyAttempted(t *tes
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusOK)
 	time.Sleep(200 * time.Millisecond)
 	n, err := rdb.LLen(context.Background(), "buddy:job:{study-quiz}:queue").Result()
 	if err != nil {
@@ -370,9 +354,7 @@ func TestSessionDetailDoesNotEnqueueStudyQuizBackfillForUnendedSession(t *testin
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusOK)
 	time.Sleep(200 * time.Millisecond)
 	n, err := rdb.LLen(context.Background(), "buddy:job:{study-quiz}:queue").Result()
 	if err != nil {
@@ -397,9 +379,7 @@ func TestSessionDetailWithNilCorrectionQueueDoesNotPanic(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req) // must not panic
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusOK)
 }
 
 func TestSessionDetailWithNilTranslateQueueDoesNotPanic(t *testing.T) {
@@ -416,9 +396,7 @@ func TestSessionDetailWithNilTranslateQueueDoesNotPanic(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req) // must not panic
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusOK)
 }
 
 func TestSessionDetailUnauthorizedWhenIdentifyFails(t *testing.T) {
@@ -426,12 +404,7 @@ func TestSessionDetailUnauthorizedWhenIdentifyFails(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/sessions/s1", nil)
 	req.SetPathValue("id", "s1")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
-	}
+	assertUnauthorized(t, h, req)
 }
 
 func TestSessionDetailNotFoundPropagatesStoreErrNotFound(t *testing.T) {
@@ -443,9 +416,7 @@ func TestSessionDetailNotFoundPropagatesStoreErrNotFound(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNotFound)
 }
 
 // TestSessionDetailDefaultsLimitWhenQueryParamsAreAbsent documents that a
@@ -465,9 +436,7 @@ func TestSessionDetailDefaultsLimitWhenQueryParamsAreAbsent(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusOK)
 	if st.detailBeforeTurn != 0 || st.detailLimit != defaultSessionPageLimit {
 		t.Fatalf("SessionDetail called with (before=%d, limit=%d), want (0, %d)", st.detailBeforeTurn, st.detailLimit, defaultSessionPageLimit)
 	}
@@ -488,9 +457,7 @@ func TestSessionDetailForwardsBeforeAndLimitQueryParams(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusOK)
 	if st.detailBeforeTurn != 42 || st.detailLimit != 10 {
 		t.Fatalf("SessionDetail called with (before=%d, limit=%d), want (42, 10)", st.detailBeforeTurn, st.detailLimit)
 	}
@@ -514,9 +481,7 @@ func TestSessionDetailExplicitZeroLimitRequestsWholeTranscript(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusOK)
 	if !st.detailUnboundedCalled {
 		t.Fatalf("SessionDetailPage was called, want the unbounded SessionDetail")
 	}

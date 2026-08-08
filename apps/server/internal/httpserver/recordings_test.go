@@ -93,9 +93,7 @@ func TestRecordingsListReturnsOnlyCallersRecordings(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusOK)
 	var body []struct {
 		ID         string `json:"id"`
 		DurationMS int    `json:"durationMs"`
@@ -113,12 +111,7 @@ func TestRecordingsListUnauthorizedWhenIdentifyFails(t *testing.T) {
 	h := recordingsListHandler(fakeIdentifier{ok: false}, &fakeRecordingStore{})
 
 	req := httptest.NewRequest("GET", "/api/recordings", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
-	}
+	assertUnauthorized(t, h, req)
 }
 
 func TestRecordingsListServiceUnavailableWhenDisabled(t *testing.T) {
@@ -128,9 +121,7 @@ func TestRecordingsListServiceUnavailableWhenDisabled(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusServiceUnavailable)
 }
 
 func TestRecordingAudioStreamsGzipBytesWithHeaders(t *testing.T) {
@@ -147,9 +138,7 @@ func TestRecordingAudioStreamsGzipBytesWithHeaders(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusOK)
 	if got := rec.Header().Get("Content-Encoding"); got != "gzip" {
 		t.Errorf("Content-Encoding = %q, want gzip", got)
 	}
@@ -178,9 +167,7 @@ func TestRecordingAudioRejectsWrongUser(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNotFound)
 }
 
 func TestRecordingAudioServiceUnavailableWhenDisabled(t *testing.T) {
@@ -191,9 +178,7 @@ func TestRecordingAudioServiceUnavailableWhenDisabled(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusServiceUnavailable)
 }
 
 func TestRecordingDeleteRemovesOnlyTheGivenRecording(t *testing.T) {
@@ -207,9 +192,7 @@ func TestRecordingDeleteRemovesOnlyTheGivenRecording(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNoContent)
 	remaining := store.byUser["alex"]
 	if len(remaining) != 1 || remaining[0].ID != "rec-2" {
 		t.Fatalf("byUser[alex] = %+v, want only rec-2 left", remaining)
@@ -235,9 +218,7 @@ func TestRecordingDeleteCascadesToAudioBackup(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNoContent)
 	remaining := audio.byUser["alex"]
 	if len(remaining) != 1 || remaining[0] != "s1/rec-2" {
 		t.Fatalf("byUser[alex] = %+v, want only s1/rec-2 left", remaining)
@@ -269,12 +250,7 @@ func TestRecordingDeleteUnauthorizedWhenIdentifyFails(t *testing.T) {
 
 	req := httptest.NewRequest("DELETE", "/api/recordings/rec-1", nil)
 	req.SetPathValue("id", "rec-1")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
-	}
+	assertUnauthorized(t, h, req)
 }
 
 func TestRecordingDeleteServiceUnavailableWhenDisabled(t *testing.T) {
@@ -285,9 +261,7 @@ func TestRecordingDeleteServiceUnavailableWhenDisabled(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusServiceUnavailable)
 }
 
 func TestRecordingDeleteInternalErrorOnStoreFailure(t *testing.T) {
@@ -299,7 +273,5 @@ func TestRecordingDeleteInternalErrorOnStoreFailure(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusInternalServerError)
 }
