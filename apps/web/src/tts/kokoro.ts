@@ -79,12 +79,18 @@ export class KokoroSpeaker {
    * through to the model's own `speed` generation parameter rather than
    * resampling the finished waveform, so slow speech stays natural instead
    * of sounding stretched. Calls are queued so replies never overlap.
+   *
+   * The returned promise reflects this call's own outcome — it rejects if
+   * synth() throws (e.g. playback blocked, generation failure) — so callers
+   * can tell a failed read-aloud apart from a successful one instead of the
+   * UI silently cycling through loading -> speaking -> idle with no sound.
+   * A separate internal queue (always resolving) is what serializes calls,
+   * so one failure doesn't wedge the ones queued after it.
    */
   speak(text: string, speed = 1): Promise<void> {
-    this.queue = this.queue
-      .then(() => this.synth(text, speed))
-      .catch((err) => console.error("tts:", err));
-    return this.queue;
+    const result = this.queue.then(() => this.synth(text, speed));
+    this.queue = result.catch(() => {});
+    return result;
   }
 
   private async synth(text: string, speed: number) {

@@ -388,7 +388,9 @@ export function App() {
         setAwaitingReply(false);
         setMsgs((m) => upsertAssistant(m, e.turn, () => e.text ?? ""));
         patchTurn(e.turn, { assistantTranslationPending: true });
-        if (e.text && speakerRef.current?.loaded) void speakerRef.current.speak(e.text);
+        if (e.text && speakerRef.current?.loaded) {
+          speakerRef.current.speak(e.text).catch((err) => console.error("tts:", err));
+        }
         // Turn 0 is the room's own opening greeting (see protocol.ts), not
         // the learner's sentence — only the first *real* reply is what a
         // quick-mode room is waiting to wrap up after.
@@ -1137,7 +1139,7 @@ export function App() {
       if (!sp) return;
       sp.unlock(); // must run synchronously in this click, before loadVoice()/speak() await
       if (!sp.loaded) await loadVoice();
-      void sp.speak(text, rate);
+      sp.speak(text, rate).catch((err) => console.error("tts:", err));
     },
     [loadVoice],
   );

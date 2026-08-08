@@ -105,4 +105,40 @@ describe("KokoroSpeaker.speak", () => {
 
     expect(audioInstances[0].src).toBe("blob:mock-url");
   });
+
+  it("rejects the caller's promise when playback fails, instead of silently resolving", async () => {
+    // Regression guard: speak() used to catch synth() failures internally
+    // and resolve the returned promise regardless, so a caller had no way
+    // to tell a failed read-aloud (blocked play(), generation error, ...)
+    // apart from a successful one — the UI just showed "playing" then went
+    // back to idle with no sound and no error.
+    const speaker = new KokoroSpeaker();
+
+    const done = speaker.speak("hello");
+    await vi.waitFor(() => expect(audioInstances).toHaveLength(1));
+    audioInstances[0].onerror?.();
+
+    await expect(done).rejects.toThrow("audio playback failed");
+  });
+
+  it("keeps processing later calls after an earlier one fails", async () => {
+    const speaker = new KokoroSpeaker();
+
+    const first = speaker.speak("hello").catch(() => {});
+    await vi.waitFor(() => expect(audioInstances).toHaveLength(1));
+    audioInstances[0].onerror?.();
+    await first;
+
+    // The element is reused across calls, so its `src` is already set from
+    // the first (failed) call by this point — wait for the second call's
+    // own play() invocation rather than for `src`, otherwise firing
+    // onended below can race and resolve against the stale first call.
+    const playCallsBeforeSecond = audioInstances[0].play.mock.calls.length;
+    const second = speaker.speak("world");
+    await vi.waitFor(() =>
+      expect(audioInstances[0].play.mock.calls.length).toBeGreaterThan(playCallsBeforeSecond),
+    );
+    audioInstances[0].onended?.();
+    await expect(second).resolves.toBeUndefined();
+  });
 });

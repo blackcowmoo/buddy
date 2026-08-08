@@ -48,7 +48,7 @@ vi.mock("./tts/kokoro", () => ({
       loaded: false,
       unlock: vi.fn(),
       load: vi.fn(),
-      speak: vi.fn(),
+      speak: vi.fn().mockResolvedValue(undefined),
     });
   }),
 }));

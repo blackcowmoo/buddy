@@ -28,7 +28,7 @@ type LoadState = "loading" | "ready" | "error";
 type View = "reading" | "quiz" | "result" | null;
 
 type DrawState = "idle" | "drawing" | "noMore" | "error";
-type TtsState = "idle" | "loading" | "speaking";
+type TtsState = "idle" | "loading" | "speaking" | "error";
 
 // "오늘의 아티클": draws a news article the learner hasn't seen before (see
 // lib/articles.ts's drawArticle, which excludes every article already drawn
@@ -163,10 +163,14 @@ export function ArticleQuiz() {
       if (!sp.loaded) await sp.load();
       setTts("speaking");
       await sp.speak(draw.summary);
+      setTts("idle");
     } catch (err) {
       console.error("tts:", err);
-    } finally {
-      setTts("idle");
+      // Show the failure briefly instead of silently reverting to the
+      // idle "🔊 읽어주기" label, which reads as if nothing was ever
+      // pressed even though playback genuinely failed.
+      setTts("error");
+      setTimeout(() => setTts("idle"), 2000);
     }
   }, [draw]);
 
@@ -296,7 +300,13 @@ export function ArticleQuiz() {
                   onClick={() => void handleRead()}
                   disabled={tts !== "idle"}
                 >
-                  {tts === "loading" ? "불러오는 중…" : tts === "speaking" ? "재생 중…" : "🔊 읽어주기"}
+                  {tts === "loading"
+                    ? "불러오는 중…"
+                    : tts === "speaking"
+                      ? "재생 중…"
+                      : tts === "error"
+                        ? "재생 실패, 다시 시도해주세요"
+                        : "🔊 읽어주기"}
                 </button>
                 <button type="button" className="quiz-start-btn" onClick={startQuiz}>
                   문제풀기
