@@ -3,7 +3,9 @@ name: Simplify Guard
 on:
   pull_request:
     types:
+      - opened
       - synchronize
+      - reopened
       - labeled
 
 permissions:
@@ -20,23 +22,24 @@ jobs:
           fetch-depth: 0
 
       - name: Check changed files
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          BASE=${{ github.event.pull_request.base.sha }}
-          HEAD=${{ github.event.pull_request.head.sha }}
-
-          git diff --name-only "$BASE" "$HEAD" > changed_files.txt
+          git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- > changed_files.txt
 
           echo "Changed files:"
           cat changed_files.txt
 
-          TEST_FILES=$(grep -E '(_test\.go$|(^|/)tests?/)' changed_files.txt || true)
-          CODE_FILES=$(grep -v -E '(_test\.go$|(^|/)tests?/)' changed_files.txt || true)
+          TEST_PATTERN='(^|/)(__tests__|tests?)/|(_test\.go$|\.(test|spec)\.[^/]+$)'
+          TEST_FILES=$(grep -E "$TEST_PATTERN" changed_files.txt || true)
+          NON_TEST_FILES=$(grep -Ev "$TEST_PATTERN" changed_files.txt || true)
 
-          if [ -n "$TEST_FILES" ] && [ -n "$CODE_FILES" ]; then
+          if [ -n "$TEST_FILES" ] && [ -n "$NON_TEST_FILES" ]; then
             echo "::error::Simplify changes cannot modify production code and tests together."
             echo ""
             echo "Production files:"
-            echo "$CODE_FILES"
+            echo "$NON_TEST_FILES"
             echo ""
             echo "Test files:"
             echo "$TEST_FILES"
