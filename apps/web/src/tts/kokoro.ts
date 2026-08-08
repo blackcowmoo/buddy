@@ -25,6 +25,37 @@ export type KokoroVoice = "af_heart" | "af_bella" | "af_sarah" | "am_adam" | "am
 // least surfaces as a retryable failure instead of hanging indefinitely.
 export const GENERATION_TIMEOUT_MS = 45_000;
 
+// Despite the model itself running fully on-device, kokoro-js fetches each
+// voice's style vector directly from HuggingFace at *generation* time (not
+// during load()) — see its `generate_from_ids()` -> internal voice loader,
+// which does its own cache-first `caches.open("kokoro-voices")` lookup and
+// falls back to `fetch()` with no timeout. A slow or unreachable network at
+// that point hangs generate() forever with no error, which is
+// indistinguishable from GENERATION_TIMEOUT_MS eventually firing except
+// that it means read-aloud never actually works on that connection. This
+// app only ever uses the "af_heart" voice, so pre-seeding that exact cache
+// entry from a same-origin copy — before load() resolves — removes the
+// HuggingFace dependency entirely for the common case; kokoro-js's own
+// lookup finds it and never touches the network. If a different voice is
+// ever wired up, its file would need seeding too.
+const VOICE_CACHE_NAME = "kokoro-voices";
+const VOICE_CACHE_URL = "https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/voices/af_heart.bin";
+const LOCAL_VOICE_URL = "/tts-voices/af_heart.bin";
+
+async function seedVoiceCache(): Promise<void> {
+  if (!("caches" in globalThis)) return;
+  try {
+    const cache = await caches.open(VOICE_CACHE_NAME);
+    if (await cache.match(VOICE_CACHE_URL)) return; // already seeded or already fetched for real
+    const res = await fetch(LOCAL_VOICE_URL);
+    if (res.ok) await cache.put(VOICE_CACHE_URL, res);
+  } catch {
+    // Best-effort: Cache Storage can be unavailable (e.g. private browsing)
+    // or the local fetch can fail — kokoro-js's own fetch-from-HuggingFace
+    // fallback still runs in that case, same as before this existed.
+  }
+}
+
 // Minimal valid 1-sample 8-bit PCM WAV (44-byte header + 1 silent byte).
 // unlock() needs a *real* source: an <audio> with no src rejects play()
 // immediately on iOS Safari ("no supported source") without ever entering a
@@ -97,7 +128,11 @@ export class KokoroSpeaker {
         },
       };
       // Cast: kokoro-js option types are looser than this typed subset.
-      this.ttsPromise = KokoroTTS.from_pretrained(MODEL_ID, opts as never);
+      const model = KokoroTTS.from_pretrained(MODEL_ID, opts as never);
+      // Runs alongside the (much larger) model download rather than
+      // blocking it — resolving load() only once both are done means the
+      // voice is already cache-seeded by the time speak() calls generate().
+      this.ttsPromise = Promise.all([seedVoiceCache(), model]).then(([, tts]) => tts);
     }
     return this.ttsPromise;
   }

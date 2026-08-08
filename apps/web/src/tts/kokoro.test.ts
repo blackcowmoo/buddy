@@ -95,6 +95,63 @@ describe("KokoroSpeaker.unlock", () => {
   });
 });
 
+describe("KokoroSpeaker.load", () => {
+  const VOICE_CACHE_URL =
+    "https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/voices/af_heart.bin";
+
+  it("seeds the voice cache from a same-origin copy instead of leaving kokoro-js to fetch it from HuggingFace", async () => {
+    // Regression guard: kokoro-js fetches the voice's style vector from
+    // HuggingFace at generation time, with no timeout — a slow/unreachable
+    // network there hangs generate() forever with no error. Pre-seeding its
+    // cache lookup from our own bundled copy avoids that network dependency
+    // for the one voice this app actually uses.
+    const put = vi.fn().mockResolvedValue(undefined);
+    const match = vi.fn().mockResolvedValue(undefined); // nothing cached yet
+    const open = vi.fn().mockResolvedValue({ match, put });
+    vi.stubGlobal("caches", { open });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const speaker = new KokoroSpeaker();
+    await speaker.load();
+
+    expect(open).toHaveBeenCalledWith("kokoro-voices");
+    expect(fetchMock).toHaveBeenCalledWith("/tts-voices/af_heart.bin");
+    expect(put).toHaveBeenCalledWith(VOICE_CACHE_URL, expect.anything());
+  });
+
+  it("skips re-fetching when the voice is already cached", async () => {
+    const put = vi.fn();
+    const match = vi.fn().mockResolvedValue({}); // already cached
+    const open = vi.fn().mockResolvedValue({ match, put });
+    vi.stubGlobal("caches", { open });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const speaker = new KokoroSpeaker();
+    await speaker.load();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it("still resolves when Cache Storage isn't available (e.g. private browsing)", async () => {
+    vi.stubGlobal("caches", undefined);
+
+    const speaker = new KokoroSpeaker();
+
+    await expect(speaker.load()).resolves.toBeDefined();
+  });
+
+  it("still resolves when seeding itself throws", async () => {
+    vi.stubGlobal("caches", { open: vi.fn().mockRejectedValue(new Error("blocked")) });
+
+    const speaker = new KokoroSpeaker();
+
+    await expect(speaker.load()).resolves.toBeDefined();
+  });
+});
+
 describe("KokoroSpeaker.speak", () => {
   it("plays through the element unlock() already primed, instead of creating a fresh one", async () => {
     const speaker = new KokoroSpeaker();
