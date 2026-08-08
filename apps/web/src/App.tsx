@@ -38,23 +38,19 @@ import { formatDateDivider, formatMessageTime, formatRelativeTime, shouldShowDat
 import { clearDraft, loadDraft, saveDraft } from "./lib/draftCache";
 import { fetchWords } from "./lib/wordReview";
 import {
-  MAX_EXTRA_RATES,
   NATIVE_RATE,
-  isValidExtraRate,
   loadAutoReadAloud,
-  loadExtraRates,
+  loadPlaybackRate,
   saveAutoReadAloud,
-  saveExtraRates,
+  savePlaybackRate,
 } from "./lib/ttsSettings";
 import {
   correctionHasIssues,
   hydrateTurnMeta,
-  isPanelOpen,
   isPendingPlaceholder,
   turnsToMsgs,
   upsertAssistant,
   type Msg,
-  type PanelKind,
   type TurnMeta,
 } from "./lib/turns";
 import { GrammarControl } from "./components/GrammarControl";
@@ -251,15 +247,22 @@ export function App() {
     saveAutoReadAloud(autoReadAloud);
   }, [autoReadAloud]);
   const [menuOpen, setMenuOpen] = useState(false);
-  // Which per-row popover (rate study panel or grammar feedback) is open, or
-  // null — only one open at a time across the whole row.
-  const [openPanel, setOpenPanel] = useState<{ index: number; kind: PanelKind } | null>(null);
+  // Which message row's grammar-feedback popover is open, or null — only one
+  // open at a time. Read-aloud no longer has a popover of its own (see
+  // StudyControl) so this only ever tracks the grammar panel now.
+  const [openGrammarIndex, setOpenGrammarIndex] = useState<number | null>(null);
   const [prInput, setPrInput] = useState("");
   const [prError, setPrError] = useState(false);
   const [email, setEmail] = useState<string | null>(null);
   const [theme, setTheme] = useState<Theme>(() => getStoredTheme());
-  const [extraRates, setExtraRates] = useState<number[]>(() => loadExtraRates());
-  const [newRateInput, setNewRateInput] = useState("");
+  const [playbackRate, setPlaybackRate] = useState<number>(() => loadPlaybackRate());
+  // onEvent's assistant_done case reads this — see activeSessionIdRef's doc
+  // comment for why a stable useCallback needs a ref alongside the state.
+  const playbackRateRef = useRef(NATIVE_RATE);
+  useEffect(() => {
+    playbackRateRef.current = playbackRate;
+    savePlaybackRate(playbackRate);
+  }, [playbackRate]);
   const [styleInput, setStyleInput] = useState("");
   const [styleSaving, setStyleSaving] = useState(false);
   const [styleSaved, setStyleSaved] = useState(false);
@@ -413,7 +416,7 @@ export function App() {
         setMsgs((m) => upsertAssistant(m, e.turn, () => e.text ?? ""));
         patchTurn(e.turn, { assistantTranslationPending: true });
         if (e.text && autoReadAloudRef.current && activeSessionIdRef.current) {
-          playAudio(messageAudioURL(activeSessionIdRef.current, e.turn, "assistant"), NATIVE_RATE);
+          playAudio(messageAudioURL(activeSessionIdRef.current, e.turn, "assistant"), playbackRateRef.current);
         }
         // Turn 0 is the room's own opening greeting (see protocol.ts), not
         // the learner's sentence — only the first *real* reply is what a
@@ -1102,17 +1105,6 @@ export function App() {
     }
   }, [voiceDraft, discardVoiceDraft]);
 
-  useEffect(() => {
-    saveExtraRates(extraRates);
-  }, [extraRates]);
-
-  // Ascending so the fastest speed is always last; native (1.0) sorts
-  // wherever it falls relative to whatever custom speeds are configured.
-  const playRates = useMemo(
-    () => [...extraRates, NATIVE_RATE].sort((a, b) => a - b),
-    [extraRates],
-  );
-
   // All user turns with feedback worth reviewing, in transcript order — feeds
   // FeedbackSummary. Covers both live turns (correction populated via the WS
   // "correction" event) and hydrated history (populated in enterChat), since
@@ -1127,30 +1119,12 @@ export function App() {
   );
 
   const playMessage = useCallback(
-    (rate: number, turn: number, role: "user" | "assistant") => {
+    (turn: number, role: "user" | "assistant") => {
       if (!activeSessionId) return;
-      playAudio(messageAudioURL(activeSessionId, turn, role), rate);
+      playAudio(messageAudioURL(activeSessionId, turn, role), playbackRate);
     },
-    [activeSessionId, playAudio],
+    [activeSessionId, playAudio, playbackRate],
   );
-
-  const addRate = useCallback(
-    (e: React.FormEvent) => {
-      e.preventDefault();
-      const v = Number(newRateInput);
-      if (!isValidExtraRate(v)) return;
-      setExtraRates((rates) => {
-        if (rates.length >= MAX_EXTRA_RATES || rates.includes(v)) return rates;
-        return [...rates, v].sort((a, b) => a - b);
-      });
-      setNewRateInput("");
-    },
-    [newRateInput],
-  );
-
-  const removeRate = useCallback((rate: number) => {
-    setExtraRates((rates) => rates.filter((r) => r !== rate));
-  }, []);
 
   const submitText = useCallback(() => {
     const t = text.trim();
@@ -1223,10 +1197,10 @@ export function App() {
   const closeMenu = useCallback(() => setMenuOpen(false), []);
   useDismiss(menuOpen, menuRef, closeMenu);
 
-  // Click-outside / Escape closes whichever per-row popover is open, same as
+  // Click-outside / Escape closes the grammar-feedback popover, same as
   // the menu.
-  const closePanel = useCallback(() => setOpenPanel(null), []);
-  useDismiss(openPanel !== null, studyRef, closePanel);
+  const closePanel = useCallback(() => setOpenGrammarIndex(null), []);
+  useDismiss(openGrammarIndex !== null, studyRef, closePanel);
 
   const goToPath = useCallback(
     (e: React.FormEvent) => {
@@ -1368,11 +1342,8 @@ export function App() {
         chat={{
           autoReadAloud,
           onToggleAutoReadAloud: () => setAutoReadAloud((v) => !v),
-          extraRates,
-          newRateInput,
-          onNewRateInputChange: setNewRateInput,
-          onAddRate: addRate,
-          onRemoveRate: removeRate,
+          playbackRate,
+          onSetPlaybackRate: setPlaybackRate,
         }}
       />
 
@@ -1408,8 +1379,7 @@ export function App() {
             m.role === "user" ? meta?.userTranslationPending : meta?.assistantTranslationPending;
           const prev = msgs[i - 1];
           const showDivider = shouldShowDateDivider(prev?.timestamp, m.timestamp);
-          const grammarOpen = isPanelOpen(openPanel, i, "grammar");
-          const rateOpen = isPanelOpen(openPanel, i, "rate");
+          const grammarOpen = openGrammarIndex === i;
           return (
             // Keyed on (turn, role) rather than array index i: loadOlderTurns
             // prepends to msgs, and an index key would make React reconcile
@@ -1453,24 +1423,11 @@ export function App() {
                         correction={meta?.correction}
                         failed={!!meta?.correctionFailed}
                         open={grammarOpen}
-                        onToggle={(idx) =>
-                          setOpenPanel(idx === null ? null : { index: idx, kind: "grammar" })
-                        }
+                        onToggle={setOpenGrammarIndex}
                         panelRef={grammarOpen ? studyRef : undefined}
                       />
                     )}
-                    <StudyControl
-                      index={i}
-                      turn={m.turn}
-                      role={m.role}
-                      rates={playRates}
-                      open={rateOpen}
-                      onToggle={(idx) =>
-                        setOpenPanel(idx === null ? null : { index: idx, kind: "rate" })
-                      }
-                      onPlay={playMessage}
-                      panelRef={rateOpen ? studyRef : undefined}
-                    />
+                    <StudyControl turn={m.turn} role={m.role} onPlay={playMessage} />
                   </div>
                 )}
               </div>

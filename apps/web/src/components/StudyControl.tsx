@@ -1,58 +1,26 @@
-import { NATIVE_RATE } from "../lib/ttsSettings";
-
-// StudyControl collapses per-rate playback into one small button that opens
-// a popover, kept separate from the bubble/correction card so it doesn't
-// compete with them for visual weight.
+// StudyControl plays a message's read-aloud audio, at the globally
+// configured playback rate (see lib/ttsSettings.ts's loadPlaybackRate, set
+// via TopBar's hamburger-menu settings) — one immediate tap, not a popover
+// of rate choices: the old per-tap rate popover rendered below the button
+// and could end up clipped behind the chat's own fixed layout near the
+// bottom of the screen, especially on the newest message.
 export function StudyControl({
-  index,
   turn,
   role,
-  rates,
-  open,
-  onToggle,
   onPlay,
-  panelRef,
 }: {
-  index: number;
   turn: number;
   role: "user" | "assistant";
-  rates: number[];
-  open: boolean;
-  onToggle: (index: number | null) => void;
-  onPlay: (rate: number, turn: number, role: "user" | "assistant") => void;
-  panelRef?: React.RefObject<HTMLDivElement | null>;
+  onPlay: (turn: number, role: "user" | "assistant") => void;
 }) {
   return (
-    <div className="study-control" ref={panelRef}>
-      <button
-        type="button"
-        className="ghost icon-btn study-btn"
-        aria-haspopup="true"
-        aria-expanded={open}
-        aria-label="발음 연습 열기"
-        onClick={() => onToggle(open ? null : index)}
-      >
-        🔊
-      </button>
-      {open && (
-        <div className="study-panel" role="menu">
-          <div className="tts-controls">
-            {rates.map((rate) => (
-              <button
-                key={rate}
-                type="button"
-                className="ghost tts-btn"
-                onClick={() => onPlay(rate, turn, role)}
-                aria-label={
-                  rate === NATIVE_RATE ? `${rate}배속(원어민 속도)으로 재생` : `${rate}배속으로 재생`
-                }
-              >
-                {rate === NATIVE_RATE ? `🔊 ${rate}x` : `${rate}x`}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
+    <button
+      type="button"
+      className="ghost icon-btn study-btn"
+      aria-label="읽어주기"
+      onClick={() => onPlay(turn, role)}
+    >
+      🔊
+    </button>
   );
 }

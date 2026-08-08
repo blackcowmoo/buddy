@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Theme } from "../lib/theme";
-import { NATIVE_RATE, MAX_EXTRA_RATES } from "../lib/ttsSettings";
+import { NATIVE_RATE, RATE_PRESETS } from "../lib/ttsSettings";
 import { MAX_INTERLOCUTOR_STYLE_LEN } from "../lib/settings";
 import { ThemeSwitch } from "./ThemeSwitch";
 
@@ -47,11 +47,8 @@ function LearnerProfileControl({ profile, loadError }: { profile: string; loadEr
 interface ChatMenuProps {
   autoReadAloud: boolean;
   onToggleAutoReadAloud: () => void;
-  extraRates: number[];
-  newRateInput: string;
-  onNewRateInputChange: (v: string) => void;
-  onAddRate: (e: React.FormEvent) => void;
-  onRemoveRate: (rate: number) => void;
+  playbackRate: number;
+  onSetPlaybackRate: (rate: number) => void;
 }
 
 // Shared by both the room list and the chat header (see App's two return
@@ -162,37 +159,19 @@ function MenuPanel({
           </div>
           <div className="menu-row tts-settings">
             <div className="tts-settings-label">재생 속도</div>
-            <div className="rate-chips">
-              <span className="rate-chip locked">🔊 {NATIVE_RATE}x (원어민)</span>
-              {chat.extraRates.map((r) => (
-                <span key={r} className="rate-chip">
-                  {r}x
-                  <button
-                    type="button"
-                    className="chip-remove"
-                    onClick={() => chat.onRemoveRate(r)}
-                    aria-label={`${r}x 속도 삭제`}
-                  >
-                    ×
-                  </button>
-                </span>
+            <div className="rate-presets" role="group" aria-label="재생 속도 선택">
+              {RATE_PRESETS.map((r) => (
+                <button
+                  key={r}
+                  type="button"
+                  className={r === chat.playbackRate ? "rate-preset-btn active" : "rate-preset-btn"}
+                  aria-pressed={r === chat.playbackRate}
+                  onClick={() => chat.onSetPlaybackRate(r)}
+                >
+                  {r === NATIVE_RATE ? `🔊 ${r}x` : `${r}x`}
+                </button>
               ))}
             </div>
-            {chat.extraRates.length < MAX_EXTRA_RATES && (
-              <form className="rate-add-form" onSubmit={chat.onAddRate}>
-                <input
-                  type="number"
-                  step="0.05"
-                  min="0.5"
-                  max="2"
-                  value={chat.newRateInput}
-                  onChange={(e) => chat.onNewRateInputChange(e.target.value)}
-                  placeholder="예: 0.7"
-                  aria-label="새 재생 속도"
-                />
-                <button type="submit">추가</button>
-              </form>
-            )}
           </div>
           <div className="menu-divider" />
         </>

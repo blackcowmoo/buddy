@@ -16,6 +16,7 @@ import { quizChoiceClass } from "../lib/quizCheck";
 import { SubPageHeader } from "../components/SubPageHeader";
 import { usePollScaffold } from "../hooks/usePollScaffold";
 import { requestAmbientAudioSession } from "../lib/audioSession";
+import { loadPlaybackRate } from "../lib/ttsSettings";
 
 // How often to re-check a draw that's still generating in the background
 // (see asyncjob.KindArticleStudy) — a poll, not a push, since nothing on the
@@ -154,6 +155,7 @@ export function ArticleQuiz() {
     // requestAmbientAudioSession's doc comment.
     requestAmbientAudioSession();
     setTts("loading");
+    el.playbackRate = loadPlaybackRate();
     el.src = articleAudioURL(draw.id);
     el.play().catch((err) => {
       console.error("tts:", err);

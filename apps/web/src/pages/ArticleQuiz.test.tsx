@@ -43,6 +43,7 @@ afterEach(() => {
   vi.clearAllMocks();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  localStorage.clear();
 });
 
 const sampleDraw: ArticleDraw = {
@@ -314,6 +315,20 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     // read-aloud mixes with (never pauses) music already playing in another
     // app.
     expect(audioSession.type).toBe("ambient");
+  });
+
+  it("plays read-aloud at the playback rate configured in the hamburger menu's global setting", async () => {
+    localStorage.setItem("buddy.tts.playbackRate", JSON.stringify(0.7));
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    const user = userEvent.setup();
+    const { container } = render(<ArticleQuiz />);
+
+    await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
+    await user.click(screen.getByRole("button", { name: "🔊 읽어주기" }));
+
+    const audioEl = container.querySelector("audio") as HTMLAudioElement;
+    expect(audioEl.playbackRate).toBe(0.7);
   });
 
   it("shows 불러오는 중… while buffering, then 재생 중… once the audio element actually starts playing", async () => {

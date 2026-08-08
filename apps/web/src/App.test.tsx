@@ -187,13 +187,7 @@ function openMenu(user: ReturnType<typeof userEvent.setup>) {
   return user.click(screen.getByRole("button", { name: "Menu" }));
 }
 
-// Play-rate buttons live behind a per-message study popover, not inline —
-// open it before a test tries to find/click one of the rate buttons.
-async function openStudyPopover(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(await screen.findByRole("button", { name: "발음 연습 열기" }));
-}
-
-// Grammar feedback lives behind a per-message popover too — open it (once
+// Grammar feedback lives behind a per-message popover — open it (once
 // the check has finished, so the button isn't disabled/spinning) before a
 // test asserts on the correction content.
 async function openGrammarPopover(user: ReturnType<typeof userEvent.setup>) {
@@ -2214,36 +2208,39 @@ describe("compaction info", () => {
 });
 
 describe("per-message tts playback", () => {
-  it("shows a play button for the native rate and each configured extra speed", async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    await enterNewChat(user);
-    act(() => emit({ type: "assistant_done", turn: 1, text: "Hello there" }));
-    await openStudyPopover(user);
-    expect(
-      await screen.findByRole("button", { name: "1배속(원어민 속도)으로 재생" }),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "0.5배속으로 재생" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "0.8배속으로 재생" })).toBeInTheDocument();
-  });
-
-  it("points the shared <audio> element at the server-generated URL for the chosen turn/role/rate when tapped", async () => {
+  it("plays a message's read-aloud audio immediately on tap, with no popover", async () => {
     // Regression guard: read-aloud is generated and cached server-side (see
     // lib/sessions.ts's messageAudioURL), so this is a plain <audio src> +
-    // play(), the same shape as ArticleQuiz.tsx's handleRead — not the old
-    // client-side KokoroSpeaker pipeline.
+    // play(), the same shape as ArticleQuiz.tsx's handleRead. Also guards the
+    // fix this replaced: the button used to open a per-rate popover that
+    // could render clipped behind the chat's own fixed layout — see
+    // StudyControl's doc comment — so a tap must now play right away.
     const user = userEvent.setup();
     const { container } = render(<App />);
     await enterNewChat(user);
     act(() => emit({ type: "ready", turn: 0, session: "s1" }));
     act(() => emit({ type: "assistant_done", turn: 1, text: "Hello there" }));
-    await openStudyPopover(user);
-    await user.click(await screen.findByRole("button", { name: "0.5배속으로 재생" }));
+    await user.click(await screen.findByRole("button", { name: "읽어주기" }));
 
     const audioEl = container.querySelector("audio") as HTMLAudioElement;
     expect(audioEl.src).toContain("api/sessions/s1/messages/1/audio?role=assistant");
-    expect(audioEl.playbackRate).toBe(0.5);
     expect(vi.mocked(HTMLMediaElement.prototype.play)).toHaveBeenCalled();
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("plays at the rate configured in the hamburger menu's global playback-speed setting", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+    await enterNewChatAndOpenMenu(user);
+    await user.click(screen.getByRole("button", { name: "0.7x" }));
+
+    act(() => emit({ type: "ready", turn: 0, session: "s1" }));
+    act(() => emit({ type: "assistant_done", turn: 1, text: "Hello there" }));
+    await user.click(await screen.findByRole("button", { name: "읽어주기" }));
+
+    const audioEl = container.querySelector("audio") as HTMLAudioElement;
+    expect(audioEl.playbackRate).toBe(0.7);
+    expect(localStorage.getItem("buddy.tts.playbackRate")).toBe("0.7");
   });
 });
 
@@ -2291,24 +2288,20 @@ describe("auto-read-aloud toggle", () => {
   });
 });
 
-describe("study popover", () => {
-  it("hides the rate buttons until the study button is clicked", async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    await enterNewChat(user);
-    act(() => emit({ type: "assistant_done", turn: 1, text: "Hello there" }));
-    await screen.findByRole("button", { name: "발음 연습 열기" });
-    expect(screen.queryByRole("button", { name: "0.5배속으로 재생" })).not.toBeInTheDocument();
-    await openStudyPopover(user);
-    expect(screen.getByRole("button", { name: "0.5배속으로 재생" })).toBeInTheDocument();
-  });
-
+describe("grammar feedback popover dismissal", () => {
   it("closes when clicking outside the popover", async () => {
     const user = userEvent.setup();
     render(<App />);
     await enterNewChat(user);
-    act(() => emit({ type: "assistant_done", turn: 1, text: "Hello there" }));
-    await openStudyPopover(user);
+    act(() => emit({ type: "final_transcript", turn: 1, text: "I are fine." }));
+    act(() =>
+      emit({
+        type: "correction",
+        turn: 1,
+        correction: { original: "I are fine.", corrected: "I am fine.", issues: [] },
+      }),
+    );
+    await openGrammarPopover(user);
     expect(screen.getByRole("menu")).toBeInTheDocument();
     await user.click(document.body);
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
@@ -2318,8 +2311,15 @@ describe("study popover", () => {
     const user = userEvent.setup();
     render(<App />);
     await enterNewChat(user);
-    act(() => emit({ type: "assistant_done", turn: 1, text: "Hello there" }));
-    await openStudyPopover(user);
+    act(() => emit({ type: "final_transcript", turn: 1, text: "I are fine." }));
+    act(() =>
+      emit({
+        type: "correction",
+        turn: 1,
+        correction: { original: "I are fine.", corrected: "I am fine.", issues: [] },
+      }),
+    );
+    await openGrammarPopover(user);
     expect(screen.getByRole("menu")).toBeInTheDocument();
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
@@ -3018,61 +3018,37 @@ describe("date dividers and message times", () => {
 });
 
 describe("tts speed settings", () => {
-  it("lists the native speed as fixed and the default extra speeds as removable", async () => {
+  it("shows every preset speed with the native rate active by default", async () => {
     const user = userEvent.setup();
     render(<App />);
     await enterNewChatAndOpenMenu(user);
-    expect(screen.getByText("🔊 1x (원어민)")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "0.5x 속도 삭제" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "0.8x 속도 삭제" })).toBeInTheDocument();
+    const native = screen.getByRole("button", { name: "🔊 1x" });
+    expect(native).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "0.5x" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "1.5x" })).toBeInTheDocument();
   });
 
-  it("hides the add-speed form once the two extra-speed slots are full", async () => {
+  it("picking a preset marks it active, persists it, and applies it to the next play", async () => {
     const user = userEvent.setup();
-    render(<App />);
-    await enterNewChatAndOpenMenu(user);
-    expect(screen.queryByLabelText("새 재생 속도")).not.toBeInTheDocument();
-  });
-
-  it("removing a speed frees a slot, drops its play button, and persists the change", async () => {
-    const user = userEvent.setup();
-    render(<App />);
+    const { container } = render(<App />);
     await enterNewChat(user);
+    act(() => emit({ type: "ready", turn: 0, session: "s1" }));
     act(() => emit({ type: "assistant_done", turn: 1, text: "Hello there" }));
     await openMenu(user);
-    await user.click(screen.getByRole("button", { name: "0.5x 속도 삭제" }));
-    expect(screen.getByLabelText("새 재생 속도")).toBeInTheDocument();
-    expect(localStorage.getItem("buddy.tts.extraRates")).toBe(JSON.stringify([0.8]));
-    // Opening the study popover closes the menu (click lands outside it),
-    // which is fine — the assertions above already ran against the menu.
-    await openStudyPopover(user);
-    expect(screen.queryByRole("button", { name: "0.5배속으로 재생" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "0.8x" }));
+
+    expect(screen.getByRole("button", { name: "0.8x" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "🔊 1x" })).toHaveAttribute("aria-pressed", "false");
+    expect(localStorage.getItem("buddy.tts.playbackRate")).toBe("0.8");
+
+    await user.click(await screen.findByRole("button", { name: "읽어주기" }));
+    const audioEl = container.querySelector("audio") as HTMLAudioElement;
+    expect(audioEl.playbackRate).toBe(0.8);
   });
 
-  it("adds a custom speed once a slot is free and persists it", async () => {
-    const user = userEvent.setup();
+  it("persists the default native rate to localStorage on first load", () => {
     render(<App />);
-    await enterNewChatAndOpenMenu(user);
-    await user.click(screen.getByRole("button", { name: "0.5x 속도 삭제" }));
-    await user.type(screen.getByLabelText("새 재생 속도"), "1.5");
-    await user.click(screen.getByRole("button", { name: "추가" }));
-    expect(screen.getByRole("button", { name: "1.5x 속도 삭제" })).toBeInTheDocument();
-    expect(localStorage.getItem("buddy.tts.extraRates")).toBe(JSON.stringify([0.8, 1.5]));
-    expect(screen.queryByLabelText("새 재생 속도")).not.toBeInTheDocument();
-  });
-
-  it("rejects the native rate as a custom speed", async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    await enterNewChatAndOpenMenu(user);
-    await user.click(screen.getByRole("button", { name: "0.5x 속도 삭제" }));
-    await user.type(screen.getByLabelText("새 재생 속도"), "1");
-    await user.click(screen.getByRole("button", { name: "추가" }));
-    expect(localStorage.getItem("buddy.tts.extraRates")).toBe(JSON.stringify([0.8]));
-  });
-
-  it("persists the default speeds to localStorage on first load", () => {
-    render(<App />);
-    expect(localStorage.getItem("buddy.tts.extraRates")).toBe(JSON.stringify([0.5, 0.8]));
+    expect(localStorage.getItem("buddy.tts.playbackRate")).toBe("1");
   });
 });
