@@ -288,6 +288,29 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     );
   });
 
+  it("shows a failure label instead of silently going back to idle when playback fails", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+
+    await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
+
+    const speakerInstance = vi.mocked(KokoroSpeaker).mock.instances[0] as unknown as {
+      speak: ReturnType<typeof vi.fn>;
+    };
+    // Regression guard: KokoroSpeaker.speak used to swallow synth() failures
+    // internally and resolve anyway, so a real playback failure (blocked
+    // gesture, generation error, etc.) looked identical to success — the
+    // button just cycled loading -> speaking -> idle with no sound and no
+    // indication anything went wrong.
+    speakerInstance.speak.mockRejectedValue(new Error("play() failed"));
+
+    await user.click(screen.getByRole("button", { name: "🔊 읽어주기" }));
+
+    expect(await screen.findByRole("button", { name: "재생 실패, 다시 시도해주세요" })).toBeInTheDocument();
+  });
+
   it("shows an incorrect reveal when the wrong choice was picked", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
