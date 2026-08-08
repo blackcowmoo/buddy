@@ -17,6 +17,7 @@ import { KokoroSpeaker } from "./kokoro";
 // stub instead.
 class FakeAudio {
   src = "";
+  loop = false;
   onended: (() => void) | null = null;
   onerror: (() => void) | null = null;
   play = vi.fn().mockResolvedValue(undefined);
@@ -48,11 +49,11 @@ afterEach(() => {
 });
 
 describe("KokoroSpeaker.unlock", () => {
-  it("primes a single Audio element by playing then pausing it synchronously", () => {
+  it("primes the reusable playback element by playing then pausing it synchronously", () => {
     const speaker = new KokoroSpeaker();
     speaker.unlock();
 
-    expect(audioInstances).toHaveLength(1);
+    expect(audioInstances).toHaveLength(2);
     expect(audioInstances[0].play).toHaveBeenCalled();
     expect(audioInstances[0].pause).toHaveBeenCalled();
   });
@@ -67,12 +68,27 @@ describe("KokoroSpeaker.unlock", () => {
     expect(audioInstances[0].src).toMatch(/^data:audio\/wav;base64,/);
   });
 
-  it("is a no-op on a second call, so the same primed element keeps being reused", () => {
+  it("starts a second, permanently looping element and never pauses it", () => {
+    // Regression guard: even a gesture-backed play() is silenced outright
+    // while the hardware ring/silent switch is on, unless some audio has
+    // been continuously playing since the gesture — a play()-then-pause()
+    // doesn't qualify. This element is left looping forever so the page's
+    // audio session stays alive for speak()'s later real output.
+    const speaker = new KokoroSpeaker();
+    speaker.unlock();
+
+    const keepAlive = audioInstances[1];
+    expect(keepAlive.loop).toBe(true);
+    expect(keepAlive.play).toHaveBeenCalled();
+    expect(keepAlive.pause).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op on a second call, so the same primed elements keep being reused", () => {
     const speaker = new KokoroSpeaker();
     speaker.unlock();
     speaker.unlock();
 
-    expect(audioInstances).toHaveLength(1);
+    expect(audioInstances).toHaveLength(2);
   });
 });
 
@@ -90,8 +106,9 @@ describe("KokoroSpeaker.speak", () => {
     // Regression guard: a fresh, un-primed Audio() created after the async
     // model load/generate would silently fail to play on iOS Safari (see
     // KokoroSpeaker.unlock's doc comment) — reusing the gesture-primed
-    // element is the actual fix.
-    expect(audioInstances).toHaveLength(1);
+    // element is the actual fix. unlock() also starts a separate looping
+    // keep-alive element, so 2 (not 1) exist by this point.
+    expect(audioInstances).toHaveLength(2);
     expect(primed.play).toHaveBeenCalledTimes(2); // once to unlock, once to actually play
   });
 
