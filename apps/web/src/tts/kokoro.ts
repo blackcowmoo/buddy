@@ -28,6 +28,7 @@ export class KokoroSpeaker {
   private ttsPromise: Promise<KokoroTTS> | null = null;
   private queue: Promise<void> = Promise.resolve();
   private audioEl: HTMLAudioElement | null = null;
+  private keepAliveEl: HTMLAudioElement | null = null;
   voice: KokoroVoice = "af_heart";
 
   get loaded() {
@@ -44,13 +45,29 @@ export class KokoroSpeaker {
    * rejecting it loudly. Priming one element here, synchronously, and
    * reusing it later is the standard workaround — a later .play() on the
    * *same* element stays permitted even from async code.
+   *
+   * That alone still isn't enough with the hardware ring/silent switch on:
+   * iOS categorizes a page's audio as "ambient" (and mutes it outright in
+   * silent mode) until some audio has been *continuously* playing since a
+   * gesture — a one-shot play()-then-pause() doesn't qualify. A second
+   * element, started the same way but left looping silently forever,
+   * keeps the page's audio session alive for as long as this speaker
+   * exists, which is what makes speak()'s real output audible even in
+   * silent mode (see feross/unmute-ios-audio for the same technique).
    */
   unlock() {
-    if (this.audioEl) return;
-    const el = new Audio(SILENT_WAV_URL);
-    el.play().catch(() => {});
-    el.pause();
-    this.audioEl = el;
+    if (!this.audioEl) {
+      const el = new Audio(SILENT_WAV_URL);
+      el.play().catch(() => {});
+      el.pause();
+      this.audioEl = el;
+    }
+    if (!this.keepAliveEl) {
+      const el = new Audio(SILENT_WAV_URL);
+      el.loop = true;
+      el.play().catch(() => {});
+      this.keepAliveEl = el;
+    }
   }
 
   private takeAudioEl(): HTMLAudioElement {
