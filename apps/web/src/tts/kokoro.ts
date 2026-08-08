@@ -1,5 +1,14 @@
 import { KokoroTTS } from "kokoro-js";
 
+// The Audio Session API (https://github.com/w3c/audio-session) isn't in
+// lib.dom.d.ts yet — Safari is currently the only implementer. Declared
+// locally rather than pulled in as a dependency for one property.
+declare global {
+  interface Navigator {
+    audioSession?: { type: "auto" | "playback" | "transient" | "transient-solo" | "ambient" | "play-and-record" };
+  }
+}
+
 // kokoro-82M runs fully in the browser (WebGPU, WASM fallback). The model is
 // ~80–300 MB depending on dtype, so it is lazy-loaded on first use.
 const MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
@@ -7,6 +16,14 @@ const MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
 // A few known-good voices. See the kokoro-js model card for the full list
 // (af_* American female, am_* American male, bf_*/bm_* British, etc.).
 export type KokoroVoice = "af_heart" | "af_bella" | "af_sarah" | "am_adam" | "am_echo";
+
+// generate() runs the whole passage through phonemization + a single ONNX
+// forward pass with no progress signal and no internal timeout — on the
+// WASM fallback (no WebGPU) that has been observed to take minutes on a
+// phone, or apparently never resolve at all, leaving the UI stuck on
+// "재생 중…" forever with no error. Bounding it means a slow/stuck device at
+// least surfaces as a retryable failure instead of hanging indefinitely.
+export const GENERATION_TIMEOUT_MS = 45_000;
 
 // Minimal valid 1-sample 8-bit PCM WAV (44-byte header + 1 silent byte).
 // unlock() needs a *real* source: an <audio> with no src rejects play()
@@ -28,7 +45,6 @@ export class KokoroSpeaker {
   private ttsPromise: Promise<KokoroTTS> | null = null;
   private queue: Promise<void> = Promise.resolve();
   private audioEl: HTMLAudioElement | null = null;
-  private keepAliveEl: HTMLAudioElement | null = null;
   voice: KokoroVoice = "af_heart";
 
   get loaded() {
@@ -46,14 +62,13 @@ export class KokoroSpeaker {
    * reusing it later is the standard workaround — a later .play() on the
    * *same* element stays permitted even from async code.
    *
-   * That alone still isn't enough with the hardware ring/silent switch on:
-   * iOS categorizes a page's audio as "ambient" (and mutes it outright in
-   * silent mode) until some audio has been *continuously* playing since a
-   * gesture — a one-shot play()-then-pause() doesn't qualify. A second
-   * element, started the same way but left looping silently forever,
-   * keeps the page's audio session alive for as long as this speaker
-   * exists, which is what makes speak()'s real output audible even in
-   * silent mode (see feross/unmute-ios-audio for the same technique).
+   * Also explicitly requests the "ambient" audio session type (Safari-only;
+   * a no-op elsewhere) so read-aloud mixes with whatever the learner is
+   * already playing (podcast, music) instead of pausing it — the other
+   * option, "playback", ignores the hardware ring/silent switch but is
+   * exclusive and would stop the learner's music, which is the opposite of
+   * what's wanted here. The trade-off is that, like any ambient sound,
+   * playback stays silent while the ring/silent switch is on.
    */
   unlock() {
     if (!this.audioEl) {
@@ -62,12 +77,8 @@ export class KokoroSpeaker {
       el.pause();
       this.audioEl = el;
     }
-    if (!this.keepAliveEl) {
-      const el = new Audio(SILENT_WAV_URL);
-      el.loop = true;
-      el.play().catch(() => {});
-      this.keepAliveEl = el;
-    }
+    const session = navigator.audioSession;
+    if (session) session.type = "ambient";
   }
 
   private takeAudioEl(): HTMLAudioElement {
@@ -112,7 +123,11 @@ export class KokoroSpeaker {
 
   private async synth(text: string, speed: number) {
     const tts = await this.load();
-    const audio = await tts.generate(text, { voice: this.voice, speed });
+    const audio = await withTimeout(
+      tts.generate(text, { voice: this.voice, speed }),
+      GENERATION_TIMEOUT_MS,
+      "TTS generation timed out",
+    );
     const url = URL.createObjectURL(audio.toBlob());
     try {
       await play(this.takeAudioEl(), url);
@@ -128,5 +143,21 @@ function play(el: HTMLAudioElement, url: string): Promise<void> {
     el.onerror = () => reject(new Error("audio playback failed"));
     el.src = url;
     void el.play().catch(reject);
+  });
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
   });
 }

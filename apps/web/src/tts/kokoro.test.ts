@@ -8,7 +8,7 @@ vi.mock("kokoro-js", () => ({
   KokoroTTS: { from_pretrained: vi.fn().mockResolvedValue({ generate }) },
 }));
 
-import { KokoroSpeaker } from "./kokoro";
+import { GENERATION_TIMEOUT_MS, KokoroSpeaker } from "./kokoro";
 
 // jsdom (used by the page-level tests) doesn't implement
 // HTMLMediaElement.play(), and those tests mock KokoroSpeaker away entirely
@@ -53,7 +53,7 @@ describe("KokoroSpeaker.unlock", () => {
     const speaker = new KokoroSpeaker();
     speaker.unlock();
 
-    expect(audioInstances).toHaveLength(2);
+    expect(audioInstances).toHaveLength(1);
     expect(audioInstances[0].play).toHaveBeenCalled();
     expect(audioInstances[0].pause).toHaveBeenCalled();
   });
@@ -68,27 +68,30 @@ describe("KokoroSpeaker.unlock", () => {
     expect(audioInstances[0].src).toMatch(/^data:audio\/wav;base64,/);
   });
 
-  it("starts a second, permanently looping element and never pauses it", () => {
-    // Regression guard: even a gesture-backed play() is silenced outright
-    // while the hardware ring/silent switch is on, unless some audio has
-    // been continuously playing since the gesture — a play()-then-pause()
-    // doesn't qualify. This element is left looping forever so the page's
-    // audio session stays alive for speak()'s later real output.
+  it("is a no-op on a second call, so the same primed element keeps being reused", () => {
     const speaker = new KokoroSpeaker();
     speaker.unlock();
+    speaker.unlock();
 
-    const keepAlive = audioInstances[1];
-    expect(keepAlive.loop).toBe(true);
-    expect(keepAlive.play).toHaveBeenCalled();
-    expect(keepAlive.pause).not.toHaveBeenCalled();
+    expect(audioInstances).toHaveLength(1);
   });
 
-  it("is a no-op on a second call, so the same primed elements keep being reused", () => {
+  it("requests the ambient audio session type so read-aloud mixes with other apps' audio", () => {
+    // Regression guard: the alternative, "playback", ignores the hardware
+    // ring/silent switch but is exclusive — it pauses whatever the learner
+    // is already playing (music, a podcast), which isn't wanted here.
+    const audioSession = { type: "auto" };
+    vi.stubGlobal("navigator", { ...navigator, audioSession });
+
     const speaker = new KokoroSpeaker();
     speaker.unlock();
-    speaker.unlock();
 
-    expect(audioInstances).toHaveLength(2);
+    expect(audioSession.type).toBe("ambient");
+  });
+
+  it("does nothing when the Audio Session API isn't available (non-Safari browsers)", () => {
+    const speaker = new KokoroSpeaker();
+    expect(() => speaker.unlock()).not.toThrow();
   });
 });
 
@@ -106,9 +109,8 @@ describe("KokoroSpeaker.speak", () => {
     // Regression guard: a fresh, un-primed Audio() created after the async
     // model load/generate would silently fail to play on iOS Safari (see
     // KokoroSpeaker.unlock's doc comment) — reusing the gesture-primed
-    // element is the actual fix. unlock() also starts a separate looping
-    // keep-alive element, so 2 (not 1) exist by this point.
-    expect(audioInstances).toHaveLength(2);
+    // element is the actual fix.
+    expect(audioInstances).toHaveLength(1);
     expect(primed.play).toHaveBeenCalledTimes(2); // once to unlock, once to actually play
   });
 
@@ -136,6 +138,24 @@ describe("KokoroSpeaker.speak", () => {
     audioInstances[0].onerror?.();
 
     await expect(done).rejects.toThrow("audio playback failed");
+  });
+
+  it("rejects with a timeout instead of hanging forever when generation never resolves", async () => {
+    // Regression guard: generate() has no internal timeout and, on some
+    // mobile WASM setups, has been observed to never resolve at all — the
+    // UI used to get stuck on "재생 중…" forever with no error and no way
+    // to retry short of reloading the page.
+    vi.useFakeTimers();
+    generate.mockReturnValueOnce(new Promise(() => {})); // never resolves
+
+    const speaker = new KokoroSpeaker();
+    const done = speaker.speak("hello");
+    const assertion = expect(done).rejects.toThrow("TTS generation timed out");
+
+    await vi.advanceTimersByTimeAsync(GENERATION_TIMEOUT_MS);
+    await assertion;
+
+    vi.useRealTimers();
   });
 
   it("keeps processing later calls after an earlier one fails", async () => {

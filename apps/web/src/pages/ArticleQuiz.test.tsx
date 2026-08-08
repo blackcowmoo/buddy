@@ -288,6 +288,34 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     );
   });
 
+  it("hints that the mute switch silences read-aloud while it's playing", async () => {
+    // Read-aloud deliberately requests the "ambient" audio session type so
+    // it never pauses music already playing in another app (see
+    // KokoroSpeaker.unlock's doc comment) — the trade-off is that, like any
+    // ambient sound, it goes silent while the hardware ring/silent switch is
+    // on. This hint is what tells the learner that's expected, not broken.
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+
+    await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
+
+    let resolveSpeak: () => void = () => {};
+    const speakerInstance = vi.mocked(KokoroSpeaker).mock.instances[0] as unknown as {
+      speak: ReturnType<typeof vi.fn>;
+    };
+    speakerInstance.speak.mockReturnValue(new Promise<void>((resolve) => (resolveSpeak = resolve)));
+
+    expect(screen.queryByText(/무음 스위치/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "🔊 읽어주기" }));
+
+    expect(await screen.findByText(/무음 스위치/)).toBeInTheDocument();
+
+    await act(async () => resolveSpeak());
+    expect(screen.queryByText(/무음 스위치/)).not.toBeInTheDocument();
+  });
+
   it("shows a failure label instead of silently going back to idle when playback fails", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
