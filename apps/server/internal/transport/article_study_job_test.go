@@ -37,6 +37,14 @@ func (f *fakeSpeaker) Speak(ctx context.Context, text string) ([]byte, error) {
 	return []byte("audio-for:" + text), nil
 }
 
+func (f *fakeSpeaker) Stream(ctx context.Context, text string) (io.ReadCloser, error) {
+	audio, err := f.Speak(ctx, text)
+	if err != nil {
+		return nil, err
+	}
+	return io.NopCloser(strings.NewReader(string(audio))), nil
+}
+
 func (f *fakeSpeaker) spokenTexts() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()

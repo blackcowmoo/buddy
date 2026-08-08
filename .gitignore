@@ -17,10 +17,6 @@ models/*
 *.bin
 *.gguf
 *.onnx
-# ...except the one small (~500 KB) voice style vector committed so the app
-# can pre-seed it into Cache Storage instead of depending on a HuggingFace
-# fetch at TTS generation time — see kokoro.ts's seedVoiceCache().
-!apps/web/public/tts-voices/*.bin
 
 # env / local
 .env

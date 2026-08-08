@@ -36,6 +36,14 @@ func (f *fakeAudioSpeaker) Speak(ctx context.Context, text string) ([]byte, erro
 	return []byte("audio-for:" + text), nil
 }
 
+func (f *fakeAudioSpeaker) Stream(ctx context.Context, text string) (io.ReadCloser, error) {
+	audio, err := f.Speak(ctx, text)
+	if err != nil {
+		return nil, err
+	}
+	return io.NopCloser(strings.NewReader(string(audio))), nil
+}
+
 type fakeAudioCache struct {
 	byKey map[string][]byte
 }

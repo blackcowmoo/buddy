@@ -7,7 +7,7 @@ import type {
   StudySummarySentence,
 } from "./lib/protocol";
 import { PCMRecorder } from "./audio/recorder";
-import { KokoroSpeaker } from "./tts/kokoro";
+import { requestAmbientAudioSession } from "./lib/audioSession";
 import { prPath } from "./lib/rootPath";
 import { useDismiss } from "./hooks/useDismiss";
 import { usePollScaffold } from "./hooks/usePollScaffold";
@@ -27,6 +27,7 @@ import {
   fetchSessionDetail,
   fetchSessions,
   markInstant,
+  messageAudioURL,
   resetQuiz,
   restudySession,
   type SessionSummary,
@@ -40,9 +41,10 @@ import {
   MAX_EXTRA_RATES,
   NATIVE_RATE,
   isValidExtraRate,
+  loadAutoReadAloud,
   loadExtraRates,
+  saveAutoReadAloud,
   saveExtraRates,
-  type TtsState,
 } from "./lib/ttsSettings";
 import {
   correctionHasIssues,
@@ -86,6 +88,14 @@ export function App() {
   // CompactionInfo has something to fetch against; the WS client and history
   // entry each track their own copy of this for their own purposes.
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  // onEvent (below) is a permanently-stable useCallback and needs to read
+  // this synchronously (to build the auto-read-aloud URL for a just-arrived
+  // reply), so it's kept in a ref alongside the state used for rendering,
+  // same reasoning as quickModeRef.
+  const activeSessionIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+  }, [activeSessionId]);
   const [status, setStatus] = useState<Status>("connecting");
   const [msgs, setMsgs] = useState<Msg[]>([]);
   // True once the open room's fetched detail reports it as permanently
@@ -232,8 +242,14 @@ export function App() {
   // True while a spoken utterance has been sent to the server but no
   // pending_transcript (or error) has come back for it yet.
   const [transcribing, setTranscribing] = useState(false);
-  const [tts, setTts] = useState<TtsState>("idle");
-  const [ttsProgress, setTtsProgress] = useState(0);
+  const [autoReadAloud, setAutoReadAloud] = useState(() => loadAutoReadAloud());
+  // onEvent's assistant_done case reads this — see activeSessionIdRef's doc
+  // comment for why a stable useCallback needs a ref alongside the state.
+  const autoReadAloudRef = useRef(false);
+  useEffect(() => {
+    autoReadAloudRef.current = autoReadAloud;
+    saveAutoReadAloud(autoReadAloud);
+  }, [autoReadAloud]);
   const [menuOpen, setMenuOpen] = useState(false);
   // Which per-row popover (rate study panel or grammar feedback) is open, or
   // null — only one open at a time across the whole row.
@@ -263,7 +279,7 @@ export function App() {
 
   const clientRef = useRef<BuddyClient | null>(null);
   const recorderRef = useRef<PCMRecorder | null>(null);
-  const speakerRef = useRef<KokoroSpeaker | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const studyRef = useRef<HTMLDivElement>(null);
   // The scrollable message list (see the .convo <main> below) — read/written
@@ -295,6 +311,25 @@ export function App() {
   // backToList's button can reuse that entry (goBack) and stay in sync with
   // what browser back/swipe-back would do, instead of pushing a redundant one.
   const hasPushedRoomEntryRef = useRef(false);
+
+  // Points the shared <audio> element at url and plays it — generated and
+  // cached server-side per (session, turn, role) (see lib/sessions.ts's
+  // messageAudioURL), so this is just "src + play(), let the browser handle
+  // buffering", the same shape as ArticleQuiz.tsx's handleRead. Used by both
+  // playMessage (a tap on a message's own 🔊 button) and onEvent's
+  // assistant_done auto-read — has no reactive dependencies (audioRef is a
+  // stable ref), so it's safe for the latter's permanently-stable closure to
+  // call.
+  const playAudio = useCallback((url: string, rate: number) => {
+    const el = audioRef.current;
+    if (!el) return;
+    // Must run synchronously with play() — see requestAmbientAudioSession's
+    // doc comment.
+    requestAmbientAudioSession();
+    el.playbackRate = rate;
+    el.src = url;
+    el.play().catch((err) => console.error("tts:", err));
+  }, []);
 
   const onEvent = useCallback((e: ServerEvent) => {
     // A permanently-ended room closes its WS connection (see enterChat), but
@@ -377,8 +412,8 @@ export function App() {
         setAwaitingReply(false);
         setMsgs((m) => upsertAssistant(m, e.turn, () => e.text ?? ""));
         patchTurn(e.turn, { assistantTranslationPending: true });
-        if (e.text && speakerRef.current?.loaded) {
-          speakerRef.current.speak(e.text).catch((err) => console.error("tts:", err));
+        if (e.text && autoReadAloudRef.current && activeSessionIdRef.current) {
+          playAudio(messageAudioURL(activeSessionIdRef.current, e.turn, "assistant"), NATIVE_RATE);
         }
         // Turn 0 is the room's own opening greeting (see protocol.ts), not
         // the learner's sentence — only the first *real* reply is what a
@@ -421,7 +456,6 @@ export function App() {
     // screen shows the room list first, not a silently reconnected chat.
     clientRef.current = new BuddyClient(onEvent, setStatus);
     recorderRef.current = new PCMRecorder();
-    speakerRef.current = new KokoroSpeaker();
     return () => {
       clientRef.current?.close();
       clientRef.current = null;
@@ -1068,19 +1102,6 @@ export function App() {
     }
   }, [voiceDraft, discardVoiceDraft]);
 
-  const loadVoice = useCallback(async () => {
-    const sp = speakerRef.current;
-    if (!sp) return;
-    setTts("loading");
-    try {
-      await sp.load((p) => setTtsProgress(p));
-      setTts("ready");
-    } catch (err) {
-      console.error("kokoro:", err);
-      setTts("error");
-    }
-  }, []);
-
   useEffect(() => {
     saveExtraRates(extraRates);
   }, [extraRates]);
@@ -1106,14 +1127,11 @@ export function App() {
   );
 
   const playMessage = useCallback(
-    async (text: string, rate: number) => {
-      const sp = speakerRef.current;
-      if (!sp) return;
-      sp.unlock(); // must run synchronously in this click, before loadVoice()/speak() await
-      if (!sp.loaded) await loadVoice();
-      sp.speak(text, rate).catch((err) => console.error("tts:", err));
+    (rate: number, turn: number, role: "user" | "assistant") => {
+      if (!activeSessionId) return;
+      playAudio(messageAudioURL(activeSessionId, turn, role), rate);
     },
-    [loadVoice],
+    [activeSessionId, playAudio],
   );
 
   const addRate = useCallback(
@@ -1348,15 +1366,20 @@ export function App() {
         }
         {...topBarProps}
         chat={{
-          tts,
-          ttsProgress,
-          onLoadVoice: loadVoice,
+          autoReadAloud,
+          onToggleAutoReadAloud: () => setAutoReadAloud((v) => !v),
           extraRates,
           newRateInput,
           onNewRateInputChange: setNewRateInput,
           onAddRate: addRate,
           onRemoveRate: removeRate,
         }}
+      />
+
+      <audio
+        ref={audioRef}
+        style={{ display: "none" }}
+        onError={() => console.error("tts: playback failed")}
       />
 
       <main className="convo" ref={convoRef} onScroll={handleConvoScroll}>
@@ -1372,10 +1395,10 @@ export function App() {
         )}
         {msgs.length === 0 && (
           <p className="hint">
-            Tap <strong>Enable voice</strong> to load kokoro, tap the{" "}
-            <strong>🎙</strong> button, speak a sentence, then tap it again to
-            review what it heard — edit if needed, then hit <strong>Send</strong>.
-            Or just type below.
+            Tap the <strong>🎙</strong> button, speak a sentence, then tap it
+            again to review what it heard — edit if needed, then hit{" "}
+            <strong>Send</strong>. Or just type below. Tap a message's{" "}
+            <strong>🔊</strong> to hear it read aloud.
           </p>
         )}
         {msgs.map((m, i) => {
@@ -1438,7 +1461,8 @@ export function App() {
                     )}
                     <StudyControl
                       index={i}
-                      text={m.text}
+                      turn={m.turn}
+                      role={m.role}
                       rates={playRates}
                       open={rateOpen}
                       onToggle={(idx) =>

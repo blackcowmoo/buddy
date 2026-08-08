@@ -15,6 +15,7 @@ import { formatAbsoluteDate, formatDateDivider, formatMessageTime, shouldShowDat
 import { quizChoiceClass } from "../lib/quizCheck";
 import { SubPageHeader } from "../components/SubPageHeader";
 import { usePollScaffold } from "../hooks/usePollScaffold";
+import { requestAmbientAudioSession } from "../lib/audioSession";
 
 // How often to re-check a draw that's still generating in the background
 // (see asyncjob.KindArticleStudy) — a poll, not a push, since nothing on the
@@ -147,12 +148,8 @@ export function ArticleQuiz() {
     const el = audioRef.current;
     if (!el || !draw) return;
     // Must run synchronously in this click, before play() — see
-    // ArticleQuiz.test.tsx's regression guard and kokoro.ts's unlock() for
-    // the same reasoning: mixes with (never pauses) music already playing
-    // in another app, at the cost of going silent while the hardware
-    // ring/silent switch is on.
-    const session = navigator.audioSession;
-    if (session) session.type = "ambient";
+    // requestAmbientAudioSession's doc comment.
+    requestAmbientAudioSession();
     setTts("loading");
     el.src = articleAudioURL(draw.id);
     el.play().catch((err) => {

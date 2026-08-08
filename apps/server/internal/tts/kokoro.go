@@ -23,11 +23,14 @@ import (
 )
 
 // Speaker is the minimal surface callers like internal/transport.ArticleAudio
-// need — Speak alone — so they (and their own tests) can depend on this
-// interface instead of the concrete *Kokoro client, the same "swap for a
-// fake in tests, real client in production" shape as internal/llm.Client.
+// need — Speak (buffered, for pre-generation) and Stream (unbuffered, for
+// relaying to an HTTP client as bytes arrive) — so they (and their own
+// tests) can depend on this interface instead of the concrete *Kokoro
+// client, the same "swap for a fake in tests, real client in production"
+// shape as internal/llm.Client.
 type Speaker interface {
 	Speak(ctx context.Context, text string) ([]byte, error)
+	Stream(ctx context.Context, text string) (io.ReadCloser, error)
 }
 
 // Kokoro is an HTTP client for one /v1/audio/speech endpoint.

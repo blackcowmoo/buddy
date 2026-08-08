@@ -5,7 +5,8 @@ import { NATIVE_RATE } from "../lib/ttsSettings";
 // compete with them for visual weight.
 export function StudyControl({
   index,
-  text,
+  turn,
+  role,
   rates,
   open,
   onToggle,
@@ -13,11 +14,12 @@ export function StudyControl({
   panelRef,
 }: {
   index: number;
-  text: string;
+  turn: number;
+  role: "user" | "assistant";
   rates: number[];
   open: boolean;
   onToggle: (index: number | null) => void;
-  onPlay: (text: string, rate: number) => void;
+  onPlay: (rate: number, turn: number, role: "user" | "assistant") => void;
   panelRef?: React.RefObject<HTMLDivElement | null>;
 }) {
   return (
@@ -40,7 +42,7 @@ export function StudyControl({
                 key={rate}
                 type="button"
                 className="ghost tts-btn"
-                onClick={() => onPlay(text, rate)}
+                onClick={() => onPlay(rate, turn, role)}
                 aria-label={
                   rate === NATIVE_RATE ? `${rate}배속(원어민 속도)으로 재생` : `${rate}배속으로 재생`
                 }

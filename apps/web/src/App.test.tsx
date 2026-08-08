@@ -42,33 +42,29 @@ vi.mock("./audio/recorder", () => ({
   }),
 }));
 
-vi.mock("./tts/kokoro", () => ({
-  KokoroSpeaker: vi.fn().mockImplementation(function KokoroSpeaker(this: object) {
-    return Object.assign(this, {
-      loaded: false,
-      unlock: vi.fn(),
-      load: vi.fn(),
-      speak: vi.fn().mockResolvedValue(undefined),
-    });
-  }),
-}));
-
 vi.mock("./lib/me", () => ({
   fetchMe: vi.fn(),
 }));
 
-vi.mock("./lib/sessions", () => ({
-  fetchSessions: vi.fn(),
-  fetchInstantSessions: vi.fn(),
-  markInstant: vi.fn(),
-  fetchSessionDetail: vi.fn(),
-  fetchSessionCompaction: vi.fn(),
-  deleteSession: vi.fn(),
-  endSession: vi.fn(),
-  restudySession: vi.fn(),
-  markQuizCompleted: vi.fn(),
-  resetQuiz: vi.fn(),
-}));
+vi.mock("./lib/sessions", async (importOriginal) => {
+  // messageAudioURL is a pure string-builder (no network) — kept real via
+  // importOriginal rather than re-listed as a vi.fn() here, so tests get
+  // the actual URL shape instead of undefined.
+  const actual = await importOriginal<typeof import("./lib/sessions")>();
+  return {
+    ...actual,
+    fetchSessions: vi.fn(),
+    fetchInstantSessions: vi.fn(),
+    markInstant: vi.fn(),
+    fetchSessionDetail: vi.fn(),
+    fetchSessionCompaction: vi.fn(),
+    deleteSession: vi.fn(),
+    endSession: vi.fn(),
+    restudySession: vi.fn(),
+    markQuizCompleted: vi.fn(),
+    resetQuiz: vi.fn(),
+  };
+});
 
 vi.mock("./lib/settings", () => ({
   fetchSettings: vi.fn(),
@@ -127,11 +123,11 @@ import { fetchSettings, saveSettings } from "./lib/settings";
 import { suggestWords } from "./lib/wordSearch";
 import { saveWord, fetchWords } from "./lib/wordReview";
 import { checkQuizAnswer } from "./lib/quizCheck";
-import { KokoroSpeaker } from "./tts/kokoro";
 import { BuddyClient } from "./lib/ws";
 
 beforeEach(() => {
   localStorage.clear();
+  HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
   capturedOnEvent = null;
   capturedPopStateHandler = null;
   vi.mocked(fetchMe).mockResolvedValue(null);
@@ -2231,45 +2227,67 @@ describe("per-message tts playback", () => {
     expect(screen.getByRole("button", { name: "0.8배속으로 재생" })).toBeInTheDocument();
   });
 
-  it("loads the voice on demand and speaks the message at the chosen rate", async () => {
+  it("points the shared <audio> element at the server-generated URL for the chosen turn/role/rate when tapped", async () => {
+    // Regression guard: read-aloud is generated and cached server-side (see
+    // lib/sessions.ts's messageAudioURL), so this is a plain <audio src> +
+    // play(), the same shape as ArticleQuiz.tsx's handleRead — not the old
+    // client-side KokoroSpeaker pipeline.
     const user = userEvent.setup();
-    render(<App />);
+    const { container } = render(<App />);
     await enterNewChat(user);
+    act(() => emit({ type: "ready", turn: 0, session: "s1" }));
     act(() => emit({ type: "assistant_done", turn: 1, text: "Hello there" }));
     await openStudyPopover(user);
     await user.click(await screen.findByRole("button", { name: "0.5배속으로 재생" }));
-    const speaker = vi.mocked(KokoroSpeaker).mock.instances[0] as unknown as {
-      unlock: ReturnType<typeof vi.fn>;
-      speak: ReturnType<typeof vi.fn>;
-    };
-    expect(speaker.speak).toHaveBeenCalledWith("Hello there", 0.5);
 
-    // Regression guard: unlock() must run synchronously in this click,
-    // before loadVoice()'s await — otherwise iOS Safari silently drops
-    // playback once the async model load has pushed the eventual .play()
-    // call outside the user-gesture window (see KokoroSpeaker.unlock).
-    expect(speaker.unlock).toHaveBeenCalled();
+    const audioEl = container.querySelector("audio") as HTMLAudioElement;
+    expect(audioEl.src).toContain("api/sessions/s1/messages/1/audio?role=assistant");
+    expect(audioEl.playbackRate).toBe(0.5);
+    expect(vi.mocked(HTMLMediaElement.prototype.play)).toHaveBeenCalled();
   });
 });
 
-describe("voice enable button", () => {
-  it("lets the learner retry from the error pill after a failed load", async () => {
+describe("auto-read-aloud toggle", () => {
+  it("defaults off, and toggling it persists the preference", async () => {
     const user = userEvent.setup();
     render(<App />);
     await enterNewChatAndOpenMenu(user);
 
-    const speaker = vi.mocked(KokoroSpeaker).mock.instances[0] as unknown as {
-      load: ReturnType<typeof vi.fn>;
-    };
-    speaker.load.mockRejectedValueOnce(new Error("boom"));
+    expect(screen.getByRole("button", { name: "답장 자동 읽기 꺼짐" })).toBeInTheDocument();
+    expect(localStorage.getItem("buddy.tts.autoReadAloud")).not.toBe("true");
 
-    await user.click(screen.getByRole("button", { name: "음성 활성화" }));
-    const retry = await screen.findByRole("button", { name: "음성 다시 불러오기" });
-    expect(retry).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "답장 자동 읽기 꺼짐" }));
 
-    speaker.load.mockResolvedValueOnce(undefined);
-    await user.click(retry);
-    expect(await screen.findByText("🔊 음성 준비 완료")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "🔊 답장 자동 읽기 켜짐" })).toBeInTheDocument();
+    expect(localStorage.getItem("buddy.tts.autoReadAloud")).toBe("true");
+  });
+
+  it("plays a new assistant reply automatically once enabled", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+    await enterNewChatAndOpenMenu(user);
+    await user.click(screen.getByRole("button", { name: "답장 자동 읽기 꺼짐" }));
+    await screen.findByRole("button", { name: "🔊 답장 자동 읽기 켜짐" });
+
+    act(() => emit({ type: "ready", turn: 0, session: "s1" }));
+    act(() => emit({ type: "assistant_done", turn: 1, text: "Hello there" }));
+
+    const audioEl = container.querySelector("audio") as HTMLAudioElement;
+    expect(audioEl.src).toContain("api/sessions/s1/messages/1/audio?role=assistant");
+    expect(vi.mocked(HTMLMediaElement.prototype.play)).toHaveBeenCalled();
+  });
+
+  it("does not auto-play a new reply while the toggle is off", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+    await enterNewChat(user);
+
+    act(() => emit({ type: "ready", turn: 0, session: "s1" }));
+    act(() => emit({ type: "assistant_done", turn: 1, text: "Hello there" }));
+
+    const audioEl = container.querySelector("audio") as HTMLAudioElement;
+    expect(audioEl.src).toBe("");
+    expect(vi.mocked(HTMLMediaElement.prototype.play)).not.toHaveBeenCalled();
   });
 });
 
