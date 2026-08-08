@@ -18,12 +18,14 @@ const MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
 export type KokoroVoice = "af_heart" | "af_bella" | "af_sarah" | "am_adam" | "am_echo";
 
 // generate() runs the whole passage through phonemization + a single ONNX
-// forward pass with no progress signal and no internal timeout — on the
-// WASM fallback (no WebGPU) that has been observed to take minutes on a
-// phone, or apparently never resolve at all, leaving the UI stuck on
-// "재생 중…" forever with no error. Bounding it means a slow/stuck device at
-// least surfaces as a retryable failure instead of hanging indefinitely.
-export const GENERATION_TIMEOUT_MS = 45_000;
+// forward pass with no progress signal and no internal timeout. The
+// multi-minute hangs originally seen here traced back to kokoro-js's
+// per-call voice fetch from HuggingFace (see seedVoiceCache() below), now
+// removed from the critical path — what's left is just on-device WASM
+// inference for one paragraph, which shouldn't need anywhere near as long.
+// Still bounded so a genuinely stuck/slow device surfaces as a retryable
+// failure instead of hanging indefinitely.
+export const GENERATION_TIMEOUT_MS = 15_000;
 
 // Despite the model itself running fully on-device, kokoro-js fetches each
 // voice's style vector directly from HuggingFace at *generation* time (not

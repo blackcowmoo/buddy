@@ -294,9 +294,9 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     // Regression guard: generation (phonemize + tokenize + the ONNX forward
     // pass) is most of speak()'s latency and used to be lumped into the same
     // "재생 중…" label as actual playback — misleading, since nothing is
-    // playing yet and generation alone has been observed to take up to the
-    // 45s GENERATION_TIMEOUT_MS. The label must say so, not claim it's
-    // already playing.
+    // playing yet and generation alone has been observed to take up to
+    // GENERATION_TIMEOUT_MS. The label must say so, not claim it's already
+    // playing.
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
     const user = userEvent.setup();
