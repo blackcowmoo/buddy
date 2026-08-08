@@ -8,6 +8,7 @@ vi.mock("kokoro-js", () => ({
   KokoroTTS: { from_pretrained: vi.fn().mockResolvedValue({ generate }) },
 }));
 
+import { KokoroTTS } from "kokoro-js";
 import { GENERATION_TIMEOUT_MS, KokoroSpeaker } from "./kokoro";
 
 // jsdom (used by the page-level tests) doesn't implement
@@ -149,6 +150,42 @@ describe("KokoroSpeaker.load", () => {
     const speaker = new KokoroSpeaker();
 
     await expect(speaker.load()).resolves.toBeDefined();
+  });
+
+  it("forces the WASM device on mobile even when the WebGPU API is present", async () => {
+    // Regression guard: `"gpu" in navigator` only means the API exists, not
+    // that it works — mobile WebGPU is documented as unreliable enough that
+    // other kokoro-js deployments disable it on mobile outright, and this
+    // app has no fallback if a WebGPU run stalls mid-generation.
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      gpu: {},
+      userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15",
+    });
+
+    const speaker = new KokoroSpeaker();
+    await speaker.load();
+
+    expect(vi.mocked(KokoroTTS.from_pretrained)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ device: "wasm", dtype: "q8" }),
+    );
+  });
+
+  it("uses WebGPU on desktop when the API is present", async () => {
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      gpu: {},
+      userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15",
+    });
+
+    const speaker = new KokoroSpeaker();
+    await speaker.load();
+
+    expect(vi.mocked(KokoroTTS.from_pretrained)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ device: "webgpu", dtype: "fp32" }),
+    );
   });
 });
 

@@ -13,6 +13,20 @@ declare global {
 // ~80–300 MB depending on dtype, so it is lazy-loaded on first use.
 const MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
 
+// `"gpu" in navigator` only means the WebGPU *API* exists, not that it
+// actually works — mobile Safari/Chrome WebGPU is documented as unreliable
+// enough that other in-browser kokoro-js deployments disable it outright on
+// mobile rather than risk it ("fails 30% of the time" — quick-tts.com's
+// WebGPU benchmarks). This app has no fallback if a WebGPU run stalls
+// mid-generation, so on mobile it isn't worth the risk: WASM is slower but
+// consistent, and GENERATION_TIMEOUT_MS is sized assuming that path.
+// A function (not a module-level constant) so it reads the live
+// navigator.userAgent at load() time rather than whenever this module
+// happens to first be imported.
+function isMobile(): boolean {
+  return /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
 // A few known-good voices. See the kokoro-js model card for the full list
 // (af_* American female, am_* American male, bf_*/bm_* British, etc.).
 export type KokoroVoice = "af_heart" | "af_bella" | "af_sarah" | "am_adam" | "am_echo";
@@ -121,7 +135,7 @@ export class KokoroSpeaker {
 
   load(onProgress?: (p: number) => void): Promise<KokoroTTS> {
     if (!this.ttsPromise) {
-      const webgpu = "gpu" in navigator;
+      const webgpu = !isMobile() && "gpu" in navigator;
       const opts = {
         dtype: webgpu ? "fp32" : "q8",
         device: webgpu ? "webgpu" : "wasm",
