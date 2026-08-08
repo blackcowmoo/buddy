@@ -300,17 +300,14 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     await user.click(screen.getByRole("button", { name: "🔊 읽어주기" }));
 
     expect(await screen.findByRole("button", { name: "불러오는 중…" })).toBeInTheDocument();
-    expect(screen.queryByText(/무음 스위치/)).not.toBeInTheDocument();
 
     const audioEl = container.querySelector("audio")!;
     await act(async () => audioEl.dispatchEvent(new Event("playing")));
 
     expect(await screen.findByRole("button", { name: "재생 중…" })).toBeInTheDocument();
-    expect(await screen.findByText(/무음 스위치/)).toBeInTheDocument();
 
     await act(async () => audioEl.dispatchEvent(new Event("ended")));
     expect(await screen.findByRole("button", { name: "🔊 읽어주기" })).toBeInTheDocument();
-    expect(screen.queryByText(/무음 스위치/)).not.toBeInTheDocument();
   });
 
   it("shows a failure label instead of silently going back to idle when playback fails", async () => {

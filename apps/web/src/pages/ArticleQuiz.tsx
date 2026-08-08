@@ -297,16 +297,6 @@ export function ArticleQuiz() {
                         ? "재생 실패, 다시 시도해주세요"
                         : "🔊 읽어주기"}
                 </button>
-                {tts === "speaking" && (
-                  // Read-aloud deliberately requests the "ambient" audio
-                  // session type (see handleRead) so it mixes with — never
-                  // pauses — music already playing in another app, which
-                  // means it inherits the same rule as any other ambient
-                  // sound: silenced while the hardware ring/silent switch is
-                  // on. Called out here so that reads as expected, not as
-                  // broken playback.
-                  <p className="hint">무음 스위치가 켜져 있으면 읽어주기 소리가 나지 않아요.</p>
-                )}
                 <button type="button" className="quiz-start-btn" onClick={startQuiz}>
                   문제풀기
                 </button>
