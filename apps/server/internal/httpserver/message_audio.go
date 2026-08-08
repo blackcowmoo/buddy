@@ -72,7 +72,7 @@ func messageAudioHandler(ident identity.Identifier, st store.Store, audio *trans
 		}
 
 		key := transport.MessageAudioKey(sessionID, turn, role)
-		body, err := audio.Cache.Open(r.Context(), key)
+		body, err := audio.Cache.Open(r.Context(), key, audio.Client.Version())
 		if err == nil {
 			defer body.Close()
 			w.Header().Set("Content-Type", "audio/mpeg")
@@ -103,7 +103,7 @@ func messageAudioHandler(ident identity.Identifier, st store.Store, audio *trans
 			log.Printf("messages: audio stream %s: %v", key, err)
 			return
 		}
-		if err := audio.Cache.Put(r.Context(), key, buf.Bytes()); err != nil {
+		if err := audio.Cache.Put(r.Context(), key, audio.Client.Version(), buf.Bytes()); err != nil {
 			log.Printf("messages: audio cache %s: %v", key, err)
 		}
 	}

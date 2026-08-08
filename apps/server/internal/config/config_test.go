@@ -16,7 +16,7 @@ var allBuddyEnvVars = []string{
 	"WHISPER_SERVER_URLS", "PARAKEET_SERVER_URLS",
 	"BUDDY_LLM_API_KEY",
 	"BUDDY_LLM_CHAT_URL", "BUDDY_LLM_ANALYSIS_URLS", "BUDDY_LLM_JUDGE_URL",
-	"BUDDY_TTS_URL",
+	"BUDDY_TTS_URL", "BUDDY_TTS_VOLUME_MULTIPLIER",
 	"BUDDY_FEEDBACK_LANG",
 	"MYSQL_RW_HOSTNAME", "MYSQL_RO_HOSTNAME", "MYSQL_PORT",
 	"MYSQL_USERNAME", "MYSQL_PASSWORD", "MYSQL_DATABASE",
@@ -75,6 +75,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if c.MaxHistoryMessages != 20 {
 		t.Errorf("MaxHistoryMessages = %d, want 20", c.MaxHistoryMessages)
+	}
+	if c.TTSVolumeMultiplier != 1.5 {
+		t.Errorf("TTSVolumeMultiplier = %v, want 1.5", c.TTSVolumeMultiplier)
 	}
 	if !c.IsDev() {
 		t.Errorf("IsDev() = false, want true when BUDDY_ENV is unset (default dev)")
@@ -187,6 +190,22 @@ func TestLoadTTSURLParsesModelAtURLPairAndDefaultsToDisabled(t *testing.T) {
 	c = Load()
 	if c.TTSVoice != "af_heart" || c.TTSURL != "http://localhost:8880/v1" {
 		t.Fatalf("TTSVoice/TTSURL = %q/%q, want af_heart/http://localhost:8880/v1", c.TTSVoice, c.TTSURL)
+	}
+}
+
+func TestLoadTTSVolumeMultiplierOverrideAndInvalidFallback(t *testing.T) {
+	clearEnv(t)
+
+	t.Setenv("BUDDY_TTS_VOLUME_MULTIPLIER", "2.25")
+	c := Load()
+	if c.TTSVolumeMultiplier != 2.25 {
+		t.Fatalf("TTSVolumeMultiplier = %v, want 2.25", c.TTSVolumeMultiplier)
+	}
+
+	t.Setenv("BUDDY_TTS_VOLUME_MULTIPLIER", "not-a-number")
+	c = Load()
+	if c.TTSVolumeMultiplier != 1.5 {
+		t.Fatalf("TTSVolumeMultiplier = %v, want the 1.5 default when the env value doesn't parse", c.TTSVolumeMultiplier)
 	}
 }
 

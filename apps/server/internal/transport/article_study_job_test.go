@@ -45,6 +45,8 @@ func (f *fakeSpeaker) Stream(ctx context.Context, text string) (io.ReadCloser, e
 	return io.NopCloser(strings.NewReader(string(audio))), nil
 }
 
+func (f *fakeSpeaker) Version() string { return "test-version" }
+
 func (f *fakeSpeaker) spokenTexts() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -52,17 +54,23 @@ func (f *fakeSpeaker) spokenTexts() []string {
 }
 
 // fakeCache is a minimal ttsstore.Cache double, backed by an in-memory map.
+// Ignores the version passed to Put/Open (the real version-mismatch
+// invalidation logic is ttsstore.Store's own, covered by its
+// container-backed tests) — just records the last one seen, for tests that
+// want to assert the caller passed the right one.
 type fakeCache struct {
-	mu      sync.Mutex
-	byKey   map[string][]byte
-	putErr  error
-	putCall int
+	mu          sync.Mutex
+	byKey       map[string][]byte
+	putErr      error
+	putCall     int
+	lastVersion string
 }
 
-func (f *fakeCache) Put(ctx context.Context, key string, audio []byte) error {
+func (f *fakeCache) Put(ctx context.Context, key, version string, audio []byte) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.putCall++
+	f.lastVersion = version
 	if f.putErr != nil {
 		return f.putErr
 	}
@@ -73,9 +81,10 @@ func (f *fakeCache) Put(ctx context.Context, key string, audio []byte) error {
 	return nil
 }
 
-func (f *fakeCache) Open(ctx context.Context, key string) (io.ReadCloser, error) {
+func (f *fakeCache) Open(ctx context.Context, key, version string) (io.ReadCloser, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.lastVersion = version
 	audio, ok := f.byKey[key]
 	if !ok {
 		return nil, ttsstore.ErrNotFound
@@ -260,7 +269,7 @@ func TestRunArticleStudyGeneratesAndCachesReadAloudAudio(t *testing.T) {
 	if got := speaker.spokenTexts(); len(got) != 1 || got[0] != wantText {
 		t.Fatalf("spoken texts = %v, want exactly [%q]", got, wantText)
 	}
-	rc, err := cache.Open(context.Background(), ArticleAudioKey("a1"))
+	rc, err := cache.Open(context.Background(), ArticleAudioKey("a1"), speaker.Version())
 	if err != nil {
 		t.Fatalf("cache.Open(%q) error = %v, want the generated audio to be cached under that key", ArticleAudioKey("a1"), err)
 	}

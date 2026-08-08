@@ -23,22 +23,33 @@ import (
 )
 
 // Speaker is the minimal surface callers like internal/transport.ArticleAudio
-// need — Speak (buffered, for pre-generation) and Stream (unbuffered, for
-// relaying to an HTTP client as bytes arrive) — so they (and their own
-// tests) can depend on this interface instead of the concrete *Kokoro
-// client, the same "swap for a fake in tests, real client in production"
-// shape as internal/llm.Client.
+// need — Speak (buffered, for pre-generation), Stream (unbuffered, for
+// relaying to an HTTP client as bytes arrive), and Version (a fingerprint of
+// the current generation settings, for cache invalidation — see
+// internal/ttsstore) — so they (and their own tests) can depend on this
+// interface instead of the concrete *Kokoro client, the same "swap for a
+// fake in tests, real client in production" shape as internal/llm.Client.
 type Speaker interface {
 	Speak(ctx context.Context, text string) ([]byte, error)
 	Stream(ctx context.Context, text string) (io.ReadCloser, error)
+	Version() string
 }
 
 // Kokoro is an HTTP client for one /v1/audio/speech endpoint.
 type Kokoro struct {
 	BaseURL string // the /v1 root, e.g. http://kokoro:8880/v1
 	Voice   string // e.g. "af_heart" — see kokoro.ts's KokoroVoice for why this app only ever uses one
-	APIKey  string // optional; sent as "Authorization: Bearer <key>"
-	http    *http.Client
+	// VolumeMultiplier scales the generated audio's output level — Kokoro-
+	// FastAPI applies it server-side (see speechReq), not a client-side
+	// <audio>.volume tweak, which is capped at 1.0 and can't make audio any
+	// louder than however it was originally rendered. Read aloud has been
+	// reported as too quiet next to background music; boosting it here
+	// (rather than in the browser) means every cached copy is actually
+	// louder, not just however loud the playing device's volume slider
+	// allows.
+	VolumeMultiplier float64
+	APIKey           string // optional; sent as "Authorization: Bearer <key>"
+	http             *http.Client
 }
 
 // requestTimeout bounds one generation call. CPU-only synthesis of a long
@@ -53,8 +64,10 @@ const requestTimeout = 2 * time.Minute
 // NewKokoro normalizes baseURL to end in exactly one "/v1", so a config
 // value with or without the suffix both reach POST {baseURL}/audio/speech.
 // An empty voice defaults to "af_heart", the one voice this app's UI has
-// ever exposed (see kokoro.ts).
-func NewKokoro(baseURL, voice, apiKey string) *Kokoro {
+// ever exposed (see kokoro.ts); a zero/negative volumeMultiplier defaults to
+// 1.0 (Kokoro-FastAPI's own unboosted default) rather than silencing output
+// or erroring.
+func NewKokoro(baseURL, voice string, volumeMultiplier float64, apiKey string) *Kokoro {
 	baseURL = strings.TrimRight(baseURL, "/")
 	if !strings.HasSuffix(baseURL, "/v1") {
 		baseURL += "/v1"
@@ -62,20 +75,35 @@ func NewKokoro(baseURL, voice, apiKey string) *Kokoro {
 	if voice == "" {
 		voice = "af_heart"
 	}
+	if volumeMultiplier <= 0 {
+		volumeMultiplier = 1.0
+	}
 	return &Kokoro{
-		BaseURL: baseURL,
-		Voice:   voice,
-		APIKey:  apiKey,
-		http:    &http.Client{Timeout: requestTimeout},
+		BaseURL:          baseURL,
+		Voice:            voice,
+		VolumeMultiplier: volumeMultiplier,
+		APIKey:           apiKey,
+		http:             &http.Client{Timeout: requestTimeout},
 	}
 }
 
+// Version fingerprints the generation settings that affect the audio
+// itself (voice, volume) — internal/ttsstore compares this against what a
+// cached entry was generated with, so changing either here (e.g. boosting
+// VolumeMultiplier) invalidates every existing cached clip instead of
+// leaving old, quieter versions being served indefinitely until their TTL
+// happens to expire.
+func (k *Kokoro) Version() string {
+	return fmt.Sprintf("%s:vol%.2f", k.Voice, k.VolumeMultiplier)
+}
+
 type speechReq struct {
-	Model          string `json:"model"`
-	Input          string `json:"input"`
-	Voice          string `json:"voice"`
-	ResponseFormat string `json:"response_format"`
-	Stream         bool   `json:"stream,omitempty"`
+	Model            string  `json:"model"`
+	Input            string  `json:"input"`
+	Voice            string  `json:"voice"`
+	ResponseFormat   string  `json:"response_format"`
+	Stream           bool    `json:"stream,omitempty"`
+	VolumeMultiplier float64 `json:"volume_multiplier,omitempty"`
 }
 
 // responseFormat is mp3 everywhere: far smaller than wav for the same
@@ -112,11 +140,12 @@ func (k *Kokoro) Stream(ctx context.Context, text string) (io.ReadCloser, error)
 
 func (k *Kokoro) do(ctx context.Context, text string, stream bool) (*http.Response, error) {
 	body, err := json.Marshal(speechReq{
-		Model:          "kokoro",
-		Input:          text,
-		Voice:          k.Voice,
-		ResponseFormat: responseFormat,
-		Stream:         stream,
+		Model:            "kokoro",
+		Input:            text,
+		Voice:            k.Voice,
+		ResponseFormat:   responseFormat,
+		Stream:           stream,
+		VolumeMultiplier: k.VolumeMultiplier,
 	})
 	if err != nil {
 		return nil, err

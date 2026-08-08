@@ -133,11 +133,11 @@ func TestPutThenOpenRoundTrips(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
 
-	if err := st.Put(ctx, "article:round-trip", []byte("fake-mp3-bytes")); err != nil {
+	if err := st.Put(ctx, "article:round-trip", "v1", []byte("fake-mp3-bytes")); err != nil {
 		t.Fatalf("Put() error = %v", err)
 	}
 
-	rc, err := st.Open(ctx, "article:round-trip")
+	rc, err := st.Open(ctx, "article:round-trip", "v1")
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -155,7 +155,7 @@ func TestOpenMissingKeyReturnsErrNotFound(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
 
-	_, err := st.Open(ctx, "article:never-generated")
+	_, err := st.Open(ctx, "article:never-generated", "v1")
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Open() error = %v, want ErrNotFound", err)
 	}
@@ -165,14 +165,14 @@ func TestPutOverwritesExistingKey(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
 
-	if err := st.Put(ctx, "message:overwrite", []byte("first")); err != nil {
+	if err := st.Put(ctx, "message:overwrite", "v1", []byte("first")); err != nil {
 		t.Fatalf("Put() #1 error = %v", err)
 	}
-	if err := st.Put(ctx, "message:overwrite", []byte("second-and-longer")); err != nil {
+	if err := st.Put(ctx, "message:overwrite", "v1", []byte("second-and-longer")); err != nil {
 		t.Fatalf("Put() #2 error = %v", err)
 	}
 
-	rc, err := st.Open(ctx, "message:overwrite")
+	rc, err := st.Open(ctx, "message:overwrite", "v1")
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -183,11 +183,56 @@ func TestPutOverwritesExistingKey(t *testing.T) {
 	}
 }
 
+// TestOpenWithDifferentVersionActsAsNotFoundAndDeletesTheStaleEntry guards
+// the whole point of versioning: a settings change (e.g. TTSVolumeMultiplier)
+// changes internal/tts.Kokoro.Version(), so an entry cached under the old
+// version must be treated as absent — and, unlike a plain cache miss, the
+// stale object/row is actively deleted (not left for SweepExpired, which
+// could be up to TTL away) so it doesn't linger unreachable in S3.
+func TestOpenWithDifferentVersionActsAsNotFoundAndDeletesTheStaleEntry(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+
+	if err := st.Put(ctx, "article:versioned", "vol1.0", []byte("quiet-version")); err != nil {
+		t.Fatalf("Put() error = %v", err)
+	}
+
+	_, err := st.Open(ctx, "article:versioned", "vol2.0")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Open() with a different version error = %v, want ErrNotFound", err)
+	}
+
+	// The stale entry must actually be gone, not just skipped this once —
+	// otherwise every future request pays the delete-detection cost again.
+	var count int
+	if err := st.ro.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table+` WHERE cache_key = ?`, "article:versioned").Scan(&count); err != nil {
+		t.Fatalf("query row count: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("row count for the stale entry = %d, want 0 (deleted)", count)
+	}
+
+	// Regenerating under the new version and re-Put()ing must work cleanly
+	// (no leftover unique-key conflict from the old row).
+	if err := st.Put(ctx, "article:versioned", "vol2.0", []byte("louder-version")); err != nil {
+		t.Fatalf("Put() after version invalidation error = %v", err)
+	}
+	rc, err := st.Open(ctx, "article:versioned", "vol2.0")
+	if err != nil {
+		t.Fatalf("Open() after regenerating at the new version error = %v", err)
+	}
+	defer rc.Close()
+	got, _ := io.ReadAll(rc)
+	if string(got) != "louder-version" {
+		t.Fatalf("Open() body = %q, want %q", got, "louder-version")
+	}
+}
+
 func TestSweepExpiredRemovesOnlyEntriesOlderThanTTL(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
 
-	if err := st.Put(ctx, "article:sweep-old", []byte("old")); err != nil {
+	if err := st.Put(ctx, "article:sweep-old", "v1", []byte("old")); err != nil {
 		t.Fatalf("Put() old error = %v", err)
 	}
 	// Backdate it directly — waiting out a real TTL in a test isn't practical.
@@ -195,7 +240,7 @@ func TestSweepExpiredRemovesOnlyEntriesOlderThanTTL(t *testing.T) {
 		time.Now().Add(-100*24*time.Hour).Unix(), "article:sweep-old"); err != nil {
 		t.Fatalf("backdate: %v", err)
 	}
-	if err := st.Put(ctx, "article:sweep-fresh", []byte("fresh")); err != nil {
+	if err := st.Put(ctx, "article:sweep-fresh", "v1", []byte("fresh")); err != nil {
 		t.Fatalf("Put() fresh error = %v", err)
 	}
 
@@ -207,10 +252,10 @@ func TestSweepExpiredRemovesOnlyEntriesOlderThanTTL(t *testing.T) {
 		t.Fatalf("SweepExpired() removed %d entries, want exactly 1 (the backdated one)", n)
 	}
 
-	if _, err := st.Open(ctx, "article:sweep-old"); !errors.Is(err, ErrNotFound) {
+	if _, err := st.Open(ctx, "article:sweep-old", "v1"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("sweep-old still openable after sweep: err = %v, want ErrNotFound", err)
 	}
-	if _, err := st.Open(ctx, "article:sweep-fresh"); err != nil {
+	if _, err := st.Open(ctx, "article:sweep-fresh", "v1"); err != nil {
 		t.Errorf("sweep-fresh should survive the sweep: Open() error = %v", err)
 	}
 }
@@ -219,7 +264,7 @@ func TestSweepExpiredNoopWhenNothingExpired(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
 
-	if err := st.Put(ctx, "article:sweep-noop", []byte("data")); err != nil {
+	if err := st.Put(ctx, "article:sweep-noop", "v1", []byte("data")); err != nil {
 		t.Fatalf("Put() error = %v", err)
 	}
 

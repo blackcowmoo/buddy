@@ -407,7 +407,7 @@ func buildArticleAudio(ctx context.Context, cfg config.Config, st *store.MySQLSt
 		log.Fatalf("tts cache: %v", err)
 	}
 	return &transport.ArticleAudio{
-		Client: tts.NewKokoro(cfg.TTSURL, cfg.TTSVoice, ""),
+		Client: tts.NewKokoro(cfg.TTSURL, cfg.TTSVoice, cfg.TTSVolumeMultiplier, ""),
 		Cache:  cache,
 	}
 }

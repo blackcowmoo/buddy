@@ -44,11 +44,16 @@ func (f *fakeAudioSpeaker) Stream(ctx context.Context, text string) (io.ReadClos
 	return io.NopCloser(strings.NewReader(string(audio))), nil
 }
 
+func (f *fakeAudioSpeaker) Version() string { return "test-version" }
+
+// fakeAudioCache ignores the version passed to Put/Open — the real
+// version-mismatch invalidation logic is ttsstore.Store's own, covered by
+// its container-backed tests.
 type fakeAudioCache struct {
 	byKey map[string][]byte
 }
 
-func (f *fakeAudioCache) Put(ctx context.Context, key string, audio []byte) error {
+func (f *fakeAudioCache) Put(ctx context.Context, key, version string, audio []byte) error {
 	if f.byKey == nil {
 		f.byKey = map[string][]byte{}
 	}
@@ -56,7 +61,7 @@ func (f *fakeAudioCache) Put(ctx context.Context, key string, audio []byte) erro
 	return nil
 }
 
-func (f *fakeAudioCache) Open(ctx context.Context, key string) (io.ReadCloser, error) {
+func (f *fakeAudioCache) Open(ctx context.Context, key, version string) (io.ReadCloser, error) {
 	audio, ok := f.byKey[key]
 	if !ok {
 		return nil, ttsstore.ErrNotFound

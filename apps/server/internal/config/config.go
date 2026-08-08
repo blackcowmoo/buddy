@@ -71,11 +71,20 @@ type Config struct {
 	// (internal/transport's article study job) and, on demand, per chat
 	// message — both cached in S3 (see S3* below) so the same text is never
 	// resynthesized twice. Same "model@url" format as the LLM *_URL vars
-	// (TTSModel here names the voice, e.g. "af_heart"); empty URL (the
+	// (TTSVoice here names the voice, e.g. "af_heart"); empty URL (the
 	// zero-setup default) disables server-side TTS entirely, same
 	// "empty = feature off" convention as S3Bucket.
 	TTSVoice string
 	TTSURL   string
+	// TTSVolumeMultiplier scales Kokoro-FastAPI's own output level (its
+	// "volume_multiplier" request field — see internal/tts.Kokoro) — plain
+	// speech has been reported as too quiet next to background music, and a
+	// client-side <audio>.volume can't help since it's capped at 1.0
+	// (already the default). >1.0 boosts it; changing this value also
+	// changes internal/tts.Kokoro.Version(), so every previously cached
+	// clip is treated as stale and regenerated at the new volume instead of
+	// old, quieter copies lingering until their TTL happens to expire.
+	TTSVolumeMultiplier float64
 
 	// Feedback language: the learner's native language for correction
 	// explanations (BCP-47-ish code, e.g. "ko", "en", "ja"). The corrected
@@ -271,8 +280,9 @@ func Load() Config {
 		LLMJudgeURL:   judgeURL,
 		LLMJudgeModel: judgeModel,
 
-		TTSVoice: ttsVoice,
-		TTSURL:   ttsURL,
+		TTSVoice:            ttsVoice,
+		TTSURL:              ttsURL,
+		TTSVolumeMultiplier: envFloat("BUDDY_TTS_VOLUME_MULTIPLIER", 1.5),
 
 		FeedbackLang: env("BUDDY_FEEDBACK_LANG", "ko"),
 
@@ -326,6 +336,15 @@ func envBool(key string, def bool) bool {
 	if v, ok := os.LookupEnv(key); ok {
 		if b, err := strconv.ParseBool(v); err == nil {
 			return b
+		}
+	}
+	return def
+}
+
+func envFloat(key string, def float64) float64 {
+	if v, ok := os.LookupEnv(key); ok {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
 		}
 	}
 	return def

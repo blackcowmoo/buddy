@@ -46,7 +46,7 @@ func (a *ArticleAudio) Generate(ctx context.Context, key, text string) ([]byte, 
 	if err != nil {
 		return nil, fmt.Errorf("tts: generate: %w", err)
 	}
-	if err := a.Cache.Put(ctx, key, audio); err != nil {
+	if err := a.Cache.Put(ctx, key, a.Client.Version(), audio); err != nil {
 		return nil, fmt.Errorf("tts: cache: %w", err)
 	}
 	return audio, nil
