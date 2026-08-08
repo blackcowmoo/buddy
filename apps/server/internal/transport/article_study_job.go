@@ -9,6 +9,7 @@ import (
 	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/newsarticle"
 	"buddy/server/internal/pipeline"
+	"buddy/server/internal/protocol"
 	"buddy/server/internal/tts"
 	"buddy/server/internal/ttsstore"
 )
@@ -112,6 +113,25 @@ type articleStudyJobPayload struct {
 // queued, durable path) and RunArticleStudyInline (httpserver.
 // articleDrawHandler's fallback when Redis isn't configured) so both paths
 // behave identically.
+// toNewsArticleSubQuestions converts pipeline.GenerateArticleStudy's
+// protocol.ArticleSubQuestion (the LLM-call JSON shape) into
+// newsarticle.SubQuestion (the persisted shape) — kept as two distinct
+// types, same layering as the old Choices/CorrectIndex/Explanation split,
+// so newsarticle doesn't need to import protocol just to describe what it
+// stores.
+func toNewsArticleSubQuestions(qs []protocol.ArticleSubQuestion) []newsarticle.SubQuestion {
+	out := make([]newsarticle.SubQuestion, len(qs))
+	for i, q := range qs {
+		out[i] = newsarticle.SubQuestion{
+			Prompt:             q.Prompt,
+			Options:            q.Options,
+			CorrectOptionIndex: q.CorrectOptionIndex,
+			Explanation:        q.Explanation,
+		}
+	}
+	return out
+}
+
 func runArticleStudy(ctx context.Context, pipe *pipeline.Pipeline, articles newsarticle.Store, audio *ArticleAudio, articleID, source, title, description string) error {
 	target, ok, err := articles.GetArticle(ctx, articleID)
 	if err != nil {
@@ -128,7 +148,7 @@ func runArticleStudy(ctx context.Context, pipe *pipeline.Pipeline, articles news
 		}
 		return fmt.Errorf("article study: generate: %w", err)
 	}
-	if _, err := articles.CompleteArticle(ctx, articleID, study.Summary, study.Choices, study.CorrectIndex, study.Explanation); err != nil {
+	if _, err := articles.CompleteArticle(ctx, articleID, study.Summary, toNewsArticleSubQuestions(study.SubQuestions)); err != nil {
 		return fmt.Errorf("article study: complete: %w", err)
 	}
 	audio.generate(ctx, articleID, study.Summary)

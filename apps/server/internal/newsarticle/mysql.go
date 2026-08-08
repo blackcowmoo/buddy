@@ -34,21 +34,39 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 	// UNIQUE KEY on url is the cache key ReserveArticle relies on: one row
 	// per distinct story no matter how many learners draw it.
 	const articlesSchema = `CREATE TABLE IF NOT EXISTS ` + articlesTable + ` (
-		id            VARCHAR(64)   NOT NULL,
-		source        VARCHAR(64)   NOT NULL,
-		title         VARCHAR(512)  NOT NULL,
-		url           VARCHAR(1024) NOT NULL,
-		summary       TEXT          NOT NULL,
-		choices_json  TEXT          NOT NULL,
-		correct_index INT           NOT NULL,
-		explanation   TEXT          NOT NULL,
-		status        VARCHAR(16)   NOT NULL DEFAULT '` + StatusDone + `',
-		created_at    BIGINT        NOT NULL,
+		id                 VARCHAR(64)   NOT NULL,
+		source             VARCHAR(64)   NOT NULL,
+		title              VARCHAR(512)  NOT NULL,
+		url                VARCHAR(1024) NOT NULL,
+		summary            TEXT          NOT NULL,
+		sub_questions_json TEXT          NOT NULL,
+		status             VARCHAR(16)   NOT NULL DEFAULT '` + StatusDone + `',
+		created_at         BIGINT        NOT NULL,
 		PRIMARY KEY (id),
 		UNIQUE KEY idx_url (url(255))
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
 	if _, err := rw.ExecContext(ctx, articlesSchema); err != nil {
 		return nil, fmt.Errorf("newsarticle: schema: articles: %w", err)
+	}
+	// sub_questions_json replaced the original choices_json/correct_index/
+	// explanation columns (a whole-paragraph 4-choice quiz shape, replaced
+	// by several independent 2-choice sub-questions — see SubQuestion's doc)
+	// — a clean break, not a migration: Article rows are a regenerable LLM-
+	// output cache (see the package doc), so scanArticle treats a
+	// pre-existing row's backfilled NULL the same as any other article
+	// whose study content needs (re)generating, same as StatusPending. NULL
+	// with no DEFAULT, not '' — MySQL rejects a literal DEFAULT on a
+	// TEXT/BLOB column outright (see the description column below for the
+	// same constraint), and NULL needs no default to begin with. The old
+	// columns are left in place on an already-existing table rather than
+	// dropped — harmless, unused dead weight, and DROP COLUMN has no
+	// idempotent "already applied" story to swallow the way ADD COLUMN does
+	// via mysqlerr.ApplyAdditive.
+	if err := mysqlerr.ApplyAdditive(func() error {
+		_, err := rw.ExecContext(ctx, `ALTER TABLE `+articlesTable+` ADD COLUMN sub_questions_json TEXT NULL AFTER summary`)
+		return err
+	}, mysqlerr.DupFieldName); err != nil {
+		return nil, fmt.Errorf("newsarticle: schema: add sub_questions_json column: %w", err)
 	}
 	// Predates asyncjob.KindArticleStudy, back when SaveArticle only ever
 	// inserted an already-fully-generated row (the LLM call ran synchronously
@@ -97,26 +115,38 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 		return nil, fmt.Errorf("newsarticle: schema: add published_at column: %w", err)
 	}
 
-	// selected_index defaults to -1 (not yet answered) rather than 0, which
-	// would be indistinguishable from an actual "chose choice 0" answer.
+	// selected_options_json defaults to NULL — not yet answered, distinct
+	// from an empty '[]' (which would mean "answered with 0 sub-questions",
+	// impossible per articleQuizMinSubQuestions) — see scanInstance.
 	// idx_user_created covers List's per-user, most-recent-first query;
 	// idx_article supports a future cross-instance lookup by article
 	// (nothing uses it yet, but it's the natural join key so it's indexed
 	// up front rather than added later under load).
 	const instancesSchema = `CREATE TABLE IF NOT EXISTS ` + instancesTable + ` (
-		id             VARCHAR(64)  NOT NULL,
-		user_id        VARCHAR(255) NOT NULL,
-		article_id     VARCHAR(64)  NOT NULL,
-		answered       TINYINT(1)   NOT NULL DEFAULT 0,
-		selected_index INT          NOT NULL DEFAULT -1,
-		correct        TINYINT(1)   NOT NULL DEFAULT 0,
-		created_at     BIGINT       NOT NULL,
+		id                    VARCHAR(64)  NOT NULL,
+		user_id               VARCHAR(255) NOT NULL,
+		article_id            VARCHAR(64)  NOT NULL,
+		answered              TINYINT(1)   NOT NULL DEFAULT 0,
+		selected_options_json TEXT         NULL,
+		correct               TINYINT(1)   NOT NULL DEFAULT 0,
+		created_at            BIGINT       NOT NULL,
 		PRIMARY KEY (id),
 		KEY idx_user_created (user_id, created_at),
 		KEY idx_article (article_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
 	if _, err := rw.ExecContext(ctx, instancesSchema); err != nil {
 		return nil, fmt.Errorf("newsarticle: schema: instances: %w", err)
+	}
+	// selected_options_json replaced selected_index (a single 0-based pick,
+	// meaningless once a "choice" became several independent sub-question
+	// picks) — same clean-break, NULL-with-no-default reasoning as
+	// sub_questions_json above. A pre-existing row's backfilled NULL scans
+	// as SelectedOptions == nil, same as any other never-answered Instance.
+	if err := mysqlerr.ApplyAdditive(func() error {
+		_, err := rw.ExecContext(ctx, `ALTER TABLE `+instancesTable+` ADD COLUMN selected_options_json TEXT NULL AFTER answered`)
+		return err
+	}, mysqlerr.DupFieldName); err != nil {
+		return nil, fmt.Errorf("newsarticle: schema: add selected_options_json column: %w", err)
 	}
 	return &MySQLStore{rw: rw, ro: ro}, nil
 }
@@ -126,18 +156,42 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
-const articleColumns = `id, source, title, url, summary, choices_json, correct_index, explanation, description, status, created_at, published_at`
+const articleColumns = `id, source, title, url, summary, sub_questions_json, description, status, created_at, published_at`
+
+// scanArticle decodes sub_questions_json (NULL/empty for a pre-existing row
+// predating this column, or an article whose SubQuestions genuinely haven't
+// been generated yet — see the schema comment above) into a nil
+// []SubQuestion rather than erroring; StatusDone with nil SubQuestions
+// simply renders/answers as an empty quiz instead of GetArticle/List
+// failing outright.
+// decodeSubQuestions decodes sub_questions_json — nil for SQL NULL or an
+// empty string (a pre-existing row predating this column, or one whose
+// study content genuinely hasn't been generated yet), otherwise the parsed
+// array. Shared by scanArticle and scanInstance (which reads the same
+// column through its joined Article).
+func decodeSubQuestions(ns sql.NullString) ([]SubQuestion, error) {
+	if !ns.Valid || ns.String == "" {
+		return nil, nil
+	}
+	var qs []SubQuestion
+	if err := json.Unmarshal([]byte(ns.String), &qs); err != nil {
+		return nil, fmt.Errorf("decode sub_questions_json: %w", err)
+	}
+	return qs, nil
+}
 
 func scanArticle(row scanner) (Article, error) {
 	var a Article
-	var choicesJSON string
+	var subQuestionsJSON sql.NullString
 	var createdAt, publishedAt int64
-	if err := row.Scan(&a.ID, &a.Source, &a.Title, &a.URL, &a.Summary, &choicesJSON, &a.CorrectIndex, &a.Explanation, &a.Description, &a.Status, &createdAt, &publishedAt); err != nil {
+	if err := row.Scan(&a.ID, &a.Source, &a.Title, &a.URL, &a.Summary, &subQuestionsJSON, &a.Description, &a.Status, &createdAt, &publishedAt); err != nil {
 		return Article{}, err
 	}
-	if err := json.Unmarshal([]byte(choicesJSON), &a.Choices); err != nil {
-		return Article{}, fmt.Errorf("decode choices: %w", err)
+	subQuestions, err := decodeSubQuestions(subQuestionsJSON)
+	if err != nil {
+		return Article{}, err
 	}
+	a.SubQuestions = subQuestions
 	a.CreatedAt = time.Unix(createdAt, 0)
 	if publishedAt > 0 {
 		a.PublishedAt = time.Unix(publishedAt, 0)
@@ -166,8 +220,8 @@ func (s *MySQLStore) ReserveArticle(ctx context.Context, source, title, url, des
 		publishedAtUnix = publishedAt.Unix()
 	}
 	_, err := s.rw.ExecContext(ctx, `
-		INSERT IGNORE INTO `+articlesTable+` (id, source, title, url, summary, choices_json, correct_index, explanation, description, status, created_at, claimed_at, published_at)
-		VALUES (?, ?, ?, ?, '', '[]', 0, '', ?, ?, ?, ?, ?)
+		INSERT IGNORE INTO `+articlesTable+` (id, source, title, url, summary, sub_questions_json, description, status, created_at, claimed_at, published_at)
+		VALUES (?, ?, ?, ?, '', '[]', ?, ?, ?, ?, ?)
 	`, uuid.New().String(), source, title, url, description, StatusPending, now, time.Now().UnixNano(), publishedAtUnix)
 	if err != nil {
 		return Article{}, fmt.Errorf("newsarticle: reserve article: insert: %w", err)
@@ -223,15 +277,15 @@ func (s *MySQLStore) ClaimArticle(ctx context.Context, id string) (bool, error) 
 	return n == 1, nil
 }
 
-func (s *MySQLStore) CompleteArticle(ctx context.Context, id, summary string, choices []string, correctIndex int, explanation string) (Article, error) {
-	choicesJSON, err := json.Marshal(choices)
+func (s *MySQLStore) CompleteArticle(ctx context.Context, id, summary string, subQuestions []SubQuestion) (Article, error) {
+	subQuestionsJSON, err := json.Marshal(subQuestions)
 	if err != nil {
-		return Article{}, fmt.Errorf("newsarticle: encode choices: %w", err)
+		return Article{}, fmt.Errorf("newsarticle: encode sub questions: %w", err)
 	}
 	if _, err := s.rw.ExecContext(ctx, `
-		UPDATE `+articlesTable+` SET summary = ?, choices_json = ?, correct_index = ?, explanation = ?, status = ?
+		UPDATE `+articlesTable+` SET summary = ?, sub_questions_json = ?, status = ?
 		WHERE id = ? AND status = ?
-	`, summary, string(choicesJSON), correctIndex, explanation, StatusDone, id, StatusPending); err != nil {
+	`, summary, string(subQuestionsJSON), StatusDone, id, StatusPending); err != nil {
 		return Article{}, fmt.Errorf("newsarticle: complete article: update: %w", err)
 	}
 	saved, err := scanArticle(s.rw.QueryRowContext(ctx, `SELECT `+articleColumns+` FROM `+articlesTable+` WHERE id = ?`, id))
@@ -284,16 +338,30 @@ func (s *MySQLStore) UsedURLs(ctx context.Context, userID string) (map[string]bo
 func (s *MySQLStore) CreateInstance(ctx context.Context, userID, articleID string) (Instance, error) {
 	id := uuid.New().String()
 	if _, err := s.rw.ExecContext(ctx, `
-		INSERT INTO `+instancesTable+` (id, user_id, article_id, answered, selected_index, correct, created_at)
-		VALUES (?, ?, ?, 0, -1, 0, ?)
+		INSERT INTO `+instancesTable+` (id, user_id, article_id, answered, selected_options_json, correct, created_at)
+		VALUES (?, ?, ?, 0, NULL, 0, ?)
 	`, id, userID, articleID, time.Now().Unix()); err != nil {
 		return Instance{}, fmt.Errorf("newsarticle: create instance: %w", err)
 	}
 	return s.Get(ctx, userID, id)
 }
 
-const instanceColumns = `i.id, i.answered, i.selected_index, i.correct, i.created_at, ` +
-	`a.id, a.source, a.title, a.url, a.summary, a.choices_json, a.correct_index, a.explanation, a.description, a.status, a.created_at, a.published_at`
+const instanceColumns = `i.id, i.answered, i.selected_options_json, i.correct, i.created_at, ` +
+	`a.id, a.source, a.title, a.url, a.summary, a.sub_questions_json, a.description, a.status, a.created_at, a.published_at`
+
+// decodeSelectedOptions decodes selected_options_json the same "NULL/empty
+// means nil, not an error" way decodeSubQuestions treats
+// sub_questions_json — NULL before Answer, always populated after.
+func decodeSelectedOptions(ns sql.NullString) ([]int, error) {
+	if !ns.Valid || ns.String == "" {
+		return nil, nil
+	}
+	var opts []int
+	if err := json.Unmarshal([]byte(ns.String), &opts); err != nil {
+		return nil, fmt.Errorf("decode selected_options_json: %w", err)
+	}
+	return opts, nil
+}
 
 // scanInstance reads one instanceColumns row (Instance columns followed by
 // its joined Article columns, in that order) — answered/correct come off
@@ -304,18 +372,25 @@ func scanInstance(row scanner, userID string) (Instance, error) {
 	var inst Instance
 	var answered, correct int
 	var instCreatedAt int64
-	var choicesJSON string
+	var selectedOptionsJSON, subQuestionsJSON sql.NullString
 	var articleCreatedAt, articlePublishedAt int64
 	if err := row.Scan(
-		&inst.ID, &answered, &inst.SelectedIndex, &correct, &instCreatedAt,
+		&inst.ID, &answered, &selectedOptionsJSON, &correct, &instCreatedAt,
 		&inst.Article.ID, &inst.Article.Source, &inst.Article.Title, &inst.Article.URL, &inst.Article.Summary,
-		&choicesJSON, &inst.Article.CorrectIndex, &inst.Article.Explanation, &inst.Article.Description, &inst.Article.Status, &articleCreatedAt, &articlePublishedAt,
+		&subQuestionsJSON, &inst.Article.Description, &inst.Article.Status, &articleCreatedAt, &articlePublishedAt,
 	); err != nil {
 		return Instance{}, err
 	}
-	if err := json.Unmarshal([]byte(choicesJSON), &inst.Article.Choices); err != nil {
-		return Instance{}, fmt.Errorf("decode choices: %w", err)
+	selectedOptions, err := decodeSelectedOptions(selectedOptionsJSON)
+	if err != nil {
+		return Instance{}, err
 	}
+	subQuestions, err := decodeSubQuestions(subQuestionsJSON)
+	if err != nil {
+		return Instance{}, err
+	}
+	inst.SelectedOptions = selectedOptions
+	inst.Article.SubQuestions = subQuestions
 	inst.UserID = userID
 	inst.Answered = answered != 0
 	inst.Correct = correct != 0
@@ -364,7 +439,24 @@ func (s *MySQLStore) Get(ctx context.Context, userID, id string) (Instance, erro
 // Answer reads/writes via rw (not ro) so an instance created moments ago is
 // never missed because of replica lag, same reasoning as
 // wordreview.MySQLStore.Review.
-func (s *MySQLStore) Answer(ctx context.Context, userID, id string, selectedIndex int) (Instance, error) {
+// allCorrect reports whether every selected option matches its
+// sub-question's CorrectOptionIndex, index-wise — false (not a panic) on a
+// length mismatch, which shouldn't happen from the real client (see
+// httpserver.articleAnswerHandler's validation) but must never be trusted
+// blindly against a server-side index anyway.
+func allCorrect(selected []int, subQuestions []SubQuestion) bool {
+	if len(selected) != len(subQuestions) {
+		return false
+	}
+	for i, q := range subQuestions {
+		if selected[i] != q.CorrectOptionIndex {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *MySQLStore) Answer(ctx context.Context, userID, id string, selectedOptions []int) (Instance, error) {
 	inst, err := scanInstance(s.rw.QueryRowContext(ctx, `
 		SELECT `+instanceColumns+` FROM `+instancesTable+` i JOIN `+articlesTable+` a ON a.id = i.article_id
 		WHERE i.id = ? AND i.user_id = ?
@@ -378,14 +470,18 @@ func (s *MySQLStore) Answer(ctx context.Context, userID, id string, selectedInde
 	if inst.Answered {
 		return inst, nil
 	}
-	correct := selectedIndex == inst.Article.CorrectIndex
+	correct := allCorrect(selectedOptions, inst.Article.SubQuestions)
+	selectedOptionsJSON, err := json.Marshal(selectedOptions)
+	if err != nil {
+		return Instance{}, fmt.Errorf("newsarticle: answer: encode selected options: %w", err)
+	}
 	if _, err := s.rw.ExecContext(ctx, `
-		UPDATE `+instancesTable+` SET answered = 1, selected_index = ?, correct = ? WHERE id = ? AND user_id = ?
-	`, selectedIndex, correct, id, userID); err != nil {
+		UPDATE `+instancesTable+` SET answered = 1, selected_options_json = ?, correct = ? WHERE id = ? AND user_id = ?
+	`, string(selectedOptionsJSON), correct, id, userID); err != nil {
 		return Instance{}, fmt.Errorf("newsarticle: answer: update: %w", err)
 	}
 	inst.Answered = true
-	inst.SelectedIndex = selectedIndex
+	inst.SelectedOptions = selectedOptions
 	inst.Correct = correct
 	return inst, nil
 }

@@ -108,7 +108,7 @@ func (f *fakeArticleStore) ClaimArticle(ctx context.Context, id string) (bool, e
 	return false, nil
 }
 
-func (f *fakeArticleStore) CompleteArticle(ctx context.Context, id, summary string, choices []string, correctIndex int, explanation string) (newsarticle.Article, error) {
+func (f *fakeArticleStore) CompleteArticle(ctx context.Context, id, summary string, subQuestions []newsarticle.SubQuestion) (newsarticle.Article, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
@@ -119,9 +119,7 @@ func (f *fakeArticleStore) CompleteArticle(ctx context.Context, id, summary stri
 			continue
 		}
 		a.Summary = summary
-		a.Choices = choices
-		a.CorrectIndex = correctIndex
-		a.Explanation = explanation
+		a.SubQuestions = subQuestions
 		a.Status = newsarticle.StatusDone
 		f.byURL[url] = a
 		return a, nil
@@ -186,7 +184,7 @@ func (f *fakeArticleStore) CreateInstance(ctx context.Context, userID, articleID
 	}
 	inst := newsarticle.Instance{
 		ID: "instance-" + articleID, UserID: userID, Article: article,
-		SelectedIndex: -1, CreatedAt: time.Now(),
+		CreatedAt: time.Now(),
 	}
 	if f.byUser == nil {
 		f.byUser = map[string][]newsarticle.Instance{}
@@ -242,7 +240,7 @@ func (f *fakeArticleStore) Get(ctx context.Context, userID, id string) (newsarti
 	return newsarticle.Instance{}, nil
 }
 
-func (f *fakeArticleStore) Answer(ctx context.Context, userID, id string, selectedIndex int) (newsarticle.Instance, error) {
+func (f *fakeArticleStore) Answer(ctx context.Context, userID, id string, selectedOptions []int) (newsarticle.Instance, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
@@ -257,8 +255,15 @@ func (f *fakeArticleStore) Answer(ctx context.Context, userID, id string, select
 			return inst, nil
 		}
 		inst.Answered = true
-		inst.SelectedIndex = selectedIndex
-		inst.Correct = selectedIndex == inst.Article.CorrectIndex
+		inst.SelectedOptions = selectedOptions
+		correct := len(selectedOptions) == len(inst.Article.SubQuestions)
+		for j, q := range inst.Article.SubQuestions {
+			if j >= len(selectedOptions) || selectedOptions[j] != q.CorrectOptionIndex {
+				correct = false
+				break
+			}
+		}
+		inst.Correct = correct
 		f.byUser[userID][i] = inst
 		return inst, nil
 	}
@@ -304,7 +309,7 @@ func fakeArticlePipeline(raw string) *pipeline.Pipeline {
 	}
 }
 
-const fakeStudyJSON = `{"summary":"A short English study paragraph.","choices":["정확한 해석","틀린 해석 1","틀린 해석 2","틀린 해석 3"],"correctIndex":0,"explanation":"정확한 해석이 원문의 의미를 담고 있기 때문입니다."}`
+const fakeStudyJSON = `{"summary":"A short English study paragraph.","subQuestions":[{"prompt":"어떤 내용이었나요?","options":["정확한 해석","틀린 해석"],"correctOptionIndex":0,"explanation":"정확한 해석이 원문의 의미를 담고 있기 때문입니다."},{"prompt":"언제 일어났나요?","options":["오늘","어제"],"correctOptionIndex":0,"explanation":"원문에 명시되어 있습니다."}]}`
 
 func fetchOneCandidate(c newsfeed.Candidate) func(context.Context) ([]newsfeed.Candidate, error) {
 	return func(context.Context) ([]newsfeed.Candidate, error) {
@@ -334,11 +339,11 @@ func TestArticleDrawHandlerReservesPendingAndCompletesInBackground(t *testing.T)
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.Source != "BBC" || got.Status != newsarticle.StatusPending || got.Summary != "" || len(got.Choices) != 0 {
+	if got.Source != "BBC" || got.Status != newsarticle.StatusPending || got.Summary != "" || len(got.SubQuestions) != 0 {
 		t.Fatalf("draw = %+v, want an immediate pending draw with no study content yet", got)
 	}
 	// The answer key must never be sent in the draw response.
-	if strings.Contains(rec.Body.String(), "correctIndex") || strings.Contains(rec.Body.String(), "explanation") {
+	if strings.Contains(rec.Body.String(), "correctOptionIndex") || strings.Contains(rec.Body.String(), "explanation") {
 		t.Fatalf("draw response leaked the answer key: %s", rec.Body.String())
 	}
 
@@ -349,7 +354,7 @@ func TestArticleDrawHandlerReservesPendingAndCompletesInBackground(t *testing.T)
 		return err == nil && inst.Article.Status == newsarticle.StatusDone
 	})
 	inst, err := st.Get(context.Background(), "alex", got.ID)
-	if err != nil || inst.Article.Summary == "" || len(inst.Article.Choices) != 4 {
+	if err != nil || inst.Article.Summary == "" || len(inst.Article.SubQuestions) != 2 {
 		t.Fatalf("Get() after background generation = (%+v, %v), want a completed article", inst, err)
 	}
 }
@@ -380,7 +385,10 @@ func TestArticleDrawHandlerCarriesPublishedAtFromTheCandidate(t *testing.T) {
 
 func TestArticleDrawHandlerReusesCachedArticleWithoutCallingLLM(t *testing.T) {
 	st := &fakeArticleStore{byURL: map[string]newsarticle.Article{
-		"https://example.com/a": {ID: "a1", Source: "BBC", Title: "Headline", URL: "https://example.com/a", Summary: "cached summary", Choices: []string{"a", "b", "c", "d"}, CorrectIndex: 1, Explanation: "e", Status: newsarticle.StatusDone},
+		"https://example.com/a": {ID: "a1", Source: "BBC", Title: "Headline", URL: "https://example.com/a", Summary: "cached summary", SubQuestions: []newsarticle.SubQuestion{
+			{Prompt: "p1", Options: []string{"a", "b"}, CorrectOptionIndex: 1, Explanation: "e"},
+			{Prompt: "p2", Options: []string{"c", "d"}, CorrectOptionIndex: 0, Explanation: "e"},
+		}, Status: newsarticle.StatusDone},
 	}}
 	llmCalls := 0
 	pipe := &pipeline.Pipeline{Analysis: []pipeline.Candidate{{Model: "m", LLM: &fakeArticleLLM{complete: func(msgs []llm.Message) (string, error) {
@@ -482,9 +490,9 @@ func TestArticleDrawHandlerInternalErrorOnFetchFailure(t *testing.T) {
 
 // ---- articleAnswerHandler ---------------------------------------------------
 
-func postAnswerRequest(t *testing.T, id string, selectedIndex int) *http.Request {
+func postAnswerRequest(t *testing.T, id string, selectedOptions []int) *http.Request {
 	t.Helper()
-	body, err := json.Marshal(map[string]int{"selectedIndex": selectedIndex})
+	body, err := json.Marshal(map[string][]int{"selectedOptions": selectedOptions})
 	if err != nil {
 		t.Fatalf("marshal body: %v", err)
 	}
@@ -495,57 +503,68 @@ func postAnswerRequest(t *testing.T, id string, selectedIndex int) *http.Request
 
 func TestArticleAnswerHandlerComputesCorrectnessServerSide(t *testing.T) {
 	st := &fakeArticleStore{byUser: map[string][]newsarticle.Instance{
-		"alex": {{ID: "i1", UserID: "alex", SelectedIndex: -1, Article: newsarticle.Article{
-			Choices: []string{"a", "b", "c", "d"}, CorrectIndex: 2, Explanation: "왜냐하면", Status: newsarticle.StatusDone,
+		"alex": {{ID: "i1", UserID: "alex", Article: newsarticle.Article{
+			SubQuestions: []newsarticle.SubQuestion{
+				{Prompt: "p1", Options: []string{"a", "b"}, CorrectOptionIndex: 1, Explanation: "왜냐하면1"},
+				{Prompt: "p2", Options: []string{"c", "d"}, CorrectOptionIndex: 0, Explanation: "왜냐하면2"},
+			},
+			Status: newsarticle.StatusDone,
 		}}},
 	}}
 	h := articleAnswerHandler(fakeIdentifier{id: "alex", ok: true}, st)
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, postAnswerRequest(t, "i1", 2))
+	h.ServeHTTP(rec, postAnswerRequest(t, "i1", []int{1, 0}))
 
 	requireStatus(t, rec, http.StatusOK)
 	var got articleResult
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !got.Correct || got.CorrectIndex != 2 || got.Translation != "c" || got.Explanation != "왜냐하면" {
-		t.Fatalf("result = %+v, want Correct=true CorrectIndex=2 Translation=c", got)
+	if !got.Correct || got.Score != 2 || got.Total != 2 {
+		t.Fatalf("result = %+v, want Correct=true Score=2 Total=2", got)
+	}
+	if len(got.SubQuestions) != 2 || !got.SubQuestions[0].Correct || got.SubQuestions[0].Explanation != "왜냐하면1" {
+		t.Fatalf("result.SubQuestions = %+v, want both sub-questions revealed correct", got.SubQuestions)
 	}
 }
 
 func TestArticleAnswerHandlerMarksWrongChoiceIncorrect(t *testing.T) {
 	st := &fakeArticleStore{byUser: map[string][]newsarticle.Instance{
-		"alex": {{ID: "i1", UserID: "alex", SelectedIndex: -1, Article: newsarticle.Article{
-			Choices: []string{"a", "b", "c", "d"}, CorrectIndex: 2, Status: newsarticle.StatusDone,
+		"alex": {{ID: "i1", UserID: "alex", Article: newsarticle.Article{
+			SubQuestions: []newsarticle.SubQuestion{
+				{Prompt: "p1", Options: []string{"a", "b"}, CorrectOptionIndex: 1, Explanation: "e"},
+				{Prompt: "p2", Options: []string{"c", "d"}, CorrectOptionIndex: 0, Explanation: "e"},
+			},
+			Status: newsarticle.StatusDone,
 		}}},
 	}}
 	h := articleAnswerHandler(fakeIdentifier{id: "alex", ok: true}, st)
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, postAnswerRequest(t, "i1", 0))
+	h.ServeHTTP(rec, postAnswerRequest(t, "i1", []int{0, 0}))
 
 	var got articleResult
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.Correct {
-		t.Fatalf("result = %+v, want Correct=false for a wrong choice", got)
+	if got.Correct || got.Score != 1 {
+		t.Fatalf("result = %+v, want Correct=false Score=1 for one wrong sub-question", got)
 	}
 }
 
 // TestArticleAnswerHandlerConflictWhileStillPending guards the panic-avoidance
 // guard: an instance whose Article hasn't finished generating yet
-// (Choices is empty) must be rejected with 409, never reach
-// Store.Answer/toArticleResult's Choices[CorrectIndex] index.
+// (SubQuestions is empty) must be rejected with 409, never reach
+// Store.Answer/toArticleResult's SubQuestions[i].CorrectOptionIndex index.
 func TestArticleAnswerHandlerConflictWhileStillPending(t *testing.T) {
 	st := &fakeArticleStore{byUser: map[string][]newsarticle.Instance{
-		"alex": {{ID: "i1", UserID: "alex", SelectedIndex: -1, Article: newsarticle.Article{Status: newsarticle.StatusPending}}},
+		"alex": {{ID: "i1", UserID: "alex", Article: newsarticle.Article{Status: newsarticle.StatusPending}}},
 	}}
 	h := articleAnswerHandler(fakeIdentifier{id: "alex", ok: true}, st)
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, postAnswerRequest(t, "i1", 0))
+	h.ServeHTTP(rec, postAnswerRequest(t, "i1", nil))
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409 for a still-pending article", rec.Code)
@@ -556,7 +575,7 @@ func TestArticleAnswerHandlerNotFoundForMissingInstance(t *testing.T) {
 	h := articleAnswerHandler(fakeIdentifier{id: "alex", ok: true}, &fakeArticleStore{})
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, postAnswerRequest(t, "missing", 0))
+	h.ServeHTTP(rec, postAnswerRequest(t, "missing", nil))
 
 	requireStatus(t, rec, http.StatusNotFound)
 }
@@ -564,7 +583,7 @@ func TestArticleAnswerHandlerNotFoundForMissingInstance(t *testing.T) {
 func TestArticleAnswerHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
 	h := articleAnswerHandler(fakeIdentifier{ok: false}, &fakeArticleStore{})
 
-	assertUnauthorized(t, h, postAnswerRequest(t, "i1", 0))
+	assertUnauthorized(t, h, postAnswerRequest(t, "i1", nil))
 }
 
 // ---- articleInstanceHandler --------------------------------------------------

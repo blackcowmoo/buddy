@@ -50,12 +50,15 @@ const sampleDraw: ArticleDraw = {
   source: "BBC",
   title: "Scientists make discovery",
   summary: "Scientists announced a new discovery today.",
-  choices: ["정확한 해석", "틀린 해석 1", "틀린 해석 2", "틀린 해석 3"],
+  subQuestions: [
+    { prompt: "어떤 내용이었나요?", options: ["정확한 해석", "틀린 해석"] },
+    { prompt: "언제 일어났나요?", options: ["오늘", "어제"] },
+  ],
   publishedAt: 1710494400,
   status: "done",
 };
 
-const pendingDraw: ArticleDraw = { ...sampleDraw, summary: "", choices: [], status: "pending" };
+const pendingDraw: ArticleDraw = { ...sampleDraw, summary: "", subQuestions: [], status: "pending" };
 
 describe("ArticleQuiz page — list view", () => {
   it("links back to the chat page with a relative href", () => {
@@ -164,39 +167,67 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     expect(await screen.findByText("아티클을 가져오지 못했습니다. 네트워크 문제일 수 있습니다.")).toBeInTheDocument();
   });
 
-  it("reveals the quiz choices only after tapping 문제풀기, alongside the English original", async () => {
+  it("reveals the quiz sub-questions only after tapping 문제풀기, alongside the English original", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
     const user = userEvent.setup();
     render(<ArticleQuiz />);
 
     await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
-    expect(screen.queryByText("틀린 해석 1")).not.toBeInTheDocument();
+    expect(screen.queryByText("틀린 해석")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "문제풀기" }));
-    expect(screen.getByText("틀린 해석 1")).toBeInTheDocument();
+    expect(screen.getByText("틀린 해석")).toBeInTheDocument();
+    expect(screen.getByText("오늘")).toBeInTheDocument();
     expect(screen.getByText(sampleDraw.summary)).toBeInTheDocument();
   });
 
-  it("submits the selected choice and shows the correct reveal", async () => {
+  it("only enables submission once every sub-question has a pick, then submits all selections at once", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
     vi.mocked(answerArticle).mockResolvedValue({
       correct: true,
-      correctIndex: 0,
-      translation: "정확한 해석",
-      explanation: "원문의 의미를 정확히 반영하기 때문입니다.",
+      score: 2,
+      total: 2,
+      subQuestions: [
+        {
+          prompt: sampleDraw.subQuestions[0].prompt,
+          options: sampleDraw.subQuestions[0].options,
+          correctOptionIndex: 0,
+          selectedOptionIndex: 0,
+          correct: true,
+          explanation: "원문의 의미를 정확히 반영하기 때문입니다.",
+        },
+        {
+          prompt: sampleDraw.subQuestions[1].prompt,
+          options: sampleDraw.subQuestions[1].options,
+          correctOptionIndex: 0,
+          selectedOptionIndex: 0,
+          correct: true,
+          explanation: "원문에 명시되어 있습니다.",
+        },
+      ],
     });
     const user = userEvent.setup();
     render(<ArticleQuiz />);
 
     await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
     await user.click(screen.getByRole("button", { name: "문제풀기" }));
-    await user.click(screen.getByRole("button", { name: "정확한 해석" }));
 
-    expect(answerArticle).toHaveBeenCalledWith("i1", 0);
+    expect(screen.getByRole("button", { name: "제출하기" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "정확한 해석" }));
+    expect(screen.getByRole("button", { name: "제출하기" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "오늘" }));
+    expect(screen.getByRole("button", { name: "제출하기" })).not.toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "제출하기" }));
+
+    expect(answerArticle).toHaveBeenCalledWith("i1", [0, 0]);
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
     expect(screen.getByText("원문의 의미를 정확히 반영하기 때문입니다.")).toBeInTheDocument();
+    expect(screen.getByText("원문에 명시되어 있습니다.")).toBeInTheDocument();
     expect(screen.getByText(sampleDraw.summary)).toBeInTheDocument();
   });
 
@@ -325,22 +356,41 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     expect(await screen.findByRole("button", { name: "재생 실패, 다시 시도해주세요" })).toBeInTheDocument();
   });
 
-  it("shows an incorrect reveal when the wrong choice was picked", async () => {
+  it("shows a partial-credit incorrect reveal when a sub-question was missed", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
     vi.mocked(answerArticle).mockResolvedValue({
       correct: false,
-      correctIndex: 0,
-      translation: "정확한 해석",
-      explanation: "왜냐하면",
+      score: 1,
+      total: 2,
+      subQuestions: [
+        {
+          prompt: sampleDraw.subQuestions[0].prompt,
+          options: sampleDraw.subQuestions[0].options,
+          correctOptionIndex: 0,
+          selectedOptionIndex: 1,
+          correct: false,
+          explanation: "왜냐하면",
+        },
+        {
+          prompt: sampleDraw.subQuestions[1].prompt,
+          options: sampleDraw.subQuestions[1].options,
+          correctOptionIndex: 0,
+          selectedOptionIndex: 0,
+          correct: true,
+          explanation: "원문에 명시되어 있습니다.",
+        },
+      ],
     });
     const user = userEvent.setup();
     render(<ArticleQuiz />);
 
     await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
     await user.click(screen.getByRole("button", { name: "문제풀기" }));
-    await user.click(screen.getByRole("button", { name: "틀린 해석 1" }));
+    await user.click(screen.getByRole("button", { name: "틀린 해석" }));
+    await user.click(screen.getByRole("button", { name: "오늘" }));
+    await user.click(screen.getByRole("button", { name: "제출하기" }));
 
-    expect(await screen.findByText("아쉬워요, 오답이에요.")).toBeInTheDocument();
+    expect(await screen.findByText("아쉬워요, 1/2 정답이에요.")).toBeInTheDocument();
   });
 });

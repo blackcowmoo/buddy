@@ -18,9 +18,9 @@ import (
 
 // articleListItem mirrors one newsarticle.Instance for the "오늘의 아티클" list
 // page — the past-attempts view, same role as InstantSessions.tsx's list.
-// Deliberately excludes Choices/CorrectIndex/Explanation: the list only
-// shows what a learner already saw (source/title/summary) plus their own
-// outcome, never re-exposing the quiz's answer key.
+// Deliberately excludes SubQuestions' answer keys: the list only shows what
+// a learner already saw (source/title/summary) plus their own outcome,
+// never re-exposing the quiz's answer key.
 type articleListItem struct {
 	ID        string `json:"id"`
 	Source    string `json:"source"`
@@ -55,25 +55,42 @@ func toArticleListItem(inst newsarticle.Instance) articleListItem {
 	}
 }
 
+// draftSubQuestion is one sub-question as sent before the learner answers:
+// the prompt and its 2 options, never CorrectOptionIndex/Explanation — see
+// articleDraw's doc comment.
+type draftSubQuestion struct {
+	Prompt  string   `json:"prompt"`
+	Options []string `json:"options"`
+}
+
+func toDraftSubQuestions(qs []newsarticle.SubQuestion) []draftSubQuestion {
+	out := make([]draftSubQuestion, len(qs))
+	for i, q := range qs {
+		out[i] = draftSubQuestion{Prompt: q.Prompt, Options: q.Options}
+	}
+	return out
+}
+
 // articleDraw is what articleDrawHandler returns right after a fresh draw:
 // enough to render the reading view (source/title/summary) and, once the
-// learner asks to see it, the quiz's Choices — but never CorrectIndex/
-// Explanation, which only articleAnswerHandler's response reveals, after
-// the learner has actually picked one. Never trust a client to keep the
-// answer key hidden on its own; the server just never sends it yet.
+// learner asks to see it, the quiz's SubQuestions — but never any entry's
+// CorrectOptionIndex/Explanation, which only articleAnswerHandler's
+// response reveals, after the learner has actually answered. Never trust a
+// client to keep the answer key hidden on its own; the server just never
+// sends it yet.
 type articleDraw struct {
-	ID      string   `json:"id"`
-	Source  string   `json:"source"`
-	Title   string   `json:"title"`
-	Summary string   `json:"summary"`
-	Choices []string `json:"choices"`
+	ID           string             `json:"id"`
+	Source       string             `json:"source"`
+	Title        string             `json:"title"`
+	Summary      string             `json:"summary"`
+	SubQuestions []draftSubQuestion `json:"subQuestions"`
 	// PublishedAt is the source feed's own publish time, unix seconds, 0 if
 	// unknown — see articleListItem.PublishedAt's doc comment. Present from
 	// the very first draw response, even while Status is still "pending":
 	// it's captured at ReserveArticle time, not once generation finishes.
 	PublishedAt int64 `json:"publishedAt"`
 	// Status is "pending" (the study content is still generating in the
-	// background — Summary/Choices are empty) or "done"/"failed" — see
+	// background — Summary/SubQuestions are empty) or "done"/"failed" — see
 	// newsarticle.Article.Status. The frontend polls articleInstanceHandler
 	// until this leaves "pending", the same way it would if the learner had
 	// stayed on the page the whole time; nothing about generation itself
@@ -83,13 +100,13 @@ type articleDraw struct {
 
 func toArticleDraw(inst newsarticle.Instance) articleDraw {
 	return articleDraw{
-		ID:          inst.ID,
-		Source:      inst.Article.Source,
-		Title:       inst.Article.Title,
-		Summary:     inst.Article.Summary,
-		Choices:     inst.Article.Choices,
-		PublishedAt: articlePublishedAtUnix(inst.Article),
-		Status:      inst.Article.Status,
+		ID:           inst.ID,
+		Source:       inst.Article.Source,
+		Title:        inst.Article.Title,
+		Summary:      inst.Article.Summary,
+		SubQuestions: toDraftSubQuestions(inst.Article.SubQuestions),
+		PublishedAt:  articlePublishedAtUnix(inst.Article),
+		Status:       inst.Article.Status,
 	}
 }
 
@@ -104,22 +121,56 @@ func articlePublishedAtUnix(a newsarticle.Article) int64 {
 	return a.PublishedAt.Unix()
 }
 
+// articleSubQuestionResult is one sub-question's reveal — its full answer
+// key plus what the learner actually picked, so the client can color each
+// one correct/incorrect independently (see quizChoiceClass) rather than
+// only knowing the aggregate verdict.
+type articleSubQuestionResult struct {
+	Prompt              string   `json:"prompt"`
+	Options             []string `json:"options"`
+	CorrectOptionIndex  int      `json:"correctOptionIndex"`
+	SelectedOptionIndex int      `json:"selectedOptionIndex"`
+	Correct             bool     `json:"correct"`
+	Explanation         string   `json:"explanation"`
+}
+
 // articleResult is what articleAnswerHandler returns — the reveal a learner
-// sees right after picking a choice: whether they got it right, which
-// choice was actually accurate, and why, in their native language.
+// sees right after answering every sub-question: an aggregate verdict
+// (Correct is true only if every sub-question was), a Score/Total for a
+// partial-credit summary line, and each sub-question's own reveal.
 type articleResult struct {
-	Correct      bool   `json:"correct"`
-	CorrectIndex int    `json:"correctIndex"`
-	Translation  string `json:"translation"` // the accurate choice's own text
-	Explanation  string `json:"explanation"`
+	Correct      bool                       `json:"correct"`
+	Score        int                        `json:"score"`
+	Total        int                        `json:"total"`
+	SubQuestions []articleSubQuestionResult `json:"subQuestions"`
 }
 
 func toArticleResult(inst newsarticle.Instance) articleResult {
+	subs := make([]articleSubQuestionResult, len(inst.Article.SubQuestions))
+	score := 0
+	for i, q := range inst.Article.SubQuestions {
+		selected := -1
+		if i < len(inst.SelectedOptions) {
+			selected = inst.SelectedOptions[i]
+		}
+		correct := selected == q.CorrectOptionIndex
+		if correct {
+			score++
+		}
+		subs[i] = articleSubQuestionResult{
+			Prompt:              q.Prompt,
+			Options:             q.Options,
+			CorrectOptionIndex:  q.CorrectOptionIndex,
+			SelectedOptionIndex: selected,
+			Correct:             correct,
+			Explanation:         q.Explanation,
+		}
+	}
 	return articleResult{
 		Correct:      inst.Correct,
-		CorrectIndex: inst.Article.CorrectIndex,
-		Translation:  inst.Article.Choices[inst.Article.CorrectIndex],
-		Explanation:  inst.Article.Explanation,
+		Score:        score,
+		Total:        len(inst.Article.SubQuestions),
+		SubQuestions: subs,
 	}
 }
 
@@ -258,16 +309,20 @@ func articleInstanceHandler(ident identity.Identifier, articles newsarticle.Stor
 	}
 }
 
-// articleAnswerHandler records the caller's choice for one of their own
+// articleAnswerHandler records the caller's choices for one of their own
 // article-quiz instances and returns the reveal — correctness is always
 // computed server-side against the stored answer key (see
 // newsarticle.Store.Answer), never trusting a client-supplied verdict, same
 // reasoning as pipeline.Pipeline.CheckQuizAnswer's caller. Rejects answering
 // an instance whose Article is still StatusPending/StatusFailed with 409:
-// there's no answer key yet to score against (Choices is empty), and the
-// frontend never offers the quiz UI before articleInstanceHandler's poll
-// reports "done" — reaching this branch means a stale/racing client request,
-// not a normal user action.
+// there's no answer key yet to score against (SubQuestions is empty), and
+// the frontend never offers the quiz UI before articleInstanceHandler's
+// poll reports "done" — reaching this branch means a stale/racing client
+// request, not a normal user action. Also rejects a selectedOptions whose
+// length doesn't match the article's SubQuestions with 400 — the frontend
+// always submits one pick per sub-question (see ArticleQuiz.tsx), so a
+// mismatch means a stale draw client-side, not a value worth silently
+// scoring as wrong.
 func articleAnswerHandler(ident identity.Identifier, articles newsarticle.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)
@@ -275,7 +330,7 @@ func articleAnswerHandler(ident identity.Identifier, articles newsarticle.Store)
 			return
 		}
 		var body struct {
-			SelectedIndex int `json:"selectedIndex"`
+			SelectedOptions []int `json:"selectedOptions"`
 		}
 		if !decodeJSON(w, r, &body) {
 			return
@@ -294,7 +349,11 @@ func articleAnswerHandler(ident identity.Identifier, articles newsarticle.Store)
 			http.Error(w, "article study still generating", http.StatusConflict)
 			return
 		}
-		inst, err := articles.Answer(r.Context(), userID, id, body.SelectedIndex)
+		if len(body.SelectedOptions) != len(existing.Article.SubQuestions) {
+			http.Error(w, "selectedOptions must have one entry per sub-question", http.StatusBadRequest)
+			return
+		}
+		inst, err := articles.Answer(r.Context(), userID, id, body.SelectedOptions)
 		if err != nil {
 			serverError(w, "articles: answer "+userID, err)
 			return

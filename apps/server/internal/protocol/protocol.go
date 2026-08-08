@@ -145,25 +145,43 @@ type WordSuggestion struct {
 
 // ArticleStudy is one LLM-synthesized "오늘의 아티클" study unit for a single
 // news article: an English summary paragraph, plus a native-language
-// multiple-choice reading-comprehension quiz testing whether the learner
-// actually understood it, not just recognized a keyword — see
+// reading-comprehension quiz testing whether the learner actually
+// understood it, not just recognized a keyword — see
 // pipeline.Pipeline.GenerateArticleStudy. Persisted as
 // newsarticle.Article once generated (cached by article URL, so every later
 // learner who draws the same story reads this exact result); this type is
 // just the JSON shape the LLM call itself returns and parses into.
+//
+// The quiz is several independent 2-choice sub-questions (SubQuestions),
+// not one 4-choice "which of these near-identical paragraphs is right"
+// question: the latter let a learner spot the answer by diffing the
+// choices against each other (whichever one reads slightly differently)
+// without having read Summary at all. Each SubQuestion instead isolates
+// ONE concrete, independently-checkable fact (an amount, a date, who did
+// what), so there's nothing to diff — every sub-question has to be
+// answered from actually having read Summary.
 type ArticleStudy struct {
-	Summary string `json:"summary"` // English, self-contained, 3-5 sentences
-	// Choices are candidate native-language translations/interpretations of
-	// Summary, exactly one of them (at CorrectIndex) accurate — the rest
-	// must each contain a real, concrete inaccuracy (a swapped fact, a
-	// flipped negation, a wrong entity) rather than being obviously
-	// unrelated, so guessing without having actually read Summary is a real
-	// gamble.
-	Choices      []string `json:"choices"`
-	CorrectIndex int      `json:"correctIndex"`
-	// Explanation is a native-language note on why Choices[CorrectIndex] is
-	// the accurate one, contrasting it against what the wrong choices got
-	// wrong — shown to the learner only after they answer.
+	Summary      string               `json:"summary"` // English, self-contained
+	SubQuestions []ArticleSubQuestion `json:"subQuestions"`
+}
+
+// ArticleSubQuestion tests ONE specific fact from ArticleStudy.Summary as a
+// plain binary choice: exactly 2 candidate answers, one of them (at
+// CorrectOptionIndex) matching Summary, the other a plausible-looking
+// alteration of that same specific detail (a swapped number/currency/date,
+// the opposite of what actually happened) — not an unrelated or
+// nonsensical alternative.
+type ArticleSubQuestion struct {
+	// Prompt is a short native-language question stem naming which fact this
+	// sub-question is about (e.g. "인수 금액은 얼마인가요?") — options alone
+	// (e.g. just "파운드" / "달러") aren't self-explanatory without it.
+	Prompt string `json:"prompt"`
+	// Options has exactly 2 entries — short native-language candidate
+	// answers to Prompt, not full-sentence paraphrases of Summary.
+	Options            []string `json:"options"`
+	CorrectOptionIndex int      `json:"correctOptionIndex"`
+	// Explanation is a native-language note on why Options[CorrectOptionIndex]
+	// is the accurate one — shown to the learner only after they answer.
 	Explanation string `json:"explanation"`
 }
 

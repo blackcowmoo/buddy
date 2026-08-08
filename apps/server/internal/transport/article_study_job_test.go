@@ -169,7 +169,7 @@ func (s *fakeNewsArticleStore) ClaimArticle(ctx context.Context, id string) (boo
 	return true, nil
 }
 
-func (s *fakeNewsArticleStore) CompleteArticle(ctx context.Context, id, summary string, choices []string, correctIndex int, explanation string) (newsarticle.Article, error) {
+func (s *fakeNewsArticleStore) CompleteArticle(ctx context.Context, id, summary string, subQuestions []newsarticle.SubQuestion) (newsarticle.Article, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	a, ok := s.articles[id]
@@ -177,9 +177,7 @@ func (s *fakeNewsArticleStore) CompleteArticle(ctx context.Context, id, summary 
 		return a, nil
 	}
 	a.Summary = summary
-	a.Choices = choices
-	a.CorrectIndex = correctIndex
-	a.Explanation = explanation
+	a.SubQuestions = subQuestions
 	a.Status = newsarticle.StatusDone
 	s.articles[id] = a
 	return a, nil
@@ -216,7 +214,7 @@ func (s *fakeNewsArticleStore) List(ctx context.Context, userID string) ([]newsa
 func (s *fakeNewsArticleStore) Get(ctx context.Context, userID, id string) (newsarticle.Instance, error) {
 	return newsarticle.Instance{}, nil
 }
-func (s *fakeNewsArticleStore) Answer(ctx context.Context, userID, id string, selectedIndex int) (newsarticle.Instance, error) {
+func (s *fakeNewsArticleStore) Answer(ctx context.Context, userID, id string, selectedOptions []int) (newsarticle.Instance, error) {
 	return newsarticle.Instance{}, nil
 }
 func (s *fakeNewsArticleStore) Delete(ctx context.Context, userID, id string) error { return nil }
@@ -228,7 +226,7 @@ func (s *fakeNewsArticleStore) status(id string) string {
 	return s.articles[id].Status
 }
 
-const fakeArticleStudyJSON = `{"summary":"A short English study paragraph.","choices":["정확한 해석","틀린 해석 1","틀린 해석 2","틀린 해석 3"],"correctIndex":0,"explanation":"정확한 해석이 원문의 의미를 담고 있기 때문입니다."}`
+const fakeArticleStudyJSON = `{"summary":"A short English study paragraph.","subQuestions":[{"prompt":"어떤 내용이었나요?","options":["정확한 해석","틀린 해석"],"correctOptionIndex":0,"explanation":"정확한 해석이 원문의 의미를 담고 있기 때문입니다."},{"prompt":"언제 일어났나요?","options":["오늘","어제"],"correctOptionIndex":0,"explanation":"원문에 명시되어 있습니다."}]}`
 
 // TestRunArticleStudyCompletesAPendingArticle guards the primary flow: a
 // StatusPending article whose LLM call succeeds ends up StatusDone with the
@@ -375,7 +373,11 @@ func TestRunArticleStudyIsNoopForAlreadyDoneArticle(t *testing.T) {
 		Analysis: []pipeline.Candidate{{Model: "m", LLM: countingLLM{&calls, fakeArticleStudyJSON}}},
 	}
 	articles := newFakeNewsArticleStore(newsarticle.Article{
-		ID: "a1", Status: newsarticle.StatusDone, Summary: "already there", Choices: []string{"a", "b", "c", "d"},
+		ID: "a1", Status: newsarticle.StatusDone, Summary: "already there",
+		SubQuestions: []newsarticle.SubQuestion{
+			{Prompt: "p1", Options: []string{"a", "b"}, CorrectOptionIndex: 0, Explanation: "e"},
+			{Prompt: "p2", Options: []string{"c", "d"}, CorrectOptionIndex: 0, Explanation: "e"},
+		},
 	})
 
 	if err := RunArticleStudyInline(context.Background(), pipe, articles, nil, "a1", "BBC", "Headline", "snippet"); err != nil {

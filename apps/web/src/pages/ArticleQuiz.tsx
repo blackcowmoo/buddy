@@ -26,9 +26,10 @@ const articleStudyPollIntervalMs = 3000;
 type LoadState = "loading" | "ready" | "error";
 
 // A single draw walks through these in order: "reading" (English summary,
-// TTS read-aloud) -> "quiz" (native-language 4-choice comprehension check)
-// -> "result" (reveal). null means the list view — past attempts, and the
-// button to draw a new one.
+// TTS read-aloud) -> "quiz" (a series of independent native-language
+// 2-choice fact checks, see pipeline.articleStudySystemPrompt) -> "result"
+// (reveal). null means the list view — past attempts, and the button to
+// draw a new one.
 type View = "reading" | "quiz" | "result" | null;
 
 type DrawState = "idle" | "drawing" | "noMore" | "error";
@@ -50,7 +51,9 @@ export function ArticleQuiz() {
   const [view, setView] = useState<View>(null);
   const [drawState, setDrawState] = useState<DrawState>("idle");
   const [draw, setDraw] = useState<ArticleDraw | null>(null);
-  const [selected, setSelected] = useState<number | null>(null);
+  // One entry per sub-question, in order; null means "not yet picked".
+  const [selections, setSelections] = useState<(number | null)[]>([]);
+  const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<ArticleAnswerResult | null>(null);
   const [tts, setTts] = useState<TtsState>("idle");
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -102,7 +105,7 @@ export function ArticleQuiz() {
     const res = await drawArticle();
     if (res.status === "ok") {
       setDraw(res.draw);
-      setSelected(null);
+      setSelections([]);
       setResult(null);
       setView("reading");
       setDrawState("idle");
@@ -124,7 +127,7 @@ export function ArticleQuiz() {
       const found = await fetchArticleInstance(id);
       if (!found) return;
       setDraw(found);
-      setSelected(null);
+      setSelections([]);
       setResult(null);
       setDrawState("idle");
       setView("reading");
@@ -162,27 +165,42 @@ export function ArticleQuiz() {
     });
   }, [draw]);
 
-  const startQuiz = useCallback(() => setView("quiz"), []);
+  const startQuiz = useCallback(() => {
+    setSelections((prev) => (draw ? draw.subQuestions.map(() => null) : prev));
+    setView("quiz");
+  }, [draw]);
 
-  const chooseAnswer = useCallback(
-    async (index: number) => {
-      if (!draw || selected !== null) return;
-      setSelected(index);
-      const res = await answerArticle(draw.id, index);
-      if (res) {
-        setResult(res);
-        setView("result");
-      }
-    },
-    [draw, selected],
-  );
+  // Picks/changes the learner's answer for one sub-question — doesn't submit
+  // on its own (unlike the old single 4-choice question, several picks are
+  // needed before there's anything to score), so a pick can still be
+  // changed before submitAnswers is tapped.
+  const pickOption = useCallback((subIndex: number, optionIndex: number) => {
+    setSelections((prev) => {
+      const next = [...prev];
+      next[subIndex] = optionIndex;
+      return next;
+    });
+  }, []);
+
+  const allAnswered = selections.length > 0 && selections.every((s) => s !== null);
+
+  const submitAnswers = useCallback(async () => {
+    if (!draw || !allAnswered || submitting) return;
+    setSubmitting(true);
+    const res = await answerArticle(draw.id, selections as number[]);
+    setSubmitting(false);
+    if (res) {
+      setResult(res);
+      setView("result");
+    }
+  }, [draw, selections, allAnswered, submitting]);
 
   const backToList = useCallback(() => {
     pollTokenRef.current = null; // stop watching; generation itself keeps going server-side
     setView(null);
     setDraw(null);
     setResult(null);
-    setSelected(null);
+    setSelections([]);
     setDrawState("idle");
     loadInstances();
   }, [loadInstances]);
@@ -320,42 +338,61 @@ export function ArticleQuiz() {
         {view === "quiz" && draw && (
           <div className="quiz-panel">
             <p className="article-summary">{draw.summary}</p>
-            <div className="quiz-prompt">이 문단의 내용과 일치하는 해석을 고르세요.</div>
-            <div className="quiz-choices">
-              {draw.choices.map((choice, i) => (
-                <button
-                  key={i}
-                  type="button"
-                  className="quiz-choice-btn"
-                  onClick={() => void chooseAnswer(i)}
-                  disabled={selected !== null}
-                >
-                  {choice}
-                </button>
-              ))}
-            </div>
+            <div className="quiz-prompt">이 문단의 내용과 일치하는 것을 각각 고르세요.</div>
+            {draw.subQuestions.map((sub, qi) => (
+              <div key={qi} className="article-sub-question">
+                <div className="quiz-prompt">{sub.prompt}</div>
+                <div className="quiz-choices">
+                  {sub.options.map((option, oi) => (
+                    <button
+                      key={oi}
+                      type="button"
+                      className={
+                        selections[qi] === oi ? "quiz-choice-btn selected" : "quiz-choice-btn"
+                      }
+                      onClick={() => pickOption(qi, oi)}
+                    >
+                      {option}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+            <button
+              type="button"
+              className="quiz-start-btn"
+              onClick={() => void submitAnswers()}
+              disabled={!allAnswered || submitting}
+            >
+              {submitting ? "채점 중…" : "제출하기"}
+            </button>
           </div>
         )}
 
         {view === "result" && draw && result && (
           <div className="quiz-panel">
             <div className={`quiz-result ${result.correct ? "correct" : "incorrect"}`} role="status">
-              {result.correct ? "정답이에요!" : "아쉬워요, 오답이에요."}
+              {result.correct ? "정답이에요!" : `아쉬워요, ${result.score}/${result.total} 정답이에요.`}
             </div>
             <p className="article-summary">{draw.summary}</p>
-            <div className="quiz-choices">
-              {draw.choices.map((choice, i) => {
-                const isAnswer = i === result.correctIndex;
-                const isSelected = i === selected;
-                const cls = quizChoiceClass(true, isSelected, isAnswer);
-                return (
-                  <button key={i} type="button" className={cls} disabled>
-                    {choice}
-                  </button>
-                );
-              })}
-            </div>
-            <div className="article-explanation">{result.explanation}</div>
+            {result.subQuestions.map((sub, qi) => (
+              <div key={qi} className="article-sub-question">
+                <div className="quiz-prompt">{sub.prompt}</div>
+                <div className="quiz-choices">
+                  {sub.options.map((option, oi) => {
+                    const isAnswer = oi === sub.correctOptionIndex;
+                    const isSelected = oi === sub.selectedOptionIndex;
+                    const cls = quizChoiceClass(true, isSelected, isAnswer);
+                    return (
+                      <button key={oi} type="button" className={cls} disabled>
+                        {option}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="article-explanation">{sub.explanation}</div>
+              </div>
+            ))}
             <button
               type="button"
               className="quiz-start-btn"

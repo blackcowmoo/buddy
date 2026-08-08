@@ -647,6 +647,15 @@ a.icon-btn.ghost {
 }
 .quiz-choice-btn.correct { border-color: var(--ok); color: var(--ok); }
 .quiz-choice-btn.incorrect { border-color: var(--err); color: var(--err); }
+/* A learner's not-yet-submitted pick for one of ArticleQuiz's independent
+   2-choice sub-questions (see pipeline.articleStudySystemPrompt) — distinct
+   from .correct/.incorrect, which only apply once the reveal comes back. */
+.quiz-choice-btn.selected { border-color: var(--accent, var(--ok)); }
+/* Groups one sub-question's prompt + its 2 choices (and, in the reveal,
+   its own explanation) with a visible gap from the next one — several of
+   these stack inside one .quiz-panel, one per fact the summary asserts. */
+.article-sub-question { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; border-top: 1px solid var(--border-2); }
+.article-sub-question:first-of-type { border-top: none; padding-top: 0; }
 
 /* Word-matching mini-game (pages/WordMatch.tsx) — a face-down card grid,
    pure play with no score persisted anywhere (see the page's doc comment on
