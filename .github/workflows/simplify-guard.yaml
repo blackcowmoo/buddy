@@ -1,0 +1,48 @@
+name: Simplify Guard
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - labeled
+
+permissions:
+  contents: read
+
+jobs:
+  simplify-check:
+    if: contains(github.event.pull_request.labels.*.name, 'simplify')
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check changed files
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- > changed_files.txt
+
+          echo "Changed files:"
+          cat changed_files.txt
+
+          TEST_PATTERN='(^|/)(__tests__|tests?)/|(_test\.go$|\.(test|spec)\.[^/]+$)'
+          TEST_FILES=$(grep -E "$TEST_PATTERN" changed_files.txt || true)
+          NON_TEST_FILES=$(grep -Ev "$TEST_PATTERN" changed_files.txt || true)
+
+          if [ -n "$TEST_FILES" ] && [ -n "$NON_TEST_FILES" ]; then
+            echo "::error::Simplify changes cannot modify production code and tests together."
+            echo ""
+            echo "Production files:"
+            echo "$NON_TEST_FILES"
+            echo ""
+            echo "Test files:"
+            echo "$TEST_FILES"
+
+            exit 1
+          fi
