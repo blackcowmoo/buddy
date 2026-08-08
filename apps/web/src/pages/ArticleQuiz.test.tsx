@@ -275,7 +275,9 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
       unlock: ReturnType<typeof vi.fn>;
       speak: ReturnType<typeof vi.fn>;
     };
-    await vi.waitFor(() => expect(speakerInstance.speak).toHaveBeenCalledWith(sampleDraw.summary));
+    await vi.waitFor(() =>
+      expect(speakerInstance.speak).toHaveBeenCalledWith(sampleDraw.summary, 1, expect.any(Function)),
+    );
 
     // Regression guard: unlock() must run before speak()'s internal
     // load()/generate() awaits, in the same synchronous click — otherwise
@@ -288,12 +290,13 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     );
   });
 
-  it("hints that the mute switch silences read-aloud while it's playing", async () => {
-    // Read-aloud deliberately requests the "ambient" audio session type so
-    // it never pauses music already playing in another app (see
-    // KokoroSpeaker.unlock's doc comment) — the trade-off is that, like any
-    // ambient sound, it goes silent while the hardware ring/silent switch is
-    // on. This hint is what tells the learner that's expected, not broken.
+  it("shows a distinct label while generating, and only switches to 재생 중… once playback actually starts", async () => {
+    // Regression guard: generation (phonemize + tokenize + the ONNX forward
+    // pass) is most of speak()'s latency and used to be lumped into the same
+    // "재생 중…" label as actual playback — misleading, since nothing is
+    // playing yet and generation alone has been observed to take up to the
+    // 45s GENERATION_TIMEOUT_MS. The label must say so, not claim it's
+    // already playing.
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
     const user = userEvent.setup();
@@ -301,18 +304,31 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
 
     await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
 
+    let onPlaybackStart: () => void = () => {};
     let resolveSpeak: () => void = () => {};
     const speakerInstance = vi.mocked(KokoroSpeaker).mock.instances[0] as unknown as {
       speak: ReturnType<typeof vi.fn>;
     };
-    speakerInstance.speak.mockReturnValue(new Promise<void>((resolve) => (resolveSpeak = resolve)));
+    speakerInstance.speak.mockImplementation(
+      (_text: string, _speed: number, cb: () => void) =>
+        new Promise<void>((resolve) => {
+          onPlaybackStart = cb;
+          resolveSpeak = resolve;
+        }),
+    );
 
-    expect(screen.queryByText(/무음 스위치/)).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "🔊 읽어주기" }));
 
+    expect(await screen.findByRole("button", { name: "생성 중…" })).toBeInTheDocument();
+    expect(screen.queryByText(/무음 스위치/)).not.toBeInTheDocument();
+
+    await act(async () => onPlaybackStart());
+
+    expect(await screen.findByRole("button", { name: "재생 중…" })).toBeInTheDocument();
     expect(await screen.findByText(/무음 스위치/)).toBeInTheDocument();
 
     await act(async () => resolveSpeak());
+    expect(await screen.findByRole("button", { name: "🔊 읽어주기" })).toBeInTheDocument();
     expect(screen.queryByText(/무음 스위치/)).not.toBeInTheDocument();
   });
 

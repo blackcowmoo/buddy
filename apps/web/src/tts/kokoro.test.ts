@@ -171,6 +171,29 @@ describe("KokoroSpeaker.speak", () => {
     expect(primed.play).toHaveBeenCalledTimes(2); // once to unlock, once to actually play
   });
 
+  it("calls onPlaybackStart only once generation has finished and audio is about to play", async () => {
+    // Regression guard: generation (phonemize + tokenize + the ONNX forward
+    // pass) is most of speak()'s latency and has no progress signal of its
+    // own — a caller that flips a "speaking" indicator for the whole call
+    // lies about what's happening while generation is still running.
+    let resolveGenerate: (v: { toBlob: () => Blob }) => void = () => {};
+    generate.mockReturnValueOnce(new Promise((resolve) => (resolveGenerate = resolve)));
+    const onPlaybackStart = vi.fn();
+    const speaker = new KokoroSpeaker();
+
+    const done = speaker.speak("hello", 1, onPlaybackStart);
+    await vi.waitFor(() => expect(generate).toHaveBeenCalled());
+    expect(onPlaybackStart).not.toHaveBeenCalled();
+    expect(audioInstances).toHaveLength(0);
+
+    resolveGenerate({ toBlob: () => new Blob() });
+    await vi.waitFor(() => expect(audioInstances).toHaveLength(1));
+    expect(onPlaybackStart).toHaveBeenCalledTimes(1);
+
+    audioInstances[0].onended?.();
+    await done;
+  });
+
   it("falls back to creating its own element when unlock() was never called", async () => {
     const speaker = new KokoroSpeaker();
 

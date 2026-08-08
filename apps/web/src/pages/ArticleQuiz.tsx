@@ -31,7 +31,7 @@ type LoadState = "loading" | "ready" | "error";
 type View = "reading" | "quiz" | "result" | null;
 
 type DrawState = "idle" | "drawing" | "noMore" | "error";
-type TtsState = "idle" | "loading" | "speaking" | "error";
+type TtsState = "idle" | "loading" | "generating" | "speaking" | "error";
 
 // "오늘의 아티클": draws a news article the learner hasn't seen before (see
 // lib/articles.ts's drawArticle, which excludes every article already drawn
@@ -148,8 +148,13 @@ export function ArticleQuiz() {
     setTts("loading");
     try {
       if (!sp.loaded) await sp.load();
-      setTts("speaking");
-      await sp.speak(draw.summary);
+      // Generation (phonemize + tokenize + the ONNX forward pass) is most of
+      // this call's latency and has been observed to take tens of seconds —
+      // "speaking" only becomes true once audio actually starts, via
+      // onPlaybackStart, so the label doesn't claim playback that hasn't
+      // started yet.
+      setTts("generating");
+      await sp.speak(draw.summary, 1, () => setTts("speaking"));
       setTts("idle");
     } catch (err) {
       console.error("tts:", err);
@@ -279,11 +284,13 @@ export function ArticleQuiz() {
                 >
                   {tts === "loading"
                     ? "불러오는 중…"
-                    : tts === "speaking"
-                      ? "재생 중…"
-                      : tts === "error"
-                        ? "재생 실패, 다시 시도해주세요"
-                        : "🔊 읽어주기"}
+                    : tts === "generating"
+                      ? "생성 중…"
+                      : tts === "speaking"
+                        ? "재생 중…"
+                        : tts === "error"
+                          ? "재생 실패, 다시 시도해주세요"
+                          : "🔊 읽어주기"}
                 </button>
                 {tts === "speaking" && (
                   // Read-aloud deliberately mixes with (never pauses) music

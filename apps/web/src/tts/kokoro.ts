@@ -149,14 +149,21 @@ export class KokoroSpeaker {
    * UI silently cycling through loading -> speaking -> idle with no sound.
    * A separate internal queue (always resolving) is what serializes calls,
    * so one failure doesn't wedge the ones queued after it.
+   *
+   * `onPlaybackStart`, if given, fires right as audio actually starts
+   * playing — i.e. once generation (phonemize + tokenize + the ONNX forward
+   * pass, which is most of this call's latency and has no progress signal
+   * of its own) has finished. Callers with a "speaking" indicator should
+   * flip to it only here, not for the whole call, otherwise it lies about
+   * what's happening during the (often much longer) generation phase.
    */
-  speak(text: string, speed = 1): Promise<void> {
-    const result = this.queue.then(() => this.synth(text, speed));
+  speak(text: string, speed = 1, onPlaybackStart?: () => void): Promise<void> {
+    const result = this.queue.then(() => this.synth(text, speed, onPlaybackStart));
     this.queue = result.catch(() => {});
     return result;
   }
 
-  private async synth(text: string, speed: number) {
+  private async synth(text: string, speed: number, onPlaybackStart?: () => void) {
     const tts = await this.load();
     const audio = await withTimeout(
       tts.generate(text, { voice: this.voice, speed }),
@@ -165,6 +172,7 @@ export class KokoroSpeaker {
     );
     const url = URL.createObjectURL(audio.toBlob());
     try {
+      onPlaybackStart?.();
       await play(this.takeAudioEl(), url);
     } finally {
       URL.revokeObjectURL(url);
