@@ -18,9 +18,7 @@ func TestSettingsGetReturnsSavedStyle(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusOK)
 	var body struct {
 		InterlocutorStyle string `json:"interlocutorStyle"`
 	}
@@ -40,9 +38,7 @@ func TestSettingsGetReturnsEmptyStringWhenNeverSet(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusOK)
 	var body struct {
 		InterlocutorStyle string `json:"interlocutorStyle"`
 	}
@@ -62,9 +58,7 @@ func TestSettingsGetReturnsLearnerProfile(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusOK)
 	var body struct {
 		LearnerProfile string `json:"learnerProfile"`
 	}
@@ -84,21 +78,14 @@ func TestSettingsGetInternalErrorOnLearnerProfileFailure(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusInternalServerError)
 }
 
 func TestSettingsGetUnauthorizedWhenIdentifyFails(t *testing.T) {
 	h := settingsGetHandler(fakeIdentifier{ok: false}, &fakeSessionStore{})
 
 	req := httptest.NewRequest("GET", "/api/settings", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
-	}
+	assertUnauthorized(t, h, req)
 }
 
 func TestSettingsGetInternalErrorOnStoreFailure(t *testing.T) {
@@ -109,9 +96,7 @@ func TestSettingsGetInternalErrorOnStoreFailure(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusInternalServerError)
 }
 
 func TestSettingsSaveStoresTrimmedStyle(t *testing.T) {
@@ -122,9 +107,7 @@ func TestSettingsSaveStoresTrimmedStyle(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
-	}
+	requireStatus(t, rec, http.StatusOK)
 	if st.styles["alex"] != "sound professional" {
 		t.Fatalf("saved style = %q, want trimmed \"sound professional\"", st.styles["alex"])
 	}
@@ -134,12 +117,7 @@ func TestSettingsSaveUnauthorizedWhenIdentifyFails(t *testing.T) {
 	h := settingsSaveHandler(fakeIdentifier{ok: false}, &fakeSessionStore{})
 
 	req := httptest.NewRequest("PUT", "/api/settings", strings.NewReader(`{"interlocutorStyle":"x"}`))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
-	}
+	assertUnauthorized(t, h, req)
 }
 
 func TestSettingsSaveBadRequestOnMalformedJSON(t *testing.T) {
@@ -149,9 +127,7 @@ func TestSettingsSaveBadRequestOnMalformedJSON(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusBadRequest)
 }
 
 // TestSettingsSaveRejectsOverlongStyle guards the cap that keeps a learner
@@ -170,9 +146,7 @@ func TestSettingsSaveRejectsOverlongStyle(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusBadRequest)
 	if _, ok := st.styles["alex"]; ok {
 		t.Fatalf("overlong style should not have been saved")
 	}
@@ -194,9 +168,7 @@ func TestSettingsSaveCountsRunesNotBytes(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
-	}
+	requireStatus(t, rec, http.StatusOK)
 	if st.styles["alex"] != style {
 		t.Fatalf("saved style = %q, want the exact input", st.styles["alex"])
 	}
@@ -210,7 +182,5 @@ func TestSettingsSaveInternalErrorOnStoreFailure(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusInternalServerError)
 }

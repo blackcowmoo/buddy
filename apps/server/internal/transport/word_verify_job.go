@@ -2,7 +2,6 @@ package transport
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -76,13 +75,9 @@ func runWordVerify(ctx context.Context, pipe *pipeline.Pipeline, words wordrevie
 // word-verify job, independent of any connection or its context — see
 // StudySummaryJobHandler's doc comment for the shared durability rationale.
 func WordVerifyJobHandler(pipe *pipeline.Pipeline, words wordreview.Store) asyncjob.Handler {
-	return func(ctx context.Context, job asyncjob.Job) error {
-		var payload wordVerifyJobPayload
-		if err := json.Unmarshal(job.Payload, &payload); err != nil {
-			return fmt.Errorf("word verify job: bad payload: %w", err)
-		}
+	return asyncjob.DecodePayloadHandler(asyncjob.KindWordVerify, func(ctx context.Context, payload wordVerifyJobPayload) error {
 		return runWordVerify(ctx, pipe, words, payload.UserID, payload.WordID)
-	}
+	})
 }
 
 // RunWordVerifyInline runs the exact same work as WordVerifyJobHandler,

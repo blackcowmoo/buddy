@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { QuizQuestion, StudySummarySentence } from "../lib/protocol";
 import { markQuizCompleted } from "../lib/sessions";
 import { useDismiss } from "../hooks/useDismiss";
-import { checkQuizAnswer, normalizeQuizAnswer } from "../lib/quizCheck";
+import { checkQuizAnswer, normalizeQuizAnswer, quizBlankInputClass } from "../lib/quizCheck";
 
 // Learner-triggered wrap-up. Confirming "end this conversation" freezes the
 // room read-only immediately (see endSession/httpserver.sessionEndHandler) —
@@ -380,7 +380,7 @@ function QuizPanel({
                 <span>{before}</span>
                 <input
                   type="text"
-                  className={"quiz-blank-input" + (checked ? (correct ? " correct" : " incorrect") : "")}
+                  className={quizBlankInputClass(checked, correct)}
                   style={{ width: `${Math.min(16, Math.max(3, answer.length + 1))}ch` }}
                   value={answer}
                   onChange={(e) => setAnswer(e.target.value)}

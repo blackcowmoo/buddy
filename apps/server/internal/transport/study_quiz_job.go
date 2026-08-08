@@ -2,7 +2,6 @@ package transport
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -71,13 +70,9 @@ func runStudyQuiz(ctx context.Context, pipe *pipeline.Pipeline, st store.Store, 
 // pre-generation job, independent of any connection or its context — see
 // StudySummaryJobHandler's doc comment for the shared durability rationale.
 func StudyQuizJobHandler(pipe *pipeline.Pipeline, st store.Store) asyncjob.Handler {
-	return func(ctx context.Context, job asyncjob.Job) error {
-		var payload studyQuizJobPayload
-		if err := json.Unmarshal(job.Payload, &payload); err != nil {
-			return fmt.Errorf("study quiz job: bad payload: %w", err)
-		}
+	return asyncjob.DecodePayloadHandler(asyncjob.KindStudyQuiz, func(ctx context.Context, payload studyQuizJobPayload) error {
 		return runStudyQuiz(ctx, pipe, st, payload.UserID, payload.SessionID)
-	}
+	})
 }
 
 // RunStudyQuizInline runs the exact same work as StudyQuizJobHandler,

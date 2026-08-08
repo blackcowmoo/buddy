@@ -55,9 +55,7 @@ func TestWithRootPathRedirectsBareRoot(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusMovedPermanently {
-		t.Fatalf("status = %d, want 301", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusMovedPermanently)
 	if loc := rec.Header().Get("Location"); loc != "/pr/14/" {
 		t.Fatalf("Location = %q, want /pr/14/", loc)
 	}
@@ -70,9 +68,7 @@ func TestWithRootPathOutsidePrefix404s(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNotFound)
 }
 
 func TestWithRootPathAnotherPrefix404s(t *testing.T) {
@@ -82,9 +78,7 @@ func TestWithRootPathAnotherPrefix404s(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNotFound)
 }
 
 func TestRegisterStalePRRedirectSendsStaleDeploymentHome(t *testing.T) {
@@ -96,9 +90,7 @@ func TestRegisterStalePRRedirectSendsStaleDeploymentHome(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusFound {
-		t.Fatalf("status = %d, want 302", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusFound)
 	if loc := rec.Header().Get("Location"); loc != "/" {
 		t.Fatalf("Location = %q, want /", loc)
 	}

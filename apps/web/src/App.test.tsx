@@ -213,6 +213,13 @@ async function enterNewChat(user: ReturnType<typeof userEvent.setup>) {
   await screen.findByRole("button", { name: "Menu" });
 }
 
+// Composes enterNewChat + openMenu for the many chat-menu-item tests below
+// that need both before they can get to what they're actually testing.
+async function enterNewChatAndOpenMenu(user: ReturnType<typeof userEvent.setup>) {
+  await enterNewChat(user);
+  await openMenu(user);
+}
+
 function lastClientInstance() {
   const mocked = vi.mocked(BuddyClient);
   return mocked.mock.instances[mocked.mock.instances.length - 1] as unknown as {
@@ -1592,8 +1599,7 @@ describe("hamburger menu", () => {
   it("opens on click and closes on a second click", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await enterNewChat(user);
-    await openMenu(user);
+    await enterNewChatAndOpenMenu(user);
     expect(screen.getByRole("menu")).toBeInTheDocument();
     await openMenu(user);
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
@@ -1602,8 +1608,7 @@ describe("hamburger menu", () => {
   it("closes when clicking outside the menu", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await enterNewChat(user);
-    await openMenu(user);
+    await enterNewChatAndOpenMenu(user);
     expect(screen.getByRole("menu")).toBeInTheDocument();
     await user.click(document.body);
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
@@ -1612,8 +1617,7 @@ describe("hamburger menu", () => {
   it("closes on Escape", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await enterNewChat(user);
-    await openMenu(user);
+    await enterNewChatAndOpenMenu(user);
     expect(screen.getByRole("menu")).toBeInTheDocument();
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
@@ -1623,24 +1627,21 @@ describe("hamburger menu", () => {
     vi.mocked(fetchMe).mockResolvedValue({ identityMode: "oidc", id: "alex@example.com" });
     const user = userEvent.setup();
     render(<App />);
-    await enterNewChat(user);
-    await openMenu(user);
+    await enterNewChatAndOpenMenu(user);
     expect(await screen.findByText("alex@example.com")).toBeInTheDocument();
   });
 
   it("shows an anonymous label when there is no real identity", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await enterNewChat(user);
-    await openMenu(user);
+    await enterNewChatAndOpenMenu(user);
     expect(await screen.findByText("익명 사용자")).toBeInTheDocument();
   });
 
   it("rejects a non-numeric PR path and does not navigate", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await enterNewChat(user);
-    await openMenu(user);
+    await enterNewChatAndOpenMenu(user);
     await user.type(screen.getByLabelText("PR 미리보기로 이동"), "abc");
     await user.click(screen.getByRole("button", { name: "이동" }));
     expect(await screen.findByText(/숫자만 입력하세요/)).toBeInTheDocument();
@@ -1650,8 +1651,7 @@ describe("hamburger menu", () => {
   it("navigates to /pr/<n>/ for a numeric PR input", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await enterNewChat(user);
-    await openMenu(user);
+    await enterNewChatAndOpenMenu(user);
     await user.type(screen.getByLabelText("PR 미리보기로 이동"), "14");
     await user.click(screen.getByRole("button", { name: "이동" }));
     expect(location.assign).toHaveBeenCalledWith("/pr/14/");
@@ -1789,8 +1789,7 @@ describe("theme switch", () => {
   it("defaults to following the system theme", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await enterNewChat(user);
-    await openMenu(user);
+    await enterNewChatAndOpenMenu(user);
     expect(screen.getByRole("button", { name: "시스템 설정" })).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -1801,8 +1800,7 @@ describe("theme switch", () => {
   it("switches to white, applies it, and persists it to localStorage only", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await enterNewChat(user);
-    await openMenu(user);
+    await enterNewChatAndOpenMenu(user);
     await user.click(screen.getByRole("button", { name: "화이트" }));
     expect(document.documentElement.getAttribute("data-theme")).toBe("white");
     expect(localStorage.getItem("buddy-theme")).toBe("white");
@@ -1812,8 +1810,7 @@ describe("theme switch", () => {
     localStorage.setItem("buddy-theme", "dark");
     const user = userEvent.setup();
     render(<App />);
-    await enterNewChat(user);
-    await openMenu(user);
+    await enterNewChatAndOpenMenu(user);
     expect(screen.getByRole("button", { name: "다크" })).toHaveAttribute("aria-pressed", "true");
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
   });
@@ -2259,8 +2256,7 @@ describe("voice enable button", () => {
   it("lets the learner retry from the error pill after a failed load", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await enterNewChat(user);
-    await openMenu(user);
+    await enterNewChatAndOpenMenu(user);
 
     const speaker = vi.mocked(KokoroSpeaker).mock.instances[0] as unknown as {
       load: ReturnType<typeof vi.fn>;
@@ -3007,8 +3003,7 @@ describe("tts speed settings", () => {
   it("lists the native speed as fixed and the default extra speeds as removable", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await enterNewChat(user);
-    await openMenu(user);
+    await enterNewChatAndOpenMenu(user);
     expect(screen.getByText("🔊 1x (원어민)")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "0.5x 속도 삭제" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "0.8x 속도 삭제" })).toBeInTheDocument();
@@ -3017,8 +3012,7 @@ describe("tts speed settings", () => {
   it("hides the add-speed form once the two extra-speed slots are full", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await enterNewChat(user);
-    await openMenu(user);
+    await enterNewChatAndOpenMenu(user);
     expect(screen.queryByLabelText("새 재생 속도")).not.toBeInTheDocument();
   });
 
@@ -3040,8 +3034,7 @@ describe("tts speed settings", () => {
   it("adds a custom speed once a slot is free and persists it", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await enterNewChat(user);
-    await openMenu(user);
+    await enterNewChatAndOpenMenu(user);
     await user.click(screen.getByRole("button", { name: "0.5x 속도 삭제" }));
     await user.type(screen.getByLabelText("새 재생 속도"), "1.5");
     await user.click(screen.getByRole("button", { name: "추가" }));
@@ -3053,8 +3046,7 @@ describe("tts speed settings", () => {
   it("rejects the native rate as a custom speed", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await enterNewChat(user);
-    await openMenu(user);
+    await enterNewChatAndOpenMenu(user);
     await user.click(screen.getByRole("button", { name: "0.5x 속도 삭제" }));
     await user.type(screen.getByLabelText("새 재생 속도"), "1");
     await user.click(screen.getByRole("button", { name: "추가" }));

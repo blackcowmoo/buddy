@@ -52,9 +52,7 @@ func TestSessionQuizResetHandlerNoQueueEventuallyRegeneratesQuiz(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postQuizResetRequest(t))
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNoContent)
 	if st.snapshotRestartQuizCalls() != 1 {
 		t.Fatalf("RestartStudyQuiz calls = %d, want 1", st.snapshotRestartQuizCalls())
 	}
@@ -80,9 +78,7 @@ func TestSessionQuizResetHandlerWithQueueEnqueuesDurableJob(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postQuizResetRequest(t))
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNoContent)
 
 	waitForCondition(t, 2*time.Second, func() bool { return st.snapshotCompleteQuizCalls() == 1 })
 }
@@ -102,9 +98,7 @@ func TestSessionQuizResetHandlerAllowsRegeneratingNonEmptyQuiz(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postQuizResetRequest(t))
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNoContent)
 	if st.snapshotRestartQuizCalls() != 1 {
 		t.Fatalf("RestartStudyQuiz calls = %d, want 1", st.snapshotRestartQuizCalls())
 	}
@@ -126,9 +120,7 @@ func TestSessionQuizResetHandlerAcceptsLegacyEmptyStatus(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postQuizResetRequest(t))
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNoContent)
 	if st.snapshotRestartQuizCalls() != 1 {
 		t.Fatalf("RestartStudyQuiz calls = %d, want 1", st.snapshotRestartQuizCalls())
 	}
@@ -147,9 +139,7 @@ func TestSessionQuizResetHandlerRejectsWhenStillPending(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postQuizResetRequest(t))
 
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want 409", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusConflict)
 	if st.snapshotRestartQuizCalls() != 0 {
 		t.Fatalf("RestartStudyQuiz calls = %d, want 0", st.snapshotRestartQuizCalls())
 	}
@@ -166,9 +156,7 @@ func TestSessionQuizResetHandlerRejectsWhenNotEnded(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postQuizResetRequest(t))
 
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want 409", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusConflict)
 }
 
 func TestSessionQuizResetHandlerNotFoundPropagatesStoreErrNotFound(t *testing.T) {
@@ -178,18 +166,11 @@ func TestSessionQuizResetHandlerNotFoundPropagatesStoreErrNotFound(t *testing.T)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postQuizResetRequest(t))
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNotFound)
 }
 
 func TestSessionQuizResetHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
 	h := sessionQuizResetHandler(fakeIdentifier{ok: false}, &fakeSessionStore{}, &pipeline.Pipeline{}, nil)
 
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, postQuizResetRequest(t))
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
-	}
+	assertUnauthorized(t, h, postQuizResetRequest(t))
 }

@@ -28,6 +28,16 @@ export function isSameDay(aUnixSeconds: number, bUnixSeconds: number): boolean {
   );
 }
 
+// Whether a date-divider belongs right before curTs: yes if there's no
+// earlier timestamp to compare against (list/page start), or if it falls on
+// a different calendar day than prevTs — shared by every day-grouped list in
+// the app (chat transcript, instant-session list, read-article list).
+export function shouldShowDateDivider(prevTs: number | null | undefined, curTs: number | null | undefined): boolean {
+  if (curTs == null) return false;
+  if (prevTs == null) return true;
+  return !isSameDay(prevTs, curTs);
+}
+
 // Divider label shown between messages sent on different days: "오늘"/"어제"
 // for the last two days, "7월 20일 (월)" within the current year, and a full
 // "2024. 05. 20. (화)" once the year rolls over — each step drops precision

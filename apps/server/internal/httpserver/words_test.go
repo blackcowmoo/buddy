@@ -47,9 +47,7 @@ func TestWordSuggestHandlerReturnsSuggestions(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
-	}
+	requireStatus(t, rec, http.StatusOK)
 	var body struct {
 		Suggestions []protocol.WordSuggestion `json:"suggestions"`
 	}
@@ -65,12 +63,7 @@ func TestWordSuggestHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
 	h := wordSuggestHandler(fakeIdentifier{ok: false}, &pipeline.Pipeline{})
 
 	req := httptest.NewRequest("POST", "/api/words/suggest", strings.NewReader(`{"query":"x"}`))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
-	}
+	assertUnauthorized(t, h, req)
 }
 
 func TestWordSuggestHandlerBadRequestOnMalformedJSON(t *testing.T) {
@@ -80,9 +73,7 @@ func TestWordSuggestHandlerBadRequestOnMalformedJSON(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusBadRequest)
 }
 
 func TestWordSuggestHandlerRejectsEmptyQuery(t *testing.T) {
@@ -92,9 +83,7 @@ func TestWordSuggestHandlerRejectsEmptyQuery(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusBadRequest)
 }
 
 // TestWordSuggestHandlerRejectsOverlongQuery guards maxWordQueryLen, same
@@ -112,9 +101,7 @@ func TestWordSuggestHandlerRejectsOverlongQuery(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusBadRequest)
 }
 
 func TestWordSuggestHandlerInternalErrorOnPipelineFailure(t *testing.T) {
@@ -130,9 +117,7 @@ func TestWordSuggestHandlerInternalErrorOnPipelineFailure(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusInternalServerError)
 }
 
 // fakeWordStore is an in-memory wordreview.Store for handler tests — real
@@ -289,9 +274,7 @@ func TestWordSaveStoresLearnerChosenSuggestionAsPending(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
-	}
+	requireStatus(t, rec, http.StatusOK)
 	var out wordItem
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("bad JSON body: %v", err)
@@ -337,9 +320,7 @@ func TestWordSaveRejectsEmptyWord(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusBadRequest)
 }
 
 func TestWordSaveUnauthorizedWhenIdentifyFails(t *testing.T) {
@@ -347,12 +328,7 @@ func TestWordSaveUnauthorizedWhenIdentifyFails(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]string{"word": "ecstatic"})
 	req := httptest.NewRequest("POST", "/api/words/save", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
-	}
+	assertUnauthorized(t, h, req)
 }
 
 func TestWordsListReturnsOwnWordsAndDueCount(t *testing.T) {
@@ -372,9 +348,7 @@ func TestWordsListReturnsOwnWordsAndDueCount(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusOK)
 	var body struct {
 		Words []struct {
 			ID string `json:"id"`
@@ -425,12 +399,7 @@ func TestWordsListUnauthorizedWhenIdentifyFails(t *testing.T) {
 	h := wordsListHandler(fakeIdentifier{ok: false}, &fakeWordStore{})
 
 	req := httptest.NewRequest("GET", "/api/words", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
-	}
+	assertUnauthorized(t, h, req)
 }
 
 func TestWordReviewUpdatesAndReturnsWord(t *testing.T) {
@@ -445,9 +414,7 @@ func TestWordReviewUpdatesAndReturnsWord(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
-	}
+	requireStatus(t, rec, http.StatusOK)
 	var out struct {
 		ReviewCount int `json:"reviewCount"`
 	}
@@ -475,9 +442,7 @@ func TestWordReviewForwardsRepeatFlag(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
-	}
+	requireStatus(t, rec, http.StatusOK)
 	if !store.lastReviewRepeat {
 		t.Error("Store.Review was not called with repeat = true")
 	}
@@ -492,9 +457,7 @@ func TestWordReviewNotFoundForUnknownID(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNotFound)
 }
 
 func TestWordDeleteRemovesOnlyTheGivenWord(t *testing.T) {
@@ -508,9 +471,7 @@ func TestWordDeleteRemovesOnlyTheGivenWord(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNoContent)
 	remaining := store.byUser["alex"]
 	if len(remaining) != 1 || remaining[0].ID != "w2" {
 		t.Fatalf("byUser[alex] = %+v, want only w2 left", remaining)
@@ -555,9 +516,7 @@ func TestWordAutoAddReservesPendingAndCompletesInBackground(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
-	}
+	requireStatus(t, rec, http.StatusOK)
 	var got wordAutoAddStatus
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("bad JSON body: %v", err)
@@ -604,9 +563,7 @@ func TestWordAutoAddAlreadyPendingReturnsCurrentStatusWithoutStartingAnotherRun(
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
-	}
+	requireStatus(t, rec, http.StatusOK)
 	var got wordAutoAddStatus
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("bad JSON body: %v", err)
@@ -634,9 +591,7 @@ func TestWordAutoAddReturnsDoneWithZeroCountWhenNoSuggestions(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
-	}
+	requireStatus(t, rec, http.StatusOK)
 
 	waitForCondition(t, 2*time.Second, func() bool {
 		status, _ := settings.snapshotWordAutoAddStatus("alex")
@@ -670,9 +625,7 @@ func TestWordAutoAddExcludesAlreadyTrackedWordsFromThePrompt(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
-	}
+	requireStatus(t, rec, http.StatusOK)
 	waitForCondition(t, 2*time.Second, func() bool {
 		status, _ := settings.snapshotWordAutoAddStatus("alex")
 		return status == store.JobStatusDone
@@ -688,12 +641,7 @@ func TestWordAutoAddUnauthorizedWhenIdentifyFails(t *testing.T) {
 	h := wordAutoAddHandler(fakeIdentifier{ok: false}, &fakeWordStore{}, &fakeSessionStore{}, &pipeline.Pipeline{}, nil, nil)
 
 	req := httptest.NewRequest("POST", "/api/words/auto-add", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
-	}
+	assertUnauthorized(t, h, req)
 }
 
 // TestWordAutoAddFailsJobWhenLearnerProfileLookupFails guards that a lookup
@@ -727,9 +675,7 @@ func TestWordAutoAddFailsJobWhenWordListFails(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
-	}
+	requireStatus(t, rec, http.StatusOK)
 	waitForCondition(t, 2*time.Second, func() bool {
 		status, _ := settings.snapshotWordAutoAddStatus("alex")
 		return status == store.JobStatusFailed
@@ -748,9 +694,7 @@ func TestWordAutoAddFailsJobWhenSuggestPipelineFails(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
-	}
+	requireStatus(t, rec, http.StatusOK)
 	waitForCondition(t, 2*time.Second, func() bool {
 		status, _ := settings.snapshotWordAutoAddStatus("alex")
 		return status == store.JobStatusFailed
@@ -766,9 +710,7 @@ func TestWordAutoAddStatusHandlerReturnsIdleWhenNoRunHasEverStarted(t *testing.T
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
-	}
+	requireStatus(t, rec, http.StatusOK)
 	var got wordAutoAddStatus
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("bad JSON body: %v", err)
@@ -803,12 +745,7 @@ func TestWordAutoAddStatusHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
 	h := wordAutoAddStatusHandler(fakeIdentifier{ok: false}, &fakeSessionStore{})
 
 	req := httptest.NewRequest("GET", "/api/words/auto-add", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
-	}
+	assertUnauthorized(t, h, req)
 }
 
 func TestWordDeleteInternalErrorOnStoreFailure(t *testing.T) {
@@ -820,7 +757,5 @@ func TestWordDeleteInternalErrorOnStoreFailure(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusInternalServerError)
 }

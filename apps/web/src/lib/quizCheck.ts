@@ -19,6 +19,22 @@ export function normalizeQuizAnswer(s: string): string {
   return s.trim().toLowerCase().replace(/[.,!?;:'"]+$/g, "");
 }
 
+// quizChoiceClass picks a multiple-choice quiz button's class: plain until
+// checked, then "correct"/"incorrect" on the learner's own pick and
+// "correct" on the right answer if they picked wrong — shared by
+// WordReview.tsx and ArticleQuiz.tsx's quiz-choice buttons.
+export function quizChoiceClass(checked: boolean, isSelected: boolean, isAnswer: boolean): string {
+  if (!checked) return "quiz-choice-btn";
+  if (isSelected) return `quiz-choice-btn ${isAnswer ? "correct" : "incorrect"}`;
+  return isAnswer ? "quiz-choice-btn correct" : "quiz-choice-btn";
+}
+
+// quizBlankInputClass picks a fill-in-the-blank quiz input's class — shared
+// by WordReview.tsx and EndConversationControl.tsx's blank-input quizzes.
+export function quizBlankInputClass(checked: boolean, isCorrect: boolean): string {
+  return "quiz-blank-input" + (checked ? (isCorrect ? " correct" : " incorrect") : "");
+}
+
 export async function checkQuizAnswer(
   prompt: string,
   answer: string,

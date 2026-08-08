@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchWords, type WordReviewItem } from "../lib/wordReview";
 import { shuffled } from "../lib/shuffle";
+import { SubPageHeader } from "../components/SubPageHeader";
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -113,15 +114,7 @@ export function WordMatch() {
 
   return (
     <div className="app">
-      <header className="topbar">
-        <div className="brand">
-          <h1>단어 매칭 게임</h1>
-        </div>
-        {/* Relative link, same reasoning as WordReview.tsx's back link. */}
-        <a className="ghost icon-btn" href="." aria-label="대화로 돌아가기" title="대화로 돌아가기">
-          ←
-        </a>
-      </header>
+      <SubPageHeader title="단어 매칭 게임" />
 
       <main className="convo word-match-page">
         {state === "loading" && <p className="hint">불러오는 중…</p>}

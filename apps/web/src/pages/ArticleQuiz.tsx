@@ -10,7 +10,10 @@ import {
   type ArticleDraw,
   type ArticleInstance,
 } from "../lib/articles";
-import { formatAbsoluteDate, formatDateDivider, formatMessageTime, isSameDay } from "../lib/time";
+import { formatAbsoluteDate, formatDateDivider, formatMessageTime, shouldShowDateDivider } from "../lib/time";
+import { quizChoiceClass } from "../lib/quizCheck";
+import { SubPageHeader } from "../components/SubPageHeader";
+import { usePollScaffold } from "../hooks/usePollScaffold";
 import { KokoroSpeaker } from "../tts/kokoro";
 
 // How often to re-check a draw that's still generating in the background
@@ -49,32 +52,16 @@ export function ArticleQuiz() {
   const [tts, setTts] = useState<TtsState>("idle");
   const speakerRef = useRef<KokoroSpeaker | null>(null);
 
-  // Poll scaffolding for a draw still generating in the background — same
-  // "setTimeout chain tracked for unmount cleanup, guarded by a token so a
-  // stale tick can't clobber a different draw's state" pattern as App.tsx's
-  // pollStudySummary. Losing this component (navigating away, or the tab
-  // closing) only stops *watching* — asyncjob.KindArticleStudy keeps
-  // generating regardless (see lib/articles.ts's drawArticle doc comment);
-  // reopening this page and tapping the still-pending row resumes watching.
-  const pollTokenRef = useRef<object | null>(null);
-  const pollTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
-
-  const schedulePoll = useCallback((tick: () => void, ms: number) => {
-    const id = setTimeout(() => {
-      pollTimersRef.current.delete(id);
-      tick();
-    }, ms);
-    pollTimersRef.current.add(id);
-  }, []);
+  // Poll scaffolding for a draw still generating in the background (see
+  // usePollScaffold's doc comment). Losing this component (navigating away,
+  // or the tab closing) only stops *watching* — asyncjob.KindArticleStudy
+  // keeps generating regardless (see lib/articles.ts's drawArticle doc
+  // comment); reopening this page and tapping the still-pending row resumes
+  // watching.
+  const { tokenRef: pollTokenRef, schedulePoll } = usePollScaffold();
 
   useEffect(() => {
-    const timers = pollTimersRef.current;
     speakerRef.current = new KokoroSpeaker();
-    return () => {
-      for (const id of timers) clearTimeout(id);
-      timers.clear();
-      pollTokenRef.current = null;
-    };
   }, []);
 
   // Polls one draw's status until it leaves "pending"/"failed" — started
@@ -204,17 +191,7 @@ export function ArticleQuiz() {
 
   return (
     <div className="app">
-      <header className="topbar">
-        <div className="brand">
-          <h1>오늘의 아티클</h1>
-        </div>
-        {/* Relative link (not "/"): resolves against the current page URL,
-            same reasoning as InstantSessions.tsx's back link, so this still
-            works under a ROOT_PATH prefix like "/pr/14/article". */}
-        <a className="ghost icon-btn" href="." aria-label="대화로 돌아가기" title="대화로 돌아가기">
-          ←
-        </a>
-      </header>
+      <SubPageHeader title="오늘의 아티클" />
 
       <main className="convo article-quiz-page">
         {drawState === "noMore" && (
@@ -241,7 +218,7 @@ export function ArticleQuiz() {
             )}
             {instances.map((inst, i) => {
               const prev = instances[i - 1];
-              const showDivider = !prev || !isSameDay(prev.createdAt, inst.createdAt);
+              const showDivider = shouldShowDateDivider(prev?.createdAt, inst.createdAt);
               return (
                 <Fragment key={inst.id}>
                   {showDivider && (
@@ -358,11 +335,7 @@ export function ArticleQuiz() {
               {draw.choices.map((choice, i) => {
                 const isAnswer = i === result.correctIndex;
                 const isSelected = i === selected;
-                const cls = isSelected
-                  ? `quiz-choice-btn ${isAnswer ? "correct" : "incorrect"}`
-                  : isAnswer
-                    ? "quiz-choice-btn correct"
-                    : "quiz-choice-btn";
+                const cls = quizChoiceClass(true, isSelected, isAnswer);
                 return (
                   <button key={i} type="button" className={cls} disabled>
                     {choice}

@@ -277,9 +277,7 @@ func TestArticleDrawHandlerReservesPendingAndCompletesInBackground(t *testing.T)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
-	}
+	requireStatus(t, rec, http.StatusOK)
 	var got articleDraw
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -343,9 +341,7 @@ func TestArticleDrawHandlerReusesCachedArticleWithoutCallingLLM(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
-	}
+	requireStatus(t, rec, http.StatusOK)
 	var got articleDraw
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -380,9 +376,7 @@ func TestArticleDrawHandlerPicksTheMostRecentCandidate(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
-	}
+	requireStatus(t, rec, http.StatusOK)
 	var got articleDraw
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -421,12 +415,7 @@ func TestArticleDrawHandlerExcludesAlreadyUsedArticles(t *testing.T) {
 func TestArticleDrawHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
 	h := articleDrawHandler(fakeIdentifier{ok: false}, &fakeArticleStore{}, fakeArticlePipeline(fakeStudyJSON), fetchOneCandidate(newsfeed.Candidate{URL: "https://example.com/a"}), nil)
 
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
-	}
+	assertUnauthorized(t, h, httptest.NewRequest("POST", "/api/articles/draw", nil))
 }
 
 func TestArticleDrawHandlerInternalErrorOnFetchFailure(t *testing.T) {
@@ -436,9 +425,7 @@ func TestArticleDrawHandlerInternalErrorOnFetchFailure(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusInternalServerError)
 }
 
 // ---- articleAnswerHandler ---------------------------------------------------
@@ -465,9 +452,7 @@ func TestArticleAnswerHandlerComputesCorrectnessServerSide(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postAnswerRequest(t, "i1", 2))
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
-	}
+	requireStatus(t, rec, http.StatusOK)
 	var got articleResult
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -521,20 +506,13 @@ func TestArticleAnswerHandlerNotFoundForMissingInstance(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postAnswerRequest(t, "missing", 0))
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNotFound)
 }
 
 func TestArticleAnswerHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
 	h := articleAnswerHandler(fakeIdentifier{ok: false}, &fakeArticleStore{})
 
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, postAnswerRequest(t, "i1", 0))
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
-	}
+	assertUnauthorized(t, h, postAnswerRequest(t, "i1", 0))
 }
 
 // ---- articleInstanceHandler --------------------------------------------------
@@ -554,9 +532,7 @@ func TestArticleInstanceHandlerReturnsCurrentStatus(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
-	}
+	requireStatus(t, rec, http.StatusOK)
 	var got articleDraw
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -574,9 +550,7 @@ func TestArticleInstanceHandlerNotFoundForMissingOrOtherUsersInstance(t *testing
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNotFound)
 }
 
 func TestArticleInstanceHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
@@ -584,12 +558,7 @@ func TestArticleInstanceHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/articles/i1", nil)
 	req.SetPathValue("id", "i1")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
-	}
+	assertUnauthorized(t, h, req)
 }
 
 // ---- articleInstancesListHandler / articleDeleteHandler --------------------
@@ -603,9 +572,7 @@ func TestArticleInstancesListHandlerReturnsStoreResult(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/articles", nil))
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusOK)
 	var got []articleListItem
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -621,9 +588,7 @@ func TestArticleInstancesListHandlerInternalErrorOnStoreFailure(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/articles", nil))
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusInternalServerError)
 }
 
 func TestArticleDeleteHandlerRemovesInstance(t *testing.T) {
@@ -637,9 +602,7 @@ func TestArticleDeleteHandlerRemovesInstance(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNoContent)
 	if len(st.byUser["alex"]) != 0 {
 		t.Fatalf("instance still present after delete: %+v", st.byUser["alex"])
 	}

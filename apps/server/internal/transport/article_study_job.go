@@ -2,7 +2,6 @@ package transport
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -85,13 +84,9 @@ func runArticleStudy(ctx context.Context, pipe *pipeline.Pipeline, articles news
 // article-study job, independent of any connection or its context — see
 // StudySummaryJobHandler's doc comment for the shared durability rationale.
 func ArticleStudyJobHandler(pipe *pipeline.Pipeline, articles newsarticle.Store) asyncjob.Handler {
-	return func(ctx context.Context, job asyncjob.Job) error {
-		var payload articleStudyJobPayload
-		if err := json.Unmarshal(job.Payload, &payload); err != nil {
-			return fmt.Errorf("article study job: bad payload: %w", err)
-		}
+	return asyncjob.DecodePayloadHandler(asyncjob.KindArticleStudy, func(ctx context.Context, payload articleStudyJobPayload) error {
 		return runArticleStudy(ctx, pipe, articles, payload.ArticleID, payload.Source, payload.Title, payload.Description)
-	}
+	})
 }
 
 // RunArticleStudyInline runs the exact same work as ArticleStudyJobHandler,

@@ -29,9 +29,7 @@ func TestSessionCompactionReturnsSummaryAndCounts(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusOK)
 	var body struct {
 		Summary        string `json:"summary"`
 		RecentMessages int    `json:"recentMessages"`
@@ -56,12 +54,7 @@ func TestSessionCompactionUnauthorizedWhenIdentifyFails(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/sessions/s1/compaction", nil)
 	req.SetPathValue("id", "s1")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
-	}
+	assertUnauthorized(t, h, req)
 }
 
 func TestSessionCompactionPropagatesLoadError(t *testing.T) {
@@ -73,7 +66,5 @@ func TestSessionCompactionPropagatesLoadError(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusInternalServerError)
 }

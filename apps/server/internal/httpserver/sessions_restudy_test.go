@@ -48,9 +48,7 @@ func TestSessionRestudyHandlerNoQueueEventuallyCompletesStudySummary(t *testing.
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postRestudyRequest(t))
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNoContent)
 	if st.snapshotRestartSummaryCalls() != 1 {
 		t.Fatalf("RestartStudySummary calls = %d, want 1", st.snapshotRestartSummaryCalls())
 	}
@@ -76,9 +74,7 @@ func TestSessionRestudyHandlerWithQueueEnqueuesDurableJob(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postRestudyRequest(t))
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNoContent)
 
 	waitForCondition(t, 2*time.Second, func() bool { return st.snapshotCompleteSummaryCalls() == 1 })
 }
@@ -96,9 +92,7 @@ func TestSessionRestudyHandlerRejectsWhenSummaryAlreadyHasContent(t *testing.T) 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postRestudyRequest(t))
 
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want 409", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusConflict)
 	if st.snapshotRestartSummaryCalls() != 0 {
 		t.Fatalf("RestartStudySummary calls = %d, want 0", st.snapshotRestartSummaryCalls())
 	}
@@ -123,9 +117,7 @@ func TestSessionRestudyHandlerAcceptsLegacyEmptyStatus(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postRestudyRequest(t))
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNoContent)
 	if st.snapshotRestartSummaryCalls() != 1 {
 		t.Fatalf("RestartStudySummary calls = %d, want 1", st.snapshotRestartSummaryCalls())
 	}
@@ -144,9 +136,7 @@ func TestSessionRestudyHandlerRejectsWhenStillPending(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postRestudyRequest(t))
 
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want 409", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusConflict)
 }
 
 // TestSessionRestudyHandlerRejectsWhenNotEnded guards against forcing a
@@ -160,9 +150,7 @@ func TestSessionRestudyHandlerRejectsWhenNotEnded(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postRestudyRequest(t))
 
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want 409", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusConflict)
 }
 
 func TestSessionRestudyHandlerNotFoundPropagatesStoreErrNotFound(t *testing.T) {
@@ -172,18 +160,11 @@ func TestSessionRestudyHandlerNotFoundPropagatesStoreErrNotFound(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postRestudyRequest(t))
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rec.Code)
-	}
+	requireStatus(t, rec, http.StatusNotFound)
 }
 
 func TestSessionRestudyHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
 	h := sessionRestudyHandler(fakeIdentifier{ok: false}, &fakeSessionStore{}, &pipeline.Pipeline{}, nil)
 
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, postRestudyRequest(t))
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
-	}
+	assertUnauthorized(t, h, postRestudyRequest(t))
 }

@@ -10,7 +10,9 @@ import {
 } from "../lib/wordReview";
 import { formatAbsoluteDateTime } from "../lib/time";
 import { shuffled } from "../lib/shuffle";
-import { normalizeQuizAnswer as normalizeAnswer } from "../lib/quizCheck";
+import { normalizeQuizAnswer as normalizeAnswer, quizBlankInputClass, quizChoiceClass } from "../lib/quizCheck";
+import { SubPageHeader } from "../components/SubPageHeader";
+import { usePollScaffold } from "../hooks/usePollScaffold";
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -153,32 +155,12 @@ export function WordReview() {
   const [autoAddError, setAutoAddError] = useState<string | null>(null);
 
   // Poll scaffolding for an auto-add job still generating in the background
-  // — same "setTimeout chain tracked for unmount cleanup, guarded by a
-  // token so a stale tick can't clobber newer state" pattern as
-  // ArticleQuiz.tsx's pollDraw. Losing this component (navigating away, or
-  // the tab closing) only stops *watching* — asyncjob.KindWordAutoAdd keeps
-  // generating regardless (see lib/wordReview.ts's startAutoAddWords doc
-  // comment); reopening this page resumes watching via the mount effect
-  // below.
-  const pollTokenRef = useRef<object | null>(null);
-  const pollTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
-
-  const schedulePoll = useCallback((tick: () => void, ms: number) => {
-    const id = setTimeout(() => {
-      pollTimersRef.current.delete(id);
-      tick();
-    }, ms);
-    pollTimersRef.current.add(id);
-  }, []);
-
-  useEffect(() => {
-    const timers = pollTimersRef.current;
-    return () => {
-      for (const id of timers) clearTimeout(id);
-      timers.clear();
-      pollTokenRef.current = null;
-    };
-  }, []);
+  // (see usePollScaffold's doc comment). Losing this component (navigating
+  // away, or the tab closing) only stops *watching* —
+  // asyncjob.KindWordAutoAdd keeps generating regardless (see
+  // lib/wordReview.ts's startAutoAddWords doc comment); reopening this page
+  // resumes watching via the mount effect below.
+  const { tokenRef: pollTokenRef, schedulePoll } = usePollScaffold();
 
   // Polls the auto-add job's status until it leaves "pending" — started
   // either right after pressing "새 단어 추가로 학습하기" or, on mount, when
@@ -404,17 +386,7 @@ export function WordReview() {
 
   return (
     <div className="app">
-      <header className="topbar">
-        <div className="brand">
-          <h1>단어 복습</h1>
-        </div>
-        {/* Relative link (not "/"): resolves against the current page URL,
-            same reasoning as Recordings.tsx's back link, so this still works
-            under a ROOT_PATH prefix like "/pr/14/words". */}
-        <a className="ghost icon-btn" href="." aria-label="대화로 돌아가기" title="대화로 돌아가기">
-          ←
-        </a>
-      </header>
+      <SubPageHeader title="단어 복습" />
 
       <main className="convo word-review-page">
         {state === "loading" && <p className="hint">불러오는 중…</p>}
@@ -562,10 +534,10 @@ export function WordReview() {
                                 blankRefs.current[i] = el;
                               }}
                               type="text"
-                              className={
-                                "quiz-blank-input" +
-                                (checked ? (normalizeAnswer(answers[i] ?? "") === normalizeAnswer(recallBlank!.answers[i]) ? " correct" : " incorrect") : "")
-                              }
+                              className={quizBlankInputClass(
+                                checked,
+                                normalizeAnswer(answers[i] ?? "") === normalizeAnswer(recallBlank!.answers[i]),
+                              )}
                               style={{ width: `${Math.min(16, Math.max(3, (answers[i]?.length ?? 0) + 1))}ch` }}
                               maxLength={40}
                               value={answers[i] ?? ""}
@@ -603,13 +575,7 @@ export function WordReview() {
                       {currentItem.choices!.map((choice, i) => {
                         const isSelected = choice === selectedChoice;
                         const isAnswer = choice === current.meaning;
-                        const cls = !checked
-                          ? "quiz-choice-btn"
-                          : isSelected
-                            ? `quiz-choice-btn ${isAnswer ? "correct" : "incorrect"}`
-                            : isAnswer
-                              ? "quiz-choice-btn correct"
-                              : "quiz-choice-btn";
+                        const cls = quizChoiceClass(checked, isSelected, isAnswer);
                         return (
                           <button
                             key={i}
