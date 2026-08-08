@@ -4,7 +4,7 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/articles", async () => {
   const actual = await vi.importActual<typeof import("../lib/articles")>("../lib/articles");
@@ -18,20 +18,10 @@ vi.mock("../lib/articles", async () => {
   };
 });
 
-vi.mock("../tts/kokoro", () => ({
-  KokoroSpeaker: vi.fn().mockImplementation(function KokoroSpeaker(this: object) {
-    return Object.assign(this, {
-      loaded: false,
-      unlock: vi.fn(),
-      load: vi.fn().mockResolvedValue(undefined),
-      speak: vi.fn().mockResolvedValue(undefined),
-    });
-  }),
-}));
-
 import { ArticleQuiz } from "./ArticleQuiz";
 import {
   answerArticle,
+  articleAudioURL,
   deleteArticleInstance,
   drawArticle,
   fetchArticleInstance,
@@ -39,12 +29,20 @@ import {
   type ArticleDraw,
 } from "../lib/articles";
 import { formatAbsoluteDate, formatDateDivider } from "../lib/time";
-import { KokoroSpeaker } from "../tts/kokoro";
+
+// jsdom doesn't implement HTMLMediaElement.play() — stub it so handleRead's
+// el.play() resolves instead of throwing "not implemented", the same reason
+// kokoro.test.ts stubs the global Audio constructor for its own (unrelated,
+// client-side chat read-aloud) tests.
+beforeEach(() => {
+  HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
+});
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 const sampleDraw: ArticleDraw = {
@@ -259,75 +257,58 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     expect(screen.getByRole("button", { name: "문제풀기" })).toBeInTheDocument();
   });
 
-  it("reads the summary aloud through a real speaker instance when 읽어주기 is tapped", async () => {
+  it("points a plain <audio> element at the server-generated read-aloud URL and plays it when 읽어주기 is tapped", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    const audioSession = { type: "auto" };
+    vi.stubGlobal("navigator", { ...navigator, audioSession });
     const user = userEvent.setup();
-    render(<ArticleQuiz />);
+    const { container } = render(<ArticleQuiz />);
 
     await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
     await user.click(screen.getByRole("button", { name: "🔊 읽어주기" }));
 
-    // Regression guard: the speaker ref must actually be constructed (see the
-    // mount effect that assigns speakerRef.current), otherwise handleRead's
-    // `if (!sp) return` bails out silently and the button does nothing.
-    const speakerInstance = vi.mocked(KokoroSpeaker).mock.instances[0] as unknown as {
-      unlock: ReturnType<typeof vi.fn>;
-      speak: ReturnType<typeof vi.fn>;
-    };
-    await vi.waitFor(() =>
-      expect(speakerInstance.speak).toHaveBeenCalledWith(sampleDraw.summary, 1, expect.any(Function)),
-    );
+    // Regression guard: generation now happens server-side, once per shared
+    // article (see lib/articles.ts's articleAudioURL) — this is just a plain
+    // <audio src> pointed at it and played, the same shape as
+    // Recordings.tsx's playback, not the old client-side kokoro.ts pipeline.
+    const audioEl = container.querySelector("audio");
+    expect(audioEl).not.toBeNull();
+    expect(audioEl?.src).toContain(articleAudioURL(sampleDraw.id));
+    expect(vi.mocked(HTMLMediaElement.prototype.play)).toHaveBeenCalled();
 
-    // Regression guard: unlock() must run before speak()'s internal
-    // load()/generate() awaits, in the same synchronous click — otherwise
-    // iOS Safari silently drops playback once the async work has pushed the
-    // eventual .play() call outside the user-gesture window (see
-    // KokoroSpeaker.unlock's doc comment).
-    expect(speakerInstance.unlock).toHaveBeenCalled();
-    expect(speakerInstance.unlock.mock.invocationCallOrder[0]).toBeLessThan(
-      speakerInstance.speak.mock.invocationCallOrder[0],
-    );
+    // Regression guard: requesting the "ambient" audio session type must run
+    // synchronously in the same click as play(), before the network request
+    // for the audio even starts — see handleRead's doc comment — so
+    // read-aloud mixes with (never pauses) music already playing in another
+    // app.
+    expect(audioSession.type).toBe("ambient");
   });
 
-  it("shows a distinct label while generating, and only switches to 재생 중… once playback actually starts", async () => {
-    // Regression guard: generation (phonemize + tokenize + the ONNX forward
-    // pass) is most of speak()'s latency and used to be lumped into the same
-    // "재생 중…" label as actual playback — misleading, since nothing is
-    // playing yet and generation alone has been observed to take up to
-    // GENERATION_TIMEOUT_MS. The label must say so, not claim it's already
-    // playing.
+  it("shows 불러오는 중… while buffering, then 재생 중… once the audio element actually starts playing", async () => {
+    // Regression guard: showing "재생 중…" before playback has actually
+    // started is misleading — the label is driven by the <audio> element's
+    // own waiting/playing events, not assumed the instant the button is
+    // tapped, so it never claims audio is playing when it's still loading/
+    // generating server-side.
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
     const user = userEvent.setup();
-    render(<ArticleQuiz />);
+    const { container } = render(<ArticleQuiz />);
 
     await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
-
-    let onPlaybackStart: () => void = () => {};
-    let resolveSpeak: () => void = () => {};
-    const speakerInstance = vi.mocked(KokoroSpeaker).mock.instances[0] as unknown as {
-      speak: ReturnType<typeof vi.fn>;
-    };
-    speakerInstance.speak.mockImplementation(
-      (_text: string, _speed: number, cb: () => void) =>
-        new Promise<void>((resolve) => {
-          onPlaybackStart = cb;
-          resolveSpeak = resolve;
-        }),
-    );
-
     await user.click(screen.getByRole("button", { name: "🔊 읽어주기" }));
 
-    expect(await screen.findByRole("button", { name: "생성 중…" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "불러오는 중…" })).toBeInTheDocument();
     expect(screen.queryByText(/무음 스위치/)).not.toBeInTheDocument();
 
-    await act(async () => onPlaybackStart());
+    const audioEl = container.querySelector("audio")!;
+    await act(async () => audioEl.dispatchEvent(new Event("playing")));
 
     expect(await screen.findByRole("button", { name: "재생 중…" })).toBeInTheDocument();
     expect(await screen.findByText(/무음 스위치/)).toBeInTheDocument();
 
-    await act(async () => resolveSpeak());
+    await act(async () => audioEl.dispatchEvent(new Event("ended")));
     expect(await screen.findByRole("button", { name: "🔊 읽어주기" })).toBeInTheDocument();
     expect(screen.queryByText(/무음 스위치/)).not.toBeInTheDocument();
   });
@@ -336,21 +317,13 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
     const user = userEvent.setup();
-    render(<ArticleQuiz />);
+    const { container } = render(<ArticleQuiz />);
 
     await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
-
-    const speakerInstance = vi.mocked(KokoroSpeaker).mock.instances[0] as unknown as {
-      speak: ReturnType<typeof vi.fn>;
-    };
-    // Regression guard: KokoroSpeaker.speak used to swallow synth() failures
-    // internally and resolve anyway, so a real playback failure (blocked
-    // gesture, generation error, etc.) looked identical to success — the
-    // button just cycled loading -> speaking -> idle with no sound and no
-    // indication anything went wrong.
-    speakerInstance.speak.mockRejectedValue(new Error("play() failed"));
-
     await user.click(screen.getByRole("button", { name: "🔊 읽어주기" }));
+
+    const audioEl = container.querySelector("audio")!;
+    await act(async () => audioEl.dispatchEvent(new Event("error")));
 
     expect(await screen.findByRole("button", { name: "재생 실패, 다시 시도해주세요" })).toBeInTheDocument();
   });

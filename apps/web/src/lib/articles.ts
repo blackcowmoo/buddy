@@ -126,3 +126,14 @@ export async function answerArticle(id: string, selectedIndex: number): Promise<
 export async function deleteArticleInstance(id: string): Promise<boolean> {
   return requestOK(`api/articles/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
+
+// URL for this draw's read-aloud audio — generated once server-side per
+// shared Article and cached (see httpserver's article audio handler), not
+// per learner, so a plain <audio src> works the same way
+// recordingAudioURL's does: point at it directly and call play(), no fetch/
+// blob/model-loading dance needed on this side anymore (that whole pipeline
+// — see the removed apps/web/src/tts/kokoro.ts usage here — existed only
+// because generation used to happen in-browser).
+export function articleAudioURL(id: string): string {
+  return `api/articles/${encodeURIComponent(id)}/audio`;
+}

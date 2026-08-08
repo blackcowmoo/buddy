@@ -16,6 +16,7 @@ var allBuddyEnvVars = []string{
 	"WHISPER_SERVER_URLS", "PARAKEET_SERVER_URLS",
 	"BUDDY_LLM_API_KEY",
 	"BUDDY_LLM_CHAT_URL", "BUDDY_LLM_ANALYSIS_URLS", "BUDDY_LLM_JUDGE_URL",
+	"BUDDY_TTS_URL",
 	"BUDDY_FEEDBACK_LANG",
 	"MYSQL_RW_HOSTNAME", "MYSQL_RO_HOSTNAME", "MYSQL_PORT",
 	"MYSQL_USERNAME", "MYSQL_PASSWORD", "MYSQL_DATABASE",
@@ -46,6 +47,8 @@ func TestLoadDefaults(t *testing.T) {
 		"LLMChatModel":   {c.LLMChatModel, "local-model"},
 		"LLMJudgeURL":    {c.LLMJudgeURL, "http://localhost:8081/v1"},
 		"LLMJudgeModel":  {c.LLMJudgeModel, "local-model"},
+		"TTSURL":         {c.TTSURL, ""},
+		"TTSVoice":       {c.TTSVoice, ""},
 		"FeedbackLang":   {c.FeedbackLang, "ko"},
 		"MySQLRWHost":    {c.MySQLRWHost, "localhost"},
 		"MySQLROHost":    {c.MySQLROHost, ""},
@@ -169,6 +172,21 @@ func TestLoadLLMChatURLBareURLOmitsModel(t *testing.T) {
 	}
 	if c.LLMChatURL != "http://localhost:8081/v1" {
 		t.Fatalf("LLMChatURL = %q, want http://localhost:8081/v1", c.LLMChatURL)
+	}
+}
+
+func TestLoadTTSURLParsesModelAtURLPairAndDefaultsToDisabled(t *testing.T) {
+	clearEnv(t)
+
+	c := Load()
+	if c.TTSURL != "" || c.TTSVoice != "" {
+		t.Fatalf("TTSURL/TTSVoice = %q/%q, want empty/empty (feature off) when BUDDY_TTS_URL is unset", c.TTSURL, c.TTSVoice)
+	}
+
+	t.Setenv("BUDDY_TTS_URL", "af_heart@http://localhost:8880/v1")
+	c = Load()
+	if c.TTSVoice != "af_heart" || c.TTSURL != "http://localhost:8880/v1" {
+		t.Fatalf("TTSVoice/TTSURL = %q/%q, want af_heart/http://localhost:8880/v1", c.TTSVoice, c.TTSURL)
 	}
 }
 

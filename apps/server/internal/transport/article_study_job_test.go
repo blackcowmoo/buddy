@@ -3,6 +3,10 @@ package transport
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,7 +16,70 @@ import (
 	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/newsarticle"
 	"buddy/server/internal/pipeline"
+	"buddy/server/internal/ttsstore"
 )
+
+// fakeSpeaker is a minimal tts.Speaker double — succeeds unless failWith is
+// set, and records every text it was asked to speak.
+type fakeSpeaker struct {
+	mu       sync.Mutex
+	failWith error
+	spoken   []string
+}
+
+func (f *fakeSpeaker) Speak(ctx context.Context, text string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failWith != nil {
+		return nil, f.failWith
+	}
+	f.spoken = append(f.spoken, text)
+	return []byte("audio-for:" + text), nil
+}
+
+func (f *fakeSpeaker) spokenTexts() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.spoken...)
+}
+
+// fakeCache is a minimal ttsstore.Cache double, backed by an in-memory map.
+type fakeCache struct {
+	mu      sync.Mutex
+	byKey   map[string][]byte
+	putErr  error
+	putCall int
+}
+
+func (f *fakeCache) Put(ctx context.Context, key string, audio []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.putCall++
+	if f.putErr != nil {
+		return f.putErr
+	}
+	if f.byKey == nil {
+		f.byKey = map[string][]byte{}
+	}
+	f.byKey[key] = audio
+	return nil
+}
+
+func (f *fakeCache) Open(ctx context.Context, key string) (io.ReadCloser, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	audio, ok := f.byKey[key]
+	if !ok {
+		return nil, ttsstore.ErrNotFound
+	}
+	return io.NopCloser(strings.NewReader(string(audio))), nil
+}
+
+func (f *fakeCache) putCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.putCall
+}
 
 // fakeNewsArticleStore is a minimal in-memory newsarticle.Store for these job
 // tests — real SQL behavior is covered by internal/newsarticle's own tests.
@@ -155,11 +222,113 @@ func TestRunArticleStudyCompletesAPendingArticle(t *testing.T) {
 	}
 	articles := newFakeNewsArticleStore(newsarticle.Article{ID: "a1", Source: "BBC", Title: "Headline", URL: "https://example.com/a", Status: newsarticle.StatusPending})
 
-	if err := RunArticleStudyInline(context.Background(), pipe, articles, "a1", "BBC", "Headline", "snippet"); err != nil {
+	if err := RunArticleStudyInline(context.Background(), pipe, articles, nil, "a1", "BBC", "Headline", "snippet"); err != nil {
 		t.Fatalf("RunArticleStudyInline() error = %v", err)
 	}
 	if got := articles.status("a1"); got != newsarticle.StatusDone {
 		t.Fatalf("status = %q, want %q", got, newsarticle.StatusDone)
+	}
+}
+
+// TestRunArticleStudyGeneratesAndCachesReadAloudAudio guards the whole
+// point of moving TTS server-side: a completed article's summary gets
+// synthesized and cached once, under the article-ID-scoped key every future
+// learner's audio request (see httpserver's article audio handler) will
+// look up — not per learner, per Instance.
+func TestRunArticleStudyGeneratesAndCachesReadAloudAudio(t *testing.T) {
+	pipe := &pipeline.Pipeline{
+		Analysis: []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{complete: fakeArticleStudyJSON}}},
+	}
+	articles := newFakeNewsArticleStore(newsarticle.Article{ID: "a1", Source: "BBC", Title: "Headline", URL: "https://example.com/a", Status: newsarticle.StatusPending})
+	speaker := &fakeSpeaker{}
+	cache := &fakeCache{}
+	audio := &ArticleAudio{Client: speaker, Cache: cache}
+
+	if err := RunArticleStudyInline(context.Background(), pipe, articles, audio, "a1", "BBC", "Headline", "snippet"); err != nil {
+		t.Fatalf("RunArticleStudyInline() error = %v", err)
+	}
+
+	wantText := "A short English study paragraph."
+	if got := speaker.spokenTexts(); len(got) != 1 || got[0] != wantText {
+		t.Fatalf("spoken texts = %v, want exactly [%q]", got, wantText)
+	}
+	rc, err := cache.Open(context.Background(), ArticleAudioKey("a1"))
+	if err != nil {
+		t.Fatalf("cache.Open(%q) error = %v, want the generated audio to be cached under that key", ArticleAudioKey("a1"), err)
+	}
+	defer rc.Close()
+	got, _ := io.ReadAll(rc)
+	if string(got) != "audio-for:"+wantText {
+		t.Fatalf("cached audio = %q, want %q", got, "audio-for:"+wantText)
+	}
+}
+
+// TestRunArticleStudySkipsGenerationWhenAudioIsNil guards the "BUDDY_TTS_URL
+// unset" default: no TTS call, no cache write, and — most importantly —
+// the article study job itself still succeeds.
+func TestRunArticleStudySkipsGenerationWhenAudioIsNil(t *testing.T) {
+	pipe := &pipeline.Pipeline{
+		Analysis: []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{complete: fakeArticleStudyJSON}}},
+	}
+	articles := newFakeNewsArticleStore(newsarticle.Article{ID: "a1", Source: "BBC", Title: "Headline", URL: "https://example.com/a", Status: newsarticle.StatusPending})
+
+	if err := RunArticleStudyInline(context.Background(), pipe, articles, nil, "a1", "BBC", "Headline", "snippet"); err != nil {
+		t.Fatalf("RunArticleStudyInline() error = %v, want nil audio to be a no-op, not a failure", err)
+	}
+	if got := articles.status("a1"); got != newsarticle.StatusDone {
+		t.Fatalf("status = %q, want %q (summary/quiz still succeed without TTS)", got, newsarticle.StatusDone)
+	}
+}
+
+// TestRunArticleStudySucceedsEvenWhenTTSGenerationFails guards the
+// "best-effort" contract: read-aloud is a bonus, not a requirement — a
+// failed Speak() call must never fail (or retry) the article study job
+// itself, since httpserver's audio handler covers a still-missing cache
+// entry by generating on demand later.
+func TestRunArticleStudySucceedsEvenWhenTTSGenerationFails(t *testing.T) {
+	pipe := &pipeline.Pipeline{
+		Analysis: []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{complete: fakeArticleStudyJSON}}},
+	}
+	articles := newFakeNewsArticleStore(newsarticle.Article{ID: "a1", Source: "BBC", Title: "Headline", URL: "https://example.com/a", Status: newsarticle.StatusPending})
+	audio := &ArticleAudio{Client: &fakeSpeaker{failWith: fmt.Errorf("tts server unreachable")}, Cache: &fakeCache{}}
+
+	if err := RunArticleStudyInline(context.Background(), pipe, articles, audio, "a1", "BBC", "Headline", "snippet"); err != nil {
+		t.Fatalf("RunArticleStudyInline() error = %v, want a TTS failure to be swallowed", err)
+	}
+	if got := articles.status("a1"); got != newsarticle.StatusDone {
+		t.Fatalf("status = %q, want %q", got, newsarticle.StatusDone)
+	}
+}
+
+// TestArticleAudioGenerateCachesUnderArticleAudioKey guards the exported
+// entry point httpserver's audio handler calls directly on a cache miss —
+// same generate-then-cache contract as the job's own best-effort path, but
+// propagating the error instead of swallowing it.
+func TestArticleAudioGenerateCachesUnderArticleAudioKey(t *testing.T) {
+	speaker := &fakeSpeaker{}
+	cache := &fakeCache{}
+	audio := &ArticleAudio{Client: speaker, Cache: cache}
+
+	got, err := audio.Generate(context.Background(), ArticleAudioKey("a2"), "hello there")
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if string(got) != "audio-for:hello there" {
+		t.Fatalf("Generate() = %q, want %q", got, "audio-for:hello there")
+	}
+	if cache.putCount() != 1 {
+		t.Fatalf("cache Put called %d times, want 1", cache.putCount())
+	}
+}
+
+// TestArticleAudioGeneratePropagatesSpeakerError guards that a real
+// generation failure surfaces to the caller (httpserver's audio handler
+// turns this into a 500) instead of silently caching nothing.
+func TestArticleAudioGeneratePropagatesSpeakerError(t *testing.T) {
+	audio := &ArticleAudio{Client: &fakeSpeaker{failWith: errors.New("boom")}, Cache: &fakeCache{}}
+
+	if _, err := audio.Generate(context.Background(), "k", "text"); err == nil {
+		t.Fatal("Generate() error = nil, want the Speak() failure to propagate")
 	}
 }
 
@@ -172,7 +341,7 @@ func TestRunArticleStudyPropagatesErrorAndMarksFailed(t *testing.T) {
 	}
 	articles := newFakeNewsArticleStore(newsarticle.Article{ID: "a1", Source: "BBC", Title: "Headline", URL: "https://example.com/a", Status: newsarticle.StatusPending})
 
-	if err := RunArticleStudyInline(context.Background(), pipe, articles, "a1", "BBC", "Headline", "snippet"); err == nil {
+	if err := RunArticleStudyInline(context.Background(), pipe, articles, nil, "a1", "BBC", "Headline", "snippet"); err == nil {
 		t.Fatal("expected an error when the LLM call fails")
 	}
 	if got := articles.status("a1"); got != newsarticle.StatusFailed {
@@ -192,7 +361,7 @@ func TestRunArticleStudyIsNoopForAlreadyDoneArticle(t *testing.T) {
 		ID: "a1", Status: newsarticle.StatusDone, Summary: "already there", Choices: []string{"a", "b", "c", "d"},
 	})
 
-	if err := RunArticleStudyInline(context.Background(), pipe, articles, "a1", "BBC", "Headline", "snippet"); err != nil {
+	if err := RunArticleStudyInline(context.Background(), pipe, articles, nil, "a1", "BBC", "Headline", "snippet"); err != nil {
 		t.Fatalf("RunArticleStudyInline() error = %v", err)
 	}
 	if calls != 0 {
@@ -206,7 +375,7 @@ func TestRunArticleStudyIsNoopForMissingArticle(t *testing.T) {
 	pipe := &pipeline.Pipeline{}
 	articles := newFakeNewsArticleStore()
 
-	if err := RunArticleStudyInline(context.Background(), pipe, articles, "does-not-exist", "BBC", "Headline", "snippet"); err != nil {
+	if err := RunArticleStudyInline(context.Background(), pipe, articles, nil, "does-not-exist", "BBC", "Headline", "snippet"); err != nil {
 		t.Fatalf("RunArticleStudyInline() error = %v, want nil for a missing article", err)
 	}
 }
@@ -226,7 +395,7 @@ func TestSweepStaleArticleStudiesResumesAbandonedGeneration(t *testing.T) {
 	})
 	articles.markStale("a-stale")
 
-	if err := SweepStaleArticleStudies(context.Background(), nil, pipe, articles); err != nil {
+	if err := SweepStaleArticleStudies(context.Background(), nil, pipe, articles, nil); err != nil {
 		t.Fatalf("SweepStaleArticleStudies() error = %v", err)
 	}
 	// queue is nil, so EnqueueOrRunInline resumes it on a detached goroutine
@@ -251,7 +420,7 @@ func TestSweepStaleArticleStudiesSkipsNonStalePending(t *testing.T) {
 		ID: "a-fresh", Source: "BBC", Title: "Headline", URL: "https://example.com/fresh", Status: newsarticle.StatusPending,
 	})
 
-	if err := SweepStaleArticleStudies(context.Background(), nil, pipe, articles); err != nil {
+	if err := SweepStaleArticleStudies(context.Background(), nil, pipe, articles, nil); err != nil {
 		t.Fatalf("SweepStaleArticleStudies() error = %v", err)
 	}
 	if calls != 0 {
@@ -260,7 +429,7 @@ func TestSweepStaleArticleStudiesSkipsNonStalePending(t *testing.T) {
 }
 
 func TestArticleStudyJobHandlerBadPayload(t *testing.T) {
-	handler := ArticleStudyJobHandler(&pipeline.Pipeline{}, newFakeNewsArticleStore())
+	handler := ArticleStudyJobHandler(&pipeline.Pipeline{}, newFakeNewsArticleStore(), nil)
 	job := asyncjob.Job{Kind: asyncjob.KindArticleStudy, Payload: json.RawMessage(`not json`)}
 	if err := handler(context.Background(), job); err == nil {
 		t.Fatalf("handler(bad payload) error = nil, want an unmarshal error")
@@ -277,7 +446,7 @@ func TestEnqueueArticleStudyJobRunsInBackgroundAndPersists(t *testing.T) {
 	}
 	articles := newFakeNewsArticleStore(newsarticle.Article{ID: "a-enqueue", Source: "BBC", Title: "Headline", URL: "https://example.com/enqueue", Status: newsarticle.StatusPending})
 
-	if err := EnqueueArticleStudyJob(context.Background(), queue, pipe, articles, "a-enqueue", "BBC", "Headline", "snippet"); err != nil {
+	if err := EnqueueArticleStudyJob(context.Background(), queue, pipe, articles, nil, "a-enqueue", "BBC", "Headline", "snippet"); err != nil {
 		t.Fatalf("EnqueueArticleStudyJob() error = %v", err)
 	}
 

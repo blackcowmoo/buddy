@@ -66,6 +66,17 @@ type Config struct {
 	LLMJudgeURL   string
 	LLMJudgeModel string
 
+	// TTS: an OpenAI-compatible /v1/audio/speech server (e.g. Kokoro-FastAPI)
+	// used to pre-generate "오늘의 아티클" read-aloud audio once per article
+	// (internal/transport's article study job) and, on demand, per chat
+	// message — both cached in S3 (see S3* below) so the same text is never
+	// resynthesized twice. Same "model@url" format as the LLM *_URL vars
+	// (TTSModel here names the voice, e.g. "af_heart"); empty URL (the
+	// zero-setup default) disables server-side TTS entirely, same
+	// "empty = feature off" convention as S3Bucket.
+	TTSVoice string
+	TTSURL   string
+
 	// Feedback language: the learner's native language for correction
 	// explanations (BCP-47-ish code, e.g. "ko", "en", "ja"). The corrected
 	// sentence itself always stays in the target language (English).
@@ -232,6 +243,7 @@ func Load() Config {
 	chatModel, chatURL := parseModelURLPair(env("BUDDY_LLM_CHAT_URL", "local-model@http://localhost:8081/v1"))
 	analysisModels, analysisURLs := parseModelURLPairs(env("BUDDY_LLM_ANALYSIS_URLS", "local-model@http://localhost:8081/v1"))
 	judgeModel, judgeURL := parseModelURLPair(env("BUDDY_LLM_JUDGE_URL", "local-model@http://localhost:8081/v1"))
+	ttsVoice, ttsURL := parseModelURLPair(env("BUDDY_TTS_URL", ""))
 
 	return Config{
 		Env:  env("BUDDY_ENV", "dev"),
@@ -258,6 +270,9 @@ func Load() Config {
 
 		LLMJudgeURL:   judgeURL,
 		LLMJudgeModel: judgeModel,
+
+		TTSVoice: ttsVoice,
+		TTSURL:   ttsURL,
 
 		FeedbackLang: env("BUDDY_FEEDBACK_LANG", "ko"),
 

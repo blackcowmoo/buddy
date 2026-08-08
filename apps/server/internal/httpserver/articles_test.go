@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,7 +16,45 @@ import (
 	"buddy/server/internal/newsarticle"
 	"buddy/server/internal/newsfeed"
 	"buddy/server/internal/pipeline"
+	"buddy/server/internal/transport"
+	"buddy/server/internal/ttsstore"
 )
+
+// fakeAudioSpeaker/fakeAudioCache are minimal tts.Speaker/ttsstore.Cache
+// doubles for articleAudioHandler tests — mirror internal/transport's own
+// fakeSpeaker/fakeCache (unexported there, so not reusable across packages).
+type fakeAudioSpeaker struct {
+	failWith error
+	calls    int
+}
+
+func (f *fakeAudioSpeaker) Speak(ctx context.Context, text string) ([]byte, error) {
+	f.calls++
+	if f.failWith != nil {
+		return nil, f.failWith
+	}
+	return []byte("audio-for:" + text), nil
+}
+
+type fakeAudioCache struct {
+	byKey map[string][]byte
+}
+
+func (f *fakeAudioCache) Put(ctx context.Context, key string, audio []byte) error {
+	if f.byKey == nil {
+		f.byKey = map[string][]byte{}
+	}
+	f.byKey[key] = audio
+	return nil
+}
+
+func (f *fakeAudioCache) Open(ctx context.Context, key string) (io.ReadCloser, error) {
+	audio, ok := f.byKey[key]
+	if !ok {
+		return nil, ttsstore.ErrNotFound
+	}
+	return io.NopCloser(strings.NewReader(string(audio))), nil
+}
 
 // fakeArticleStore is an in-memory newsarticle.Store for handler tests —
 // real SQL behavior (the URL-keyed cache upsert, the instance/article join)
@@ -272,7 +311,7 @@ func TestArticleDrawHandlerReservesPendingAndCompletesInBackground(t *testing.T)
 	st := &fakeArticleStore{}
 	pipe := fakeArticlePipeline(fakeStudyJSON)
 	fetch := fetchOneCandidate(newsfeed.Candidate{Source: "BBC", Title: "Headline", URL: "https://example.com/a", Description: "snippet"})
-	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil)
+	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil, nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
@@ -312,7 +351,7 @@ func TestArticleDrawHandlerCarriesPublishedAtFromTheCandidate(t *testing.T) {
 	pipe := fakeArticlePipeline(fakeStudyJSON)
 	published := time.Date(2024, 3, 15, 9, 30, 0, 0, time.UTC)
 	fetch := fetchOneCandidate(newsfeed.Candidate{Source: "BBC", Title: "Headline", URL: "https://example.com/a", Description: "snippet", PublishedAt: published})
-	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil)
+	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil, nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
@@ -336,7 +375,7 @@ func TestArticleDrawHandlerReusesCachedArticleWithoutCallingLLM(t *testing.T) {
 		return fakeStudyJSON, nil
 	}}}}}
 	fetch := fetchOneCandidate(newsfeed.Candidate{Source: "BBC", Title: "Headline", URL: "https://example.com/a", Description: "snippet"})
-	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil)
+	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil, nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
@@ -371,7 +410,7 @@ func TestArticleDrawHandlerPicksTheMostRecentCandidate(t *testing.T) {
 			{Source: "NPR", Title: "Older", URL: "https://example.com/older", Description: "d"},
 		}, nil
 	}
-	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil)
+	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil, nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
@@ -402,7 +441,7 @@ func TestArticleDrawHandlerExcludesAlreadyUsedArticles(t *testing.T) {
 	fetch := func(context.Context) ([]newsfeed.Candidate, error) {
 		return []newsfeed.Candidate{{Source: "BBC", Title: "Old", URL: "https://example.com/used", Description: "d"}}, nil
 	}
-	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil)
+	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil, nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
@@ -413,14 +452,14 @@ func TestArticleDrawHandlerExcludesAlreadyUsedArticles(t *testing.T) {
 }
 
 func TestArticleDrawHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
-	h := articleDrawHandler(fakeIdentifier{ok: false}, &fakeArticleStore{}, fakeArticlePipeline(fakeStudyJSON), fetchOneCandidate(newsfeed.Candidate{URL: "https://example.com/a"}), nil)
+	h := articleDrawHandler(fakeIdentifier{ok: false}, &fakeArticleStore{}, fakeArticlePipeline(fakeStudyJSON), fetchOneCandidate(newsfeed.Candidate{URL: "https://example.com/a"}), nil, nil)
 
 	assertUnauthorized(t, h, httptest.NewRequest("POST", "/api/articles/draw", nil))
 }
 
 func TestArticleDrawHandlerInternalErrorOnFetchFailure(t *testing.T) {
 	fetch := func(context.Context) ([]newsfeed.Candidate, error) { return nil, errors.New("all feeds down") }
-	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, &fakeArticleStore{}, fakeArticlePipeline(fakeStudyJSON), fetch, nil)
+	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, &fakeArticleStore{}, fakeArticlePipeline(fakeStudyJSON), fetch, nil, nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
@@ -559,6 +598,126 @@ func TestArticleInstanceHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
 	req := httptest.NewRequest("GET", "/api/articles/i1", nil)
 	req.SetPathValue("id", "i1")
 	assertUnauthorized(t, h, req)
+}
+
+// ---- articleAudioHandler -----------------------------------------------------
+
+func TestArticleAudioHandlerServesCachedAudioWithoutGenerating(t *testing.T) {
+	st := &fakeArticleStore{byUser: map[string][]newsarticle.Instance{
+		"alex": {{ID: "i1", UserID: "alex", Article: newsarticle.Article{ID: "a1", Status: newsarticle.StatusDone, Summary: "hello"}, CreatedAt: time.Now()}},
+	}}
+	speaker := &fakeAudioSpeaker{}
+	cache := &fakeAudioCache{byKey: map[string][]byte{transport.ArticleAudioKey("a1"): []byte("cached-mp3-bytes")}}
+	h := articleAudioHandler(fakeIdentifier{id: "alex", ok: true}, st, &transport.ArticleAudio{Client: speaker, Cache: cache})
+
+	req := httptest.NewRequest("GET", "/api/articles/i1/audio", nil)
+	req.SetPathValue("id", "i1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	requireStatus(t, rec, http.StatusOK)
+	if rec.Body.String() != "cached-mp3-bytes" {
+		t.Fatalf("body = %q, want the cached bytes served as-is", rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "audio/mpeg" {
+		t.Errorf("Content-Type = %q, want audio/mpeg", ct)
+	}
+	if speaker.calls != 0 {
+		t.Fatalf("Speak() called %d times, want 0 — a cache hit must never regenerate", speaker.calls)
+	}
+}
+
+// TestArticleAudioHandlerGeneratesOnCacheMiss guards the "regenerate on
+// next read" half of the TTL spec: never generated yet (or swept past its
+// TTL — same ttsstore.ErrNotFound either way) falls back to generating on
+// the spot instead of 404ing.
+func TestArticleAudioHandlerGeneratesOnCacheMiss(t *testing.T) {
+	st := &fakeArticleStore{byUser: map[string][]newsarticle.Instance{
+		"alex": {{ID: "i1", UserID: "alex", Article: newsarticle.Article{ID: "a1", Status: newsarticle.StatusDone, Summary: "hello there"}, CreatedAt: time.Now()}},
+	}}
+	speaker := &fakeAudioSpeaker{}
+	cache := &fakeAudioCache{}
+	h := articleAudioHandler(fakeIdentifier{id: "alex", ok: true}, st, &transport.ArticleAudio{Client: speaker, Cache: cache})
+
+	req := httptest.NewRequest("GET", "/api/articles/i1/audio", nil)
+	req.SetPathValue("id", "i1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	requireStatus(t, rec, http.StatusOK)
+	if rec.Body.String() != "audio-for:hello there" {
+		t.Fatalf("body = %q, want freshly generated audio for the article's summary", rec.Body.String())
+	}
+	if speaker.calls != 1 {
+		t.Fatalf("Speak() called %d times, want exactly 1", speaker.calls)
+	}
+	if _, ok := cache.byKey[transport.ArticleAudioKey("a1")]; !ok {
+		t.Fatal("freshly generated audio was not cached for the next request")
+	}
+}
+
+func TestArticleAudioHandlerServiceUnavailableWhenTTSNotConfigured(t *testing.T) {
+	st := &fakeArticleStore{byUser: map[string][]newsarticle.Instance{
+		"alex": {{ID: "i1", UserID: "alex", Article: newsarticle.Article{ID: "a1", Status: newsarticle.StatusDone, Summary: "hello"}, CreatedAt: time.Now()}},
+	}}
+	h := articleAudioHandler(fakeIdentifier{id: "alex", ok: true}, st, nil)
+
+	req := httptest.NewRequest("GET", "/api/articles/i1/audio", nil)
+	req.SetPathValue("id", "i1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	requireStatus(t, rec, http.StatusServiceUnavailable)
+}
+
+func TestArticleAudioHandlerConflictWhileStillPending(t *testing.T) {
+	st := &fakeArticleStore{byUser: map[string][]newsarticle.Instance{
+		"alex": {{ID: "i1", UserID: "alex", Article: newsarticle.Article{ID: "a1", Status: newsarticle.StatusPending}, CreatedAt: time.Now()}},
+	}}
+	h := articleAudioHandler(fakeIdentifier{id: "alex", ok: true}, st, &transport.ArticleAudio{Client: &fakeAudioSpeaker{}, Cache: &fakeAudioCache{}})
+
+	req := httptest.NewRequest("GET", "/api/articles/i1/audio", nil)
+	req.SetPathValue("id", "i1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	requireStatus(t, rec, http.StatusConflict)
+}
+
+func TestArticleAudioHandlerNotFoundForMissingOrOtherUsersInstance(t *testing.T) {
+	h := articleAudioHandler(fakeIdentifier{id: "alex", ok: true}, &fakeArticleStore{}, &transport.ArticleAudio{Client: &fakeAudioSpeaker{}, Cache: &fakeAudioCache{}})
+
+	req := httptest.NewRequest("GET", "/api/articles/missing/audio", nil)
+	req.SetPathValue("id", "missing")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	requireStatus(t, rec, http.StatusNotFound)
+}
+
+func TestArticleAudioHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
+	h := articleAudioHandler(fakeIdentifier{ok: false}, &fakeArticleStore{}, &transport.ArticleAudio{Client: &fakeAudioSpeaker{}, Cache: &fakeAudioCache{}})
+
+	req := httptest.NewRequest("GET", "/api/articles/i1/audio", nil)
+	req.SetPathValue("id", "i1")
+	assertUnauthorized(t, h, req)
+}
+
+func TestArticleAudioHandlerGenerationFailureIsServerError(t *testing.T) {
+	st := &fakeArticleStore{byUser: map[string][]newsarticle.Instance{
+		"alex": {{ID: "i1", UserID: "alex", Article: newsarticle.Article{ID: "a1", Status: newsarticle.StatusDone, Summary: "hello"}, CreatedAt: time.Now()}},
+	}}
+	h := articleAudioHandler(fakeIdentifier{id: "alex", ok: true}, st, &transport.ArticleAudio{
+		Client: &fakeAudioSpeaker{failWith: errors.New("tts unreachable")},
+		Cache:  &fakeAudioCache{},
+	})
+
+	req := httptest.NewRequest("GET", "/api/articles/i1/audio", nil)
+	req.SetPathValue("id", "i1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	requireStatus(t, rec, http.StatusInternalServerError)
 }
 
 // ---- articleInstancesListHandler / articleDeleteHandler --------------------

@@ -2,6 +2,9 @@ package httpserver
 
 import (
 	"context"
+	"errors"
+	"io"
+	"log"
 	"net/http"
 
 	"buddy/server/internal/asyncjob"
@@ -10,6 +13,7 @@ import (
 	"buddy/server/internal/newsfeed"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/transport"
+	"buddy/server/internal/ttsstore"
 )
 
 // articleListItem mirrors one newsarticle.Instance for the "오늘의 아티클" list
@@ -168,7 +172,7 @@ func articleInstancesListHandler(ident identity.Identifier, articles newsarticle
 // taking it as a parameter, rather than calling the package function
 // directly, is what lets handler tests substitute a fake feed without
 // reaching the real internet.
-func articleDrawHandler(ident identity.Identifier, articles newsarticle.Store, pipe *pipeline.Pipeline, fetchCandidates func(context.Context) ([]newsfeed.Candidate, error), articleStudyQueue *asyncjob.Queue) http.HandlerFunc {
+func articleDrawHandler(ident identity.Identifier, articles newsarticle.Store, pipe *pipeline.Pipeline, fetchCandidates func(context.Context) ([]newsfeed.Candidate, error), articleStudyQueue *asyncjob.Queue, audio *transport.ArticleAudio) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)
 		if !ok {
@@ -209,11 +213,11 @@ func articleDrawHandler(ident identity.Identifier, articles newsarticle.Store, p
 			asyncjob.EnqueueOrRunInline(articleStudyQueue, r.Context(),
 				"articles: enqueue study "+article.ID,
 				func(ctx context.Context) error {
-					return transport.EnqueueArticleStudyJob(ctx, articleStudyQueue, pipe, articles, article.ID, pick.Source, pick.Title, pick.Description)
+					return transport.EnqueueArticleStudyJob(ctx, articleStudyQueue, pipe, articles, audio, article.ID, pick.Source, pick.Title, pick.Description)
 				},
 				"articles: study "+article.ID,
 				func(ctx context.Context) error {
-					return transport.RunArticleStudyInline(ctx, pipe, articles, article.ID, pick.Source, pick.Title, pick.Description)
+					return transport.RunArticleStudyInline(ctx, pipe, articles, audio, article.ID, pick.Source, pick.Title, pick.Description)
 				},
 			)
 		}
@@ -300,6 +304,67 @@ func articleAnswerHandler(ident identity.Identifier, articles newsarticle.Store)
 			return
 		}
 		writeJSON(w, toArticleResult(inst))
+	}
+}
+
+// articleAudioHandler serves this article's read-aloud audio — generated
+// once per shared Article (see transport.ArticleAudio, hooked into the
+// article study job right after its summary completes) and cached in S3
+// (see internal/ttsstore), so every learner who's drawn this same story
+// gets it from cache instead of it being regenerated per instance/learner.
+// A cache miss — never pre-generated (e.g. the job's best-effort attempt
+// failed), or swept past its TTL (see ttsstore.Store.SweepExpired) — falls
+// back to generating on the spot instead of 404ing, buffering the whole
+// thing before responding since Kokoro-FastAPI's non-streaming response
+// doesn't report a size up front either way. Scoped to the caller's own
+// instance the same way articleInstanceHandler is, even though the
+// underlying audio is shared, so a learner can't probe another's article ID
+// unless they've actually drawn it too.
+func articleAudioHandler(ident identity.Identifier, articles newsarticle.Store, audio *transport.ArticleAudio) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if audio == nil {
+			http.Error(w, "read-aloud is not configured", http.StatusServiceUnavailable)
+			return
+		}
+		userID, ok := requireUser(w, r, ident)
+		if !ok {
+			return
+		}
+		inst, err := articles.Get(r.Context(), userID, r.PathValue("id"))
+		if err != nil {
+			serverError(w, "articles: audio get "+userID, err)
+			return
+		}
+		if inst.ID == "" {
+			http.NotFound(w, r)
+			return
+		}
+		if inst.Article.Status != newsarticle.StatusDone {
+			http.Error(w, "article study still generating", http.StatusConflict)
+			return
+		}
+
+		key := transport.ArticleAudioKey(inst.Article.ID)
+		body, err := audio.Cache.Open(r.Context(), key)
+		if errors.Is(err, ttsstore.ErrNotFound) {
+			generated, genErr := audio.Generate(r.Context(), key, inst.Article.Summary)
+			if genErr != nil {
+				serverError(w, "articles: audio generate "+inst.Article.ID, genErr)
+				return
+			}
+			w.Header().Set("Content-Type", "audio/mpeg")
+			w.Write(generated)
+			return
+		}
+		if err != nil {
+			serverError(w, "articles: audio open "+inst.Article.ID, err)
+			return
+		}
+		defer body.Close()
+		w.Header().Set("Content-Type", "audio/mpeg")
+		if _, err := io.Copy(w, body); err != nil {
+			log.Printf("articles: audio stream %s: %v", inst.Article.ID, err)
+		}
 	}
 }
 

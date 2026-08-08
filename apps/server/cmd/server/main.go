@@ -25,6 +25,8 @@ import (
 	"buddy/server/internal/store"
 	"buddy/server/internal/stt"
 	"buddy/server/internal/transport"
+	"buddy/server/internal/tts"
+	"buddy/server/internal/ttsstore"
 	"buddy/server/internal/webassets"
 	"buddy/server/internal/wordreview"
 
@@ -150,6 +152,12 @@ func main() {
 	articles := buildNewsArticleStore(context.Background(), st)
 	defer articles.Close()
 
+	// "오늘의 아티클" read-aloud + (on demand) chat message read-aloud TTS:
+	// optional, disabled unless both BUDDY_TTS_URL and S3Bucket are set (see
+	// buildArticleAudio) — same "zero setup by default" convention as
+	// recordings below.
+	articleAudio := buildArticleAudio(context.Background(), cfg, st)
+
 	// Word verification: fact-checks a word/phrase right after "학습하기"
 	// saves it Pending (see httpserver.wordSaveHandler) or after a
 	// vocabulary/phrasing correction auto-captures it (see
@@ -171,7 +179,7 @@ func main() {
 	var articleStudyQueue *asyncjob.Queue
 	if rdb != nil {
 		articleStudyQueue = startWorker(rdb, jobsCtx, asyncjob.KindArticleStudy, transport.ArticleStudyWorkerConcurrency, transport.ArticleStudyClaimTTL,
-			transport.ArticleStudyJobHandler(pipe, articles))
+			transport.ArticleStudyJobHandler(pipe, articles, articleAudio))
 	}
 	// DB-only orphan sweep for article-study generation: runs regardless of
 	// whether Redis/articleStudyQueue is configured, since it's the only
@@ -179,7 +187,7 @@ func main() {
 	// redeploy killing the in-process fallback goroutine EnqueueOrRunInline
 	// uses when articleStudyQueue is nil) when there's no durable Redis claim
 	// to reap in the first place — see transport.RunArticleStudySweepLoop.
-	go transport.RunArticleStudySweepLoop(jobsCtx, articleStudyQueue, pipe, articles)
+	go transport.RunArticleStudySweepLoop(jobsCtx, articleStudyQueue, pipe, articles, articleAudio)
 
 	// Word auto-add generation: generates a batch of new words fit to the
 	// learner's profile in the background (see httpserver.wordAutoAddHandler),
@@ -275,7 +283,7 @@ func main() {
 		defer recordings.Close()
 	}
 
-	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, wordReviews, articles, wordVerifyQueue, translateQueue, correctionBackfillQueue, studySummaryQueue, studyQuizQueue, profileRegenerateQueue, articleStudyQueue, wordAutoAddQueue)
+	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, wordReviews, articles, wordVerifyQueue, translateQueue, correctionBackfillQueue, studySummaryQueue, studyQuizQueue, profileRegenerateQueue, articleStudyQueue, wordAutoAddQueue, articleAudio)
 
 	go func() {
 		log.Printf("buddy up on %s  env=%s  stt=%v  feedback=%s",
@@ -371,6 +379,37 @@ func buildRecordingStore(ctx context.Context, cfg config.Config, st *store.MySQL
 		log.Fatalf("recording store: %v", err)
 	}
 	return rec
+}
+
+// buildArticleAudio builds the "오늘의 아티클"/chat message read-aloud TTS
+// pipeline (internal/tts's Kokoro-FastAPI client + internal/ttsstore's S3
+// cache) when both BUDDY_TTS_URL and S3Bucket are set, or returns nil
+// (read-aloud generation disabled — articleDrawHandler simply skips
+// pre-generation and articleAudioHandler answers 503) otherwise, the same
+// optional-feature convention as buildRecordingStore. Shares cfg's S3_*
+// settings and st's MySQL pools with internal/recording — see
+// config.Config's TTSURL doc comment for why generated audio piggybacks on
+// the same bucket rather than needing its own.
+func buildArticleAudio(ctx context.Context, cfg config.Config, st *store.MySQLStore) *transport.ArticleAudio {
+	if cfg.TTSURL == "" || cfg.S3Bucket == "" {
+		return nil
+	}
+	rw, ro := st.DB()
+	cache, err := ttsstore.New(ctx, ttsstore.Config{
+		Endpoint:     cfg.S3Endpoint,
+		PathStyle:    cfg.S3PathStyle,
+		AccessKey:    cfg.S3AccessKey,
+		SecretKey:    cfg.S3SecretKey,
+		Bucket:       cfg.S3Bucket,
+		StorageClass: cfg.S3StorageClass,
+	}, rw, ro)
+	if err != nil {
+		log.Fatalf("tts cache: %v", err)
+	}
+	return &transport.ArticleAudio{
+		Client: tts.NewKokoro(cfg.TTSURL, cfg.TTSVoice, ""),
+		Cache:  cache,
+	}
 }
 
 // buildWordReviewStore builds the spaced-repetition study-list store

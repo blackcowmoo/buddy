@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { confirmThenDelete } from "../lib/confirmDelete";
 import {
   answerArticle,
+  articleAudioURL,
   deleteArticleInstance,
   drawArticle,
   fetchArticleInstance,
@@ -14,7 +15,6 @@ import { formatAbsoluteDate, formatDateDivider, formatMessageTime, shouldShowDat
 import { quizChoiceClass } from "../lib/quizCheck";
 import { SubPageHeader } from "../components/SubPageHeader";
 import { usePollScaffold } from "../hooks/usePollScaffold";
-import { KokoroSpeaker } from "../tts/kokoro";
 
 // How often to re-check a draw that's still generating in the background
 // (see asyncjob.KindArticleStudy) — a poll, not a push, since nothing on the
@@ -31,16 +31,18 @@ type LoadState = "loading" | "ready" | "error";
 type View = "reading" | "quiz" | "result" | null;
 
 type DrawState = "idle" | "drawing" | "noMore" | "error";
-type TtsState = "idle" | "loading" | "generating" | "speaking" | "error";
+type TtsState = "idle" | "loading" | "speaking" | "error";
 
 // "오늘의 아티클": draws a news article the learner hasn't seen before (see
 // lib/articles.ts's drawArticle, which excludes every article already drawn
 // — no daily limit, only repeats are excluded), shows an English study
-// paragraph to read (with an optional Kokoro read-aloud for listening
-// practice, reusing the same client-side TTS as per-message playback in
-// App.tsx), then a native-language multiple-choice comprehension check.
-// Past attempts live in their own list here, the same "instant, unlimited,
-// own list" shape as InstantSessions.tsx.
+// paragraph to read (with an optional read-aloud for listening practice —
+// audio generated and cached server-side once per shared article, see
+// lib/articles.ts's articleAudioURL, unlike App.tsx's per-message chat
+// read-aloud, which is still generated client-side since each reply is
+// unique to that conversation), then a native-language multiple-choice
+// comprehension check. Past attempts live in their own list here, the same
+// "instant, unlimited, own list" shape as InstantSessions.tsx.
 export function ArticleQuiz() {
   const [state, setState] = useState<LoadState>("loading");
   const [instances, setInstances] = useState<ArticleInstance[]>([]);
@@ -50,7 +52,7 @@ export function ArticleQuiz() {
   const [selected, setSelected] = useState<number | null>(null);
   const [result, setResult] = useState<ArticleAnswerResult | null>(null);
   const [tts, setTts] = useState<TtsState>("idle");
-  const speakerRef = useRef<KokoroSpeaker | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   // Poll scaffolding for a draw still generating in the background (see
   // usePollScaffold's doc comment). Losing this component (navigating away,
@@ -59,10 +61,6 @@ export function ArticleQuiz() {
   // comment); reopening this page and tapping the still-pending row resumes
   // watching.
   const { tokenRef: pollTokenRef, schedulePoll } = usePollScaffold();
-
-  useEffect(() => {
-    speakerRef.current = new KokoroSpeaker();
-  }, []);
 
   // Polls one draw's status until it leaves "pending"/"failed" — started
   // right after a fresh draw, or when reopening a still-generating row from
@@ -138,32 +136,33 @@ export function ArticleQuiz() {
     [pollDraw],
   );
 
-  // Lazy-loads the kokoro-82M model on first use (same pattern as App.tsx's
-  // playMessage/loadVoice), then reads the English summary aloud at native
-  // speed — the listening-practice half of this feature, alongside reading.
-  const handleRead = useCallback(async () => {
-    const sp = speakerRef.current;
-    if (!sp || !draw) return;
-    sp.unlock(); // must run synchronously in this click, before load()/speak() await
+  // Plays the English summary's read-aloud audio — generated and cached
+  // server-side once per shared article (see lib/articles.ts's
+  // articleAudioURL), so this is just pointing a plain <audio> element at
+  // it, the same "src + play(), let the browser handle buffering" shape as
+  // Recordings.tsx's playback. "loading"/"speaking" are driven by the
+  // element's own buffering/playing events (below) rather than tracked by
+  // hand, so the label never claims audio is playing before it actually is.
+  const handleRead = useCallback(() => {
+    const el = audioRef.current;
+    if (!el || !draw) return;
+    // Must run synchronously in this click, before play() — see
+    // ArticleQuiz.test.tsx's regression guard and kokoro.ts's unlock() for
+    // the same reasoning: mixes with (never pauses) music already playing
+    // in another app, at the cost of going silent while the hardware
+    // ring/silent switch is on.
+    const session = navigator.audioSession;
+    if (session) session.type = "ambient";
     setTts("loading");
-    try {
-      if (!sp.loaded) await sp.load();
-      // Generation (phonemize + tokenize + the ONNX forward pass) is most of
-      // this call's latency and has been observed to take tens of seconds —
-      // "speaking" only becomes true once audio actually starts, via
-      // onPlaybackStart, so the label doesn't claim playback that hasn't
-      // started yet.
-      setTts("generating");
-      await sp.speak(draw.summary, 1, () => setTts("speaking"));
-      setTts("idle");
-    } catch (err) {
+    el.src = articleAudioURL(draw.id);
+    el.play().catch((err) => {
       console.error("tts:", err);
-      // Show the failure briefly instead of silently reverting to the
-      // idle "🔊 읽어주기" label, which reads as if nothing was ever
-      // pressed even though playback genuinely failed.
+      // Show the failure briefly instead of silently reverting to the idle
+      // "🔊 읽어주기" label, which reads as if nothing was ever pressed even
+      // though playback genuinely failed.
       setTts("error");
       setTimeout(() => setTts("idle"), 2000);
-    }
+    });
   }, [draw]);
 
   const startQuiz = useCallback(() => setView("quiz"), []);
@@ -276,29 +275,39 @@ export function ArticleQuiz() {
             {draw.status === "done" ? (
               <>
                 <p className="article-summary">{draw.summary}</p>
+                <audio
+                  ref={audioRef}
+                  style={{ display: "none" }}
+                  onPlaying={() => setTts("speaking")}
+                  onWaiting={() => setTts("loading")}
+                  onEnded={() => setTts("idle")}
+                  onError={() => {
+                    setTts("error");
+                    setTimeout(() => setTts("idle"), 2000);
+                  }}
+                />
                 <button
                   type="button"
                   className="ghost article-read-aloud-btn"
-                  onClick={() => void handleRead()}
+                  onClick={handleRead}
                   disabled={tts !== "idle"}
                 >
                   {tts === "loading"
                     ? "불러오는 중…"
-                    : tts === "generating"
-                      ? "생성 중…"
-                      : tts === "speaking"
-                        ? "재생 중…"
-                        : tts === "error"
-                          ? "재생 실패, 다시 시도해주세요"
-                          : "🔊 읽어주기"}
+                    : tts === "speaking"
+                      ? "재생 중…"
+                      : tts === "error"
+                        ? "재생 실패, 다시 시도해주세요"
+                        : "🔊 읽어주기"}
                 </button>
                 {tts === "speaking" && (
-                  // Read-aloud deliberately mixes with (never pauses) music
-                  // already playing in another app — see KokoroSpeaker.
-                  // unlock()'s doc comment — which means it inherits the
-                  // same rule as any other ambient sound: silenced while the
-                  // hardware ring/silent switch is on. Called out here so
-                  // that reads as expected, not as broken playback.
+                  // Read-aloud deliberately requests the "ambient" audio
+                  // session type (see handleRead) so it mixes with — never
+                  // pauses — music already playing in another app, which
+                  // means it inherits the same rule as any other ambient
+                  // sound: silenced while the hardware ring/silent switch is
+                  // on. Called out here so that reads as expected, not as
+                  // broken playback.
                   <p className="hint">무음 스위치가 켜져 있으면 읽어주기 소리가 나지 않아요.</p>
                 )}
                 <button type="button" className="quiz-start-btn" onClick={startQuiz}>

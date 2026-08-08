@@ -59,8 +59,12 @@ import (
 // wordAutoAddQueue is nil the same optional way as wordVerifyQueue —
 // wordAutoAddHandler falls back to running pipeline.SuggestNewWords inline,
 // on its own detached goroutine, instead of durably queuing it (see
-// transport.EnqueueWordAutoAddJob).
-func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, words wordreview.Store, articles newsarticle.Store, wordVerifyQueue *asyncjob.Queue, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue, studySummaryQueue *asyncjob.Queue, studyQuizQueue *asyncjob.Queue, profileRegenerateQueue *asyncjob.Queue, articleStudyQueue *asyncjob.Queue, wordAutoAddQueue *asyncjob.Queue) *http.Server {
+// transport.EnqueueWordAutoAddJob). articleAudio is nil unless BUDDY_TTS_URL
+// is set — same optional-feature convention as recordings/audio above (see
+// config.Config's TTSURL doc comment) — articleDrawHandler simply skips
+// read-aloud pre-generation and articleAudioHandler answers 503, instead of
+// each needing its own separate on/off signal.
+func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, words wordreview.Store, articles newsarticle.Store, wordVerifyQueue *asyncjob.Queue, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue, studySummaryQueue *asyncjob.Queue, studyQuizQueue *asyncjob.Queue, profileRegenerateQueue *asyncjob.Queue, articleStudyQueue *asyncjob.Queue, wordAutoAddQueue *asyncjob.Queue, articleAudio *transport.ArticleAudio) *http.Server {
 	mux := http.NewServeMux()
 
 	// Realtime + API first (exact patterns win over the "/" catch-all).
@@ -102,8 +106,9 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux.HandleFunc("GET /api/recordings/{id}/audio", recordingAudioHandler(ident, recordings))
 	mux.HandleFunc("DELETE /api/recordings/{id}", recordingDeleteHandler(ident, audio, recordings))
 	mux.HandleFunc("GET /api/articles", articleInstancesListHandler(ident, articles))
-	mux.HandleFunc("POST /api/articles/draw", articleDrawHandler(ident, articles, pipe, newsfeed.FetchCandidates, articleStudyQueue))
+	mux.HandleFunc("POST /api/articles/draw", articleDrawHandler(ident, articles, pipe, newsfeed.FetchCandidates, articleStudyQueue, articleAudio))
 	mux.HandleFunc("GET /api/articles/{id}", articleInstanceHandler(ident, articles))
+	mux.HandleFunc("GET /api/articles/{id}/audio", articleAudioHandler(ident, articles, articleAudio))
 	mux.HandleFunc("POST /api/articles/{id}/answer", articleAnswerHandler(ident, articles))
 	mux.HandleFunc("DELETE /api/articles/{id}", articleDeleteHandler(ident, articles))
 	registerStalePRRedirect(mux, cfg.RootPath)
