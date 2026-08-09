@@ -96,6 +96,45 @@ func TestSuggestNewWordsPropagatesLLMError(t *testing.T) {
 	}
 }
 
+// ---- DefineWord() -----------------------------------------------------------
+
+func TestDefineWordParsesDefinition(t *testing.T) {
+	var gotInput string
+	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		gotInput = msgs[len(msgs)-1].Content
+		return `{"word":"resilient","meaning":"회복력이 있는","example":"She stayed resilient through the setback."}`, nil
+	}}, ChatModel: "m", FeedbackLang: "ko"}
+	got, err := p.DefineWord(context.Background(), "resilient", "She stayed resilient through the setback.")
+	if err != nil {
+		t.Fatalf("DefineWord() error = %v", err)
+	}
+	if !strings.Contains(gotInput, "resilient") || !strings.Contains(gotInput, "She stayed resilient") {
+		t.Fatalf("input sent to the model = %q, want it to include both the word and its context", gotInput)
+	}
+	want := protocol.WordSuggestion{Word: "resilient", Meaning: "회복력이 있는", Example: "She stayed resilient through the setback."}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("DefineWord() = %+v, want %+v", got, want)
+	}
+}
+
+func TestDefineWordPropagatesLLMError(t *testing.T) {
+	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		return "", errors.New("down")
+	}}, ChatModel: "m"}
+	if _, err := p.DefineWord(context.Background(), "resilient", "context"); err == nil {
+		t.Fatal("expected an error when the LLM call fails")
+	}
+}
+
+func TestDefineWordRejectsBadJSON(t *testing.T) {
+	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		return "not json", nil
+	}}, ChatModel: "m"}
+	if _, err := p.DefineWord(context.Background(), "resilient", "context"); err == nil {
+		t.Fatal("expected an error when the model's reply isn't valid JSON")
+	}
+}
+
 func TestSuggestNewWordsRejectsBadJSON(t *testing.T) {
 	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 		return "not json", nil

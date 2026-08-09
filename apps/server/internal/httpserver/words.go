@@ -230,6 +230,55 @@ func wordSuggestHandler(ident identity.Identifier, pipe *pipeline.Pipeline) http
 	}
 }
 
+// maxWordDefineContextLen caps the passage a learner's tapped word came
+// from, same abuse-guard reasoning as maxWordQueryLen — generous enough for
+// an article's full study paragraph (see ArticleQuiz.tsx), which is the only
+// caller today.
+const maxWordDefineContextLen = 2000
+
+// wordDefineHandler asks pipeline.DefineWord to define one English
+// word/phrase the learner already knows exactly — tapped in an article's
+// reading view (see ArticleQuiz.tsx) — rather than described vaguely in
+// their native language (that's wordSuggestHandler). Synchronous, same
+// latency/nothing-durable reasoning as wordSuggestHandler; returns a single
+// WordSuggestion (not wrapped in a list) since there's exactly one word to
+// define. The frontend saves it via the existing POST /api/words/save, same
+// as a wordSuggestHandler result — this endpoint only looks a word up, it
+// never persists anything itself.
+func wordDefineHandler(ident identity.Identifier, pipe *pipeline.Pipeline) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		_, ok := requireUser(w, r, ident)
+		if !ok {
+			return
+		}
+		var body struct {
+			Word    string `json:"word"`
+			Context string `json:"context"`
+		}
+		if !decodeJSON(w, r, &body) {
+			return
+		}
+		word := strings.TrimSpace(body.Word)
+		wordContext := strings.TrimSpace(body.Context)
+		if word == "" {
+			http.Error(w, "word is required", http.StatusBadRequest)
+			return
+		}
+		if !requireMaxRunes(w, word, maxWordLen, "word is too long") {
+			return
+		}
+		if !requireMaxRunes(w, wordContext, maxWordDefineContextLen, fmt.Sprintf("context exceeds %d characters", maxWordDefineContextLen)) {
+			return
+		}
+		suggestion, err := pipe.DefineWord(r.Context(), word, wordContext)
+		if err != nil {
+			serverError(w, "define word", err)
+			return
+		}
+		writeJSON(w, suggestion)
+	}
+}
+
 // wordAutoAddStatus is what wordAutoAddHandler/wordAutoAddStatusHandler
 // return — mirrors articleDraw's "come back immediately, poll for the
 // result" shape. Status is store.JobStatusPending/Done/Failed, or "" if no

@@ -56,6 +56,49 @@ Rules:
 - If the description is too vague to suggest anything meaningful, return an empty "suggestions" array rather than guessing wildly.`, native)
 }
 
+// DefineWord asks the chat model to define one English word/phrase a learner
+// tapped while reading (see httpserver.wordDefineHandler, ArticleQuiz.tsx's
+// clickable article summary) in the sentence it actually appeared in. Unlike
+// SuggestWords (a vague native-language description -> several English
+// candidates), the word here is already known exactly, so this returns a
+// single protocol.WordSuggestion rather than a list — reusing the same wire
+// type keeps httpserver.wordSaveHandler's {word, meaning, example} shape and
+// lib/wordReview.ts's saveWord() usable unchanged for this entry point too.
+// Same single fast-call tier as SuggestWords: this backs an interactive tap
+// mid-reading, not a background job.
+func (p *Pipeline) DefineWord(ctx context.Context, word, passage string) (protocol.WordSuggestion, error) {
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: wordDefineSystemPrompt(p.FeedbackLang)},
+		{Role: llm.RoleUser, Content: fmt.Sprintf("word: %s\ncontext: %s", word, passage)},
+	}
+	raw, err := p.LLM.Complete(ctx, p.ChatModel, msgs, true)
+	if err != nil {
+		return protocol.WordSuggestion{}, err
+	}
+	parsed, err := parseJSON[protocol.WordSuggestion](raw, "word definition")
+	if err != nil {
+		return protocol.WordSuggestion{}, err
+	}
+	return parsed, nil
+}
+
+// wordDefineSystemPrompt builds DefineWord's prompt, reusing the same
+// native-language config as wordSuggestionSystemPrompt.
+func wordDefineSystemPrompt(lang string) string {
+	native := languageName(lang)
+	return fmt.Sprintf(`You help a %[1]s-speaking English learner who tapped an English word or
+short phrase while reading, because they don't know it.
+You will be given "word" (the exact English word/phrase they tapped) and
+"context" (the passage it appeared in). Define "word" as it is actually used
+in that context.
+Return STRICT JSON only, no prose, in exactly this shape:
+{"word":"<the word/phrase, corrected to its dictionary form if "word" was an inflected form found in "context">","meaning":"<brief %[1]s gloss, specific to how it's used in "context">","example":"<one example English sentence using "word", may reuse the sentence from "context">"}
+Rules:
+- "word" MUST stay in English.
+- "meaning" MUST be written in %[1]s.
+- "example" MUST be a natural English sentence that uses "word".`, native)
+}
+
 // autoAddSuggestionCount is how many candidates SuggestNewWords asks for —
 // fixed (unlike SuggestWords' "3-5", which hedges against a vague
 // description) since there's no learner query to hedge against here, and a
