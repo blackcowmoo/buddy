@@ -18,6 +18,16 @@ vi.mock("../lib/articles", async () => {
   };
 });
 
+vi.mock("../lib/wordSearch", async () => {
+  const actual = await vi.importActual<typeof import("../lib/wordSearch")>("../lib/wordSearch");
+  return { ...actual, defineWord: vi.fn() };
+});
+
+vi.mock("../lib/wordReview", async () => {
+  const actual = await vi.importActual<typeof import("../lib/wordReview")>("../lib/wordReview");
+  return { ...actual, saveWord: vi.fn() };
+});
+
 import { ArticleQuiz } from "./ArticleQuiz";
 import {
   answerArticle,
@@ -29,6 +39,8 @@ import {
   type ArticleDraw,
 } from "../lib/articles";
 import { formatAbsoluteDate, formatDateDivider } from "../lib/time";
+import { defineWord } from "../lib/wordSearch";
+import { saveWord } from "../lib/wordReview";
 
 // jsdom doesn't implement HTMLMediaElement.play() — stub it so handleRead's
 // el.play() resolves instead of throwing "not implemented", the same reason
@@ -60,6 +72,16 @@ const sampleDraw: ArticleDraw = {
 };
 
 const pendingDraw: ArticleDraw = { ...sampleDraw, summary: "", subQuestions: [], status: "pending" };
+
+// The reading view now splits the summary into per-word tappable buttons
+// (see ArticleQuiz.tsx's word-lookup feature), so the full summary is no
+// longer one element's own text-node child the way testing-library's default
+// getByText(string) expects (it only reads a node's direct text children,
+// not descendants) — match by the whole .article-summary element's
+// textContent instead, which still equals the summary verbatim since
+// tokenizing only ever re-renders the same characters across more elements.
+const articleSummaryMatcher = (text: string) => (_content: string, element: Element | null) =>
+  element?.classList.contains("article-summary") === true && element.textContent === text;
 
 describe("ArticleQuiz page — list view", () => {
   it("links back to the chat page with a relative href", () => {
@@ -128,7 +150,7 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
 
     await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
 
-    expect(await screen.findByText(sampleDraw.summary)).toBeInTheDocument();
+    expect(await screen.findByText(articleSummaryMatcher(sampleDraw.summary))).toBeInTheDocument();
     expect(screen.getByText("[BBC] Scientists make discovery")).toBeInTheDocument();
     expect(screen.getByText(formatAbsoluteDate(new Date(sampleDraw.publishedAt * 1000)))).toBeInTheDocument();
   });
@@ -141,7 +163,7 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
 
     await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
 
-    expect(await screen.findByText(sampleDraw.summary)).toBeInTheDocument();
+    expect(await screen.findByText(articleSummaryMatcher(sampleDraw.summary))).toBeInTheDocument();
     expect(screen.queryByText(formatAbsoluteDate(new Date(sampleDraw.publishedAt * 1000)))).not.toBeInTheDocument();
   });
 
@@ -180,7 +202,7 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     await user.click(screen.getByRole("button", { name: "문제풀기" }));
     expect(screen.getByText("틀린 해석")).toBeInTheDocument();
     expect(screen.getByText("오늘")).toBeInTheDocument();
-    expect(screen.getByText(sampleDraw.summary)).toBeInTheDocument();
+    expect(screen.getByText(articleSummaryMatcher(sampleDraw.summary))).toBeInTheDocument();
   });
 
   it("only enables submission once every sub-question has a pick, then submits all selections at once", async () => {
@@ -229,7 +251,7 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
     expect(screen.getByText("원문의 의미를 정확히 반영하기 때문입니다.")).toBeInTheDocument();
     expect(screen.getByText("원문에 명시되어 있습니다.")).toBeInTheDocument();
-    expect(screen.getByText(sampleDraw.summary)).toBeInTheDocument();
+    expect(screen.getByText(articleSummaryMatcher(sampleDraw.summary))).toBeInTheDocument();
   });
 
   it("shows a generating hint for a pending draw, then the summary once polling reports done", async () => {
@@ -256,7 +278,7 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     });
 
     expect(fetchArticleInstance).toHaveBeenCalledWith(pendingDraw.id);
-    expect(screen.getByText(sampleDraw.summary)).toBeInTheDocument();
+    expect(screen.getByText(articleSummaryMatcher(sampleDraw.summary))).toBeInTheDocument();
   });
 
   it("resumes polling a still-generating draw reopened from the list", async () => {
@@ -285,7 +307,7 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     await user.click(await screen.findByText("[BBC] Old story"));
 
     expect(fetchArticleInstance).toHaveBeenCalledWith("i1");
-    expect(await screen.findByText(sampleDraw.summary)).toBeInTheDocument();
+    expect(await screen.findByText(articleSummaryMatcher(sampleDraw.summary))).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "문제풀기" })).toBeInTheDocument();
   });
 
@@ -432,5 +454,57 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     await user.click(screen.getByRole("button", { name: "제출하기" }));
 
     expect(await screen.findByText("아쉬워요, 1/2 정답이에요.")).toBeInTheDocument();
+  });
+});
+
+describe("ArticleQuiz page — word lookup while reading", () => {
+  it("looks up a tapped word and saves it to the vocabulary list", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    vi.mocked(defineWord).mockResolvedValue({
+      word: "discovery",
+      meaning: "발견",
+      example: "Scientists announced a new discovery today.",
+    });
+    vi.mocked(saveWord).mockResolvedValue({
+      id: "w1",
+      word: "discovery",
+      meaning: "발견",
+      example: "Scientists announced a new discovery today.",
+      stage: 0,
+      reviewCount: 0,
+      nextReviewAt: 0,
+      status: "pending",
+    });
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+
+    await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
+    await user.click(screen.getByRole("button", { name: "discovery" }));
+
+    expect(defineWord).toHaveBeenCalledWith("discovery", sampleDraw.summary);
+    expect(await screen.findByText("발견")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "학습하기" }));
+
+    expect(saveWord).toHaveBeenCalledWith({
+      word: "discovery",
+      meaning: "발견",
+      example: "Scientists announced a new discovery today.",
+    });
+    expect(await screen.findByRole("button", { name: "✓ 확인 중" })).toBeInTheDocument();
+  });
+
+  it("shows a failure message when the lookup fails", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    vi.mocked(defineWord).mockResolvedValue(null);
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+
+    await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
+    await user.click(screen.getByRole("button", { name: "discovery" }));
+
+    expect(await screen.findByText("뜻을 가져오지 못했어요.")).toBeInTheDocument();
   });
 });

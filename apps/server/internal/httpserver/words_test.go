@@ -120,6 +120,82 @@ func TestWordSuggestHandlerInternalErrorOnPipelineFailure(t *testing.T) {
 	requireStatus(t, rec, http.StatusInternalServerError)
 }
 
+// ---- wordDefineHandler ------------------------------------------------------
+
+func TestWordDefineHandlerReturnsDefinition(t *testing.T) {
+	pipe := &pipeline.Pipeline{
+		LLM: &fakeWordSuggestLLM{complete: func(msgs []llm.Message) (string, error) {
+			return `{"word":"resilient","meaning":"회복력이 있는","example":"She stayed resilient."}`, nil
+		}},
+		ChatModel: "m",
+	}
+	h := wordDefineHandler(fakeIdentifier{id: "alex", ok: true}, pipe)
+
+	req := httptest.NewRequest("POST", "/api/words/define", strings.NewReader(`{"word":"resilient","context":"She stayed resilient through the setback."}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	requireStatus(t, rec, http.StatusOK)
+	var got protocol.WordSuggestion
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Word != "resilient" {
+		t.Fatalf("word = %+v, want a single definition for \"resilient\"", got)
+	}
+}
+
+func TestWordDefineHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
+	h := wordDefineHandler(fakeIdentifier{ok: false}, &pipeline.Pipeline{})
+
+	req := httptest.NewRequest("POST", "/api/words/define", strings.NewReader(`{"word":"x","context":"y"}`))
+	assertUnauthorized(t, h, req)
+}
+
+func TestWordDefineHandlerRejectsEmptyWord(t *testing.T) {
+	h := wordDefineHandler(fakeIdentifier{id: "alex", ok: true}, &pipeline.Pipeline{})
+
+	req := httptest.NewRequest("POST", "/api/words/define", strings.NewReader(`{"word":"   ","context":"y"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	requireStatus(t, rec, http.StatusBadRequest)
+}
+
+// TestWordDefineHandlerRejectsOverlongContext guards maxWordDefineContextLen,
+// same "cap a free-text field a learner controls" reasoning as
+// TestWordSuggestHandlerRejectsOverlongQuery.
+func TestWordDefineHandlerRejectsOverlongContext(t *testing.T) {
+	tooLong := strings.Repeat("a", maxWordDefineContextLen+1)
+	body, err := json.Marshal(map[string]string{"word": "resilient", "context": tooLong})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	h := wordDefineHandler(fakeIdentifier{id: "alex", ok: true}, &pipeline.Pipeline{})
+
+	req := httptest.NewRequest("POST", "/api/words/define", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	requireStatus(t, rec, http.StatusBadRequest)
+}
+
+func TestWordDefineHandlerInternalErrorOnPipelineFailure(t *testing.T) {
+	pipe := &pipeline.Pipeline{
+		LLM: &fakeWordSuggestLLM{complete: func(msgs []llm.Message) (string, error) {
+			return "", errors.New("model unreachable")
+		}},
+		ChatModel: "m",
+	}
+	h := wordDefineHandler(fakeIdentifier{id: "alex", ok: true}, pipe)
+
+	req := httptest.NewRequest("POST", "/api/words/define", strings.NewReader(`{"word":"resilient","context":"y"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	requireStatus(t, rec, http.StatusInternalServerError)
+}
+
 // fakeWordStore is an in-memory wordreview.Store for handler tests — real
 // SQL behavior (upsert-on-duplicate, schedule math) is covered by
 // internal/wordreview's own tests. Guarded by mu because wordSaveHandler

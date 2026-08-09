@@ -17,6 +17,10 @@ import { SubPageHeader } from "../components/SubPageHeader";
 import { usePollScaffold } from "../hooks/usePollScaffold";
 import { requestAmbientAudioSession } from "../lib/audioSession";
 import { loadPlaybackRate } from "../lib/ttsSettings";
+import { defineWord } from "../lib/wordSearch";
+import { saveWord } from "../lib/wordReview";
+import type { WordSuggestion } from "../lib/protocol";
+import { useDismiss } from "../hooks/useDismiss";
 
 // How often to re-check a draw that's still generating in the background
 // (see asyncjob.KindArticleStudy) — a poll, not a push, since nothing on the
@@ -58,6 +62,26 @@ export function ArticleQuiz() {
   const [result, setResult] = useState<ArticleAnswerResult | null>(null);
   const [tts, setTts] = useState<TtsState>("idle");
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // A learner tapping a word inside the reading paragraph to look it up and,
+  // if it's new to them, add it to their vocabulary study list — the same
+  // save target as WordSearchControl's "학습하기", just reached from the
+  // exact word already in front of them instead of a typed-out Korean
+  // description. `key` is the tapped token's index within draw.summary's
+  // split (not the word text alone), since the same word can appear more
+  // than once in a paragraph and each tap should look up/save independently.
+  // null means no popover is open.
+  const [wordLookup, setWordLookup] = useState<{
+    key: number;
+    word: string;
+    loading: boolean;
+    failed: boolean;
+    result: WordSuggestion | null;
+    saving: boolean;
+    saved: boolean;
+  } | null>(null);
+  const wordLookupRef = useRef<HTMLDivElement>(null);
+  useDismiss(wordLookup !== null, wordLookupRef, () => setWordLookup(null));
 
   // Poll scaffolding for a draw still generating in the background (see
   // usePollScaffold's doc comment). Losing this component (navigating away,
@@ -111,6 +135,7 @@ export function ArticleQuiz() {
       setView("reading");
       setDrawState("idle");
       setTts("idle");
+      setWordLookup(null);
       if (res.draw.status !== "done") {
         const token = {};
         pollTokenRef.current = token;
@@ -133,6 +158,7 @@ export function ArticleQuiz() {
       setResult(null);
       setDrawState("idle");
       setTts("idle");
+      setWordLookup(null);
       setView("reading");
       if (found.status !== "done") {
         const token = {};
@@ -169,8 +195,39 @@ export function ArticleQuiz() {
     });
   }, [draw]);
 
+  // Looks up one word tapped inside the reading paragraph (see the
+  // word-token buttons in the reading view below) — the whole study
+  // paragraph is short (one paragraph), so it's sent as context every time
+  // rather than trying to isolate just the containing sentence.
+  const openWordLookup = useCallback(
+    (key: number, word: string) => {
+      if (!draw) return;
+      setWordLookup({ key, word, loading: true, failed: false, result: null, saving: false, saved: false });
+      void defineWord(word, draw.summary).then((result) => {
+        setWordLookup((prev) =>
+          prev && prev.key === key ? { ...prev, loading: false, failed: result === null, result } : prev,
+        );
+      });
+    },
+    [draw],
+  );
+
+  // Saves the currently open word-lookup popover's result to the learner's
+  // vocabulary study list — same saveWord() call and pending-until-verified
+  // lifecycle as WordSearchControl's "학습하기" button.
+  const learnLookedUpWord = useCallback(() => {
+    if (!wordLookup || !wordLookup.result || wordLookup.saving || wordLookup.saved) return;
+    const key = wordLookup.key;
+    const suggestion = wordLookup.result;
+    setWordLookup((prev) => (prev && prev.key === key ? { ...prev, saving: true } : prev));
+    void saveWord(suggestion).then((saved) => {
+      setWordLookup((prev) => (prev && prev.key === key ? { ...prev, saving: false, saved: !!saved } : prev));
+    });
+  }, [wordLookup]);
+
   const startQuiz = useCallback(() => {
     setSelections((prev) => (draw ? draw.subQuestions.map(() => null) : prev));
+    setWordLookup(null);
     setView("quiz");
   }, [draw]);
 
@@ -212,6 +269,7 @@ export function ArticleQuiz() {
     // "재생 중…"/"불러오는 중…" label would otherwise survive stale into
     // whatever's opened next.
     setTts("idle");
+    setWordLookup(null);
     loadInstances();
   }, [loadInstances]);
 
@@ -299,7 +357,55 @@ export function ArticleQuiz() {
             )}
             {draw.status === "done" ? (
               <>
-                <p className="article-summary">{draw.summary}</p>
+                <p className="article-summary">
+                  {draw.summary.split(/([A-Za-z']+)/g).map((part, i) =>
+                    /^[A-Za-z']+$/.test(part) ? (
+                      <button
+                        key={i}
+                        type="button"
+                        className="article-word"
+                        onClick={() => openWordLookup(i, part)}
+                      >
+                        {part}
+                      </button>
+                    ) : (
+                      <span key={i}>{part}</span>
+                    ),
+                  )}
+                </p>
+                {wordLookup && (
+                  <div className="word-lookup-panel" role="menu" ref={wordLookupRef}>
+                    <div className="word-lookup-header">
+                      <span className="word-search-word">{wordLookup.word}</span>
+                      <button
+                        type="button"
+                        className="ghost icon-btn"
+                        onClick={() => setWordLookup(null)}
+                        aria-label="단어 뜻 닫기"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                    {wordLookup.loading && <div className="word-search-status">찾는 중…</div>}
+                    {!wordLookup.loading && wordLookup.failed && (
+                      <div className="word-search-status">뜻을 가져오지 못했어요.</div>
+                    )}
+                    {!wordLookup.loading && !wordLookup.failed && wordLookup.result && (
+                      <>
+                        <span className="word-search-meaning">{wordLookup.result.meaning}</span>
+                        <span className="word-search-example">{wordLookup.result.example}</span>
+                        <button
+                          type="button"
+                          className="word-learn-btn"
+                          onClick={learnLookedUpWord}
+                          disabled={wordLookup.saving || wordLookup.saved}
+                        >
+                          {wordLookup.saved ? "✓ 확인 중" : "학습하기"}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
                 <audio
                   ref={audioRef}
                   style={{ display: "none" }}
