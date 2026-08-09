@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"buddy/server/internal/asyncjob"
+	"buddy/server/internal/concurrent"
 	"buddy/server/internal/identity"
 	"buddy/server/internal/newsarticle"
 	"buddy/server/internal/newsfeed"
@@ -224,6 +225,23 @@ func selfHealIncompleteArticle(ctx context.Context, articles newsarticle.Store, 
 	return a, true
 }
 
+// dispatchArticleStudy enqueues (or runs inline, if no queue is configured)
+// article-study generation for a StatusPending article — the shared body of
+// articleDrawHandler's first-draw dispatch and articleInstanceHandler's
+// self-heal re-dispatch.
+func dispatchArticleStudy(ctx context.Context, queue *asyncjob.Queue, pipe *pipeline.Pipeline, articles newsarticle.Store, audio *transport.ArticleAudio, a newsarticle.Article, logSuffix string) {
+	asyncjob.EnqueueOrRunInline(queue, ctx,
+		"articles: enqueue study"+logSuffix+" "+a.ID,
+		func(ctx context.Context) error {
+			return transport.EnqueueArticleStudyJob(ctx, queue, pipe, articles, audio, a.ID, a.Source, a.Title, a.Description)
+		},
+		"articles: study"+logSuffix+" "+a.ID,
+		func(ctx context.Context) error {
+			return transport.RunArticleStudyInline(ctx, pipe, articles, audio, a.ID, a.Source, a.Title, a.Description)
+		},
+	)
+}
+
 // articleDrawHandler draws the most recent news article the caller hasn't
 // drawn before — internal/newsfeed.FetchCandidates already returns every
 // outlet's items sorted newest-first, so this just takes the first one left
@@ -256,14 +274,19 @@ func articleDrawHandler(ident identity.Identifier, articles newsarticle.Store, p
 			return
 		}
 
-		used, err := articles.UsedURLs(r.Context(), userID)
-		if err != nil {
-			serverError(w, "articles: used urls "+userID, err)
+		var used map[string]bool
+		var candidates []newsfeed.Candidate
+		var usedErr, candErr error
+		concurrent.Run(
+			func() { used, usedErr = articles.UsedURLs(r.Context(), userID) },
+			func() { candidates, candErr = fetchCandidates(r.Context()) },
+		)
+		if usedErr != nil {
+			serverError(w, "articles: used urls "+userID, usedErr)
 			return
 		}
-		candidates, err := fetchCandidates(r.Context())
-		if err != nil {
-			serverError(w, "articles: fetch candidates", err)
+		if candErr != nil {
+			serverError(w, "articles: fetch candidates", candErr)
 			return
 		}
 		// candidates is already sorted newest-first (see
@@ -290,16 +313,7 @@ func articleDrawHandler(ident identity.Identifier, articles newsarticle.Store, p
 			article = healed
 		}
 		if article.Status == newsarticle.StatusPending {
-			asyncjob.EnqueueOrRunInline(articleStudyQueue, r.Context(),
-				"articles: enqueue study "+article.ID,
-				func(ctx context.Context) error {
-					return transport.EnqueueArticleStudyJob(ctx, articleStudyQueue, pipe, articles, audio, article.ID, pick.Source, pick.Title, pick.Description)
-				},
-				"articles: study "+article.ID,
-				func(ctx context.Context) error {
-					return transport.RunArticleStudyInline(ctx, pipe, articles, audio, article.ID, pick.Source, pick.Title, pick.Description)
-				},
-			)
+			dispatchArticleStudy(r.Context(), articleStudyQueue, pipe, articles, audio, article, "")
 		}
 
 		inst, err := articles.CreateInstance(r.Context(), userID, article.ID)
@@ -344,17 +358,7 @@ func articleInstanceHandler(ident identity.Identifier, articles newsarticle.Stor
 		}
 		if healed, reopened := selfHealIncompleteArticle(r.Context(), articles, inst.Article); reopened {
 			inst.Article = healed
-			a := healed
-			asyncjob.EnqueueOrRunInline(articleStudyQueue, r.Context(),
-				"articles: enqueue study (reopen) "+a.ID,
-				func(ctx context.Context) error {
-					return transport.EnqueueArticleStudyJob(ctx, articleStudyQueue, pipe, articles, audio, a.ID, a.Source, a.Title, a.Description)
-				},
-				"articles: study (reopen) "+a.ID,
-				func(ctx context.Context) error {
-					return transport.RunArticleStudyInline(ctx, pipe, articles, audio, a.ID, a.Source, a.Title, a.Description)
-				},
-			)
+			dispatchArticleStudy(r.Context(), articleStudyQueue, pipe, articles, audio, healed, " (reopen)")
 		}
 		writeJSON(w, toArticleDraw(inst))
 	}

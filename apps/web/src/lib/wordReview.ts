@@ -1,4 +1,4 @@
-import { fetchJSON, requestOK } from "./fetchJSON";
+import { fetchJSON, postJSON, requestOK } from "./fetchJSON";
 import type { WordSuggestion } from "./protocol";
 
 // Mirrors httpserver's wordItem shape (apps/server/internal/httpserver/words.go).
@@ -35,17 +35,7 @@ export interface WordReviewItem {
 // (network error, non-200, bad JSON) so the caller can leave the button in
 // its un-saved state instead of assuming success.
 export async function saveWord(s: WordSuggestion): Promise<WordReviewItem | null> {
-  try {
-    const res = await fetch("api/words/save", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ word: s.word, meaning: s.meaning, example: s.example }),
-    });
-    if (!res.ok) return null;
-    return (await res.json()) as WordReviewItem;
-  } catch {
-    return null;
-  }
+  return postJSON<WordReviewItem | null>("api/words/save", { word: s.word, meaning: s.meaning, example: s.example }, null);
 }
 
 // Mirrors httpserver's wordAutoAddStatus shape. status is "" (no run has
@@ -101,17 +91,7 @@ export async function fetchWords(): Promise<{ words: WordReviewItem[]; dueCount:
 // interval it just came from instead of advancing; meaningless when correct
 // is false. Returns null on any failure.
 export async function reviewWord(id: string, correct: boolean, repeat = false): Promise<WordReviewItem | null> {
-  try {
-    const res = await fetch(`api/words/${encodeURIComponent(id)}/review`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ correct, repeat }),
-    });
-    if (!res.ok) return null;
-    return (await res.json()) as WordReviewItem;
-  } catch {
-    return null;
-  }
+  return postJSON<WordReviewItem | null>(`api/words/${encodeURIComponent(id)}/review`, { correct, repeat }, null);
 }
 
 // Removes one tracked word from the caller's study list. Returns whether the

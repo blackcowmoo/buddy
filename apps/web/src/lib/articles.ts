@@ -1,4 +1,4 @@
-import { fetchJSON, requestOK } from "./fetchJSON";
+import { fetchJSON, postJSON, requestOK } from "./fetchJSON";
 
 // Mirrors newsarticle.Article.Status's three values — "pending" while
 // asyncjob.KindArticleStudy is still generating the summary/quiz in the
@@ -109,13 +109,7 @@ export async function drawArticle(): Promise<ArticleDrawResult> {
 // Returns null on any failure (network error, non-200, bad JSON) so a poll
 // tick can just skip a beat and retry rather than tearing down the view.
 export async function fetchArticleInstance(id: string): Promise<ArticleDraw | null> {
-  try {
-    const res = await fetch(`api/articles/${encodeURIComponent(id)}`);
-    if (!res.ok) return null;
-    return (await res.json()) as ArticleDraw;
-  } catch {
-    return null;
-  }
+  return fetchJSON<ArticleDraw | null>(`api/articles/${encodeURIComponent(id)}`, null);
 }
 
 // Fetches the caller's own past article-quiz attempts, most recently drawn
@@ -132,17 +126,7 @@ export async function fetchArticleInstances(): Promise<ArticleInstance[]> {
 // a client-supplied verdict. Returns null on any failure (network error,
 // non-200, bad JSON).
 export async function answerArticle(id: string, selectedOptions: number[]): Promise<ArticleAnswerResult | null> {
-  try {
-    const res = await fetch(`api/articles/${encodeURIComponent(id)}/answer`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ selectedOptions }),
-    });
-    if (!res.ok) return null;
-    return (await res.json()) as ArticleAnswerResult;
-  } catch {
-    return null;
-  }
+  return postJSON<ArticleAnswerResult | null>(`api/articles/${encodeURIComponent(id)}/answer`, { selectedOptions }, null);
 }
 
 // Deletes one of the caller's own article-quiz instances. Returns whether

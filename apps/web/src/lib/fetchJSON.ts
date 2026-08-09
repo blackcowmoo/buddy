@@ -13,6 +13,23 @@ export async function fetchJSON<T>(url: string, fallback: T): Promise<T> {
   }
 }
 
+// Same relative-URL and fallback-on-any-failure reasoning as fetchJSON, for
+// the common "POST a JSON body, parse a JSON response" shape most POST
+// endpoints in this app share.
+export async function postJSON<T>(url: string, body: unknown, fallback: T): Promise<T> {
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) return fallback;
+    return (await res.json()) as T;
+  } catch {
+    return fallback;
+  }
+}
+
 // Issues a request (typically a DELETE) and reports whether it succeeded.
 // Same relative-URL and network-error-swallowing reasoning as fetchJSON, so
 // callers can decide what to do on failure (e.g. leave a row in a list)

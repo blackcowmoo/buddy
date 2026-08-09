@@ -13,8 +13,8 @@ import { shuffled } from "../lib/shuffle";
 import { normalizeQuizAnswer as normalizeAnswer, quizBlankInputClass, quizChoiceClass } from "../lib/quizCheck";
 import { SubPageHeader } from "../components/SubPageHeader";
 import { usePollScaffold } from "../hooks/usePollScaffold";
-
-type LoadState = "loading" | "ready" | "error";
+import { LoadingHint } from "../components/LoadingHint";
+import type { LoadState } from "../lib/loadState";
 
 // How often to re-check an auto-add job that's still generating in the
 // background (see asyncjob.KindWordAutoAdd) — a poll, not a push, same
@@ -389,7 +389,7 @@ export function WordReview() {
       <SubPageHeader title="단어 복습" />
 
       <main className="convo word-review-page">
-        {state === "loading" && <p className="hint">불러오는 중…</p>}
+        {state === "loading" && <LoadingHint />}
         {state === "error" && <p className="hint">단어 목록을 불러오지 못했습니다. 네트워크 문제일 수 있습니다.</p>}
 
         {state === "ready" && quizQueue === null && (
@@ -418,80 +418,24 @@ export function WordReview() {
               </p>
             )}
 
-            {verifiedWords.length > 0 && (
-              <ul className="word-list">
-                {verifiedWords.map((w) => (
-                  <li key={w.id} className="word-list-row">
-                    <div className="word-list-meta">
-                      <span className="word-search-word">{w.word}</span>
-                      <span className="word-search-meaning">{w.meaning}</span>
-                      <span className="word-list-next">다음 복습: {formatAbsoluteDateTime(w.nextReviewAt)}</span>
-                    </div>
-                    <button
-                      type="button"
-                      className="ghost icon-btn word-list-delete"
-                      onClick={() => void handleDelete(w.id)}
-                      aria-label="단어 삭제"
-                      title="단어 삭제"
-                    >
-                      🗑
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            {pendingWords.length > 0 && (
-              <>
-                <h2 className="word-section-title">확인 중</h2>
-                <ul className="word-list">
-                  {pendingWords.map((w) => (
-                    <li key={w.id} className="word-list-row">
-                      <div className="word-list-meta">
-                        <span className="word-search-word">{w.word}</span>
-                        <span className="word-search-meaning">{w.meaning}</span>
-                        <span className="word-list-next">확인 중…</span>
-                      </div>
-                      <button
-                        type="button"
-                        className="ghost icon-btn word-list-delete"
-                        onClick={() => void handleDelete(w.id)}
-                        aria-label="단어 삭제"
-                        title="단어 삭제"
-                      >
-                        🗑
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </>
-            )}
-
-            {rejectedWords.length > 0 && (
-              <>
-                <h2 className="word-section-title">제외된 단어</h2>
-                <ul className="word-list">
-                  {rejectedWords.map((w) => (
-                    <li key={w.id} className="word-list-row word-list-row-rejected">
-                      <div className="word-list-meta">
-                        <span className="word-search-word">{w.word}</span>
-                        <span className="word-search-meaning">{w.meaning}</span>
-                        {w.verifyReason && <span className="word-list-reject-reason">{w.verifyReason}</span>}
-                      </div>
-                      <button
-                        type="button"
-                        className="ghost icon-btn word-list-delete"
-                        onClick={() => void handleDelete(w.id)}
-                        aria-label="단어 삭제"
-                        title="단어 삭제"
-                      >
-                        🗑
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </>
-            )}
+            <WordListSection
+              words={verifiedWords}
+              onDelete={(id) => void handleDelete(id)}
+              renderMeta={(w) => <span className="word-list-next">다음 복습: {formatAbsoluteDateTime(w.nextReviewAt)}</span>}
+            />
+            <WordListSection
+              title="확인 중"
+              words={pendingWords}
+              onDelete={(id) => void handleDelete(id)}
+              renderMeta={() => <span className="word-list-next">확인 중…</span>}
+            />
+            <WordListSection
+              title="제외된 단어"
+              words={rejectedWords}
+              rowClassName="word-list-row-rejected"
+              onDelete={(id) => void handleDelete(id)}
+              renderMeta={(w) => (w.verifyReason ? <span className="word-list-reject-reason">{w.verifyReason}</span> : null)}
+            />
           </>
         )}
 
@@ -621,5 +565,46 @@ export function WordReview() {
         )}
       </main>
     </div>
+  );
+}
+
+function WordListSection({
+  title,
+  words,
+  rowClassName,
+  renderMeta,
+  onDelete,
+}: {
+  title?: string;
+  words: WordReviewItem[];
+  rowClassName?: string;
+  renderMeta: (w: WordReviewItem) => React.ReactNode;
+  onDelete: (id: string) => void;
+}) {
+  if (words.length === 0) return null;
+  return (
+    <>
+      {title && <h2 className="word-section-title">{title}</h2>}
+      <ul className="word-list">
+        {words.map((w) => (
+          <li key={w.id} className={rowClassName ? `word-list-row ${rowClassName}` : "word-list-row"}>
+            <div className="word-list-meta">
+              <span className="word-search-word">{w.word}</span>
+              <span className="word-search-meaning">{w.meaning}</span>
+              {renderMeta(w)}
+            </div>
+            <button
+              type="button"
+              className="ghost icon-btn word-list-delete"
+              onClick={() => onDelete(w.id)}
+              aria-label="단어 삭제"
+              title="단어 삭제"
+            >
+              🗑
+            </button>
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }

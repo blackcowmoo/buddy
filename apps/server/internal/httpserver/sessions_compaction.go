@@ -2,8 +2,8 @@ package httpserver
 
 import (
 	"net/http"
-	"sync"
 
+	"buddy/server/internal/concurrent"
 	"buddy/server/internal/identity"
 	"buddy/server/internal/store"
 )
@@ -31,17 +31,10 @@ func sessionCompactionHandler(ident identity.Identifier, st store.Store) http.Ha
 		var profile store.Profile
 		var lastTurn int
 		var loadErr, lastTurnErr error
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			profile, loadErr = st.Load(r.Context(), userID, sessionID)
-		}()
-		go func() {
-			defer wg.Done()
-			lastTurn, lastTurnErr = st.LastTurn(r.Context(), userID, sessionID)
-		}()
-		wg.Wait()
+		concurrent.Run(
+			func() { profile, loadErr = st.Load(r.Context(), userID, sessionID) },
+			func() { lastTurn, lastTurnErr = st.LastTurn(r.Context(), userID, sessionID) },
+		)
 		if loadErr != nil {
 			serverError(w, "load profile", loadErr)
 			return

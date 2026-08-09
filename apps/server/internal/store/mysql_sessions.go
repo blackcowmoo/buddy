@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 
+	"buddy/server/internal/concurrent"
 	"buddy/server/internal/llm"
 )
 
@@ -303,19 +303,14 @@ func (s *MySQLStore) sessionDetail(ctx context.Context, userID, sessionID string
 	var ended, quizCompleted, instant int
 	var studySummaryJSON, quizJSON string
 
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		metaErr = s.ro.QueryRowContext(ctx, `
-			SELECT title, created_at, updated_at, ended, study_summary, study_summary_status, quiz, quiz_status, quiz_completed, instant FROM `+sessionsTable+` WHERE user_id = ? AND id = ?
-		`, userID, sessionID).Scan(&meta.Title, &meta.CreatedAt, &meta.UpdatedAt, &ended, &studySummaryJSON, &meta.StudySummaryStatus, &quizJSON, &meta.QuizStatus, &quizCompleted, &instant)
-	}()
-	go func() {
-		defer wg.Done()
-		turns, hasMore, turnsErr = fetchTurns()
-	}()
-	wg.Wait()
+	concurrent.Run(
+		func() {
+			metaErr = s.ro.QueryRowContext(ctx, `
+				SELECT title, created_at, updated_at, ended, study_summary, study_summary_status, quiz, quiz_status, quiz_completed, instant FROM `+sessionsTable+` WHERE user_id = ? AND id = ?
+			`, userID, sessionID).Scan(&meta.Title, &meta.CreatedAt, &meta.UpdatedAt, &ended, &studySummaryJSON, &meta.StudySummaryStatus, &quizJSON, &meta.QuizStatus, &quizCompleted, &instant)
+		},
+		func() { turns, hasMore, turnsErr = fetchTurns() },
+	)
 
 	if errors.Is(metaErr, sql.ErrNoRows) {
 		return SessionMeta{}, nil, false, ErrNotFound

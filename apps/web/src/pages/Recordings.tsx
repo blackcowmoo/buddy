@@ -3,8 +3,8 @@ import { confirmThenDelete } from "../lib/confirmDelete";
 import { deleteRecording, fetchRecordings, recordingAudioURL, type Recording } from "../lib/recordings";
 import { formatAbsoluteDateTime } from "../lib/time";
 import { SubPageHeader } from "../components/SubPageHeader";
-
-type LoadState = "loading" | "ready" | "error";
+import { LoadingHint } from "../components/LoadingHint";
+import type { LoadState } from "../lib/loadState";
 
 export function Recordings() {
   const [state, setState] = useState<LoadState>("loading");
@@ -28,7 +28,7 @@ export function Recordings() {
       <SubPageHeader title="녹음 목록" />
 
       <main className="convo recordings-list">
-        {state === "loading" && <p className="hint">불러오는 중…</p>}
+        {state === "loading" && <LoadingHint />}
         {state === "error" && (
           <p className="hint">
             녹음 목록을 불러오지 못했습니다. 녹음 저장이 설정되어 있지 않거나, 네트워크 문제일 수

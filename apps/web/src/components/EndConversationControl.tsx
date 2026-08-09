@@ -4,6 +4,36 @@ import { markQuizCompleted } from "../lib/sessions";
 import { useDismiss } from "../hooks/useDismiss";
 import { checkQuizAnswer, normalizeQuizAnswer, quizBlankInputClass } from "../lib/quizCheck";
 
+// Per-question quiz progress, hoisted out of QuizPanel itself into
+// EndConversationControl (see quizProgress there). QuizPanel is only
+// conditionally mounted (quizMode && ...), and the whole popover (including
+// it) unmounts whenever `open` goes false — so if this lived as QuizPanel's
+// own useState, dismissing the popover with an outside click and reopening
+// it would always restart the quiz from question 1. Keeping it in a
+// component that stays mounted for the life of the session means reopening
+// just re-renders QuizPanel with whatever progress was already made.
+interface QuizProgress {
+  index: number;
+  answer: string;
+  checked: boolean;
+  // True while an answer that didn't match answer/acceptableAnswers
+  // literally is being double-checked against checkQuizAnswer's LLM fallback
+  // (see QuizPanel's check()) — distinct from `checked`, which only flips
+  // once that fallback (if any) has actually resolved, so the UI shows
+  // "확인하는 중…" instead of prematurely revealing a result.
+  checking: boolean;
+  correct: boolean;
+  correctCount: number;
+}
+const initialQuizProgress: QuizProgress = {
+  index: 0,
+  answer: "",
+  checked: false,
+  checking: false,
+  correct: false,
+  correctCount: 0,
+};
+
 // Learner-triggered wrap-up. Confirming "end this conversation" freezes the
 // room read-only immediately (see endSession/httpserver.sessionEndHandler) —
 // the study-summary synthesis (every grammar/vocabulary/phrasing/context
@@ -51,29 +81,11 @@ export function EndConversationControl({
   // swaps to a confirmation instantly rather than waiting on quizCompleted
   // to round-trip back through App's own state.
   const [acknowledged, setAcknowledged] = useState(false);
-  // Per-question quiz progress, hoisted out of QuizPanel itself. QuizPanel
-  // is only conditionally mounted (quizMode && ...), and the whole popover
-  // (including it) unmounts whenever `open` goes false — so if this lived
-  // as QuizPanel's own useState, dismissing the popover with an outside
-  // click (see useDismiss below) and reopening it would always restart the
-  // quiz from question 1. Keeping it here, in a component that stays
-  // mounted for the life of the session, means reopening just re-renders
-  // QuizPanel with whatever progress was already made.
-  const [quizIndex, setQuizIndex] = useState(0);
-  const [quizAnswer, setQuizAnswer] = useState("");
-  const [quizChecked, setQuizChecked] = useState(false);
-  const [quizChecking, setQuizChecking] = useState(false);
-  const [quizCorrect, setQuizCorrect] = useState(false);
-  const [quizCorrectCount, setQuizCorrectCount] = useState(0);
+  const [quizProgress, setQuizProgress] = useState<QuizProgress>(initialQuizProgress);
   const panelRef = useRef<HTMLDivElement>(null);
 
   const resetQuizProgress = useCallback(() => {
-    setQuizIndex(0);
-    setQuizAnswer("");
-    setQuizChecked(false);
-    setQuizChecking(false);
-    setQuizCorrect(false);
-    setQuizCorrectCount(0);
+    setQuizProgress(initialQuizProgress);
   }, []);
 
   // A new question set (e.g. after "퀴즈 다시 만들기" — see onQuizReset)
@@ -221,18 +233,8 @@ export function EndConversationControl({
             <QuizPanel
               sessionId={sessionId}
               questions={quiz}
-              index={quizIndex}
-              setIndex={setQuizIndex}
-              answer={quizAnswer}
-              setAnswer={setQuizAnswer}
-              checked={quizChecked}
-              setChecked={setQuizChecked}
-              checking={quizChecking}
-              setChecking={setQuizChecking}
-              correct={quizCorrect}
-              setCorrect={setQuizCorrect}
-              correctCount={quizCorrectCount}
-              setCorrectCount={setQuizCorrectCount}
+              progress={quizProgress}
+              setProgress={setQuizProgress}
               onBack={backToSummary}
               onCompleted={onQuizCompleted}
             />
@@ -270,43 +272,19 @@ function isQuizAnswerAccepted(question: QuizQuestion, raw: string): boolean {
 function QuizPanel({
   sessionId,
   questions,
-  index,
-  setIndex,
-  answer,
-  setAnswer,
-  checked,
-  setChecked,
-  checking,
-  setChecking,
-  correct,
-  setCorrect,
-  correctCount,
-  setCorrectCount,
+  progress,
+  setProgress,
   onBack,
   onCompleted,
 }: {
   sessionId: string;
   questions: QuizQuestion[];
-  index: number;
-  setIndex: React.Dispatch<React.SetStateAction<number>>;
-  answer: string;
-  setAnswer: React.Dispatch<React.SetStateAction<string>>;
-  checked: boolean;
-  setChecked: React.Dispatch<React.SetStateAction<boolean>>;
-  // True while an answer that didn't match answer/acceptableAnswers
-  // literally is being double-checked against checkQuizAnswer's LLM fallback
-  // (see check()) — distinct from `checked`, which only flips once that
-  // fallback (if any) has actually resolved, so the UI shows "확인하는 중…"
-  // instead of prematurely revealing a result.
-  checking: boolean;
-  setChecking: React.Dispatch<React.SetStateAction<boolean>>;
-  correct: boolean;
-  setCorrect: React.Dispatch<React.SetStateAction<boolean>>;
-  correctCount: number;
-  setCorrectCount: React.Dispatch<React.SetStateAction<number>>;
+  progress: QuizProgress;
+  setProgress: React.Dispatch<React.SetStateAction<QuizProgress>>;
   onBack: () => void;
   onCompleted: () => void;
 }) {
+  const { index, answer, checked, checking, correct, correctCount } = progress;
   const question = questions[index];
 
   // finalize records one question's outcome once it's fully settled — either
@@ -318,17 +296,20 @@ function QuizPanel({
   // the checkmark means "studied this", not "aced this".
   const finalize = useCallback(
     (isAnswerCorrect: boolean) => {
-      setChecked(true);
-      setChecking(false);
-      setCorrect(isAnswerCorrect);
+      setProgress((p) => ({
+        ...p,
+        checked: true,
+        checking: false,
+        correct: isAnswerCorrect,
+        correctCount: p.correctCount + (isAnswerCorrect ? 1 : 0),
+      }));
       if (index + 1 === questions.length) {
         void markQuizCompleted(sessionId).then((ok) => {
           if (ok) onCompleted();
         });
       }
-      setCorrectCount((c) => c + (isAnswerCorrect ? 1 : 0));
     },
-    [index, questions.length, sessionId, onCompleted],
+    [index, questions.length, sessionId, onCompleted, setProgress],
   );
 
   const check = useCallback(() => {
@@ -342,19 +323,15 @@ function QuizPanel({
     // didn't think to list (see checkQuizAnswer's doc comment on why this is
     // biased toward "no" server-side, so a hallucinated false positive can't
     // teach the learner something wrong).
-    setChecking(true);
+    setProgress((p) => ({ ...p, checking: true }));
     void checkQuizAnswer(question.prompt, question.answer, question.acceptableAnswers, answer).then((verdict) => {
       finalize(verdict);
     });
-  }, [question, checked, checking, answer, finalize]);
+  }, [question, checked, checking, answer, finalize, setProgress]);
 
   const next = useCallback(() => {
-    setIndex((i) => i + 1);
-    setAnswer("");
-    setChecked(false);
-    setChecking(false);
-    setCorrect(false);
-  }, []);
+    setProgress((p) => ({ ...p, index: p.index + 1, answer: "", checked: false, checking: false, correct: false }));
+  }, [setProgress]);
 
   if (!question) return null;
 
@@ -383,7 +360,7 @@ function QuizPanel({
                   className={quizBlankInputClass(checked, correct)}
                   style={{ width: `${Math.min(16, Math.max(3, answer.length + 1))}ch` }}
                   value={answer}
-                  onChange={(e) => setAnswer(e.target.value)}
+                  onChange={(e) => setProgress((p) => ({ ...p, answer: e.target.value }))}
                   onKeyDown={(e) => {
                     if (e.key !== "Enter") return;
                     if (checked) next();

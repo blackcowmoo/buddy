@@ -1,3 +1,5 @@
+import { postJSON } from "./fetchJSON";
+
 // Asks the server (httpserver.quizAnswerCheckHandler ->
 // pipeline.CheckQuizAnswer) whether a learner's typed quiz answer should
 // count as correct, for the one case QuizPanel's own isQuizAnswerAccepted
@@ -41,16 +43,10 @@ export async function checkQuizAnswer(
   acceptableAnswers: string[] | undefined,
   learnerAnswer: string,
 ): Promise<boolean> {
-  try {
-    const res = await fetch("api/quiz/check-answer", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt, answer, acceptableAnswers, learnerAnswer }),
-    });
-    if (!res.ok) return false;
-    const body = (await res.json()) as { correct: boolean };
-    return body.correct === true;
-  } catch {
-    return false;
-  }
+  const body = await postJSON<{ correct: boolean }>(
+    "api/quiz/check-answer",
+    { prompt, answer, acceptableAnswers, learnerAnswer },
+    { correct: false },
+  );
+  return body.correct === true;
 }

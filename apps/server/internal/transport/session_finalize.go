@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"sync"
 
 	"buddy/server/internal/asyncjob"
+	"buddy/server/internal/concurrent"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/store"
 )
@@ -36,35 +36,32 @@ func FinalizeSession(ctx context.Context, st store.Store, pipe *pipeline.Pipelin
 	// each blocks on its own Enqueue round trip (see
 	// asyncjob.EnqueueOrRunInline), so running them one after another would
 	// pay that latency twice for no reason.
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		asyncjob.EnqueueOrRunInline(studySummaryQueue, ctx,
-			fmt.Sprintf("finalize session: enqueue study summary %s/%s", userID, sessionID),
-			func(ctx context.Context) error {
-				return EnqueueStudySummaryJob(ctx, studySummaryQueue, pipe, st, userID, sessionID)
-			},
-			fmt.Sprintf("finalize session: study summary %s/%s", userID, sessionID),
-			func(ctx context.Context) error {
-				return RunStudySummaryInline(ctx, pipe, st, userID, sessionID)
-			},
-		)
-	}()
-	go func() {
-		defer wg.Done()
-		asyncjob.EnqueueOrRunInline(studyQuizQueue, ctx,
-			fmt.Sprintf("finalize session: enqueue study quiz %s/%s", userID, sessionID),
-			func(ctx context.Context) error {
-				return EnqueueStudyQuizJob(ctx, studyQuizQueue, pipe, st, userID, sessionID)
-			},
-			fmt.Sprintf("finalize session: study quiz %s/%s", userID, sessionID),
-			func(ctx context.Context) error {
-				return RunStudyQuizInline(ctx, pipe, st, userID, sessionID)
-			},
-		)
-	}()
-	wg.Wait()
+	concurrent.Run(
+		func() {
+			asyncjob.EnqueueOrRunInline(studySummaryQueue, ctx,
+				fmt.Sprintf("finalize session: enqueue study summary %s/%s", userID, sessionID),
+				func(ctx context.Context) error {
+					return EnqueueStudySummaryJob(ctx, studySummaryQueue, pipe, st, userID, sessionID)
+				},
+				fmt.Sprintf("finalize session: study summary %s/%s", userID, sessionID),
+				func(ctx context.Context) error {
+					return RunStudySummaryInline(ctx, pipe, st, userID, sessionID)
+				},
+			)
+		},
+		func() {
+			asyncjob.EnqueueOrRunInline(studyQuizQueue, ctx,
+				fmt.Sprintf("finalize session: enqueue study quiz %s/%s", userID, sessionID),
+				func(ctx context.Context) error {
+					return EnqueueStudyQuizJob(ctx, studyQuizQueue, pipe, st, userID, sessionID)
+				},
+				fmt.Sprintf("finalize session: study quiz %s/%s", userID, sessionID),
+				func(ctx context.Context) error {
+					return RunStudyQuizInline(ctx, pipe, st, userID, sessionID)
+				},
+			)
+		},
+	)
 
 	return nil
 }

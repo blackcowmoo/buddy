@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"sync"
 
 	"buddy/server/internal/asyncjob"
+	"buddy/server/internal/concurrent"
 	"buddy/server/internal/identity"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/recording"
@@ -107,32 +107,28 @@ func sessionDeleteHandler(ident identity.Identifier, st store.Store, audio trans
 
 		// Any error here (including "doesn't exist") just means "nothing to
 		// rebuild for" — never blocks the delete itself, which is why this
-		// isn't wired into the wg/error-handling below.
+		// isn't wired into the fns/error-handling below.
 		contributedToProfile := false
 		if meta, _, err := st.SessionDetail(r.Context(), userID, sessionID); err == nil {
 			contributedToProfile = meta.Ended && len(meta.StudySummary) > 0
 		}
 
-		var wg sync.WaitGroup
+		var fns []func()
 		if audio != nil {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			fns = append(fns, func() {
 				if err := audio.DeleteBySession(r.Context(), userID, sessionID); err != nil {
 					log.Printf("delete session: cascade audio backups %s/%s: %v", userID, sessionID, err)
 				}
-			}()
+			})
 		}
 		if recordings != nil {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			fns = append(fns, func() {
 				if err := recordings.DeleteBySession(r.Context(), userID, sessionID); err != nil {
 					log.Printf("delete session: cascade recordings %s/%s: %v", userID, sessionID, err)
 				}
-			}()
+			})
 		}
-		wg.Wait()
+		concurrent.Run(fns...)
 		if err := st.DeleteSession(r.Context(), userID, sessionID); err != nil {
 			serverError(w, "delete session", err)
 			return
