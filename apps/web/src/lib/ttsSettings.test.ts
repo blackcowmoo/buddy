@@ -2,56 +2,56 @@
  * @vitest-environment jsdom
  */
 import { beforeEach, describe, expect, it } from "vitest";
-import { MAX_EXTRA_RATES, NATIVE_RATE, loadExtraRates, saveExtraRates } from "./ttsSettings";
+import { NATIVE_RATE, isValidRate, loadPlaybackRate, savePlaybackRate } from "./ttsSettings";
 
 beforeEach(() => {
   localStorage.clear();
 });
 
-describe("loadExtraRates", () => {
-  it("returns the default speeds when nothing is stored", () => {
-    expect(loadExtraRates()).toEqual([0.5, 0.8]);
+describe("loadPlaybackRate", () => {
+  it("defaults to the native rate when nothing is stored", () => {
+    expect(loadPlaybackRate()).toBe(NATIVE_RATE);
   });
 
-  it("returns a previously saved list", () => {
-    saveExtraRates([0.6, 1.4]);
-    expect(loadExtraRates()).toEqual([0.6, 1.4]);
+  it("returns a previously saved rate", () => {
+    savePlaybackRate(0.7);
+    expect(loadPlaybackRate()).toBe(0.7);
   });
 
-  it("falls back to defaults on corrupt JSON", () => {
-    localStorage.setItem("buddy.tts.extraRates", "{not json");
-    expect(loadExtraRates()).toEqual([0.5, 0.8]);
+  it("falls back to the default on corrupt JSON", () => {
+    localStorage.setItem("buddy.tts.playbackRate", "{not json");
+    expect(loadPlaybackRate()).toBe(NATIVE_RATE);
   });
 
-  it("falls back to defaults when the stored value isn't an array", () => {
-    localStorage.setItem("buddy.tts.extraRates", JSON.stringify({ rate: 0.5 }));
-    expect(loadExtraRates()).toEqual([0.5, 0.8]);
-  });
-
-  it("drops the native rate, out-of-range values, and duplicates", () => {
-    localStorage.setItem(
-      "buddy.tts.extraRates",
-      JSON.stringify([NATIVE_RATE, 0.5, 0.5, 10, -1, "0.7"]),
-    );
-    expect(loadExtraRates()).toEqual([0.5]);
-  });
-
-  it("caps the stored list at MAX_EXTRA_RATES", () => {
-    localStorage.setItem("buddy.tts.extraRates", JSON.stringify([0.5, 0.6, 0.7]));
-    const rates = loadExtraRates();
-    expect(rates).toHaveLength(MAX_EXTRA_RATES);
-    expect(rates).toEqual([0.5, 0.6]);
-  });
-
-  it("allows an empty list (all extra speeds removed)", () => {
-    saveExtraRates([]);
-    expect(loadExtraRates()).toEqual([]);
+  it("falls back to the default for an out-of-range stored value", () => {
+    localStorage.setItem("buddy.tts.playbackRate", JSON.stringify(10));
+    expect(loadPlaybackRate()).toBe(NATIVE_RATE);
   });
 });
 
-describe("saveExtraRates", () => {
-  it("dedupes, filters, and caps before persisting", () => {
-    saveExtraRates([0.5, 0.5, NATIVE_RATE, 1.9, 1.9, 0.1]);
-    expect(loadExtraRates()).toEqual([0.5, 1.9]);
+describe("savePlaybackRate", () => {
+  it("persists a valid rate", () => {
+    savePlaybackRate(1.25);
+    expect(loadPlaybackRate()).toBe(1.25);
+  });
+
+  it("falls back to the default instead of persisting an out-of-range value", () => {
+    savePlaybackRate(10);
+    expect(loadPlaybackRate()).toBe(NATIVE_RATE);
+  });
+});
+
+describe("isValidRate", () => {
+  it("accepts values within [0.5, 2]", () => {
+    expect(isValidRate(0.5)).toBe(true);
+    expect(isValidRate(2)).toBe(true);
+    expect(isValidRate(1)).toBe(true);
+  });
+
+  it("rejects out-of-range or non-numeric values", () => {
+    expect(isValidRate(0.4)).toBe(false);
+    expect(isValidRate(2.1)).toBe(false);
+    expect(isValidRate("1")).toBe(false);
+    expect(isValidRate(NaN)).toBe(false);
   });
 });

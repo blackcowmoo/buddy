@@ -1,9 +1,7 @@
 import { useState } from "react";
 import type { Theme } from "../lib/theme";
-import type { TtsState } from "../lib/ttsSettings";
-import { NATIVE_RATE, MAX_EXTRA_RATES } from "../lib/ttsSettings";
+import { NATIVE_RATE, RATE_PRESETS } from "../lib/ttsSettings";
 import { MAX_INTERLOCUTOR_STYLE_LEN } from "../lib/settings";
-import { VoiceButton } from "./VoiceButton";
 import { ThemeSwitch } from "./ThemeSwitch";
 
 // Read-only view onto the learner's persistent cross-session profile (see
@@ -47,14 +45,10 @@ function LearnerProfileControl({ profile, loadError }: { profile: string; loadEr
 }
 
 interface ChatMenuProps {
-  tts: TtsState;
-  ttsProgress: number;
-  onLoadVoice: () => void;
-  extraRates: number[];
-  newRateInput: string;
-  onNewRateInputChange: (v: string) => void;
-  onAddRate: (e: React.FormEvent) => void;
-  onRemoveRate: (rate: number) => void;
+  autoReadAloud: boolean;
+  onToggleAutoReadAloud: () => void;
+  playbackRate: number;
+  onSetPlaybackRate: (rate: number) => void;
 }
 
 // Shared by both the room list and the chat header (see App's two return
@@ -154,41 +148,30 @@ function MenuPanel({
       {chat && (
         <>
           <div className="menu-row">
-            <VoiceButton state={chat.tts} progress={chat.ttsProgress} onLoad={chat.onLoadVoice} />
+            <button
+              type="button"
+              className={chat.autoReadAloud ? "pill ok" : "ghost"}
+              onClick={chat.onToggleAutoReadAloud}
+              aria-pressed={chat.autoReadAloud}
+            >
+              {chat.autoReadAloud ? "🔊 답장 자동 읽기 켜짐" : "답장 자동 읽기 꺼짐"}
+            </button>
           </div>
           <div className="menu-row tts-settings">
             <div className="tts-settings-label">재생 속도</div>
-            <div className="rate-chips">
-              <span className="rate-chip locked">🔊 {NATIVE_RATE}x (원어민)</span>
-              {chat.extraRates.map((r) => (
-                <span key={r} className="rate-chip">
-                  {r}x
-                  <button
-                    type="button"
-                    className="chip-remove"
-                    onClick={() => chat.onRemoveRate(r)}
-                    aria-label={`${r}x 속도 삭제`}
-                  >
-                    ×
-                  </button>
-                </span>
+            <div className="rate-presets" role="group" aria-label="재생 속도 선택">
+              {RATE_PRESETS.map((r) => (
+                <button
+                  key={r}
+                  type="button"
+                  className={r === chat.playbackRate ? "rate-preset-btn active" : "rate-preset-btn"}
+                  aria-pressed={r === chat.playbackRate}
+                  onClick={() => chat.onSetPlaybackRate(r)}
+                >
+                  {r === NATIVE_RATE ? `🔊 ${r}x` : `${r}x`}
+                </button>
               ))}
             </div>
-            {chat.extraRates.length < MAX_EXTRA_RATES && (
-              <form className="rate-add-form" onSubmit={chat.onAddRate}>
-                <input
-                  type="number"
-                  step="0.05"
-                  min="0.5"
-                  max="2"
-                  value={chat.newRateInput}
-                  onChange={(e) => chat.onNewRateInputChange(e.target.value)}
-                  placeholder="예: 0.7"
-                  aria-label="새 재생 속도"
-                />
-                <button type="submit">추가</button>
-              </form>
-            )}
           </div>
           <div className="menu-divider" />
         </>

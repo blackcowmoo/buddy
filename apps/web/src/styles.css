@@ -164,50 +164,22 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 
 .tts-settings { flex-direction: column; align-items: stretch; gap: 6px; }
 .tts-settings-label { font-size: 12px; color: var(--muted); }
-.rate-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.rate-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+/* Global playback-rate presets (see TopBar's MenuPanel) — tappable pills,
+   one active at a time, replacing the old per-message rate popover (see
+   App.tsx StudyControl's doc comment for why: that popover could render
+   clipped behind the chat's own fixed layout near the bottom of the
+   screen). */
+.rate-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.rate-preset-btn {
   font-size: 12px;
-  padding: 4px 8px;
+  padding: 4px 10px;
+  min-height: 30px;
   border-radius: 999px;
   background: var(--panel-2);
   color: var(--text);
+  border: 1px solid transparent;
 }
-.rate-chip.locked { color: var(--muted); }
-.chip-remove {
-  min-height: 0;
-  width: 16px;
-  height: 16px;
-  padding: 0;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1;
-  display: grid;
-  place-items: center;
-}
-.rate-add-form { display: flex; gap: 6px; }
-.rate-add-form input {
-  flex: 1;
-  min-width: 0;
-  font: inherit;
-  font-size: 16px;
-  background: var(--panel-2);
-  border: 1px solid var(--border-2);
-  color: var(--text);
-  border-radius: 10px;
-  padding: 8px 10px;
-  min-height: 36px;
-  -webkit-appearance: none;
-  appearance: none;
-}
-.rate-add-form button { padding: 8px 12px; min-height: 36px; }
-
-.tts-controls { display: flex; gap: 6px; flex-wrap: wrap; }
-.tts-btn { font-size: 12px; padding: 4px 10px; min-height: 30px; }
+.rate-preset-btn.active { border-color: var(--accent); color: var(--accent); }
 
 /* Per-row toolbar: source/refined markers plus the grammar-feedback button
    sit next to the study (rate-playback) button, all vertically centered so
@@ -225,18 +197,19 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
   background: var(--panel-2);
 }
 
-/* Collapses per-rate playback into one small button + popover so a message
-   row isn't dominated by a wall of rate buttons — see App.tsx StudyControl.
-   Sized down from grammar-btn: the 🔊 emoji renders full-size color art
-   regardless of font-size, so at a matching 32px it visually dwarfed the
-   plain-glyph grammar button next to it.
-   Deliberately not position:relative here (moved up to .msg-tools instead):
-   grammar-control sits left of study-control in the row, so anchoring each
-   popover to its own small button — rather than to the shared msg-tools box,
-   whose edge lines up flush with the bubble above it — pulled the grammar
+/* study-btn (App.tsx StudyControl) is a plain, immediate-play button — no
+   popover of its own (see its doc comment for why: playback rate now comes
+   from one global setting instead of a per-tap choice). Sized down from
+   grammar-btn: the 🔊 emoji renders full-size color art regardless of
+   font-size, so at a matching 32px it visually dwarfed the plain-glyph
+   grammar button next to it.
+   .grammar-control is deliberately not position:relative here (moved up to
+   .msg-tools instead): it sits left of study-btn in the row, so anchoring
+   its popover to its own small button — rather than to the shared msg-tools
+   box, whose edge lines up flush with the bubble above it — pulled the
    popover's right:0 off the bubble's true right edge, skewing it left with
    an oversized right margin. */
-.study-control, .grammar-control { display: inline-flex; }
+.grammar-control { display: inline-flex; }
 .grammar-btn { width: 28px; height: 28px; min-height: 28px; font-size: 13px; }
 .study-btn { width: 22px; height: 22px; min-height: 22px; font-size: 11px; }
 .grammar-btn:disabled { opacity: 0.7; }
@@ -647,6 +620,15 @@ a.icon-btn.ghost {
 }
 .quiz-choice-btn.correct { border-color: var(--ok); color: var(--ok); }
 .quiz-choice-btn.incorrect { border-color: var(--err); color: var(--err); }
+/* A learner's not-yet-submitted pick for one of ArticleQuiz's independent
+   2-choice sub-questions (see pipeline.articleStudySystemPrompt) — distinct
+   from .correct/.incorrect, which only apply once the reveal comes back. */
+.quiz-choice-btn.selected { border-color: var(--accent, var(--ok)); }
+/* Groups one sub-question's prompt + its 2 choices (and, in the reveal,
+   its own explanation) with a visible gap from the next one — several of
+   these stack inside one .quiz-panel, one per fact the summary asserts. */
+.article-sub-question { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; border-top: 1px solid var(--border-2); }
+.article-sub-question:first-of-type { border-top: none; padding-top: 0; }
 
 /* Word-matching mini-game (pages/WordMatch.tsx) — a face-down card grid,
    pure play with no score persisted anywhere (see the page's doc comment on

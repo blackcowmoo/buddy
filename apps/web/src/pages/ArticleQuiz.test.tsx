@@ -4,7 +4,7 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/articles", async () => {
   const actual = await vi.importActual<typeof import("../lib/articles")>("../lib/articles");
@@ -18,20 +18,10 @@ vi.mock("../lib/articles", async () => {
   };
 });
 
-vi.mock("../tts/kokoro", () => ({
-  KokoroSpeaker: vi.fn().mockImplementation(function KokoroSpeaker(this: object) {
-    return Object.assign(this, {
-      loaded: false,
-      unlock: vi.fn(),
-      load: vi.fn().mockResolvedValue(undefined),
-      speak: vi.fn().mockResolvedValue(undefined),
-    });
-  }),
-}));
-
 import { ArticleQuiz } from "./ArticleQuiz";
 import {
   answerArticle,
+  articleAudioURL,
   deleteArticleInstance,
   drawArticle,
   fetchArticleInstance,
@@ -39,12 +29,21 @@ import {
   type ArticleDraw,
 } from "../lib/articles";
 import { formatAbsoluteDate, formatDateDivider } from "../lib/time";
-import { KokoroSpeaker } from "../tts/kokoro";
+
+// jsdom doesn't implement HTMLMediaElement.play() — stub it so handleRead's
+// el.play() resolves instead of throwing "not implemented", the same reason
+// kokoro.test.ts stubs the global Audio constructor for its own (unrelated,
+// client-side chat read-aloud) tests.
+beforeEach(() => {
+  HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
+});
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   vi.useRealTimers();
+  vi.unstubAllGlobals();
+  localStorage.clear();
 });
 
 const sampleDraw: ArticleDraw = {
@@ -52,12 +51,15 @@ const sampleDraw: ArticleDraw = {
   source: "BBC",
   title: "Scientists make discovery",
   summary: "Scientists announced a new discovery today.",
-  choices: ["정확한 해석", "틀린 해석 1", "틀린 해석 2", "틀린 해석 3"],
+  subQuestions: [
+    { prompt: "어떤 내용이었나요?", options: ["정확한 해석", "틀린 해석"] },
+    { prompt: "언제 일어났나요?", options: ["오늘", "어제"] },
+  ],
   publishedAt: 1710494400,
   status: "done",
 };
 
-const pendingDraw: ArticleDraw = { ...sampleDraw, summary: "", choices: [], status: "pending" };
+const pendingDraw: ArticleDraw = { ...sampleDraw, summary: "", subQuestions: [], status: "pending" };
 
 describe("ArticleQuiz page — list view", () => {
   it("links back to the chat page with a relative href", () => {
@@ -166,39 +168,67 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     expect(await screen.findByText("아티클을 가져오지 못했습니다. 네트워크 문제일 수 있습니다.")).toBeInTheDocument();
   });
 
-  it("reveals the quiz choices only after tapping 문제풀기, alongside the English original", async () => {
+  it("reveals the quiz sub-questions only after tapping 문제풀기, alongside the English original", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
     const user = userEvent.setup();
     render(<ArticleQuiz />);
 
     await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
-    expect(screen.queryByText("틀린 해석 1")).not.toBeInTheDocument();
+    expect(screen.queryByText("틀린 해석")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "문제풀기" }));
-    expect(screen.getByText("틀린 해석 1")).toBeInTheDocument();
+    expect(screen.getByText("틀린 해석")).toBeInTheDocument();
+    expect(screen.getByText("오늘")).toBeInTheDocument();
     expect(screen.getByText(sampleDraw.summary)).toBeInTheDocument();
   });
 
-  it("submits the selected choice and shows the correct reveal", async () => {
+  it("only enables submission once every sub-question has a pick, then submits all selections at once", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
     vi.mocked(answerArticle).mockResolvedValue({
       correct: true,
-      correctIndex: 0,
-      translation: "정확한 해석",
-      explanation: "원문의 의미를 정확히 반영하기 때문입니다.",
+      score: 2,
+      total: 2,
+      subQuestions: [
+        {
+          prompt: sampleDraw.subQuestions[0].prompt,
+          options: sampleDraw.subQuestions[0].options,
+          correctOptionIndex: 0,
+          selectedOptionIndex: 0,
+          correct: true,
+          explanation: "원문의 의미를 정확히 반영하기 때문입니다.",
+        },
+        {
+          prompt: sampleDraw.subQuestions[1].prompt,
+          options: sampleDraw.subQuestions[1].options,
+          correctOptionIndex: 0,
+          selectedOptionIndex: 0,
+          correct: true,
+          explanation: "원문에 명시되어 있습니다.",
+        },
+      ],
     });
     const user = userEvent.setup();
     render(<ArticleQuiz />);
 
     await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
     await user.click(screen.getByRole("button", { name: "문제풀기" }));
-    await user.click(screen.getByRole("button", { name: "정확한 해석" }));
 
-    expect(answerArticle).toHaveBeenCalledWith("i1", 0);
+    expect(screen.getByRole("button", { name: "제출하기" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "정확한 해석" }));
+    expect(screen.getByRole("button", { name: "제출하기" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "오늘" }));
+    expect(screen.getByRole("button", { name: "제출하기" })).not.toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "제출하기" }));
+
+    expect(answerArticle).toHaveBeenCalledWith("i1", [0, 0]);
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
     expect(screen.getByText("원문의 의미를 정확히 반영하기 때문입니다.")).toBeInTheDocument();
+    expect(screen.getByText("원문에 명시되어 있습니다.")).toBeInTheDocument();
     expect(screen.getByText(sampleDraw.summary)).toBeInTheDocument();
   });
 
@@ -259,74 +289,148 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     expect(screen.getByRole("button", { name: "문제풀기" })).toBeInTheDocument();
   });
 
-  it("reads the summary aloud through a real speaker instance when 읽어주기 is tapped", async () => {
+  it("points a plain <audio> element at the server-generated read-aloud URL and plays it when 읽어주기 is tapped", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    const audioSession = { type: "auto" };
+    vi.stubGlobal("navigator", { ...navigator, audioSession });
     const user = userEvent.setup();
-    render(<ArticleQuiz />);
+    const { container } = render(<ArticleQuiz />);
 
     await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
     await user.click(screen.getByRole("button", { name: "🔊 읽어주기" }));
 
-    // Regression guard: the speaker ref must actually be constructed (see the
-    // mount effect that assigns speakerRef.current), otherwise handleRead's
-    // `if (!sp) return` bails out silently and the button does nothing.
-    const speakerInstance = vi.mocked(KokoroSpeaker).mock.instances[0] as unknown as {
-      unlock: ReturnType<typeof vi.fn>;
-      speak: ReturnType<typeof vi.fn>;
-    };
-    await vi.waitFor(() => expect(speakerInstance.speak).toHaveBeenCalledWith(sampleDraw.summary));
+    // Regression guard: generation now happens server-side, once per shared
+    // article (see lib/articles.ts's articleAudioURL) — this is just a plain
+    // <audio src> pointed at it and played, the same shape as
+    // Recordings.tsx's playback, not the old client-side kokoro.ts pipeline.
+    const audioEl = container.querySelector("audio");
+    expect(audioEl).not.toBeNull();
+    expect(audioEl?.src).toContain(articleAudioURL(sampleDraw.id));
+    expect(vi.mocked(HTMLMediaElement.prototype.play)).toHaveBeenCalled();
 
-    // Regression guard: unlock() must run before speak()'s internal
-    // load()/generate() awaits, in the same synchronous click — otherwise
-    // iOS Safari silently drops playback once the async work has pushed the
-    // eventual .play() call outside the user-gesture window (see
-    // KokoroSpeaker.unlock's doc comment).
-    expect(speakerInstance.unlock).toHaveBeenCalled();
-    expect(speakerInstance.unlock.mock.invocationCallOrder[0]).toBeLessThan(
-      speakerInstance.speak.mock.invocationCallOrder[0],
-    );
+    // Regression guard: requesting the "ambient" audio session type must run
+    // synchronously in the same click as play(), before the network request
+    // for the audio even starts — see handleRead's doc comment — so
+    // read-aloud mixes with (never pauses) music already playing in another
+    // app.
+    expect(audioSession.type).toBe("ambient");
+  });
+
+  it("plays read-aloud at the playback rate configured in the hamburger menu's global setting", async () => {
+    localStorage.setItem("buddy.tts.playbackRate", JSON.stringify(0.7));
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    const user = userEvent.setup();
+    const { container } = render(<ArticleQuiz />);
+
+    await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
+    await user.click(screen.getByRole("button", { name: "🔊 읽어주기" }));
+
+    const audioEl = container.querySelector("audio") as HTMLAudioElement;
+    expect(audioEl.playbackRate).toBe(0.7);
+  });
+
+  it("shows 불러오는 중… while buffering, then 재생 중… once the audio element actually starts playing", async () => {
+    // Regression guard: showing "재생 중…" before playback has actually
+    // started is misleading — the label is driven by the <audio> element's
+    // own waiting/playing events, not assumed the instant the button is
+    // tapped, so it never claims audio is playing when it's still loading/
+    // generating server-side.
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    const user = userEvent.setup();
+    const { container } = render(<ArticleQuiz />);
+
+    await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
+    await user.click(screen.getByRole("button", { name: "🔊 읽어주기" }));
+
+    expect(await screen.findByRole("button", { name: "불러오는 중…" })).toBeInTheDocument();
+
+    const audioEl = container.querySelector("audio")!;
+    await act(async () => audioEl.dispatchEvent(new Event("playing")));
+
+    expect(await screen.findByRole("button", { name: "재생 중…" })).toBeInTheDocument();
+
+    await act(async () => audioEl.dispatchEvent(new Event("ended")));
+    expect(await screen.findByRole("button", { name: "🔊 읽어주기" })).toBeInTheDocument();
+  });
+
+  it("resets the read-aloud label to idle after leaving mid-playback and reopening", async () => {
+    // Regression guard: navigating back to the list while "재생 중…" is
+    // showing does stop the actual audio (the reading view's <audio>
+    // element unmounts with it), but that unmount never fires the element's
+    // own onEnded/onError — nothing reset the tts label state itself, so
+    // reopening any draw afterward showed a stale "재생 중…" even though
+    // nothing was actually playing.
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    const user = userEvent.setup();
+    const { container } = render(<ArticleQuiz />);
+
+    await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
+    await user.click(screen.getByRole("button", { name: "🔊 읽어주기" }));
+    const audioEl = container.querySelector("audio")!;
+    await act(async () => audioEl.dispatchEvent(new Event("playing")));
+    expect(await screen.findByRole("button", { name: "재생 중…" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "← 목록으로" }));
+    await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
+
+    expect(await screen.findByRole("button", { name: "🔊 읽어주기" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "재생 중…" })).not.toBeInTheDocument();
   });
 
   it("shows a failure label instead of silently going back to idle when playback fails", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
     const user = userEvent.setup();
-    render(<ArticleQuiz />);
+    const { container } = render(<ArticleQuiz />);
 
     await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
-
-    const speakerInstance = vi.mocked(KokoroSpeaker).mock.instances[0] as unknown as {
-      speak: ReturnType<typeof vi.fn>;
-    };
-    // Regression guard: KokoroSpeaker.speak used to swallow synth() failures
-    // internally and resolve anyway, so a real playback failure (blocked
-    // gesture, generation error, etc.) looked identical to success — the
-    // button just cycled loading -> speaking -> idle with no sound and no
-    // indication anything went wrong.
-    speakerInstance.speak.mockRejectedValue(new Error("play() failed"));
-
     await user.click(screen.getByRole("button", { name: "🔊 읽어주기" }));
+
+    const audioEl = container.querySelector("audio")!;
+    await act(async () => audioEl.dispatchEvent(new Event("error")));
 
     expect(await screen.findByRole("button", { name: "재생 실패, 다시 시도해주세요" })).toBeInTheDocument();
   });
 
-  it("shows an incorrect reveal when the wrong choice was picked", async () => {
+  it("shows a partial-credit incorrect reveal when a sub-question was missed", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
     vi.mocked(answerArticle).mockResolvedValue({
       correct: false,
-      correctIndex: 0,
-      translation: "정확한 해석",
-      explanation: "왜냐하면",
+      score: 1,
+      total: 2,
+      subQuestions: [
+        {
+          prompt: sampleDraw.subQuestions[0].prompt,
+          options: sampleDraw.subQuestions[0].options,
+          correctOptionIndex: 0,
+          selectedOptionIndex: 1,
+          correct: false,
+          explanation: "왜냐하면",
+        },
+        {
+          prompt: sampleDraw.subQuestions[1].prompt,
+          options: sampleDraw.subQuestions[1].options,
+          correctOptionIndex: 0,
+          selectedOptionIndex: 0,
+          correct: true,
+          explanation: "원문에 명시되어 있습니다.",
+        },
+      ],
     });
     const user = userEvent.setup();
     render(<ArticleQuiz />);
 
     await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
     await user.click(screen.getByRole("button", { name: "문제풀기" }));
-    await user.click(screen.getByRole("button", { name: "틀린 해석 1" }));
+    await user.click(screen.getByRole("button", { name: "틀린 해석" }));
+    await user.click(screen.getByRole("button", { name: "오늘" }));
+    await user.click(screen.getByRole("button", { name: "제출하기" }));
 
-    expect(await screen.findByText("아쉬워요, 오답이에요.")).toBeInTheDocument();
+    expect(await screen.findByText("아쉬워요, 1/2 정답이에요.")).toBeInTheDocument();
   });
 });

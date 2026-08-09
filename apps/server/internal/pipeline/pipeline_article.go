@@ -9,23 +9,25 @@ import (
 	"buddy/server/internal/protocol"
 )
 
-// articleQuizChoiceCount is how many candidate translations
-// GenerateArticleStudy asks for — matches the classic 4-option
-// multiple-choice shape WordReview's recognition-mode quiz already uses.
-const articleQuizChoiceCount = 4
+// articleQuizMinSubQuestions is the floor GenerateArticleStudy enforces —
+// not a fixed count: the LLM decides how many independent, checkable facts
+// the summary actually supports (see articleStudySystemPrompt), but fewer
+// than 2 wouldn't be a meaningful comprehension check at all.
+const articleQuizMinSubQuestions = 2
 
 // GenerateArticleStudy turns one newsfeed.Candidate's headline/snippet into
 // a single self-contained English study paragraph, plus a native-language
-// multiple-choice quiz that tests whether the learner actually understood
-// it — see protocol.ArticleStudy's doc for the exact shape. Deliberately
-// built from the feed's own short editorial snippet, not a scrape of the
-// full article body: full-page scraping is fragile per outlet (paywalls,
-// changing markup, anti-bot measures), and a snippet is already enough
-// material for a coherent study paragraph. Generated once per unique
+// quiz — several independent 2-choice sub-questions, each isolating one
+// concrete fact from the paragraph (see protocol.ArticleStudy's doc for why
+// this shape, not one 4-choice "which paraphrase is right" question).
+// Deliberately built from the feed's own short editorial snippet, not a
+// scrape of the full article body: full-page scraping is fragile per outlet
+// (paywalls, changing markup, anti-bot measures), and a snippet is already
+// enough material for a coherent study paragraph. Generated once per unique
 // article URL and cached (see newsarticle.Store.SaveArticle) — every later
 // learner who draws the same story reads this exact result, never re-paying
 // the LLM call. Same Analysis-ensemble+Judge quality bar as
-// GenerateStudyQuiz: a wrong "correct" choice here would actively mislead a
+// GenerateStudyQuiz: a wrong "correct" option here would actively mislead a
 // learner practicing on their own, so this affords the full ensemble rather
 // than a single quick call.
 func (p *Pipeline) GenerateArticleStudy(ctx context.Context, source, title, description string) (protocol.ArticleStudy, error) {
@@ -43,49 +45,59 @@ func (p *Pipeline) GenerateArticleStudy(ctx context.Context, source, title, desc
 	// An LLM asked for "the accurate option" tends to place it at the same
 	// position (often index 0) far more often than chance — a learner could
 	// learn that pattern instead of actually reading the summary. Reshuffle
-	// here, once, before this result is ever cached: every later learner who
-	// draws the same story (see newsarticle.Store.SaveArticle) sees the same
-	// already-shuffled order.
-	return shuffleChoices(study), nil
+	// here, once per sub-question, before this result is ever cached: every
+	// later learner who draws the same story (see newsarticle.Store.
+	// SaveArticle) sees the same already-shuffled order.
+	return shuffleSubQuestions(study), nil
 }
 
-// shuffleChoices randomizes s.Choices' order and remaps CorrectIndex to
-// follow the same choice — see GenerateArticleStudy's call site for why.
-func shuffleChoices(s protocol.ArticleStudy) protocol.ArticleStudy {
-	order := rand.Perm(len(s.Choices))
-	shuffled := make([]string, len(s.Choices))
-	newCorrectIndex := 0
-	for newPos, oldPos := range order {
-		shuffled[newPos] = s.Choices[oldPos]
-		if oldPos == s.CorrectIndex {
-			newCorrectIndex = newPos
+// shuffleSubQuestions independently coin-flips each sub-question's two
+// options — see GenerateArticleStudy's call site for why.
+func shuffleSubQuestions(s protocol.ArticleStudy) protocol.ArticleStudy {
+	for i, q := range s.SubQuestions {
+		if rand.Intn(2) == 0 {
+			continue
 		}
+		q.Options[0], q.Options[1] = q.Options[1], q.Options[0]
+		q.CorrectOptionIndex = 1 - q.CorrectOptionIndex
+		s.SubQuestions[i] = q
 	}
-	s.Choices = shuffled
-	s.CorrectIndex = newCorrectIndex
 	return s
 }
 
 // validateArticleStudy guards the invariants httpserver/newsarticle trust
-// without re-checking: exactly one correct choice, in range, and every
-// field actually populated. An LLM occasionally drifts from the requested
-// JSON shape (e.g. 3 choices instead of 4) even under strict JSON mode, and
-// a malformed quiz stored as-is would surface as an out-of-range index or a
-// broken multiple-choice question days later, whenever it's drawn — better
-// to fail the draw immediately so the caller can retry with a different
-// candidate article instead.
+// without re-checking: every sub-question has exactly 2 options and an
+// in-range correct index, and every field is actually populated. An LLM
+// occasionally drifts from the requested JSON shape even under strict JSON
+// mode, and a malformed quiz stored as-is would surface as a broken
+// question days later, whenever it's drawn — better to fail the draw
+// immediately so the caller can retry with a different candidate article
+// instead.
 func validateArticleStudy(s protocol.ArticleStudy) error {
 	if strings.TrimSpace(s.Summary) == "" {
 		return fmt.Errorf("article study: empty summary")
 	}
-	if len(s.Choices) != articleQuizChoiceCount {
-		return fmt.Errorf("article study: got %d choices, want %d", len(s.Choices), articleQuizChoiceCount)
+	if len(s.SubQuestions) < articleQuizMinSubQuestions {
+		return fmt.Errorf("article study: got %d sub-questions, want at least %d", len(s.SubQuestions), articleQuizMinSubQuestions)
 	}
-	if s.CorrectIndex < 0 || s.CorrectIndex >= len(s.Choices) {
-		return fmt.Errorf("article study: correctIndex %d out of range", s.CorrectIndex)
-	}
-	if strings.TrimSpace(s.Explanation) == "" {
-		return fmt.Errorf("article study: empty explanation")
+	for i, q := range s.SubQuestions {
+		if strings.TrimSpace(q.Prompt) == "" {
+			return fmt.Errorf("article study: sub-question %d: empty prompt", i)
+		}
+		if len(q.Options) != 2 {
+			return fmt.Errorf("article study: sub-question %d: got %d options, want 2", i, len(q.Options))
+		}
+		for j, opt := range q.Options {
+			if strings.TrimSpace(opt) == "" {
+				return fmt.Errorf("article study: sub-question %d: empty option %d", i, j)
+			}
+		}
+		if q.CorrectOptionIndex != 0 && q.CorrectOptionIndex != 1 {
+			return fmt.Errorf("article study: sub-question %d: correctOptionIndex %d out of range", i, q.CorrectOptionIndex)
+		}
+		if strings.TrimSpace(q.Explanation) == "" {
+			return fmt.Errorf("article study: sub-question %d: empty explanation", i)
+		}
 	}
 	return nil
 }
@@ -97,28 +109,47 @@ func articleStudySystemPrompt(lang string) string {
 news article's source outlet, headline, and a short editorial snippet (not
 the full article body).
 Do two things:
-1. Write ONE short, self-contained English paragraph (3-5 sentences)
-   summarizing the story, suitable for an intermediate English learner:
-   clear, natural sentences, no jargon left unexplained. Base it only on the
-   headline and snippet given — do not invent specific facts, quotes, or
-   numbers beyond what they state or directly imply.
+1. Write ONE short, self-contained English paragraph summarizing the story,
+   suitable for an intermediate English learner: clear, natural sentences,
+   no jargon left unexplained. A bit longer than a bare minimum summary is
+   fine — enough sentences to carry several distinct, independently
+   checkable facts (a specific amount, date, name, or who-did-what), since
+   the quiz below needs that many separate facts to draw on. Base it only
+   on the headline and snippet given — do not invent specific facts,
+   quotes, or numbers beyond what they state or directly imply.
 2. Write a %[1]s-language reading-comprehension check for that exact
-   paragraph: exactly %[2]d candidate %[1]s translations/interpretations of
-   the paragraph's meaning, with exactly ONE of them accurate. The other
-   %[3]d must be PLAUSIBLE, not obviously wrong — each should read like a
-   reasonable translation at a glance, but subtly misrepresent the
-   paragraph in one concrete way (e.g. swap which party did what, flip a
-   negation, change a number/date, swap a similar-sounding entity) rather
-   than being unrelated or nonsensical. A learner who has not actually read
-   and understood the English paragraph should find this genuinely hard to
-   guess.
+   paragraph, as a series of INDEPENDENT sub-questions — NOT one question
+   with several candidate paraphrases of the whole paragraph. Each
+   sub-question must:
+   - Target exactly ONE concrete, independently-checkable fact from the
+     paragraph (an amount, a date, a name, which party did what, a
+     number) — never the paragraph's overall meaning.
+   - Have a short %[1]s "prompt" naming which fact it's asking about (e.g.
+     "인수 금액은 얼마인가요?"), not a full-sentence restatement.
+   - Have exactly 2 short %[1]s "options" answering that prompt — not full
+     paraphrases of the paragraph — one of them (at "correctOptionIndex")
+     matching the paragraph, the other a plausible near-miss that changes
+     THAT ONE fact only (a different number, currency, date, or the
+     opposite of what happened) while staying otherwise identical in
+     wording, so it can't be told apart from the correct one just by
+     glancing at how it's phrased.
+   - Come with its own %[1]s "explanation" of why its correct option
+     matches the paragraph.
+   Write as many sub-questions as the paragraph genuinely supports with
+   distinct, independently-checkable facts — at least %[2]d, more if the
+   paragraph has more distinct facts worth checking. Every sub-question
+   must test a DIFFERENT fact from every other one: two sub-questions
+   about the same fact (even phrased differently) are not acceptable. A
+   learner who has not actually read and understood the English paragraph
+   should find each sub-question genuinely hard to guess on its own,
+   independent of the others.
 Return STRICT JSON only, no prose, in exactly this shape:
-{"summary":"<the English paragraph>","choices":["<%[1]s option 1>","<%[1]s option 2>","<%[1]s option 3>","<%[1]s option 4>"],"correctIndex":<0-based index of the one accurate option>,"explanation":"<%[1]s explanation of why that option is accurate, contrasting it against what the wrong options got wrong>"}
+{"summary":"<the English paragraph>","subQuestions":[{"prompt":"<%[1]s question about one fact>","options":["<%[1]s option 1>","<%[1]s option 2>"],"correctOptionIndex":<0 or 1>,"explanation":"<%[1]s explanation>"}, ...]}
 Rules:
 - "summary" MUST stay in English.
-- "choices" and "explanation" MUST be written in %[1]s.
-- "choices" MUST contain exactly %[2]d entries.
-- Exactly one entry in "choices" may be an accurate translation of "summary" — the rest must each contain a real, concrete inaccuracy.`, native, articleQuizChoiceCount, articleQuizChoiceCount-1)
+- "prompt", "options", and "explanation" MUST be written in %[1]s.
+- Each "options" array MUST contain exactly 2 entries.
+- At least %[2]d entries in "subQuestions", each about a different fact from the paragraph.`, native, articleQuizMinSubQuestions)
 }
 
 func renderArticleStudyInput(source, title, description string) string {

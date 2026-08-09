@@ -7,13 +7,13 @@ afterEach(() => {
 
 describe("drawArticle", () => {
   it("returns status ok with the draw on a successful response", async () => {
-    const draw = { id: "i1", source: "BBC", title: "t", summary: "s", choices: ["a", "b", "c", "d"], status: "done" };
+    const draw = { id: "i1", source: "BBC", title: "t", summary: "s", subQuestions: [{ prompt: "p", options: ["a", "b"] }], status: "done" };
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve(draw) }));
     await expect(drawArticle()).resolves.toEqual({ status: "ok", draw });
   });
 
   it("returns status ok with a pending draw right after reserving a fresh article", async () => {
-    const draw = { id: "i1", source: "BBC", title: "t", summary: "", choices: [], status: "pending" };
+    const draw = { id: "i1", source: "BBC", title: "t", summary: "", subQuestions: [], status: "pending" };
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve(draw) }));
     await expect(drawArticle()).resolves.toEqual({ status: "ok", draw });
   });
@@ -43,7 +43,7 @@ describe("drawArticle", () => {
 
 describe("fetchArticleInstance", () => {
   it("returns the draw on a successful response", async () => {
-    const draw = { id: "i1", source: "BBC", title: "t", summary: "s", choices: ["a", "b", "c", "d"], status: "done" };
+    const draw = { id: "i1", source: "BBC", title: "t", summary: "s", subQuestions: [{ prompt: "p", options: ["a", "b"] }], status: "done" };
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(draw) });
     vi.stubGlobal("fetch", fetchMock);
     await expect(fetchArticleInstance("i1")).resolves.toEqual(draw);
@@ -89,33 +89,40 @@ describe("fetchArticleInstances", () => {
 });
 
 describe("answerArticle", () => {
-  it("posts the selected index and returns the reveal", async () => {
-    const result = { correct: true, correctIndex: 1, translation: "정확한 해석", explanation: "왜냐하면" };
+  it("posts the selected options and returns the reveal", async () => {
+    const result = {
+      correct: true,
+      score: 1,
+      total: 1,
+      subQuestions: [
+        { prompt: "p", options: ["a", "b"], correctOptionIndex: 1, selectedOptionIndex: 1, correct: true, explanation: "왜냐하면" },
+      ],
+    };
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(result) });
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(answerArticle("i1", 1)).resolves.toEqual(result);
+    await expect(answerArticle("i1", [1])).resolves.toEqual(result);
     expect(fetchMock).toHaveBeenCalledWith("api/articles/i1/answer", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ selectedIndex: 1 }),
+      body: JSON.stringify({ selectedOptions: [1] }),
     });
   });
 
   it("returns null on a non-ok response", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
-    await expect(answerArticle("i1", 0)).resolves.toBeNull();
+    await expect(answerArticle("i1", [0])).resolves.toBeNull();
   });
 
   it("returns null when fetch rejects", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
-    await expect(answerArticle("i1", 0)).resolves.toBeNull();
+    await expect(answerArticle("i1", [0])).resolves.toBeNull();
   });
 
   it("URL-encodes the id", async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: false });
     vi.stubGlobal("fetch", fetchMock);
-    await answerArticle("weird id/1", 0);
+    await answerArticle("weird id/1", [0]);
     expect(fetchMock).toHaveBeenCalledWith(
       "api/articles/weird%20id%2F1/answer",
       expect.objectContaining({ method: "POST" }),

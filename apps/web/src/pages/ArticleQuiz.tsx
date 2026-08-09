@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { confirmThenDelete } from "../lib/confirmDelete";
 import {
   answerArticle,
+  articleAudioURL,
   deleteArticleInstance,
   drawArticle,
   fetchArticleInstance,
@@ -14,7 +15,8 @@ import { formatAbsoluteDate, formatDateDivider, formatMessageTime, shouldShowDat
 import { quizChoiceClass } from "../lib/quizCheck";
 import { SubPageHeader } from "../components/SubPageHeader";
 import { usePollScaffold } from "../hooks/usePollScaffold";
-import { KokoroSpeaker } from "../tts/kokoro";
+import { requestAmbientAudioSession } from "../lib/audioSession";
+import { loadPlaybackRate } from "../lib/ttsSettings";
 
 // How often to re-check a draw that's still generating in the background
 // (see asyncjob.KindArticleStudy) — a poll, not a push, since nothing on the
@@ -25,9 +27,10 @@ const articleStudyPollIntervalMs = 3000;
 type LoadState = "loading" | "ready" | "error";
 
 // A single draw walks through these in order: "reading" (English summary,
-// TTS read-aloud) -> "quiz" (native-language 4-choice comprehension check)
-// -> "result" (reveal). null means the list view — past attempts, and the
-// button to draw a new one.
+// TTS read-aloud) -> "quiz" (a series of independent native-language
+// 2-choice fact checks, see pipeline.articleStudySystemPrompt) -> "result"
+// (reveal). null means the list view — past attempts, and the button to
+// draw a new one.
 type View = "reading" | "quiz" | "result" | null;
 
 type DrawState = "idle" | "drawing" | "noMore" | "error";
@@ -36,21 +39,25 @@ type TtsState = "idle" | "loading" | "speaking" | "error";
 // "오늘의 아티클": draws a news article the learner hasn't seen before (see
 // lib/articles.ts's drawArticle, which excludes every article already drawn
 // — no daily limit, only repeats are excluded), shows an English study
-// paragraph to read (with an optional Kokoro read-aloud for listening
-// practice, reusing the same client-side TTS as per-message playback in
-// App.tsx), then a native-language multiple-choice comprehension check.
-// Past attempts live in their own list here, the same "instant, unlimited,
-// own list" shape as InstantSessions.tsx.
+// paragraph to read (with an optional read-aloud for listening practice —
+// audio generated and cached server-side once per shared article, see
+// lib/articles.ts's articleAudioURL, unlike App.tsx's per-message chat
+// read-aloud, which is still generated client-side since each reply is
+// unique to that conversation), then a native-language multiple-choice
+// comprehension check. Past attempts live in their own list here, the same
+// "instant, unlimited, own list" shape as InstantSessions.tsx.
 export function ArticleQuiz() {
   const [state, setState] = useState<LoadState>("loading");
   const [instances, setInstances] = useState<ArticleInstance[]>([]);
   const [view, setView] = useState<View>(null);
   const [drawState, setDrawState] = useState<DrawState>("idle");
   const [draw, setDraw] = useState<ArticleDraw | null>(null);
-  const [selected, setSelected] = useState<number | null>(null);
+  // One entry per sub-question, in order; null means "not yet picked".
+  const [selections, setSelections] = useState<(number | null)[]>([]);
+  const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<ArticleAnswerResult | null>(null);
   const [tts, setTts] = useState<TtsState>("idle");
-  const speakerRef = useRef<KokoroSpeaker | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   // Poll scaffolding for a draw still generating in the background (see
   // usePollScaffold's doc comment). Losing this component (navigating away,
@@ -59,10 +66,6 @@ export function ArticleQuiz() {
   // comment); reopening this page and tapping the still-pending row resumes
   // watching.
   const { tokenRef: pollTokenRef, schedulePoll } = usePollScaffold();
-
-  useEffect(() => {
-    speakerRef.current = new KokoroSpeaker();
-  }, []);
 
   // Polls one draw's status until it leaves "pending"/"failed" — started
   // right after a fresh draw, or when reopening a still-generating row from
@@ -103,10 +106,11 @@ export function ArticleQuiz() {
     const res = await drawArticle();
     if (res.status === "ok") {
       setDraw(res.draw);
-      setSelected(null);
+      setSelections([]);
       setResult(null);
       setView("reading");
       setDrawState("idle");
+      setTts("idle");
       if (res.draw.status !== "done") {
         const token = {};
         pollTokenRef.current = token;
@@ -125,9 +129,10 @@ export function ArticleQuiz() {
       const found = await fetchArticleInstance(id);
       if (!found) return;
       setDraw(found);
-      setSelected(null);
+      setSelections([]);
       setResult(null);
       setDrawState("idle");
+      setTts("idle");
       setView("reading");
       if (found.status !== "done") {
         const token = {};
@@ -138,51 +143,75 @@ export function ArticleQuiz() {
     [pollDraw],
   );
 
-  // Lazy-loads the kokoro-82M model on first use (same pattern as App.tsx's
-  // playMessage/loadVoice), then reads the English summary aloud at native
-  // speed — the listening-practice half of this feature, alongside reading.
-  const handleRead = useCallback(async () => {
-    const sp = speakerRef.current;
-    if (!sp || !draw) return;
-    sp.unlock(); // must run synchronously in this click, before load()/speak() await
+  // Plays the English summary's read-aloud audio — generated and cached
+  // server-side once per shared article (see lib/articles.ts's
+  // articleAudioURL), so this is just pointing a plain <audio> element at
+  // it, the same "src + play(), let the browser handle buffering" shape as
+  // Recordings.tsx's playback. "loading"/"speaking" are driven by the
+  // element's own buffering/playing events (below) rather than tracked by
+  // hand, so the label never claims audio is playing before it actually is.
+  const handleRead = useCallback(() => {
+    const el = audioRef.current;
+    if (!el || !draw) return;
+    // Must run synchronously in this click, before play() — see
+    // requestAmbientAudioSession's doc comment.
+    requestAmbientAudioSession();
     setTts("loading");
-    try {
-      if (!sp.loaded) await sp.load();
-      setTts("speaking");
-      await sp.speak(draw.summary);
-      setTts("idle");
-    } catch (err) {
+    el.playbackRate = loadPlaybackRate();
+    el.src = articleAudioURL(draw.id);
+    el.play().catch((err) => {
       console.error("tts:", err);
-      // Show the failure briefly instead of silently reverting to the
-      // idle "🔊 읽어주기" label, which reads as if nothing was ever
-      // pressed even though playback genuinely failed.
+      // Show the failure briefly instead of silently reverting to the idle
+      // "🔊 읽어주기" label, which reads as if nothing was ever pressed even
+      // though playback genuinely failed.
       setTts("error");
       setTimeout(() => setTts("idle"), 2000);
-    }
+    });
   }, [draw]);
 
-  const startQuiz = useCallback(() => setView("quiz"), []);
+  const startQuiz = useCallback(() => {
+    setSelections((prev) => (draw ? draw.subQuestions.map(() => null) : prev));
+    setView("quiz");
+  }, [draw]);
 
-  const chooseAnswer = useCallback(
-    async (index: number) => {
-      if (!draw || selected !== null) return;
-      setSelected(index);
-      const res = await answerArticle(draw.id, index);
-      if (res) {
-        setResult(res);
-        setView("result");
-      }
-    },
-    [draw, selected],
-  );
+  // Picks/changes the learner's answer for one sub-question — doesn't submit
+  // on its own (unlike the old single 4-choice question, several picks are
+  // needed before there's anything to score), so a pick can still be
+  // changed before submitAnswers is tapped.
+  const pickOption = useCallback((subIndex: number, optionIndex: number) => {
+    setSelections((prev) => {
+      const next = [...prev];
+      next[subIndex] = optionIndex;
+      return next;
+    });
+  }, []);
+
+  const allAnswered = selections.length > 0 && selections.every((s) => s !== null);
+
+  const submitAnswers = useCallback(async () => {
+    if (!draw || !allAnswered || submitting) return;
+    setSubmitting(true);
+    const res = await answerArticle(draw.id, selections as number[]);
+    setSubmitting(false);
+    if (res) {
+      setResult(res);
+      setView("result");
+    }
+  }, [draw, selections, allAnswered, submitting]);
 
   const backToList = useCallback(() => {
     pollTokenRef.current = null; // stop watching; generation itself keeps going server-side
     setView(null);
     setDraw(null);
     setResult(null);
-    setSelected(null);
+    setSelections([]);
     setDrawState("idle");
+    // The reading view's <audio> element unmounts with it (view leaves
+    // "reading"), which does stop playback — but that's a DOM-level effect
+    // its own onEnded/onError event never fires for, so without this the
+    // "재생 중…"/"불러오는 중…" label would otherwise survive stale into
+    // whatever's opened next.
+    setTts("idle");
     loadInstances();
   }, [loadInstances]);
 
@@ -271,10 +300,21 @@ export function ArticleQuiz() {
             {draw.status === "done" ? (
               <>
                 <p className="article-summary">{draw.summary}</p>
+                <audio
+                  ref={audioRef}
+                  style={{ display: "none" }}
+                  onPlaying={() => setTts("speaking")}
+                  onWaiting={() => setTts("loading")}
+                  onEnded={() => setTts("idle")}
+                  onError={() => {
+                    setTts("error");
+                    setTimeout(() => setTts("idle"), 2000);
+                  }}
+                />
                 <button
                   type="button"
                   className="ghost article-read-aloud-btn"
-                  onClick={() => void handleRead()}
+                  onClick={handleRead}
                   disabled={tts !== "idle"}
                 >
                   {tts === "loading"
@@ -308,42 +348,61 @@ export function ArticleQuiz() {
         {view === "quiz" && draw && (
           <div className="quiz-panel">
             <p className="article-summary">{draw.summary}</p>
-            <div className="quiz-prompt">이 문단의 내용과 일치하는 해석을 고르세요.</div>
-            <div className="quiz-choices">
-              {draw.choices.map((choice, i) => (
-                <button
-                  key={i}
-                  type="button"
-                  className="quiz-choice-btn"
-                  onClick={() => void chooseAnswer(i)}
-                  disabled={selected !== null}
-                >
-                  {choice}
-                </button>
-              ))}
-            </div>
+            <div className="quiz-prompt">이 문단의 내용과 일치하는 것을 각각 고르세요.</div>
+            {draw.subQuestions.map((sub, qi) => (
+              <div key={qi} className="article-sub-question">
+                <div className="quiz-prompt">{sub.prompt}</div>
+                <div className="quiz-choices">
+                  {sub.options.map((option, oi) => (
+                    <button
+                      key={oi}
+                      type="button"
+                      className={
+                        selections[qi] === oi ? "quiz-choice-btn selected" : "quiz-choice-btn"
+                      }
+                      onClick={() => pickOption(qi, oi)}
+                    >
+                      {option}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+            <button
+              type="button"
+              className="quiz-start-btn"
+              onClick={() => void submitAnswers()}
+              disabled={!allAnswered || submitting}
+            >
+              {submitting ? "채점 중…" : "제출하기"}
+            </button>
           </div>
         )}
 
         {view === "result" && draw && result && (
           <div className="quiz-panel">
             <div className={`quiz-result ${result.correct ? "correct" : "incorrect"}`} role="status">
-              {result.correct ? "정답이에요!" : "아쉬워요, 오답이에요."}
+              {result.correct ? "정답이에요!" : `아쉬워요, ${result.score}/${result.total} 정답이에요.`}
             </div>
             <p className="article-summary">{draw.summary}</p>
-            <div className="quiz-choices">
-              {draw.choices.map((choice, i) => {
-                const isAnswer = i === result.correctIndex;
-                const isSelected = i === selected;
-                const cls = quizChoiceClass(true, isSelected, isAnswer);
-                return (
-                  <button key={i} type="button" className={cls} disabled>
-                    {choice}
-                  </button>
-                );
-              })}
-            </div>
-            <div className="article-explanation">{result.explanation}</div>
+            {result.subQuestions.map((sub, qi) => (
+              <div key={qi} className="article-sub-question">
+                <div className="quiz-prompt">{sub.prompt}</div>
+                <div className="quiz-choices">
+                  {sub.options.map((option, oi) => {
+                    const isAnswer = oi === sub.correctOptionIndex;
+                    const isSelected = oi === sub.selectedOptionIndex;
+                    const cls = quizChoiceClass(true, isSelected, isAnswer);
+                    return (
+                      <button key={oi} type="button" className={cls} disabled>
+                        {option}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="article-explanation">{sub.explanation}</div>
+              </div>
+            ))}
             <button
               type="button"
               className="quiz-start-btn"

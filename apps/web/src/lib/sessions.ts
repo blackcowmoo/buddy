@@ -208,3 +208,16 @@ export async function endSession(id: string): Promise<boolean> {
 export async function restudySession(id: string): Promise<boolean> {
   return requestOK(`api/sessions/${encodeURIComponent(id)}/restudy`, { method: "POST" });
 }
+
+// URL for one chat turn's read-aloud audio — the learner's own line or the
+// assistant's reply (role disambiguates the two sharing a turn number, see
+// store.Turn) — generated on demand (the first time a learner asks to hear
+// this specific message, not eagerly for every reply) and cached
+// server-side, so a plain <audio src> works the same way
+// recordingAudioURL's/articleAudioURL's does: point at it directly and
+// call play(), same as App.tsx's playMessage. Unlike "오늘의 아티클"'s
+// read-aloud, this can't be pre-generated — each line is unique to its own
+// conversation, not known until the learner actually picks it.
+export function messageAudioURL(sessionId: string, turn: number, role: "user" | "assistant"): string {
+  return `api/sessions/${encodeURIComponent(sessionId)}/messages/${turn}/audio?role=${role}`;
+}

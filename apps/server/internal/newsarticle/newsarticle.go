@@ -1,8 +1,8 @@
 // Package newsarticle persists "오늘의 아티클" — a news article drawn from
-// internal/newsfeed, summarized into one English study paragraph plus a
-// Korean-translation multiple-choice quiz (see
-// pipeline.Pipeline.GenerateArticleStudy) — and each learner's own attempts
-// at it.
+// internal/newsfeed, summarized into one English study paragraph plus
+// several independent Korean-language 2-choice reading-comprehension
+// sub-questions (see pipeline.Pipeline.GenerateArticleStudy and
+// SubQuestion's doc) — and each learner's own attempts at it.
 //
 // Two tables back this, for the same reason internal/wordreview's Word and
 // this package's Instance are separate concerns: Article is the
@@ -35,19 +35,14 @@ type Article struct {
 	// verbatim copy of the source article. Empty while Status is
 	// StatusPending.
 	Summary string
-	// Choices are four Korean-language candidate translations/
-	// interpretations of Summary, exactly one of them (at CorrectIndex)
-	// accurate — the other three are plausible-looking but wrong (a swapped
-	// fact, a flipped negation, a wrong entity) rather than obviously
-	// unrelated, so guessing without having actually read Summary is a real
-	// gamble. Never sent to the learner before they ask to see the quiz, and
-	// CorrectIndex/Explanation are never sent before they answer — see
-	// httpserver's handlers. Empty while Status is StatusPending.
-	Choices      []string
-	CorrectIndex int
-	// Explanation is a Korean-language note on why Choices[CorrectIndex] is
-	// the accurate one — shown only after the learner answers.
-	Explanation string
+	// SubQuestions are several independent 2-choice reading-comprehension
+	// checks against Summary — see SubQuestion's doc for why this shape,
+	// not one 4-choice "which paraphrase is right" question. At least 2,
+	// however many the source paragraph supports; never sent to the learner
+	// before they ask to see the quiz, and each entry's CorrectOptionIndex/
+	// Explanation are never sent before they answer — see httpserver's
+	// handlers. Empty while Status is StatusPending.
+	SubQuestions []SubQuestion
 	// Description is the feed's own short snippet (newsfeed.Candidate.
 	// Description) that pipeline.GenerateArticleStudy needs as input,
 	// persisted here — not just held transiently in the draw request — so
@@ -81,6 +76,31 @@ const (
 	StatusFailed  = "failed"
 )
 
+// SubQuestion is one independent 2-choice reading-comprehension check
+// against an Article's Summary, isolating a single concrete fact (an
+// amount, a date, who did what) rather than the paragraph's overall
+// meaning. This shape — many small binary fact-checks instead of one
+// 4-choice "which of these near-identical paraphrases is right" question —
+// exists specifically so a learner can't spot the answer by diffing the
+// options against each other (the old shape's failure mode: three of four
+// choices were full paraphrases differing from the fourth by one swapped
+// word, findable without reading Summary at all). See
+// pipeline.Pipeline.GenerateArticleStudy/protocol.ArticleSubQuestion.
+type SubQuestion struct {
+	// Prompt is a short native-language question naming which fact this
+	// sub-question is about — the two Options alone aren't self-explanatory
+	// without it.
+	Prompt string
+	// Options always has exactly 2 entries — short candidate answers to
+	// Prompt, not full-paragraph paraphrases.
+	Options            []string
+	CorrectOptionIndex int
+	// Explanation is a native-language note on why
+	// Options[CorrectOptionIndex] matches Summary — shown only after the
+	// learner answers.
+	Explanation string
+}
+
 // Instance is one learner's own attempt at one Article — the "instant
 // conversation"-style unit this feature lists and never limits per day (see
 // the package doc); only which articles a learner has already drawn is ever
@@ -90,10 +110,15 @@ type Instance struct {
 	UserID   string
 	Article  Article // denormalized in full for display — see Store.List
 	Answered bool
-	// SelectedIndex is -1 until Answered.
-	SelectedIndex int
-	Correct       bool
-	CreatedAt     time.Time
+	// SelectedOptions is one 0/1 pick per Article.SubQuestions entry (same
+	// index), empty until Answered — the learner's own choice for each
+	// independent sub-question, scored against SubQuestions[i].
+	// CorrectOptionIndex server-side (see Store.Answer).
+	SelectedOptions []int
+	// Correct is true only if every SubQuestions entry was answered
+	// correctly — see Store.Answer.
+	Correct   bool
+	CreatedAt time.Time
 }
 
 // Store persists the shared Article cache and each learner's own Instances,
@@ -121,7 +146,7 @@ type Store interface {
 	// row if it's no longer StatusPending (e.g. another attempt already
 	// completed it first) — same race-tolerant idempotence ReserveArticle's
 	// insert-ignore gives the reservation itself.
-	CompleteArticle(ctx context.Context, id, summary string, choices []string, correctIndex int, explanation string) (Article, error)
+	CompleteArticle(ctx context.Context, id, summary string, subQuestions []SubQuestion) (Article, error)
 	// FailArticle marks a StatusPending Article StatusFailed after a
 	// pipeline.GenerateArticleStudy attempt errored — observability only; the
 	// asyncjob reaper still retries the job from scratch regardless (see
@@ -149,6 +174,17 @@ type Store interface {
 	// the original in-flight attempt) both kicking off a redundant duplicate
 	// generation for the same article.
 	ClaimArticle(ctx context.Context, id string) (bool, error)
+	// ReopenIncompleteArticle atomically flips id back to StatusPending if
+	// it's currently StatusDone with no SubQuestions — the shape an Article
+	// completed before the 4-choice -> N-sub-question quiz redesign is left
+	// in (its sub_questions_json predates that column and is empty), which
+	// otherwise shows the learner a permanently broken quiz with no
+	// questions on reopen. Reports whether this call actually won the
+	// reopen: false means id no longer matches (already reopened/
+	// regenerated by a racing caller, or wasn't in that stale shape to begin
+	// with) — the caller must not redispatch generation in that case. A
+	// no-op for any Article that already has real SubQuestions.
+	ReopenIncompleteArticle(ctx context.Context, id string) (bool, error)
 
 	// UsedURLs returns every Article URL userID has already drawn an
 	// Instance for — the exclusion set httpserver's draw handler filters
@@ -167,16 +203,19 @@ type Store interface {
 	// user, same indistinguishable-from-missing contract as
 	// wordreview.Store.Get.
 	Get(ctx context.Context, userID, id string) (Instance, error)
-	// Answer records userID's choice for Instance id: Answered becomes true,
-	// SelectedIndex becomes selectedIndex, and Correct is computed against
-	// the Instance's Article.CorrectIndex server-side (never trusting a
-	// client-supplied verdict — same reasoning as
-	// pipeline.Pipeline.CheckQuizAnswer). Answering is one-shot: if id was
-	// already answered, this just returns the existing row unchanged rather
-	// than overwriting the first recorded outcome. Returns a zero Instance
-	// and nil error if id doesn't exist or belongs to a different user, same
-	// indistinguishable-from-missing contract as Get.
-	Answer(ctx context.Context, userID, id string, selectedIndex int) (Instance, error)
+	// Answer records userID's choices for Instance id: Answered becomes
+	// true, SelectedOptions becomes selectedOptions, and Correct is computed
+	// index-wise against the Instance's Article.SubQuestions[i].
+	// CorrectOptionIndex server-side (never trusting a client-supplied
+	// verdict — same reasoning as pipeline.Pipeline.CheckQuizAnswer) — true
+	// only if every sub-question was answered correctly. Answering is
+	// one-shot: if id was already answered, this just returns the existing
+	// row unchanged rather than overwriting the first recorded outcome.
+	// selectedOptions must have the same length as the Instance's Article.
+	// SubQuestions, one 0/1 pick per entry, same index. Returns a zero
+	// Instance and nil error if id doesn't exist or belongs to a different
+	// user, same indistinguishable-from-missing contract as Get.
+	Answer(ctx context.Context, userID, id string, selectedOptions []int) (Instance, error)
 	// Delete removes one Instance — mirrors
 	// store.Store.DeleteSession/wordreview.Store.Delete's "just gone, not
 	// archived" contract. Never touches the shared Article row, which other

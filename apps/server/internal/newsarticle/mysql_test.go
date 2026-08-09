@@ -94,6 +94,27 @@ func requireStore(t *testing.T) *MySQLStore {
 	return sharedStore
 }
 
+// testSubQuestions returns a fixed, valid 2-entry SubQuestions slice — the
+// minimum articleQuizMinSubQuestions requires — for tests that just need
+// *a* valid quiz to build an Instance against, not to exercise its content.
+func testSubQuestions() []SubQuestion {
+	return []SubQuestion{
+		{Prompt: "질문 1", Options: []string{"정답 1", "오답 1"}, CorrectOptionIndex: 0, Explanation: "설명 1"},
+		{Prompt: "질문 2", Options: []string{"정답 2", "오답 2"}, CorrectOptionIndex: 1, Explanation: "설명 2"},
+	}
+}
+
+// correctOptions returns the all-correct selection for qs — Answer(ctx,
+// ..., correctOptions(article.SubQuestions)) is what a learner who
+// answered every sub-question right would have submitted.
+func correctOptions(qs []SubQuestion) []int {
+	out := make([]int, len(qs))
+	for i, q := range qs {
+		out[i] = q.CorrectOptionIndex
+	}
+	return out
+}
+
 // mustSaveArticle reserves a fresh Article row and immediately completes it
 // with study content — the two-step ReserveArticle + CompleteArticle
 // sequence httpserver.articleDrawHandler and asyncjob.KindArticleStudy
@@ -107,8 +128,7 @@ func mustSaveArticle(t *testing.T, st *MySQLStore, url string) Article {
 	}
 	completed, err := st.CompleteArticle(context.Background(), reserved.ID,
 		"A short English study paragraph about the test headline.",
-		[]string{"정확한 해석", "틀린 해석 1", "틀린 해석 2", "틀린 해석 3"}, 0,
-		"정확한 해석이 원문의 의미를 그대로 담고 있기 때문이다.")
+		testSubQuestions())
 	if err != nil {
 		t.Fatalf("CompleteArticle() error = %v", err)
 	}
@@ -150,7 +170,7 @@ func TestReserveArticleStartsPendingForAFreshURL(t *testing.T) {
 	if reserved.Status != StatusPending {
 		t.Fatalf("ReserveArticle() Status = %q, want %q for a never-seen URL", reserved.Status, StatusPending)
 	}
-	if reserved.Summary != "" || len(reserved.Choices) != 0 {
+	if reserved.Summary != "" || len(reserved.SubQuestions) != 0 {
 		t.Errorf("ReserveArticle() = %+v, want empty study content while pending", reserved)
 	}
 }
@@ -161,15 +181,19 @@ func TestCompleteArticleIsNoopIfNoLongerPending(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReserveArticle() error = %v", err)
 	}
-	first, err := st.CompleteArticle(context.Background(), reserved.ID, "first summary", []string{"a", "b", "c", "d"}, 1, "e1")
+	first, err := st.CompleteArticle(context.Background(), reserved.ID, "first summary", testSubQuestions())
 	if err != nil {
 		t.Fatalf("CompleteArticle() #1 error = %v", err)
 	}
-	second, err := st.CompleteArticle(context.Background(), reserved.ID, "second summary", []string{"w", "x", "y", "z"}, 3, "e2")
+	otherSubQuestions := []SubQuestion{
+		{Prompt: "다른 질문", Options: []string{"w", "x"}, CorrectOptionIndex: 1, Explanation: "e2"},
+		{Prompt: "또 다른 질문", Options: []string{"y", "z"}, CorrectOptionIndex: 0, Explanation: "e3"},
+	}
+	second, err := st.CompleteArticle(context.Background(), reserved.ID, "second summary", otherSubQuestions)
 	if err != nil {
 		t.Fatalf("CompleteArticle() #2 error = %v", err)
 	}
-	if second.Summary != first.Summary || second.CorrectIndex != first.CorrectIndex {
+	if second.Summary != first.Summary || len(second.SubQuestions) != len(first.SubQuestions) || second.SubQuestions[0].Prompt != first.SubQuestions[0].Prompt {
 		t.Fatalf("CompleteArticle() #2 = %+v, want the first completion's content kept unchanged", second)
 	}
 }
@@ -349,7 +373,7 @@ func TestClaimArticleReportsWhetherStillPending(t *testing.T) {
 		t.Fatal("ClaimArticle() on a StatusPending article = false, want true")
 	}
 
-	if _, err := st.CompleteArticle(ctx, reserved.ID, "s", []string{"a", "b", "c", "d"}, 0, "e"); err != nil {
+	if _, err := st.CompleteArticle(ctx, reserved.ID, "s", testSubQuestions()); err != nil {
 		t.Fatalf("CompleteArticle() error = %v", err)
 	}
 
@@ -416,6 +440,83 @@ func TestClaimArticleRefreshesClaimedAtSoItLeavesStalePending(t *testing.T) {
 	}
 }
 
+// TestReopenIncompleteArticleWinsForADoneArticleWithNoSubQuestions guards
+// the self-heal path (see httpserver.selfHealIncompleteArticle): an Article
+// left StatusDone with no SubQuestions — the shape a row completed before
+// the 4-choice -> N-sub-question redesign is stuck in — must be reopened so
+// it can be regenerated. CompleteArticle itself doesn't validate an empty
+// subQuestions slice (that's pipeline.validateArticleStudy's job, one layer
+// up), so calling it directly with nil is exactly how to build this shape
+// in a test without needing to touch the DB by hand.
+func TestReopenIncompleteArticleWinsForADoneArticleWithNoSubQuestions(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	reserved, err := st.ReserveArticle(ctx, "BBC", "Stale", "https://example.com/reopen-empty", "snippet", time.Time{})
+	if err != nil {
+		t.Fatalf("ReserveArticle() error = %v", err)
+	}
+	if _, err := st.CompleteArticle(ctx, reserved.ID, "old summary", nil); err != nil {
+		t.Fatalf("CompleteArticle() error = %v", err)
+	}
+
+	won, err := st.ReopenIncompleteArticle(ctx, reserved.ID)
+	if err != nil {
+		t.Fatalf("ReopenIncompleteArticle() error = %v", err)
+	}
+	if !won {
+		t.Fatal("ReopenIncompleteArticle() = false, want true for a done article with no sub-questions")
+	}
+
+	found, ok, err := st.GetArticle(ctx, reserved.ID)
+	if err != nil || !ok {
+		t.Fatalf("GetArticle() = (%+v, %v, %v)", found, ok, err)
+	}
+	if found.Status != StatusPending {
+		t.Fatalf("Status after reopen = %q, want %q", found.Status, StatusPending)
+	}
+}
+
+// TestReopenIncompleteArticleIsNoopForARealDoneArticle guards against ever
+// clobbering a genuinely completed quiz back to pending.
+func TestReopenIncompleteArticleIsNoopForARealDoneArticle(t *testing.T) {
+	st := requireStore(t)
+	article := mustSaveArticle(t, st, "https://example.com/reopen-real")
+
+	won, err := st.ReopenIncompleteArticle(context.Background(), article.ID)
+	if err != nil {
+		t.Fatalf("ReopenIncompleteArticle() error = %v", err)
+	}
+	if won {
+		t.Fatal("ReopenIncompleteArticle() = true, want false for an article that already has real sub-questions")
+	}
+
+	found, _, err := st.GetArticle(context.Background(), article.ID)
+	if err != nil {
+		t.Fatalf("GetArticle() error = %v", err)
+	}
+	if found.Status != StatusDone {
+		t.Fatalf("Status = %q, want unchanged %q", found.Status, StatusDone)
+	}
+}
+
+// TestReopenIncompleteArticleIsNoopWhilePending guards against interfering
+// with a normal, still-in-flight (never-yet-completed) generation.
+func TestReopenIncompleteArticleIsNoopWhilePending(t *testing.T) {
+	st := requireStore(t)
+	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Still pending", "https://example.com/reopen-pending", "snippet", time.Time{})
+	if err != nil {
+		t.Fatalf("ReserveArticle() error = %v", err)
+	}
+
+	won, err := st.ReopenIncompleteArticle(context.Background(), reserved.ID)
+	if err != nil {
+		t.Fatalf("ReopenIncompleteArticle() error = %v", err)
+	}
+	if won {
+		t.Fatal("ReopenIncompleteArticle() = true, want false for an article that's still pending")
+	}
+}
+
 func TestCreateInstanceListAndGetRoundTrip(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
@@ -425,10 +526,10 @@ func TestCreateInstanceListAndGetRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateInstance() error = %v", err)
 	}
-	if created.Answered || created.SelectedIndex != -1 {
+	if created.Answered || len(created.SelectedOptions) != 0 {
 		t.Errorf("CreateInstance() = %+v, want a fresh unanswered instance", created)
 	}
-	if created.Article.URL != article.URL || len(created.Article.Choices) != 4 {
+	if created.Article.URL != article.URL || len(created.Article.SubQuestions) != len(testSubQuestions()) {
 		t.Errorf("CreateInstance() Article = %+v, want the joined article populated", created.Article)
 	}
 
@@ -503,22 +604,28 @@ func TestAnswerComputesCorrectnessServerSideAndIsOneShot(t *testing.T) {
 		t.Fatalf("CreateInstance() error = %v", err)
 	}
 
-	answered, err := st.Answer(ctx, "alex-answer", inst.ID, article.CorrectIndex)
+	allCorrect := correctOptions(article.SubQuestions)
+	answered, err := st.Answer(ctx, "alex-answer", inst.ID, allCorrect)
 	if err != nil {
 		t.Fatalf("Answer() error = %v", err)
 	}
-	if !answered.Answered || !answered.Correct || answered.SelectedIndex != article.CorrectIndex {
-		t.Fatalf("Answer() with the correct index = %+v, want Answered/Correct true", answered)
+	if !answered.Answered || !answered.Correct || len(answered.SelectedOptions) != len(allCorrect) {
+		t.Fatalf("Answer() with every correct option = %+v, want Answered/Correct true", answered)
 	}
 
-	// A second Answer call — even with a different (wrong) index — must not
-	// overwrite the first recorded outcome (see Store.Answer's one-shot doc).
-	again, err := st.Answer(ctx, "alex-answer", inst.ID, article.CorrectIndex+1)
+	// A second Answer call — even with different (wrong) selections — must
+	// not overwrite the first recorded outcome (see Store.Answer's one-shot
+	// doc).
+	wrong := make([]int, len(allCorrect))
+	for i, v := range allCorrect {
+		wrong[i] = 1 - v
+	}
+	again, err := st.Answer(ctx, "alex-answer", inst.ID, wrong)
 	if err != nil {
 		t.Fatalf("Answer() #2 error = %v", err)
 	}
-	if again.SelectedIndex != article.CorrectIndex || !again.Correct {
-		t.Errorf("Answer() #2 = %+v, want the original outcome unchanged", again)
+	if !again.Correct {
+		t.Errorf("Answer() #2 = %+v, want the original (correct) outcome unchanged", again)
 	}
 }
 
@@ -531,13 +638,16 @@ func TestAnswerWithWrongChoice(t *testing.T) {
 		t.Fatalf("CreateInstance() error = %v", err)
 	}
 
-	wrongIndex := (article.CorrectIndex + 1) % len(article.Choices)
-	answered, err := st.Answer(ctx, "alex-answer-wrong", inst.ID, wrongIndex)
+	// Every sub-question right except the first one, which is deliberately
+	// wrong — Correct must require ALL of them, not just most.
+	selections := correctOptions(article.SubQuestions)
+	selections[0] = 1 - selections[0]
+	answered, err := st.Answer(ctx, "alex-answer-wrong", inst.ID, selections)
 	if err != nil {
 		t.Fatalf("Answer() error = %v", err)
 	}
 	if answered.Correct {
-		t.Fatalf("Answer() with a wrong index = %+v, want Correct = false", answered)
+		t.Fatalf("Answer() with one wrong sub-question = %+v, want Correct = false", answered)
 	}
 }
 

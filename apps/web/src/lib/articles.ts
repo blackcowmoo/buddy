@@ -22,31 +22,54 @@ export interface ArticleInstance {
   status: ArticleStatus;
 }
 
+// Mirrors httpserver's draftSubQuestion shape — one independent 2-choice
+// fact-check within the quiz (see pipeline.articleStudySystemPrompt's
+// "spot the difference" redesign), never carrying CorrectOptionIndex/
+// Explanation; the server only reveals those via answerArticle's per-sub-
+// question reveal, after the learner has answered every one.
+export interface ArticleSubQuestion {
+  prompt: string;
+  options: string[]; // always exactly 2
+}
+
 // Mirrors httpserver's articleDraw shape — enough to render the reading
-// view and, once the learner asks to see it, the quiz's Choices. Never
-// carries CorrectIndex/Explanation; the server only reveals those via
-// answerArticle, after the learner has actually picked one. Summary/choices
-// are empty while status is "pending"/"failed" — see fetchArticleInstance,
-// which polls this same shape until generation lands.
+// view and, once the learner asks to see it, the quiz's SubQuestions.
+// Summary/subQuestions are empty while status is "pending"/"failed" — see
+// fetchArticleInstance, which polls this same shape until generation lands.
 export interface ArticleDraw {
   id: string;
   source: string;
   title: string;
   summary: string;
-  choices: string[];
+  subQuestions: ArticleSubQuestion[];
   // unix seconds; 0 if the source feed had no usable pubDate. Present from
   // the very first draw response, even while status is still "pending".
   publishedAt: number;
   status: ArticleStatus;
 }
 
+// Mirrors httpserver's articleSubQuestionResult shape — one sub-question's
+// reveal, with its answer key and what the learner actually picked, so the
+// UI can color each one correct/incorrect independently (see
+// lib/quizCheck.ts's quizChoiceClass).
+export interface ArticleSubQuestionResult {
+  prompt: string;
+  options: string[];
+  correctOptionIndex: number;
+  selectedOptionIndex: number;
+  correct: boolean;
+  explanation: string;
+}
+
 // Mirrors httpserver's articleResult shape — the reveal shown right after
-// answering.
+// answering every sub-question: an aggregate verdict (Correct is true only
+// if every sub-question was), a Score/Total for a partial-credit summary
+// line, and each sub-question's own reveal.
 export interface ArticleAnswerResult {
   correct: boolean;
-  correctIndex: number;
-  translation: string; // the accurate choice's own text
-  explanation: string;
+  score: number;
+  total: number;
+  subQuestions: ArticleSubQuestionResult[];
 }
 
 export type ArticleDrawResult =
@@ -103,16 +126,17 @@ export async function fetchArticleInstances(): Promise<ArticleInstance[]> {
   return fetchJSON<ArticleInstance[]>("api/articles", []);
 }
 
-// Records the caller's choice for one of their own article-quiz instances
-// and returns the reveal — correctness is always computed server-side
-// against the stored answer key, never trusting a client-supplied verdict.
-// Returns null on any failure (network error, non-200, bad JSON).
-export async function answerArticle(id: string, selectedIndex: number): Promise<ArticleAnswerResult | null> {
+// Records the caller's choices (one per sub-question, in order) for one of
+// their own article-quiz instances and returns the reveal — correctness is
+// always computed server-side against the stored answer key, never trusting
+// a client-supplied verdict. Returns null on any failure (network error,
+// non-200, bad JSON).
+export async function answerArticle(id: string, selectedOptions: number[]): Promise<ArticleAnswerResult | null> {
   try {
     const res = await fetch(`api/articles/${encodeURIComponent(id)}/answer`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ selectedIndex }),
+      body: JSON.stringify({ selectedOptions }),
     });
     if (!res.ok) return null;
     return (await res.json()) as ArticleAnswerResult;
@@ -125,4 +149,15 @@ export async function answerArticle(id: string, selectedIndex: number): Promise<
 // the request succeeded, same as lib/sessions.ts's deleteSession.
 export async function deleteArticleInstance(id: string): Promise<boolean> {
   return requestOK(`api/articles/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+// URL for this draw's read-aloud audio — generated once server-side per
+// shared Article and cached (see httpserver's article audio handler), not
+// per learner, so a plain <audio src> works the same way
+// recordingAudioURL's does: point at it directly and call play(), no fetch/
+// blob/model-loading dance needed on this side anymore (that whole pipeline
+// — see the removed apps/web/src/tts/kokoro.ts usage here — existed only
+// because generation used to happen in-browser).
+export function articleAudioURL(id: string): string {
+  return `api/articles/${encodeURIComponent(id)}/audio`;
 }

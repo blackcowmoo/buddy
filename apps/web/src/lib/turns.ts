@@ -16,16 +16,6 @@ export interface Msg {
   timestamp?: number;
 }
 
-export type PanelKind = "rate" | "grammar";
-
-export function isPanelOpen(
-  openPanel: { index: number; kind: PanelKind } | null,
-  index: number,
-  kind: PanelKind,
-): boolean {
-  return openPanel?.index === index && openPanel.kind === kind;
-}
-
 // A reply still being generated (see store.Turn.ReplyStatus) is an empty
 // placeholder row — rendering it now would show a blank bubble; the typing
 // indicator covers this gap instead, until pollMissingFeedback hydrates the
