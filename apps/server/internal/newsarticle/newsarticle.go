@@ -157,8 +157,8 @@ type Store interface {
 	// whether the work it was handed is already done before redoing the LLM
 	// call, same early-exit reasoning as runWordVerify.
 	GetArticle(ctx context.Context, id string) (Article, bool, error)
-	// StalePending returns every StatusPending Article last (re)claimed more
-	// than olderThan ago — see ClaimArticle. This is the DB-only orphan
+	// StalePending returns every unfinished Article (StatusPending or
+	// StatusFailed) last (re)claimed more than olderThan ago — see ClaimArticle. This is the DB-only orphan
 	// detection transport.SweepStaleArticleStudies polls on, independent of
 	// whether Redis (and asyncjob's own claim-based reaper) is configured at
 	// all: a generation goroutine killed mid-job by a crash or a redeploy
@@ -166,11 +166,11 @@ type Store interface {
 	// no durability of its own) otherwise leaves its row StatusPending
 	// forever, with nothing left to ever retry it.
 	StalePending(ctx context.Context, olderThan time.Duration) ([]Article, error)
-	// ClaimArticle marks id as freshly (re)claimed — refreshing the
-	// timestamp StalePending compares against — and reports whether this
-	// call actually won the claim: false means id is no longer StatusPending
-	// (already completed/failed by a racing attempt), so the caller must
-	// skip redispatching it. Guards against two sweepers (or a sweep racing
+	// ClaimArticle marks id as freshly (re)claimed, changes a failed article
+	// back to pending, and refreshes the timestamp StalePending compares
+	// against. It reports whether this call actually won the claim: false
+	// means id is no longer unfinished (already completed by a racing attempt),
+	// so the caller must skip redispatching it. Guards against two sweepers (or a sweep racing
 	// the original in-flight attempt) both kicking off a redundant duplicate
 	// generation for the same article.
 	ClaimArticle(ctx context.Context, id string) (bool, error)
