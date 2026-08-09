@@ -110,6 +110,7 @@ export function ArticleQuiz() {
       setResult(null);
       setView("reading");
       setDrawState("idle");
+      setTts("idle");
       if (res.draw.status !== "done") {
         const token = {};
         pollTokenRef.current = token;
@@ -131,6 +132,7 @@ export function ArticleQuiz() {
       setSelections([]);
       setResult(null);
       setDrawState("idle");
+      setTts("idle");
       setView("reading");
       if (found.status !== "done") {
         const token = {};
@@ -204,6 +206,12 @@ export function ArticleQuiz() {
     setResult(null);
     setSelections([]);
     setDrawState("idle");
+    // The reading view's <audio> element unmounts with it (view leaves
+    // "reading"), which does stop playback — but that's a DOM-level effect
+    // its own onEnded/onError event never fires for, so without this the
+    // "재생 중…"/"불러오는 중…" label would otherwise survive stale into
+    // whatever's opened next.
+    setTts("idle");
     loadInstances();
   }, [loadInstances]);
 

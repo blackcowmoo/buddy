@@ -356,6 +356,31 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     expect(await screen.findByRole("button", { name: "🔊 읽어주기" })).toBeInTheDocument();
   });
 
+  it("resets the read-aloud label to idle after leaving mid-playback and reopening", async () => {
+    // Regression guard: navigating back to the list while "재생 중…" is
+    // showing does stop the actual audio (the reading view's <audio>
+    // element unmounts with it), but that unmount never fires the element's
+    // own onEnded/onError — nothing reset the tts label state itself, so
+    // reopening any draw afterward showed a stale "재생 중…" even though
+    // nothing was actually playing.
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    const user = userEvent.setup();
+    const { container } = render(<ArticleQuiz />);
+
+    await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
+    await user.click(screen.getByRole("button", { name: "🔊 읽어주기" }));
+    const audioEl = container.querySelector("audio")!;
+    await act(async () => audioEl.dispatchEvent(new Event("playing")));
+    expect(await screen.findByRole("button", { name: "재생 중…" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "← 목록으로" }));
+    await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
+
+    expect(await screen.findByRole("button", { name: "🔊 읽어주기" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "재생 중…" })).not.toBeInTheDocument();
+  });
+
   it("shows a failure label instead of silently going back to idle when playback fails", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
