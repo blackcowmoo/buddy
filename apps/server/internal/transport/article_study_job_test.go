@@ -151,7 +151,7 @@ func (s *fakeNewsArticleStore) StalePending(ctx context.Context, olderThan time.
 	defer s.mu.Unlock()
 	var out []newsarticle.Article
 	for id, a := range s.articles {
-		if a.Status == newsarticle.StatusPending && s.stale[id] {
+		if (a.Status == newsarticle.StatusPending || a.Status == newsarticle.StatusFailed) && s.stale[id] {
 			out = append(out, a)
 		}
 	}
@@ -162,9 +162,11 @@ func (s *fakeNewsArticleStore) ClaimArticle(ctx context.Context, id string) (boo
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	a, ok := s.articles[id]
-	if !ok || a.Status != newsarticle.StatusPending {
+	if !ok || (a.Status != newsarticle.StatusPending && a.Status != newsarticle.StatusFailed) {
 		return false, nil
 	}
+	a.Status = newsarticle.StatusPending
+	s.articles[id] = a
 	delete(s.stale, id) // freshly (re)claimed, so no longer stale
 	return true, nil
 }
@@ -373,6 +375,30 @@ func TestRunArticleStudyPropagatesErrorAndMarksFailed(t *testing.T) {
 	}
 	if got := articles.status("a1"); got != newsarticle.StatusFailed {
 		t.Fatalf("status = %q, want %q", got, newsarticle.StatusFailed)
+	}
+}
+
+// TestRunArticleStudyRetriesAPreviouslyFailedArticle verifies that the next
+// durable attempt reopens a failed row before generating. Without this, the
+// queue reaper retries the job but runArticleStudy returns immediately on
+// StatusFailed, leaving the learner's row stuck in "생성 중" forever.
+func TestRunArticleStudyRetriesAPreviouslyFailedArticle(t *testing.T) {
+	articles := newFakeNewsArticleStore(newsarticle.Article{
+		ID: "a1", Source: "BBC", Title: "Headline", URL: "https://example.com/a", Status: newsarticle.StatusFailed,
+	})
+	calls := 0
+	pipe := &pipeline.Pipeline{
+		Analysis: []pipeline.Candidate{{Model: "m", LLM: countingLLM{&calls, fakeArticleStudyJSON}}},
+	}
+
+	if err := RunArticleStudyInline(context.Background(), pipe, articles, nil, "a1", "BBC", "Headline", "snippet"); err != nil {
+		t.Fatalf("retry failed: %v", err)
+	}
+	if got := articles.status("a1"); got != newsarticle.StatusDone {
+		t.Fatalf("status = %q, want %q", got, newsarticle.StatusDone)
+	}
+	if calls == 0 {
+		t.Fatal("retry did not call the LLM")
 	}
 }
 

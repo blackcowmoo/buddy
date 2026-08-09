@@ -137,7 +137,23 @@ func runArticleStudy(ctx context.Context, pipe *pipeline.Pipeline, articles news
 	if err != nil {
 		return fmt.Errorf("article study: get: %w", err)
 	}
-	if !ok || target.Status != newsarticle.StatusPending {
+	if !ok {
+		return nil
+	}
+	if target.Status == newsarticle.StatusFailed {
+		// A previous attempt recorded its failure before the durable queue
+		// reaped/retried it. Reclaim the row atomically so a retry really
+		// reaches GenerateArticleStudy instead of becoming a no-op.
+		claimed, claimErr := articles.ClaimArticle(ctx, articleID)
+		if claimErr != nil {
+			return fmt.Errorf("article study: reclaim failed article: %w", claimErr)
+		}
+		if !claimed {
+			return nil
+		}
+		target.Status = newsarticle.StatusPending
+	}
+	if target.Status != newsarticle.StatusPending {
 		return nil
 	}
 

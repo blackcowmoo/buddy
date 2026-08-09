@@ -223,12 +223,15 @@ func (s *MySQLStore) ReserveArticle(ctx context.Context, source, title, url, des
 	return saved, nil
 }
 
-// StalePending implements Store.StalePending — see its doc comment.
+// StalePending implements Store.StalePending — see its doc comment. Failed
+// rows are included because a failed generation is retryable and must not
+// remain stuck when Redis is unavailable.
 func (s *MySQLStore) StalePending(ctx context.Context, olderThan time.Duration) ([]Article, error) {
 	cutoff := time.Now().Add(-olderThan).UnixNano()
 	rows, err := s.ro.QueryContext(ctx, `
-		SELECT `+articleColumns+` FROM `+articlesTable+` WHERE status = ? AND claimed_at < ?
-	`, StatusPending, cutoff)
+		SELECT `+articleColumns+` FROM `+articlesTable+`
+		WHERE status IN (?, ?) AND claimed_at < ?
+	`, StatusPending, StatusFailed, cutoff)
 	if err != nil {
 		return nil, fmt.Errorf("newsarticle: stale pending: %w", err)
 	}
@@ -255,8 +258,9 @@ func (s *MySQLStore) StalePending(ctx context.Context, olderThan time.Duration) 
 // lost the claim — even though the UPDATE's WHERE matched and ran.
 func (s *MySQLStore) ClaimArticle(ctx context.Context, id string) (bool, error) {
 	res, err := s.rw.ExecContext(ctx, `
-		UPDATE `+articlesTable+` SET claimed_at = ? WHERE id = ? AND status = ?
-	`, time.Now().UnixNano(), id, StatusPending)
+		UPDATE `+articlesTable+` SET claimed_at = ?, status = ?
+		WHERE id = ? AND status IN (?, ?)
+	`, time.Now().UnixNano(), StatusPending, id, StatusPending, StatusFailed)
 	if err != nil {
 		return false, fmt.Errorf("newsarticle: claim article: %w", err)
 	}
