@@ -277,6 +277,30 @@ func (s *MySQLStore) ClaimArticle(ctx context.Context, id string) (bool, error) 
 	return n == 1, nil
 }
 
+// ReopenIncompleteArticle implements Store.ReopenIncompleteArticle — see its
+// doc comment. The sub_questions_json condition covers every shape
+// decodeSubQuestions treats as "no data": a real SQL NULL (the nullable
+// ApplyAdditive column on a row that predates it entirely), the
+// pre-migration ReserveArticle default of '[]' surviving unchanged into a
+// StatusDone row from before CompleteArticle ever wrote real content into
+// it, an empty string, and the literal text "null" (what json.Marshal
+// encodes a nil []SubQuestion as, if CompleteArticle is ever called with
+// one).
+func (s *MySQLStore) ReopenIncompleteArticle(ctx context.Context, id string) (bool, error) {
+	res, err := s.rw.ExecContext(ctx, `
+		UPDATE `+articlesTable+` SET status = ?, claimed_at = ?
+		WHERE id = ? AND status = ? AND (sub_questions_json IS NULL OR sub_questions_json IN ('', '[]', 'null'))
+	`, StatusPending, time.Now().UnixNano(), id, StatusDone)
+	if err != nil {
+		return false, fmt.Errorf("newsarticle: reopen incomplete article: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("newsarticle: reopen incomplete article: rows affected: %w", err)
+	}
+	return n == 1, nil
+}
+
 func (s *MySQLStore) CompleteArticle(ctx context.Context, id, summary string, subQuestions []SubQuestion) (Article, error) {
 	subQuestionsJSON, err := json.Marshal(subQuestions)
 	if err != nil {

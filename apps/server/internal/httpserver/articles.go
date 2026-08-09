@@ -198,6 +198,32 @@ func articleInstancesListHandler(ident identity.Identifier, articles newsarticle
 	}
 }
 
+// selfHealIncompleteArticle detects a StatusDone Article left over from
+// before the 4-choice -> N-sub-question quiz redesign — SubQuestions is
+// empty because sub_questions_json predates that migration entirely — and
+// atomically reopens it as StatusPending (see newsarticle.Store.
+// ReopenIncompleteArticle) so it can be regenerated exactly like a fresh
+// draw, instead of permanently showing a quiz with no questions. The bool
+// result is true only when this call actually won the reopen — callers must
+// gate re-dispatching generation on it, not on the returned Article's
+// Status alone, or a still-legitimately-generating article would get
+// re-enqueued on every poll tick (see articleInstanceHandler).
+func selfHealIncompleteArticle(ctx context.Context, articles newsarticle.Store, a newsarticle.Article) (newsarticle.Article, bool) {
+	if a.Status != newsarticle.StatusDone || len(a.SubQuestions) > 0 {
+		return a, false
+	}
+	won, err := articles.ReopenIncompleteArticle(ctx, a.ID)
+	if err != nil {
+		log.Printf("articles: reopen incomplete %s: %v", a.ID, err)
+		return a, false
+	}
+	if !won {
+		return a, false
+	}
+	a.Status = newsarticle.StatusPending
+	return a, true
+}
+
 // articleDrawHandler draws the most recent news article the caller hasn't
 // drawn before — internal/newsfeed.FetchCandidates already returns every
 // outlet's items sorted newest-first, so this just takes the first one left
@@ -260,6 +286,9 @@ func articleDrawHandler(ident identity.Identifier, articles newsarticle.Store, p
 			serverError(w, "articles: reserve "+userID, err)
 			return
 		}
+		if healed, reopened := selfHealIncompleteArticle(r.Context(), articles, article); reopened {
+			article = healed
+		}
 		if article.Status == newsarticle.StatusPending {
 			asyncjob.EnqueueOrRunInline(articleStudyQueue, r.Context(),
 				"articles: enqueue study "+article.ID,
@@ -290,7 +319,15 @@ func articleDrawHandler(ident identity.Identifier, articles newsarticle.Store, p
 // resume watching it finish instead of losing track of it. Same response
 // shape and answer-key-hiding contract as articleDrawHandler; gated to the
 // caller's own instance the same way as articleAnswerHandler.
-func articleInstanceHandler(ident identity.Identifier, articles newsarticle.Store) http.HandlerFunc {
+//
+// Also the self-heal entry point (see selfHealIncompleteArticle) for an
+// Article completed before the 4-choice -> N-sub-question quiz redesign:
+// reopening one of those here transitions it back to "pending" and kicks
+// off real generation exactly once (gated on actually winning the reopen,
+// not just on Status being "pending" — this handler is polled every few
+// seconds by a normally-generating draw, and re-enqueuing on every one of
+// those ticks would be wasteful/duplicative).
+func articleInstanceHandler(ident identity.Identifier, articles newsarticle.Store, pipe *pipeline.Pipeline, articleStudyQueue *asyncjob.Queue, audio *transport.ArticleAudio) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)
 		if !ok {
@@ -304,6 +341,20 @@ func articleInstanceHandler(ident identity.Identifier, articles newsarticle.Stor
 		if inst.ID == "" {
 			http.NotFound(w, r)
 			return
+		}
+		if healed, reopened := selfHealIncompleteArticle(r.Context(), articles, inst.Article); reopened {
+			inst.Article = healed
+			a := healed
+			asyncjob.EnqueueOrRunInline(articleStudyQueue, r.Context(),
+				"articles: enqueue study (reopen) "+a.ID,
+				func(ctx context.Context) error {
+					return transport.EnqueueArticleStudyJob(ctx, articleStudyQueue, pipe, articles, audio, a.ID, a.Source, a.Title, a.Description)
+				},
+				"articles: study (reopen) "+a.ID,
+				func(ctx context.Context) error {
+					return transport.RunArticleStudyInline(ctx, pipe, articles, audio, a.ID, a.Source, a.Title, a.Description)
+				},
+			)
 		}
 		writeJSON(w, toArticleDraw(inst))
 	}

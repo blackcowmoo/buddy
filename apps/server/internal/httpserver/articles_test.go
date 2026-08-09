@@ -108,6 +108,20 @@ func (f *fakeArticleStore) ClaimArticle(ctx context.Context, id string) (bool, e
 	return false, nil
 }
 
+func (f *fakeArticleStore) ReopenIncompleteArticle(ctx context.Context, id string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for url, a := range f.byURL {
+		if a.ID != id || a.Status != newsarticle.StatusDone || len(a.SubQuestions) > 0 {
+			continue
+		}
+		a.Status = newsarticle.StatusPending
+		f.byURL[url] = a
+		return true, nil
+	}
+	return false, nil
+}
+
 func (f *fakeArticleStore) CompleteArticle(ctx context.Context, id, summary string, subQuestions []newsarticle.SubQuestion) (newsarticle.Article, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -418,6 +432,46 @@ func TestArticleDrawHandlerReusesCachedArticleWithoutCallingLLM(t *testing.T) {
 	}
 }
 
+// TestArticleDrawHandlerRegeneratesAPreMigrationDoneArticleWithNoSubQuestions
+// guards the draw-side half of the same self-heal fix as
+// TestArticleInstanceHandlerSelfHealsAPreMigrationDoneArticleWithNoSubQuestions:
+// re-drawing a URL whose cached Article is StatusDone but has no
+// SubQuestions (left over from before the 4-choice -> N-sub-question quiz
+// redesign) must trigger real regeneration instead of just handing back the
+// same permanently-broken cached row.
+func TestArticleDrawHandlerRegeneratesAPreMigrationDoneArticleWithNoSubQuestions(t *testing.T) {
+	st := &fakeArticleStore{byURL: map[string]newsarticle.Article{
+		"https://example.com/a": {ID: "a1", Source: "BBC", Title: "Headline", URL: "https://example.com/a", Summary: "stale summary", Status: newsarticle.StatusDone},
+	}}
+	llmCalls := 0
+	pipe := &pipeline.Pipeline{Analysis: []pipeline.Candidate{{Model: "m", LLM: &fakeArticleLLM{complete: func(msgs []llm.Message) (string, error) {
+		llmCalls++
+		return fakeStudyJSON, nil
+	}}}}}
+	fetch := fetchOneCandidate(newsfeed.Candidate{Source: "BBC", Title: "Headline", URL: "https://example.com/a", Description: "snippet"})
+	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil, nil)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
+
+	requireStatus(t, rec, http.StatusOK)
+	var got articleDraw
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Status != newsarticle.StatusPending {
+		t.Fatalf("draw = %+v, want status %q (self-healed back to pending)", got, newsarticle.StatusPending)
+	}
+
+	waitForCondition(t, 2*time.Second, func() bool {
+		a, ok, err := st.GetArticle(context.Background(), "a1")
+		return err == nil && ok && a.Status == newsarticle.StatusDone
+	})
+	if llmCalls != 1 {
+		t.Fatalf("LLM calls = %d, want exactly 1", llmCalls)
+	}
+}
+
 // TestArticleDrawHandlerPicksTheMostRecentCandidate guards the ordering
 // contract with newsfeed.FetchCandidates (which sorts newest-first): the
 // handler must take fetchCandidates' first not-yet-drawn entry as-is rather
@@ -596,7 +650,7 @@ func TestArticleInstanceHandlerReturnsCurrentStatus(t *testing.T) {
 	st := &fakeArticleStore{byUser: map[string][]newsarticle.Instance{
 		"alex": {{ID: "i1", UserID: "alex", Article: newsarticle.Article{Source: "BBC", Title: "t", Status: newsarticle.StatusPending}, CreatedAt: time.Now()}},
 	}}
-	h := articleInstanceHandler(fakeIdentifier{id: "alex", ok: true}, st)
+	h := articleInstanceHandler(fakeIdentifier{id: "alex", ok: true}, st, fakeArticlePipeline(fakeStudyJSON), nil, nil)
 
 	req := httptest.NewRequest("GET", "/api/articles/i1", nil)
 	req.SetPathValue("id", "i1")
@@ -613,8 +667,68 @@ func TestArticleInstanceHandlerReturnsCurrentStatus(t *testing.T) {
 	}
 }
 
+// TestArticleInstanceHandlerSelfHealsAPreMigrationDoneArticleWithNoSubQuestions
+// guards the fix for a real reported bug: reopening a past draw whose
+// Article was left StatusDone with no SubQuestions — the shape a row
+// completed before the 4-choice -> N-sub-question quiz redesign is stuck in
+// — must not show a permanently blank quiz. It should transition back to
+// "pending" and kick off real generation exactly once (the same "생성 중"
+// state a fresh draw shows), not re-enqueue on every subsequent poll of an
+// article that's now legitimately generating (see selfHealIncompleteArticle's
+// doc comment on why the enqueue is gated on winning the reopen, not just on
+// Status == "pending").
+func TestArticleInstanceHandlerSelfHealsAPreMigrationDoneArticleWithNoSubQuestions(t *testing.T) {
+	stale := newsarticle.Article{
+		ID: "a1", Source: "BBC", Title: "Old", URL: "https://example.com/old",
+		Description: "old snippet", Status: newsarticle.StatusDone, Summary: "stale summary",
+	}
+	st := &fakeArticleStore{
+		byURL:  map[string]newsarticle.Article{stale.URL: stale},
+		byUser: map[string][]newsarticle.Instance{"alex": {{ID: "i1", UserID: "alex", Article: stale, CreatedAt: time.Now()}}},
+	}
+	calls := 0
+	pipe := &pipeline.Pipeline{Analysis: []pipeline.Candidate{{Model: "m", LLM: &fakeArticleLLM{complete: func(msgs []llm.Message) (string, error) {
+		calls++
+		return fakeStudyJSON, nil
+	}}}}}
+	h := articleInstanceHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, nil, nil)
+
+	req := httptest.NewRequest("GET", "/api/articles/i1", nil)
+	req.SetPathValue("id", "i1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	requireStatus(t, rec, http.StatusOK)
+	var got articleDraw
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Status != newsarticle.StatusPending {
+		t.Fatalf("Status = %q, want %q (self-healed back to pending)", got.Status, newsarticle.StatusPending)
+	}
+
+	// The regeneration itself runs on a detached goroutine (EnqueueOrRunInline's
+	// inline fallback, since articleStudyQueue is nil here) — give it a moment
+	// to actually land.
+	waitForCondition(t, 2*time.Second, func() bool {
+		inst, err := st.Get(context.Background(), "alex", "i1")
+		return err == nil && inst.Article.Status == newsarticle.StatusDone
+	})
+	if calls != 1 {
+		t.Fatalf("LLM calls = %d, want exactly 1", calls)
+	}
+
+	// A second poll, now that generation has landed, must not re-trigger it.
+	rec2 := httptest.NewRecorder()
+	h.ServeHTTP(rec2, req)
+	requireStatus(t, rec2, http.StatusOK)
+	if calls != 1 {
+		t.Fatalf("LLM calls after a second poll = %d, want still 1 (no re-enqueue for an already-done article)", calls)
+	}
+}
+
 func TestArticleInstanceHandlerNotFoundForMissingOrOtherUsersInstance(t *testing.T) {
-	h := articleInstanceHandler(fakeIdentifier{id: "alex", ok: true}, &fakeArticleStore{})
+	h := articleInstanceHandler(fakeIdentifier{id: "alex", ok: true}, &fakeArticleStore{}, fakeArticlePipeline(fakeStudyJSON), nil, nil)
 
 	req := httptest.NewRequest("GET", "/api/articles/missing", nil)
 	req.SetPathValue("id", "missing")
@@ -625,7 +739,7 @@ func TestArticleInstanceHandlerNotFoundForMissingOrOtherUsersInstance(t *testing
 }
 
 func TestArticleInstanceHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
-	h := articleInstanceHandler(fakeIdentifier{ok: false}, &fakeArticleStore{})
+	h := articleInstanceHandler(fakeIdentifier{ok: false}, &fakeArticleStore{}, fakeArticlePipeline(fakeStudyJSON), nil, nil)
 
 	req := httptest.NewRequest("GET", "/api/articles/i1", nil)
 	req.SetPathValue("id", "i1")

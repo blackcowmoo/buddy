@@ -440,6 +440,83 @@ func TestClaimArticleRefreshesClaimedAtSoItLeavesStalePending(t *testing.T) {
 	}
 }
 
+// TestReopenIncompleteArticleWinsForADoneArticleWithNoSubQuestions guards
+// the self-heal path (see httpserver.selfHealIncompleteArticle): an Article
+// left StatusDone with no SubQuestions — the shape a row completed before
+// the 4-choice -> N-sub-question redesign is stuck in — must be reopened so
+// it can be regenerated. CompleteArticle itself doesn't validate an empty
+// subQuestions slice (that's pipeline.validateArticleStudy's job, one layer
+// up), so calling it directly with nil is exactly how to build this shape
+// in a test without needing to touch the DB by hand.
+func TestReopenIncompleteArticleWinsForADoneArticleWithNoSubQuestions(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	reserved, err := st.ReserveArticle(ctx, "BBC", "Stale", "https://example.com/reopen-empty", "snippet", time.Time{})
+	if err != nil {
+		t.Fatalf("ReserveArticle() error = %v", err)
+	}
+	if _, err := st.CompleteArticle(ctx, reserved.ID, "old summary", nil); err != nil {
+		t.Fatalf("CompleteArticle() error = %v", err)
+	}
+
+	won, err := st.ReopenIncompleteArticle(ctx, reserved.ID)
+	if err != nil {
+		t.Fatalf("ReopenIncompleteArticle() error = %v", err)
+	}
+	if !won {
+		t.Fatal("ReopenIncompleteArticle() = false, want true for a done article with no sub-questions")
+	}
+
+	found, ok, err := st.GetArticle(ctx, reserved.ID)
+	if err != nil || !ok {
+		t.Fatalf("GetArticle() = (%+v, %v, %v)", found, ok, err)
+	}
+	if found.Status != StatusPending {
+		t.Fatalf("Status after reopen = %q, want %q", found.Status, StatusPending)
+	}
+}
+
+// TestReopenIncompleteArticleIsNoopForARealDoneArticle guards against ever
+// clobbering a genuinely completed quiz back to pending.
+func TestReopenIncompleteArticleIsNoopForARealDoneArticle(t *testing.T) {
+	st := requireStore(t)
+	article := mustSaveArticle(t, st, "https://example.com/reopen-real")
+
+	won, err := st.ReopenIncompleteArticle(context.Background(), article.ID)
+	if err != nil {
+		t.Fatalf("ReopenIncompleteArticle() error = %v", err)
+	}
+	if won {
+		t.Fatal("ReopenIncompleteArticle() = true, want false for an article that already has real sub-questions")
+	}
+
+	found, _, err := st.GetArticle(context.Background(), article.ID)
+	if err != nil {
+		t.Fatalf("GetArticle() error = %v", err)
+	}
+	if found.Status != StatusDone {
+		t.Fatalf("Status = %q, want unchanged %q", found.Status, StatusDone)
+	}
+}
+
+// TestReopenIncompleteArticleIsNoopWhilePending guards against interfering
+// with a normal, still-in-flight (never-yet-completed) generation.
+func TestReopenIncompleteArticleIsNoopWhilePending(t *testing.T) {
+	st := requireStore(t)
+	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Still pending", "https://example.com/reopen-pending", "snippet", time.Time{})
+	if err != nil {
+		t.Fatalf("ReserveArticle() error = %v", err)
+	}
+
+	won, err := st.ReopenIncompleteArticle(context.Background(), reserved.ID)
+	if err != nil {
+		t.Fatalf("ReopenIncompleteArticle() error = %v", err)
+	}
+	if won {
+		t.Fatal("ReopenIncompleteArticle() = true, want false for an article that's still pending")
+	}
+}
+
 func TestCreateInstanceListAndGetRoundTrip(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()

@@ -108,7 +108,7 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux.HandleFunc("DELETE /api/recordings/{id}", recordingDeleteHandler(ident, audio, recordings))
 	mux.HandleFunc("GET /api/articles", articleInstancesListHandler(ident, articles))
 	mux.HandleFunc("POST /api/articles/draw", articleDrawHandler(ident, articles, pipe, newsfeed.FetchCandidates, articleStudyQueue, articleAudio))
-	mux.HandleFunc("GET /api/articles/{id}", articleInstanceHandler(ident, articles))
+	mux.HandleFunc("GET /api/articles/{id}", articleInstanceHandler(ident, articles, pipe, articleStudyQueue, articleAudio))
 	mux.HandleFunc("GET /api/articles/{id}/audio", articleAudioHandler(ident, articles, articleAudio))
 	mux.HandleFunc("POST /api/articles/{id}/answer", articleAnswerHandler(ident, articles))
 	mux.HandleFunc("DELETE /api/articles/{id}", articleDeleteHandler(ident, articles))

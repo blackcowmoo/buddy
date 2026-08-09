@@ -169,6 +169,18 @@ func (s *fakeNewsArticleStore) ClaimArticle(ctx context.Context, id string) (boo
 	return true, nil
 }
 
+func (s *fakeNewsArticleStore) ReopenIncompleteArticle(ctx context.Context, id string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.articles[id]
+	if !ok || a.Status != newsarticle.StatusDone || len(a.SubQuestions) > 0 {
+		return false, nil
+	}
+	a.Status = newsarticle.StatusPending
+	s.articles[id] = a
+	return true, nil
+}
+
 func (s *fakeNewsArticleStore) CompleteArticle(ctx context.Context, id, summary string, subQuestions []newsarticle.SubQuestion) (newsarticle.Article, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
