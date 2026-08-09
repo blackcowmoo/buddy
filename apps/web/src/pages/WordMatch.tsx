@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchWords, type WordReviewItem } from "../lib/wordReview";
 import { shuffled } from "../lib/shuffle";
 import { SubPageHeader } from "../components/SubPageHeader";
-
-type LoadState = "loading" | "ready" | "error";
+import { LoadingHint } from "../components/LoadingHint";
+import type { LoadState } from "../lib/loadState";
 
 // Below this many verified words, a round would either repeat cards or be
 // trivial (a 2-pair board is solved by elimination on the second flip) — so
@@ -117,7 +117,7 @@ export function WordMatch() {
       <SubPageHeader title="단어 매칭 게임" />
 
       <main className="convo word-match-page">
-        {state === "loading" && <p className="hint">불러오는 중…</p>}
+        {state === "loading" && <LoadingHint />}
         {state === "error" && <p className="hint">단어 목록을 불러오지 못했습니다. 네트워크 문제일 수 있습니다.</p>}
 
         {state === "ready" && verifiedWords.length < minPairs && (

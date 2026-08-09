@@ -21,6 +21,8 @@ import { defineWord } from "../lib/wordSearch";
 import { saveWord } from "../lib/wordReview";
 import type { WordSuggestion } from "../lib/protocol";
 import { useDismiss } from "../hooks/useDismiss";
+import { LoadingHint } from "../components/LoadingHint";
+import type { LoadState } from "../lib/loadState";
 
 // How often to re-check a draw that's still generating in the background
 // (see asyncjob.KindArticleStudy) — a poll, not a push, since nothing on the
@@ -28,7 +30,6 @@ import { useDismiss } from "../hooks/useDismiss";
 // App.tsx's pollStudySummary).
 const articleStudyPollIntervalMs = 3000;
 
-type LoadState = "loading" | "ready" | "error";
 
 // A single draw walks through these in order: "reading" (English summary,
 // TTS read-aloud) -> "quiz" (a series of independent native-language
@@ -299,7 +300,7 @@ export function ArticleQuiz() {
               {drawState === "drawing" ? "가져오는 중…" : "새 아티클 뽑기"}
             </button>
 
-            {state === "loading" && <p className="hint">불러오는 중…</p>}
+            {state === "loading" && <LoadingHint />}
             {state === "ready" && instances.length === 0 && (
               <p className="hint">아직 읽은 아티클이 없어요.</p>
             )}

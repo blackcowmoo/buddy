@@ -28,6 +28,20 @@ type MySQLStore struct {
 	rw, ro *sql.DB
 }
 
+// addColumn runs an idempotent `ALTER TABLE ... ADD COLUMN` migration,
+// swallowing mysqlerr.DupFieldName the same way every such migration in
+// this package needs to (see mysqlerr's doc for why ADD COLUMN, unlike DROP
+// COLUMN, has no native idempotent "already applied" story).
+func addColumn(ctx context.Context, rw *sql.DB, ddl, label string) error {
+	if err := mysqlerr.ApplyAdditive(func() error {
+		_, err := rw.ExecContext(ctx, ddl)
+		return err
+	}, mysqlerr.DupFieldName); err != nil {
+		return fmt.Errorf("newsarticle: schema: add %s column: %w", label, err)
+	}
+	return nil
+}
+
 // NewMySQL ensures buddy_articles/buddy_article_instances exist and returns
 // a Store backed by them.
 func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
@@ -62,11 +76,8 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 	// dropped — harmless, unused dead weight, and DROP COLUMN has no
 	// idempotent "already applied" story to swallow the way ADD COLUMN does
 	// via mysqlerr.ApplyAdditive.
-	if err := mysqlerr.ApplyAdditive(func() error {
-		_, err := rw.ExecContext(ctx, `ALTER TABLE `+articlesTable+` ADD COLUMN sub_questions_json TEXT NULL AFTER summary`)
-		return err
-	}, mysqlerr.DupFieldName); err != nil {
-		return nil, fmt.Errorf("newsarticle: schema: add sub_questions_json column: %w", err)
+	if err := addColumn(ctx, rw, `ALTER TABLE `+articlesTable+` ADD COLUMN sub_questions_json TEXT NULL AFTER summary`, "sub_questions_json"); err != nil {
+		return nil, err
 	}
 	// Predates asyncjob.KindArticleStudy, back when SaveArticle only ever
 	// inserted an already-fully-generated row (the LLM call ran synchronously
@@ -74,11 +85,8 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 	// row is therefore already StatusDone, hence the DEFAULT above backfilling
 	// them automatically. See mysqlerr's doc for why this ADD COLUMN needs to
 	// swallow "already applied" rather than use IF NOT EXISTS.
-	if err := mysqlerr.ApplyAdditive(func() error {
-		_, err := rw.ExecContext(ctx, `ALTER TABLE `+articlesTable+` ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT '`+StatusDone+`'`)
-		return err
-	}, mysqlerr.DupFieldName); err != nil {
-		return nil, fmt.Errorf("newsarticle: schema: add status column: %w", err)
+	if err := addColumn(ctx, rw, `ALTER TABLE `+articlesTable+` ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT '`+StatusDone+`'`, "status"); err != nil {
+		return nil, err
 	}
 	// description backs Article.Description — see its doc comment for why
 	// it's persisted rather than only passed transiently through the draw
@@ -91,28 +99,19 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 	// columns outright (only expression defaults are allowed there), and a
 	// feed snippet (see newsfeed.Candidate.Description's doc comment) is
 	// short by construction anyway, same reasoning as title's VARCHAR(512).
-	if err := mysqlerr.ApplyAdditive(func() error {
-		_, err := rw.ExecContext(ctx, `ALTER TABLE `+articlesTable+` ADD COLUMN description VARCHAR(2048) NOT NULL DEFAULT ''`)
-		return err
-	}, mysqlerr.DupFieldName); err != nil {
-		return nil, fmt.Errorf("newsarticle: schema: add description column: %w", err)
+	if err := addColumn(ctx, rw, `ALTER TABLE `+articlesTable+` ADD COLUMN description VARCHAR(2048) NOT NULL DEFAULT ''`, "description"); err != nil {
+		return nil, err
 	}
-	if err := mysqlerr.ApplyAdditive(func() error {
-		_, err := rw.ExecContext(ctx, `ALTER TABLE `+articlesTable+` ADD COLUMN claimed_at BIGINT NOT NULL DEFAULT 0`)
-		return err
-	}, mysqlerr.DupFieldName); err != nil {
-		return nil, fmt.Errorf("newsarticle: schema: add claimed_at column: %w", err)
+	if err := addColumn(ctx, rw, `ALTER TABLE `+articlesTable+` ADD COLUMN claimed_at BIGINT NOT NULL DEFAULT 0`, "claimed_at"); err != nil {
+		return nil, err
 	}
 	// published_at backs Article.PublishedAt — the source feed's own <pubDate>
 	// (see newsfeed.Candidate.PublishedAt), separate from created_at (when
 	// this row was reserved). DEFAULT 0 leaves every pre-existing row with a
 	// zero PublishedAt, same "unknown, render nothing" fallback a fresh row
 	// gets if its feed item had no parseable pubDate.
-	if err := mysqlerr.ApplyAdditive(func() error {
-		_, err := rw.ExecContext(ctx, `ALTER TABLE `+articlesTable+` ADD COLUMN published_at BIGINT NOT NULL DEFAULT 0`)
-		return err
-	}, mysqlerr.DupFieldName); err != nil {
-		return nil, fmt.Errorf("newsarticle: schema: add published_at column: %w", err)
+	if err := addColumn(ctx, rw, `ALTER TABLE `+articlesTable+` ADD COLUMN published_at BIGINT NOT NULL DEFAULT 0`, "published_at"); err != nil {
+		return nil, err
 	}
 
 	// selected_options_json defaults to NULL — not yet answered, distinct
@@ -142,11 +141,8 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 	// picks) — same clean-break, NULL-with-no-default reasoning as
 	// sub_questions_json above. A pre-existing row's backfilled NULL scans
 	// as SelectedOptions == nil, same as any other never-answered Instance.
-	if err := mysqlerr.ApplyAdditive(func() error {
-		_, err := rw.ExecContext(ctx, `ALTER TABLE `+instancesTable+` ADD COLUMN selected_options_json TEXT NULL AFTER answered`)
-		return err
-	}, mysqlerr.DupFieldName); err != nil {
-		return nil, fmt.Errorf("newsarticle: schema: add selected_options_json column: %w", err)
+	if err := addColumn(ctx, rw, `ALTER TABLE `+instancesTable+` ADD COLUMN selected_options_json TEXT NULL AFTER answered`, "selected_options_json"); err != nil {
+		return nil, err
 	}
 	return &MySQLStore{rw: rw, ro: ro}, nil
 }
@@ -158,12 +154,6 @@ type scanner interface {
 
 const articleColumns = `id, source, title, url, summary, sub_questions_json, description, status, created_at, published_at`
 
-// scanArticle decodes sub_questions_json (NULL/empty for a pre-existing row
-// predating this column, or an article whose SubQuestions genuinely haven't
-// been generated yet — see the schema comment above) into a nil
-// []SubQuestion rather than erroring; StatusDone with nil SubQuestions
-// simply renders/answers as an empty quiz instead of GetArticle/List
-// failing outright.
 // decodeSubQuestions decodes sub_questions_json — nil for SQL NULL or an
 // empty string (a pre-existing row predating this column, or one whose
 // study content genuinely hasn't been generated yet), otherwise the parsed

@@ -30,6 +30,7 @@ import {
   messageAudioURL,
   resetQuiz,
   restudySession,
+  type SessionDetail,
   type SessionSummary,
 } from "./lib/sessions";
 import { fetchSettings, saveSettings, MAX_INTERLOCUTOR_STYLE_LEN } from "./lib/settings";
@@ -666,6 +667,35 @@ export function App() {
     schedulePoll(tick, intervalMs);
   }, [patchTurns, schedulePoll]);
 
+  // Shared shape behind pollStudySummary/pollQuizStatus below: poll
+  // fetchSessionDetail until a session-level background job's status field
+  // reaches "done" (or maxAttempts runs out), applying whatever value came
+  // back on every tick regardless of status so a "pending"/"failed" mid-poll
+  // state renders too, not just the final one.
+  const pollSessionField = useCallback(
+    <T,>(
+      sessionId: string,
+      token: object,
+      maxAttempts: number,
+      getField: (s: SessionDetail["session"]) => { status: "pending" | "done" | "failed"; value: T },
+      apply: (status: "pending" | "done" | "failed", value: T) => void,
+    ) => {
+      const intervalMs = 4000;
+      let attempt = 0;
+      const tick = async () => {
+        if (pollTokenRef.current !== token) return; // left this room, or opened another
+        attempt++;
+        const detail = await fetchSessionDetail(sessionId, { limit: 0 });
+        if (pollTokenRef.current !== token || !detail) return;
+        const { status, value } = getField(detail.session);
+        apply(status, value);
+        if (status !== "done" && attempt < maxAttempts) schedulePoll(tick, intervalMs);
+      };
+      schedulePoll(tick, intervalMs);
+    },
+    [pollTokenRef, schedulePoll],
+  );
+
   // Polls an ended room's background study-summary job (see
   // asyncjob.KindStudySummary) until it lands — the same "no push channel to
   // an already-open client" gap pollMissingFeedback fills for turn-level
@@ -674,43 +704,39 @@ export function App() {
   // this the same way it stops pollMissingFeedback. "failed" keeps polling
   // rather than giving up: the reaper (see internal/asyncjob) retries a
   // failed attempt on its own, so a later attempt may still land.
-  const pollStudySummary = useCallback((sessionId: string, token: object) => {
-    const maxAttempts = 30;
-    const intervalMs = 4000;
-    let attempt = 0;
-    const tick = async () => {
-      if (pollTokenRef.current !== token) return; // left this room, or opened another
-      attempt++;
-      const detail = await fetchSessionDetail(sessionId, { limit: 0 });
-      if (pollTokenRef.current !== token || !detail) return;
-      const status = detail.session.studySummaryStatus || "done";
-      setEndedSummary(detail.session.studySummary ?? []);
-      setEndedSummaryStatus(status);
-      if (status !== "done" && attempt < maxAttempts) schedulePoll(tick, intervalMs);
-    };
-    schedulePoll(tick, intervalMs);
-  }, [schedulePoll]);
+  const pollStudySummary = useCallback(
+    (sessionId: string, token: object) =>
+      pollSessionField(
+        sessionId,
+        token,
+        30,
+        (s) => ({ status: s.studySummaryStatus || "done", value: s.studySummary ?? [] }),
+        (status, value) => {
+          setEndedSummaryStatus(status);
+          setEndedSummary(value);
+        },
+      ),
+    [pollSessionField],
+  );
 
   // Mirrors pollStudySummary exactly, but for the quiz pre-generation job
   // (see asyncjob.KindStudyQuiz) — a separate poller, not folded into the
   // one above, since the two background jobs run independently and can land
   // at different times.
-  const pollQuizStatus = useCallback((sessionId: string, token: object) => {
-    const maxAttempts = 30;
-    const intervalMs = 4000;
-    let attempt = 0;
-    const tick = async () => {
-      if (pollTokenRef.current !== token) return; // left this room, or opened another
-      attempt++;
-      const detail = await fetchSessionDetail(sessionId, { limit: 0 });
-      if (pollTokenRef.current !== token || !detail) return;
-      const status = detail.session.quizStatus || "done";
-      setEndedQuiz(detail.session.quiz ?? []);
-      setEndedQuizStatus(status);
-      if (status !== "done" && attempt < maxAttempts) schedulePoll(tick, intervalMs);
-    };
-    schedulePoll(tick, intervalMs);
-  }, [schedulePoll]);
+  const pollQuizStatus = useCallback(
+    (sessionId: string, token: object) =>
+      pollSessionField(
+        sessionId,
+        token,
+        30,
+        (s) => ({ status: s.quizStatus || "done", value: s.quiz ?? [] }),
+        (status, value) => {
+          setEndedQuizStatus(status);
+          setEndedQuiz(value);
+        },
+      ),
+    [pollSessionField],
+  );
 
   // Opens a room and enters chat view. sessionId omitted starts a brand-new
   // room (server mints the ID, delivered on the "ready" event); given an
@@ -1170,28 +1196,10 @@ export function App() {
     el.style.height = `${el.scrollHeight}px`;
   }, [text]);
 
-  const goToRecordings = useCallback(() => {
-    // Relative navigation (not "/recordings"): resolves against the current
-    // page URL, so this still works under a ROOT_PATH prefix like "/pr/14"
-    // (see lib/route.ts).
-    window.location.assign("recordings");
-  }, []);
-
-  const goToWords = useCallback(() => {
-    window.location.assign("words");
-  }, []);
-
-  const goToMatch = useCallback(() => {
-    window.location.assign("match");
-  }, []);
-
-  const goToInstant = useCallback(() => {
-    window.location.assign("instant");
-  }, []);
-
-  const goToArticle = useCallback(() => {
-    window.location.assign("article");
-  }, []);
+  // Relative navigation (not "/recordings"): resolves against the current
+  // page URL, so this still works under a ROOT_PATH prefix like "/pr/14"
+  // (see lib/route.ts).
+  const goTo = useCallback((path: string) => () => window.location.assign(path), []);
 
   // Click-outside / Escape closes the menu, same as any dropdown.
   const closeMenu = useCallback(() => setMenuOpen(false), []);
@@ -1233,11 +1241,11 @@ export function App() {
     onPrInputChange: handlePrInputChange,
     prError,
     onGoToPath: goToPath,
-    onGoToRecordings: goToRecordings,
-    onGoToInstant: goToInstant,
-    onGoToWords: goToWords,
-    onGoToMatch: goToMatch,
-    onGoToArticle: goToArticle,
+    onGoToRecordings: goTo("recordings"),
+    onGoToInstant: goTo("instant"),
+    onGoToWords: goTo("words"),
+    onGoToMatch: goTo("match"),
+    onGoToArticle: goTo("article"),
     wordDueCount,
     styleInput,
     onStyleInputChange: handleStyleInputChange,

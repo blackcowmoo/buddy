@@ -1,4 +1,4 @@
-import { requestOK } from "./fetchJSON";
+import { fetchJSON, requestOK } from "./fetchJSON";
 
 // Mirrors httpserver.settingsGetHandler/settingsSaveHandler's response shape
 // (apps/server/internal/httpserver/server.go). Global to the user (not
@@ -27,13 +27,7 @@ export const MAX_INTERLOCUTOR_STYLE_LEN = 1024;
 // button would otherwise happily persist that fallback empty string over a
 // real saved value.
 export async function fetchSettings(): Promise<Settings | null> {
-  try {
-    const res = await fetch("api/settings");
-    if (!res.ok) return null;
-    return (await res.json()) as Settings;
-  } catch {
-    return null;
-  }
+  return fetchJSON<Settings | null>("api/settings", null);
 }
 
 // Saves the caller's conversation-style preference. Takes effect on chat
