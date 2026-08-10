@@ -51,6 +51,8 @@ Return STRICT JSON only, no prose, in exactly this shape:
 {"suggestions":[{"word":"<English word or short phrase>","meaning":"<brief %[1]s gloss>","example":"<one example English sentence using it>"}]}
 Rules:
 - "word" MUST stay in English.
+- "word" MUST be lowercase, except the pronoun "I" and its contractions
+  ("I'm", "I'll", "I'd", "I've") when they are part of the word/phrase.
 - "meaning" MUST be written in %[1]s.
 - "example" MUST be a natural English sentence that uses "word".
 - If the description is too vague to suggest anything meaningful, return an empty "suggestions" array rather than guessing wildly.`, native)
@@ -95,6 +97,8 @@ Return STRICT JSON only, no prose, in exactly this shape:
 {"word":"<the word/phrase, corrected to its dictionary form if "word" was an inflected form found in "context">","meaning":"<brief %[1]s gloss, specific to how it's used in "context">","example":"<one example English sentence using "word", may reuse the sentence from "context">"}
 Rules:
 - "word" MUST stay in English.
+- "word" MUST be lowercase, except the pronoun "I" and its contractions
+  ("I'm", "I'll", "I'd", "I've") when they are part of the word/phrase.
 - "meaning" MUST be written in %[1]s.
 - "example" MUST be a natural English sentence that uses "word".`, native)
 }
@@ -156,6 +160,8 @@ Return STRICT JSON only, no prose, in exactly this shape:
 {"suggestions":[{"word":"<English word or short phrase>","meaning":"<brief %[1]s gloss>","example":"<one example English sentence using it>"}]}
 Rules:
 - "word" MUST stay in English, and MUST NOT be one already in the learner's tracked list.
+- "word" MUST be lowercase, except the pronoun "I" and its contractions
+  ("I'm", "I'll", "I'd", "I've") when they are part of the word/phrase.
 - "meaning" MUST be written in %[1]s.
 - "example" MUST be a natural English sentence that uses "word".`, native, autoAddSuggestionCount)
 }

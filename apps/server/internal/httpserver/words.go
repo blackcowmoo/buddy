@@ -126,7 +126,7 @@ type wordItem struct {
 func toWordItem(w wordreview.Word) wordItem {
 	return wordItem{
 		ID:           w.ID,
-		Word:         w.Word,
+		Word:         wordreview.NormalizeWord(w.Word),
 		Meaning:      w.Meaning,
 		Example:      w.Example,
 		Stage:        w.Stage,
