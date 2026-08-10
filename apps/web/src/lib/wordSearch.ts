@@ -18,6 +18,23 @@ export async function suggestWords(query: string): Promise<WordSuggestion[] | nu
 // context is the passage the word was tapped in, so the definition matches
 // how it's actually used there. Returns null on any failure, same reasoning
 // as suggestWords.
-export async function defineWord(word: string, context: string): Promise<WordSuggestion | null> {
-  return postJSON<WordSuggestion | null>("api/words/define", { word, context }, null);
+type ArticleWordLookupResponse = {
+  status: "pending" | "done";
+  result?: WordSuggestion;
+};
+
+const wordLookupPollIntervalMs = 1000;
+
+// Starts a durable article lookup and waits for its Redis-backed result while
+// this page remains open. Leaving the page only stops the caller; the server's
+// asyncjob continues and the next visit submits the same deterministic key,
+// which is then an immediate cache hit.
+export async function defineWord(articleID: string, word: string, position: number): Promise<WordSuggestion | null> {
+  const path = `api/articles/${encodeURIComponent(articleID)}/words/define`;
+  for (;;) {
+    const response = await postJSON<ArticleWordLookupResponse | null>(path, { word, position }, null);
+    if (!response) return null;
+    if (response.status === "done") return response.result ?? null;
+    await new Promise((resolve) => setTimeout(resolve, wordLookupPollIntervalMs));
+  }
 }

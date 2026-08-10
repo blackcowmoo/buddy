@@ -201,6 +201,12 @@ func main() {
 			transport.WordAutoAddJobHandler(pipe, wordReviews, st, wordVerifyQueue))
 	}
 
+	var wordDefineQueue *asyncjob.Queue
+	if rdb != nil {
+		wordDefineQueue = startWorker(rdb, jobsCtx, asyncjob.KindWordDefine, transport.WordDefineWorkerConcurrency, transport.WordDefineClaimTTL,
+			transport.WordDefineJobHandler(pipe, rdb))
+	}
+
 	// End-of-conversation wrap-up: unlike the reply/correction/translation/
 	// title hooks below, this isn't wired onto pipe (nothing mid-conversation
 	// triggers it directly) — httpserver's sessionEndHandler and
@@ -283,7 +289,7 @@ func main() {
 		defer recordings.Close()
 	}
 
-	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, wordReviews, articles, wordVerifyQueue, translateQueue, correctionBackfillQueue, studySummaryQueue, studyQuizQueue, profileRegenerateQueue, articleStudyQueue, wordAutoAddQueue, articleAudio)
+	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, wordReviews, articles, wordVerifyQueue, translateQueue, correctionBackfillQueue, studySummaryQueue, studyQuizQueue, profileRegenerateQueue, articleStudyQueue, wordAutoAddQueue, articleAudio, rdb, wordDefineQueue)
 
 	go func() {
 		log.Printf("buddy up on %s  env=%s  stt=%v  feedback=%s",

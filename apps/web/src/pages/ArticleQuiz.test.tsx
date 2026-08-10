@@ -482,7 +482,7 @@ describe("ArticleQuiz page — word lookup while reading", () => {
     await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
     await user.click(screen.getByRole("button", { name: "discovery" }));
 
-    expect(defineWord).toHaveBeenCalledWith("discovery", sampleDraw.summary);
+    expect(defineWord).toHaveBeenCalledWith(sampleDraw.id, "discovery", 9);
     expect(await screen.findByText("발견")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "학습하기" }));

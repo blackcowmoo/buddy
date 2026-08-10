@@ -20,6 +20,7 @@ import (
 	"buddy/server/internal/store"
 	"buddy/server/internal/transport"
 	"buddy/server/internal/wordreview"
+	"github.com/redis/go-redis/v9"
 )
 
 // New builds the single HTTP entry point. assets is the embedded frontend FS
@@ -64,7 +65,7 @@ import (
 // config.Config's TTSURL doc comment) — articleDrawHandler simply skips
 // read-aloud pre-generation and articleAudioHandler answers 503, instead of
 // each needing its own separate on/off signal.
-func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, words wordreview.Store, articles newsarticle.Store, wordVerifyQueue *asyncjob.Queue, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue, studySummaryQueue *asyncjob.Queue, studyQuizQueue *asyncjob.Queue, profileRegenerateQueue *asyncjob.Queue, articleStudyQueue *asyncjob.Queue, wordAutoAddQueue *asyncjob.Queue, articleAudio *transport.ArticleAudio) *http.Server {
+func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, words wordreview.Store, articles newsarticle.Store, wordVerifyQueue *asyncjob.Queue, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue, studySummaryQueue *asyncjob.Queue, studyQuizQueue *asyncjob.Queue, profileRegenerateQueue *asyncjob.Queue, articleStudyQueue *asyncjob.Queue, wordAutoAddQueue *asyncjob.Queue, articleAudio *transport.ArticleAudio, rdb redis.UniversalClient, wordDefineQueue *asyncjob.Queue) *http.Server {
 	mux := http.NewServeMux()
 
 	// Realtime + API first (exact patterns win over the "/" catch-all).
@@ -112,6 +113,7 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux.HandleFunc("GET /api/articles/{id}", articleInstanceHandler(ident, articles, pipe, articleStudyQueue, articleAudio))
 	mux.HandleFunc("GET /api/articles/{id}/audio", articleAudioHandler(ident, articles, articleAudio))
 	mux.HandleFunc("POST /api/articles/{id}/answer", articleAnswerHandler(ident, articles))
+	mux.HandleFunc("POST /api/articles/{id}/words/define", articleWordDefineHandler(ident, articles, pipe, rdb, wordDefineQueue))
 	mux.HandleFunc("DELETE /api/articles/{id}", articleDeleteHandler(ident, articles))
 	registerStalePRRedirect(mux, cfg.RootPath)
 

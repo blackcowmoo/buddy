@@ -131,6 +131,10 @@ const (
 	// finishes — see store.SessionMeta's sibling status fields' doc
 	// comments for the general pattern this follows.
 	KindWordAutoAdd Kind = "word-auto-add"
+	// KindWordDefine generates and caches the meaning of a word tapped in an
+	// article. The result is stored separately from the queue so a learner can
+	// leave the page and retrieve it when they return.
+	KindWordDefine Kind = "word-define"
 )
 
 // Job is the durable Redis envelope for one unit of background work.
