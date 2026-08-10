@@ -366,6 +366,30 @@ func TestWordSaveStoresLearnerChosenSuggestionAsPending(t *testing.T) {
 	}
 }
 
+func TestWordSaveNormalizesCapitalizedVocabulary(t *testing.T) {
+	store := &fakeWordStore{}
+	h := wordSaveHandler(fakeIdentifier{id: "alex", ok: true}, store, noopVerifyPipeline(), nil)
+
+	body, _ := json.Marshal(map[string]string{"word": "Leverage", "meaning": "활용하다", "example": "Leverage your skills."})
+	req := httptest.NewRequest("POST", "/api/words/save", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	requireStatus(t, rec, http.StatusOK)
+	var out wordItem
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("bad JSON body: %v", err)
+	}
+	if out.Word != "leverage" {
+		t.Errorf("response word = %q, want lowercase vocabulary label", out.Word)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if got := store.byUser["alex"][0].Word; got != "leverage" {
+		t.Errorf("stored word = %q, want lowercase vocabulary label", got)
+	}
+}
+
 func TestWordSaveTracksSameWordDifferentMeaningsIndependently(t *testing.T) {
 	store := &fakeWordStore{}
 	h := wordSaveHandler(fakeIdentifier{id: "alex", ok: true}, store, noopVerifyPipeline(), nil)
@@ -413,7 +437,7 @@ func TestWordsListReturnsOwnWordsAndDueCount(t *testing.T) {
 	now := time.Now()
 	store := &fakeWordStore{byUser: map[string][]wordreview.Word{
 		"alex": {
-			{ID: "w1", UserID: "alex", Word: "ecstatic", Status: wordreview.StatusVerified, NextReviewAt: now.Add(-time.Hour)},    // due
+			{ID: "w1", UserID: "alex", Word: "ecstatic", Status: wordreview.StatusVerified, NextReviewAt: now.Add(-time.Hour)},   // due
 			{ID: "w2", UserID: "alex", Word: "elated", Status: wordreview.StatusVerified, NextReviewAt: now.Add(48 * time.Hour)}, // not due yet
 		},
 		"sam": {{ID: "w4", UserID: "sam", Word: "other", Status: wordreview.StatusVerified, NextReviewAt: now.Add(-time.Hour)}},

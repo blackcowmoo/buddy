@@ -105,6 +105,7 @@ func EnqueueWordVerifyJob(ctx context.Context, queue *asyncjob.Queue, pipe *pipe
 // word_auto_add_job.go), so a system-suggested word is fact-checked exactly
 // the same way a manually picked one is, no shortcut.
 func SaveWordAndVerify(ctx context.Context, words wordreview.Store, pipe *pipeline.Pipeline, wordVerifyQueue *asyncjob.Queue, userID, word, meaning, example string) (wordreview.Word, error) {
+	word = wordreview.NormalizeWord(word)
 	saved, err := words.Save(ctx, userID, word, meaning, example)
 	if err != nil {
 		return wordreview.Word{}, err

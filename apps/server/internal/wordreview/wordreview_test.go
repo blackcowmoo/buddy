@@ -5,6 +5,21 @@ import (
 	"time"
 )
 
+func TestNormalizeWordLowercasesVocabularyButPreservesFirstPersonPronouns(t *testing.T) {
+	tests := map[string]string{
+		"Leverage":       "leverage",
+		"Mitigate risks": "mitigate risks",
+		"I":              "I",
+		"I'M READY":      "I'm ready",
+		"  Streamline  ": "streamline",
+	}
+	for input, want := range tests {
+		if got := NormalizeWord(input); got != want {
+			t.Errorf("NormalizeWord(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestNextScheduleAdvancesStageOnCorrectAnswer(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 

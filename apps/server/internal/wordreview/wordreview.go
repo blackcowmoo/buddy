@@ -25,8 +25,27 @@ package wordreview
 
 import (
 	"context"
+	"strings"
 	"time"
 )
+
+// NormalizeWord makes vocabulary labels consistent without changing example
+// sentences. English words and phrases are lowercase by convention; the
+// first-person pronoun and its common contractions are the useful exceptions.
+// It also makes older rows display consistently when they are read again.
+func NormalizeWord(word string) string {
+	parts := strings.Fields(word)
+	for i, part := range parts {
+		lower := strings.ToLower(part)
+		switch lower {
+		case "i", "i'm", "i'll", "i'd", "i've", "i’m", "i’ll", "i’d", "i’ve":
+			parts[i] = part[:1] + lower[1:]
+		default:
+			parts[i] = lower
+		}
+	}
+	return strings.Join(parts, " ")
+}
 
 // stageIntervals hand-tunes the spacing for a word's first several correct
 // recalls — steep at first (matching how fast the forgetting curve drops
