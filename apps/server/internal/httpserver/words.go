@@ -10,10 +10,14 @@ import (
 
 	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/identity"
+	"buddy/server/internal/newsarticle"
 	"buddy/server/internal/pipeline"
+	"buddy/server/internal/protocol"
 	"buddy/server/internal/store"
 	"buddy/server/internal/transport"
+	"buddy/server/internal/wordlookup"
 	"buddy/server/internal/wordreview"
+	"github.com/redis/go-redis/v9"
 )
 
 // maxWordLen/maxWordFieldLen cap what a learner can persist via
@@ -21,9 +25,83 @@ import (
 // word, see wordreview's package doc) and its meaning/example, same
 // abuse-guard reasoning as wordSuggestHandler's maxWordQueryLen.
 const (
-	maxWordLen      = 255 // matches buddy_word_reviews.word's VARCHAR(255)
-	maxWordFieldLen = 2000
+	maxWordLen            = 255 // matches buddy_word_reviews.word's VARCHAR(255)
+	maxWordFieldLen       = 2000
+	maxWordLookupPosition = 100000
 )
+
+type articleWordLookupResponse struct {
+	Status string                   `json:"status"`
+	Result *protocol.WordSuggestion `json:"result,omitempty"`
+}
+
+// articleWordDefineHandler only accepts the article instance ID from the
+// client. The article text is loaded from the caller's own stored instance,
+// which prevents a client from mixing a word with a different article's
+// passage. A cache hit completes immediately; a miss is durably queued and
+// returns while the LLM runs in the background.
+func articleWordDefineHandler(ident identity.Identifier, articles newsarticle.Store, pipe *pipeline.Pipeline, rdb redis.UniversalClient, queue *asyncjob.Queue) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := requireUser(w, r, ident)
+		if !ok {
+			return
+		}
+		if rdb == nil {
+			http.Error(w, "word lookup requires Redis", http.StatusServiceUnavailable)
+			return
+		}
+		var body struct {
+			Word     string `json:"word"`
+			Position int    `json:"position"`
+		}
+		if !decodeJSON(w, r, &body) {
+			return
+		}
+		word := strings.TrimSpace(body.Word)
+		if word == "" {
+			http.Error(w, "word is required", http.StatusBadRequest)
+			return
+		}
+		if !requireMaxRunes(w, word, maxWordLen, "word is too long") {
+			return
+		}
+		if body.Position < 0 || body.Position > maxWordLookupPosition {
+			http.Error(w, "invalid word position", http.StatusBadRequest)
+			return
+		}
+		inst, err := articles.Get(r.Context(), userID, r.PathValue("id"))
+		if err != nil {
+			serverError(w, "articles: get word context "+userID, err)
+			return
+		}
+		if inst.ID == "" {
+			http.NotFound(w, r)
+			return
+		}
+		if inst.Article.Status != newsarticle.StatusDone {
+			http.Error(w, "article study still generating", http.StatusConflict)
+			return
+		}
+		lookup := wordlookup.Request{
+			ArticleID: inst.Article.ID,
+			Word:      word,
+			Position:  body.Position,
+			Context:   inst.Article.Summary,
+			Language:  pipe.FeedbackLang,
+			Model:     pipe.ChatModel,
+		}
+		key := wordlookup.Key(lookup)
+		if result, found, err := wordlookup.Get(r.Context(), rdb, key); err != nil {
+			serverError(w, "word lookup: cache read", err)
+			return
+		} else if found {
+			writeJSON(w, articleWordLookupResponse{Status: "done", Result: &result})
+			return
+		}
+		transport.StartWordDefine(queue, pipe, rdb, lookup)
+		writeJSON(w, articleWordLookupResponse{Status: "pending"})
+	}
+}
 
 // wordItem mirrors one wordreview.Word for the frontend — a subset of the
 // stored fields (no CorrectStreak, which isn't shown anywhere yet). No

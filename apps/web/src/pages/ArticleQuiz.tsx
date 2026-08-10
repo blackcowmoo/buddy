@@ -204,7 +204,7 @@ export function ArticleQuiz() {
     (key: number, word: string) => {
       if (!draw) return;
       setWordLookup({ key, word, loading: true, failed: false, result: null, saving: false, saved: false });
-      void defineWord(word, draw.summary).then((result) => {
+      void defineWord(draw.id, word, key).then((result) => {
         setWordLookup((prev) =>
           prev && prev.key === key ? { ...prev, loading: false, failed: result === null, result } : prev,
         );
