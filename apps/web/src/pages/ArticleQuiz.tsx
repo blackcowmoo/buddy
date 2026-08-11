@@ -63,6 +63,9 @@ export function ArticleQuiz() {
   const [result, setResult] = useState<ArticleAnswerResult | null>(null);
   const [tts, setTts] = useState<TtsState>("idle");
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  // Invalidates a pending play() rejection when the learner cancels before
+  // the browser has finished starting playback.
+  const ttsAttemptRef = useRef(0);
 
   // A learner tapping a word inside the reading paragraph to look it up and,
   // if it's new to them, add it to their vocabulary study list — the same
@@ -180,6 +183,7 @@ export function ArticleQuiz() {
   const handleRead = useCallback(() => {
     const el = audioRef.current;
     if (!el || !draw) return;
+    const attempt = ++ttsAttemptRef.current;
     // Must run synchronously in this click, before play() — see
     // requestAmbientAudioSession's doc comment.
     requestAmbientAudioSession();
@@ -187,6 +191,7 @@ export function ArticleQuiz() {
     el.playbackRate = loadPlaybackRate();
     el.src = articleAudioURL(draw.id);
     el.play().catch((err) => {
+      if (ttsAttemptRef.current !== attempt) return;
       console.error("tts:", err);
       // Show the failure briefly instead of silently reverting to the idle
       // "🔊 읽어주기" label, which reads as if nothing was ever pressed even
@@ -195,6 +200,18 @@ export function ArticleQuiz() {
       setTimeout(() => setTts("idle"), 2000);
     });
   }, [draw]);
+
+  // Stops both an audible read and one that is still buffering. Resetting the
+  // position means the next "읽어주기" starts from the beginning.
+  const cancelRead = useCallback(() => {
+    ttsAttemptRef.current += 1;
+    const el = audioRef.current;
+    if (el) {
+      el.pause();
+      el.currentTime = 0;
+    }
+    setTts("idle");
+  }, []);
 
   // Looks up one word tapped inside the reading paragraph (see the
   // word-token buttons in the reading view below) — the whole study
@@ -432,6 +449,11 @@ export function ArticleQuiz() {
                         ? "재생 실패, 다시 시도해주세요"
                         : "🔊 읽어주기"}
                 </button>
+                {(tts === "loading" || tts === "speaking") && (
+                  <button type="button" className="ghost article-read-aloud-btn" onClick={cancelRead}>
+                    취소
+                  </button>
+                )}
                 <button type="button" className="quiz-start-btn" onClick={startQuiz}>
                   문제풀기
                 </button>
