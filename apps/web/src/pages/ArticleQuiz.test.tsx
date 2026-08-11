@@ -48,6 +48,7 @@ import { saveWord } from "../lib/wordReview";
 // client-side chat read-aloud) tests.
 beforeEach(() => {
   HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
+  HTMLMediaElement.prototype.pause = vi.fn();
 });
 
 afterEach(() => {
@@ -375,6 +376,32 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     expect(await screen.findByRole("button", { name: "재생 중…" })).toBeInTheDocument();
 
     await act(async () => audioEl.dispatchEvent(new Event("ended")));
+    expect(await screen.findByRole("button", { name: "🔊 읽어주기" })).toBeInTheDocument();
+  });
+
+  it("cancels read-aloud while it is buffering or playing", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    const user = userEvent.setup();
+    const { container } = render(<ArticleQuiz />);
+
+    await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
+    await user.click(screen.getByRole("button", { name: "🔊 읽어주기" }));
+    const audioEl = container.querySelector("audio") as HTMLAudioElement;
+
+    expect(screen.getByRole("button", { name: "취소" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "취소" }));
+
+    expect(vi.mocked(HTMLMediaElement.prototype.pause)).toHaveBeenCalled();
+    expect(audioEl.currentTime).toBe(0);
+    expect(await screen.findByRole("button", { name: "🔊 읽어주기" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "취소" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "🔊 읽어주기" }));
+    await act(async () => audioEl.dispatchEvent(new Event("playing")));
+    await user.click(screen.getByRole("button", { name: "취소" }));
+
+    expect(vi.mocked(HTMLMediaElement.prototype.pause)).toHaveBeenCalledTimes(2);
     expect(await screen.findByRole("button", { name: "🔊 읽어주기" })).toBeInTheDocument();
   });
 
