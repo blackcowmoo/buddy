@@ -76,8 +76,8 @@ func TestLoadDefaults(t *testing.T) {
 	if c.MaxHistoryMessages != 20 {
 		t.Errorf("MaxHistoryMessages = %d, want 20", c.MaxHistoryMessages)
 	}
-	if c.TTSVolumeMultiplier != 1.5 {
-		t.Errorf("TTSVolumeMultiplier = %v, want 1.5", c.TTSVolumeMultiplier)
+	if c.TTSVolumeMultiplier != 1.75 {
+		t.Errorf("TTSVolumeMultiplier = %v, want 1.75", c.TTSVolumeMultiplier)
 	}
 	if !c.IsDev() {
 		t.Errorf("IsDev() = false, want true when BUDDY_ENV is unset (default dev)")
@@ -204,8 +204,8 @@ func TestLoadTTSVolumeMultiplierOverrideAndInvalidFallback(t *testing.T) {
 
 	t.Setenv("BUDDY_TTS_VOLUME_MULTIPLIER", "not-a-number")
 	c = Load()
-	if c.TTSVolumeMultiplier != 1.5 {
-		t.Fatalf("TTSVolumeMultiplier = %v, want the 1.5 default when the env value doesn't parse", c.TTSVolumeMultiplier)
+	if c.TTSVolumeMultiplier != 1.75 {
+		t.Fatalf("TTSVolumeMultiplier = %v, want the 1.75 default when the env value doesn't parse", c.TTSVolumeMultiplier)
 	}
 }
 
