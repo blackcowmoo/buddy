@@ -391,6 +391,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 .quiz-result { font-size: 13px; font-weight: 600; }
 .quiz-result.correct { color: var(--ok); }
 .quiz-result.incorrect { color: var(--err); }
+.quiz-result.similar { color: var(--accent, #986a00); }
 .quiz-translation { margin-top: -4px; }
 .quiz-next-btn, .quiz-check-btn { width: 100%; }
 .quiz-next-actions { display: flex; flex-direction: column; gap: 6px; }

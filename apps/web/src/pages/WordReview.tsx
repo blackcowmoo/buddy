@@ -10,7 +10,7 @@ import {
 } from "../lib/wordReview";
 import { formatAbsoluteDateTime } from "../lib/time";
 import { shuffled } from "../lib/shuffle";
-import { normalizeQuizAnswer as normalizeAnswer, quizBlankInputClass, quizChoiceClass } from "../lib/quizCheck";
+import { checkQuizAnswer, normalizeQuizAnswer as normalizeAnswer, quizBlankInputClass, quizChoiceClass } from "../lib/quizCheck";
 import { SubPageHeader } from "../components/SubPageHeader";
 import { usePollScaffold } from "../hooks/usePollScaffold";
 import { LoadingHint } from "../components/LoadingHint";
@@ -149,6 +149,8 @@ export function WordReview() {
   const [answers, setAnswers] = useState<string[]>([]);
   const [selectedChoice, setSelectedChoice] = useState<string | null>(null);
   const [checked, setChecked] = useState(false);
+  const [checkingSimilarity, setCheckingSimilarity] = useState(false);
+  const [similarHint, setSimilarHint] = useState(false);
   const [correctCount, setCorrectCount] = useState(0);
   const blankRefs = useRef<(HTMLInputElement | null)[]>([]);
   const [autoAdding, setAutoAdding] = useState(false);
@@ -243,6 +245,8 @@ export function WordReview() {
     setAnswers(answersForItem(queue[0]));
     setSelectedChoice(null);
     setChecked(false);
+    setCheckingSimilarity(false);
+    setSimilarHint(false);
     setCorrectCount(0);
   }, [words]);
 
@@ -307,10 +311,23 @@ export function WordReview() {
     [],
   );
 
-  const checkRecall = useCallback(() => {
+  const checkRecall = useCallback(async () => {
     if (!currentItem || checked || currentItem.mode !== "recall" || answers.some((a) => !a.trim())) return;
     const expected = computeBlank(currentItem.word.example, currentItem.word.word).answers;
-    finishCheck(currentItem, blanksMatch(expected, answers));
+    if (blanksMatch(expected, answers)) {
+      finishCheck(currentItem, true);
+      return;
+    }
+    setCheckingSimilarity(true);
+    const similar = await checkQuizAnswer(recallBlank!.parts.join("___"), expected.join(" "), undefined, answers.join(" "));
+    setCheckingSimilarity(false);
+    if (similar) {
+      setSimilarHint(true);
+      setAnswers(answersForItem(currentItem));
+      blankRefs.current[0]?.focus();
+      return;
+    }
+    finishCheck(currentItem, false);
   }, [currentItem, checked, answers, finishCheck]);
 
   const chooseRecognition = useCallback(
@@ -327,6 +344,8 @@ export function WordReview() {
     setAnswers(answersForItem(quizQueue?.[index + 1]));
     setSelectedChoice(null);
     setChecked(false);
+    setCheckingSimilarity(false);
+    setSimilarHint(false);
   }, [index, quizQueue]);
 
   // Sends the deferred correct-answer review call, then moves on. repeat
@@ -493,7 +512,7 @@ export function WordReview() {
                                 })
                               }
                               onKeyDown={(e) => handleBlankKeyDown(e, i)}
-                              disabled={checked}
+                              disabled={checked || checkingSimilarity}
                               aria-label={recallBlank!.answers.length > 1 ? `빈칸 ${i + 1} 정답 입력` : "정답 입력"}
                             />
                           )}
@@ -501,14 +520,17 @@ export function WordReview() {
                       ))}
                     </div>
                     {!checked && (
-                      <button
-                        type="button"
-                        className="quiz-check-btn"
-                        onClick={checkRecall}
-                        disabled={answers.length === 0 || answers.some((a) => !a.trim())}
-                      >
-                        확인
-                      </button>
+                      <>
+                        {similarHint && <p className="quiz-result similar" role="status">유사한 정답이에요! 시제에 맞춰 다시 입력해보세요.</p>}
+                        <div className="quiz-next-actions">
+                          <button type="button" className="quiz-check-btn" onClick={() => void checkRecall()} disabled={checkingSimilarity || answers.length === 0 || answers.some((a) => !a.trim())}>
+                            {checkingSimilarity ? "확인 중…" : "확인"}
+                          </button>
+                          <button type="button" className="ghost quiz-forced-btn" onClick={() => finishCheck(currentItem, false)} disabled={checkingSimilarity}>
+                            모르겠어요
+                          </button>
+                        </div>
+                      </>
                     )}
                   </>
                 ) : (
