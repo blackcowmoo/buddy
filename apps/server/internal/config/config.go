@@ -282,7 +282,7 @@ func Load() Config {
 
 		TTSVoice:            ttsVoice,
 		TTSURL:              ttsURL,
-		TTSVolumeMultiplier: envFloat("BUDDY_TTS_VOLUME_MULTIPLIER", 1.5),
+		TTSVolumeMultiplier: envFloat("BUDDY_TTS_VOLUME_MULTIPLIER", 1.75),
 
 		FeedbackLang: env("BUDDY_FEEDBACK_LANG", "ko"),
 
