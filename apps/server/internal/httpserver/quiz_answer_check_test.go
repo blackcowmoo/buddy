@@ -9,10 +9,25 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"buddy/server/internal/llm"
 	"buddy/server/internal/pipeline"
 )
+
+type fakeAnswerCache struct {
+	result bool
+	found  bool
+	saves  int
+}
+
+func (f *fakeAnswerCache) LookupAnswer(context.Context, string, string, string, time.Time) (bool, bool, error) {
+	return f.result, f.found, nil
+}
+func (f *fakeAnswerCache) SaveAnswer(context.Context, string, string, string, bool, time.Time) error {
+	f.saves++
+	return nil
+}
 
 // fakeQuizAnswerCheckLLM is a minimal llm.Client double for exercising
 // pipeline.Pipeline.CheckQuizAnswer (called from quizAnswerCheckHandler)
@@ -76,6 +91,26 @@ func TestQuizAnswerCheckHandlerReturnsFalseVerdict(t *testing.T) {
 	}
 	if out.Correct {
 		t.Fatalf("correct = true, want false")
+	}
+}
+
+func TestQuizAnswerCheckHandlerUsesCachedVerdictWithoutCallingLLM(t *testing.T) {
+	cache := &fakeAnswerCache{result: true, found: true}
+	pipe := &pipeline.Pipeline{LLM: &fakeQuizAnswerCheckLLM{complete: func([]llm.Message) (string, error) {
+		t.Fatal("LLM called for cached answer")
+		return "", nil
+	}}, ChatModel: "m"}
+	h := quizAnswerCheckHandler(fakeIdentifier{id: "alex", ok: true}, pipe, cache)
+	req := httptest.NewRequest("POST", "/api/quiz/check-answer", strings.NewReader(`{"prompt":"He ___","answer":"goes","learnerAnswer":"walks"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	requireStatus(t, rec, http.StatusOK)
+	var out struct{ Correct, Similar bool }
+	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !out.Correct || !out.Similar || cache.saves != 0 {
+		t.Fatalf("cached response = %+v, saves = %d", out, cache.saves)
 	}
 }
 

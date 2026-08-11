@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"buddy/server/internal/identity"
 	"buddy/server/internal/pipeline"
+	"buddy/server/internal/wordreview"
 )
 
 // maxQuizAnswerCheckLen caps the typed answer quizAnswerCheckHandler sends to
@@ -24,7 +26,7 @@ const maxQuizAnswerCheckLen = 200
 // itself (prompt/answer/acceptableAnswers) is already loaded client-side
 // (see App.tsx's endedQuiz), so this only needs what's in the request body,
 // the same "no session lookup needed" shape as wordSuggestHandler.
-func quizAnswerCheckHandler(ident identity.Identifier, pipe *pipeline.Pipeline) http.HandlerFunc {
+func quizAnswerCheckHandler(ident identity.Identifier, pipe *pipeline.Pipeline, caches ...wordreview.AnswerCache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		_, ok := requireUser(w, r, ident)
 		if !ok {
@@ -49,11 +51,30 @@ func quizAnswerCheckHandler(ident identity.Identifier, pipe *pipeline.Pipeline) 
 		if !requireMaxRunes(w, learnerAnswer, maxQuizAnswerCheckLen, fmt.Sprintf("learnerAnswer exceeds %d characters", maxQuizAnswerCheckLen)) {
 			return
 		}
+		var cache wordreview.AnswerCache
+		if len(caches) > 0 {
+			cache = caches[0]
+		}
+		if cache != nil {
+			if result, found, err := cache.LookupAnswer(r.Context(), prompt, answer, learnerAnswer, time.Now()); err != nil {
+				serverError(w, "lookup quiz answer cache", err)
+				return
+			} else if found {
+				writeJSON(w, map[string]any{"correct": result, "similar": result})
+				return
+			}
+		}
 		correct, err := pipe.CheckQuizAnswer(r.Context(), prompt, answer, body.AcceptableAnswers, learnerAnswer)
 		if err != nil {
 			serverError(w, "check quiz answer", err)
 			return
 		}
-		writeJSON(w, map[string]any{"correct": correct})
+		if cache != nil {
+			if err := cache.SaveAnswer(r.Context(), prompt, answer, learnerAnswer, correct, time.Now()); err != nil {
+				serverError(w, "save quiz answer cache", err)
+				return
+			}
+		}
+		writeJSON(w, map[string]any{"correct": correct, "similar": correct})
 	}
 }

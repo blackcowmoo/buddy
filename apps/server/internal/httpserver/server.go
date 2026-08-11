@@ -93,7 +93,11 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux.HandleFunc("POST /api/sessions/{id}/restudy", sessionRestudyHandler(ident, st, pipe, studySummaryQueue))
 	mux.HandleFunc("POST /api/sessions/{id}/quiz/complete", sessionQuizCompleteHandler(ident, st))
 	mux.HandleFunc("POST /api/sessions/{id}/quiz/reset", sessionQuizResetHandler(ident, st, pipe, studyQuizQueue))
-	mux.HandleFunc("POST /api/quiz/check-answer", quizAnswerCheckHandler(ident, pipe))
+	var answerCache wordreview.AnswerCache
+	if candidate, ok := words.(wordreview.AnswerCache); ok {
+		answerCache = candidate
+	}
+	mux.HandleFunc("POST /api/quiz/check-answer", quizAnswerCheckHandler(ident, pipe, answerCache))
 	mux.HandleFunc("DELETE /api/sessions/{id}", sessionDeleteHandler(ident, st, audio, recordings, pipe, profileRegenerateQueue))
 	mux.HandleFunc("GET /api/settings", settingsGetHandler(ident, st))
 	mux.HandleFunc("PUT /api/settings", settingsSaveHandler(ident, st))
