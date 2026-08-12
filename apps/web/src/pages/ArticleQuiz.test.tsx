@@ -487,7 +487,7 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
 });
 
 describe("ArticleQuiz page — word lookup while reading", () => {
-  it("looks up a tapped word and saves it to the vocabulary list", async () => {
+  it("waits for confirmation before looking up a tapped word, then saves it to the vocabulary list", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
     vi.mocked(defineWord).mockResolvedValue({
@@ -511,6 +511,10 @@ describe("ArticleQuiz page — word lookup while reading", () => {
     await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
     await user.click(screen.getByRole("button", { name: "discovery" }));
 
+    expect(defineWord).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "찾기" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "찾기" }));
+
     expect(defineWord).toHaveBeenCalledWith(sampleDraw.id, "discovery", 9);
     expect(await screen.findByText("발견")).toBeInTheDocument();
 
@@ -533,6 +537,7 @@ describe("ArticleQuiz page — word lookup while reading", () => {
 
     await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
     await user.click(screen.getByRole("button", { name: "discovery" }));
+    await user.click(screen.getByRole("button", { name: "찾기" }));
 
     expect(await screen.findByText("뜻을 가져오지 못했어요.")).toBeInTheDocument();
   });

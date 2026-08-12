@@ -67,7 +67,7 @@ export function ArticleQuiz() {
   // the browser has finished starting playback.
   const ttsAttemptRef = useRef(0);
 
-  // A learner tapping a word inside the reading paragraph to look it up and,
+  // A learner tapping a word inside the reading paragraph can look it up and,
   // if it's new to them, add it to their vocabulary study list — the same
   // save target as WordSearchControl's "학습하기", just reached from the
   // exact word already in front of them instead of a typed-out Korean
@@ -213,22 +213,30 @@ export function ArticleQuiz() {
     setTts("idle");
   }, []);
 
-  // Looks up one word tapped inside the reading paragraph (see the
-  // word-token buttons in the reading view below) — the whole study
-  // paragraph is short (one paragraph), so it's sent as context every time
-  // rather than trying to isolate just the containing sentence.
+  // Selects one word tapped inside the reading paragraph (see the word-token
+  // buttons in the reading view below). Looking up is deliberately a second
+  // action so an accidental tap while reading never starts a request.
   const openWordLookup = useCallback(
     (key: number, word: string) => {
       if (!draw) return;
-      setWordLookup({ key, word, loading: true, failed: false, result: null, saving: false, saved: false });
-      void defineWord(draw.id, word, key).then((result) => {
-        setWordLookup((prev) =>
-          prev && prev.key === key ? { ...prev, loading: false, failed: result === null, result } : prev,
-        );
-      });
+      setWordLookup({ key, word, loading: false, failed: false, result: null, saving: false, saved: false });
     },
     [draw],
   );
+
+  // The whole study paragraph is short (one paragraph), so it's sent as
+  // context every time rather than trying to isolate just the containing
+  // sentence.
+  const requestWordLookup = useCallback(() => {
+    if (!draw || !wordLookup || wordLookup.loading) return;
+    const { key, word } = wordLookup;
+    setWordLookup((prev) => (prev && prev.key === key ? { ...prev, loading: true } : prev));
+    void defineWord(draw.id, word, key).then((result) => {
+      setWordLookup((prev) =>
+        prev && prev.key === key ? { ...prev, loading: false, failed: result === null, result } : prev,
+      );
+    });
+  }, [draw, wordLookup]);
 
   // Saves the currently open word-lookup popover's result to the learner's
   // vocabulary study list — same saveWord() call and pending-until-verified
@@ -405,6 +413,11 @@ export function ArticleQuiz() {
                       </button>
                     </div>
                     {wordLookup.loading && <div className="word-search-status">찾는 중…</div>}
+                    {!wordLookup.loading && !wordLookup.result && !wordLookup.failed && (
+                      <button type="button" className="word-learn-btn" onClick={requestWordLookup}>
+                        찾기
+                      </button>
+                    )}
                     {!wordLookup.loading && wordLookup.failed && (
                       <div className="word-search-status">뜻을 가져오지 못했어요.</div>
                     )}
