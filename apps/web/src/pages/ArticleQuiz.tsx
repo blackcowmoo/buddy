@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { confirmThenDelete } from "../lib/confirmDelete";
 import {
   answerArticle,
@@ -62,6 +62,7 @@ export function ArticleQuiz() {
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<ArticleAnswerResult | null>(null);
   const [tts, setTts] = useState<TtsState>("idle");
+  const articlePageRef = useRef<HTMLElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   // Invalidates a pending play() rejection when the learner cancels before
   // the browser has finished starting playback.
@@ -120,7 +121,9 @@ export function ArticleQuiz() {
 
   const loadInstances = useCallback(() => {
     fetchArticleInstances().then((list) => {
-      setInstances(list);
+      // The API returns newest first, but this page grows downward: the
+      // newest attempt belongs at the bottom, next to the draw action.
+      setInstances(list.slice().sort((a, b) => a.createdAt - b.createdAt));
       setState("ready");
     });
   }, []);
@@ -128,6 +131,16 @@ export function ArticleQuiz() {
   useEffect(() => {
     loadInstances();
   }, [loadInstances]);
+
+  // Keep the newest article and the action for drawing another one in view
+  // when entering the list. The list itself remains a normal top-to-bottom
+  // scroll container so the learner can scroll upward into older articles.
+  useLayoutEffect(() => {
+    if (view === null && state === "ready") {
+      const page = articlePageRef.current;
+      if (page) page.scrollTop = page.scrollHeight;
+    }
+  }, [instances.length, state, view]);
 
   const handleDraw = useCallback(async () => {
     setDrawState("drawing");
@@ -306,7 +319,7 @@ export function ArticleQuiz() {
     <div className="app">
       <SubPageHeader title="오늘의 아티클" />
 
-      <main className="convo article-quiz-page">
+      <main ref={articlePageRef} className="convo article-quiz-page">
         {drawState === "noMore" && (
           <p className="hint">지금은 새로 볼 아티클이 없어요. 나중에 다시 시도해보세요.</p>
         )}
@@ -316,15 +329,6 @@ export function ArticleQuiz() {
 
         {view === null && (
           <>
-            <button
-              type="button"
-              className="quiz-start-btn"
-              onClick={() => void handleDraw()}
-              disabled={drawState === "drawing"}
-            >
-              {drawState === "drawing" ? "가져오는 중…" : "새 아티클 뽑기"}
-            </button>
-
             {state === "loading" && <LoadingHint />}
             {state === "ready" && instances.length === 0 && (
               <p className="hint">아직 읽은 아티클이 없어요.</p>
@@ -370,6 +374,15 @@ export function ArticleQuiz() {
                 </Fragment>
               );
             })}
+
+            <button
+              type="button"
+              className="quiz-start-btn"
+              onClick={() => void handleDraw()}
+              disabled={drawState === "drawing"}
+            >
+              {drawState === "drawing" ? "가져오는 중…" : "새 아티클 뽑기"}
+            </button>
           </>
         )}
 
