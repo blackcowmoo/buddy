@@ -399,57 +399,58 @@ export function ArticleQuiz() {
                 <p className="article-summary">
                   {draw.summary.split(/([A-Za-z']+)/g).map((part, i) =>
                     /^[A-Za-z']+$/.test(part) ? (
-                      <button
-                        key={i}
-                        type="button"
-                        className="article-word"
-                        onClick={() => openWordLookup(i, part)}
-                      >
-                        {part}
-                      </button>
+                      <span className="article-word-anchor" key={i}>
+                        <button
+                          type="button"
+                          className="article-word"
+                          onClick={() => openWordLookup(i, part)}
+                        >
+                          {part}
+                        </button>
+                        {wordLookup?.key === i && (
+                          <div className="word-lookup-panel" role="menu" ref={wordLookupRef}>
+                            <div className="word-lookup-header">
+                              <span className="word-search-word">{wordLookup.word}</span>
+                              <button
+                                type="button"
+                                className="ghost icon-btn"
+                                onClick={() => setWordLookup(null)}
+                                aria-label="단어 뜻 닫기"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                            {wordLookup.loading && <div className="word-search-status">찾는 중…</div>}
+                            {!wordLookup.loading && !wordLookup.result && !wordLookup.failed && (
+                              <button type="button" className="word-learn-btn" onClick={requestWordLookup}>
+                                찾기
+                              </button>
+                            )}
+                            {!wordLookup.loading && wordLookup.failed && (
+                              <div className="word-search-status">뜻을 가져오지 못했어요.</div>
+                            )}
+                            {!wordLookup.loading && !wordLookup.failed && wordLookup.result && (
+                              <>
+                                <span className="word-search-meaning">{wordLookup.result.meaning}</span>
+                                <span className="word-search-example">{wordLookup.result.example}</span>
+                                <button
+                                  type="button"
+                                  className="word-learn-btn"
+                                  onClick={learnLookedUpWord}
+                                  disabled={wordLookup.saving || wordLookup.saved}
+                                >
+                                  {wordLookup.saved ? "✓ 확인 중" : "학습하기"}
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </span>
                     ) : (
                       <span key={i}>{part}</span>
                     ),
                   )}
                 </p>
-                {wordLookup && (
-                  <div className="word-lookup-panel" role="menu" ref={wordLookupRef}>
-                    <div className="word-lookup-header">
-                      <span className="word-search-word">{wordLookup.word}</span>
-                      <button
-                        type="button"
-                        className="ghost icon-btn"
-                        onClick={() => setWordLookup(null)}
-                        aria-label="단어 뜻 닫기"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                    {wordLookup.loading && <div className="word-search-status">찾는 중…</div>}
-                    {!wordLookup.loading && !wordLookup.result && !wordLookup.failed && (
-                      <button type="button" className="word-learn-btn" onClick={requestWordLookup}>
-                        찾기
-                      </button>
-                    )}
-                    {!wordLookup.loading && wordLookup.failed && (
-                      <div className="word-search-status">뜻을 가져오지 못했어요.</div>
-                    )}
-                    {!wordLookup.loading && !wordLookup.failed && wordLookup.result && (
-                      <>
-                        <span className="word-search-meaning">{wordLookup.result.meaning}</span>
-                        <span className="word-search-example">{wordLookup.result.example}</span>
-                        <button
-                          type="button"
-                          className="word-learn-btn"
-                          onClick={learnLookedUpWord}
-                          disabled={wordLookup.saving || wordLookup.saved}
-                        >
-                          {wordLookup.saved ? "✓ 확인 중" : "학습하기"}
-                        </button>
-                      </>
-                    )}
-                  </div>
-                )}
                 <audio
                   ref={audioRef}
                   style={{ display: "none" }}

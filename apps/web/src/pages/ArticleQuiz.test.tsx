@@ -527,6 +527,10 @@ describe("ArticleQuiz page — word lookup while reading", () => {
 
     expect(defineWord).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "찾기" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "찾기" }).closest(".article-word-anchor"))
+      .toHaveClass("article-word-anchor");
+    expect(screen.getByRole("button", { name: "찾기" }).closest(".article-summary"))
+      .toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "찾기" }));
 
     expect(defineWord).toHaveBeenCalledWith(sampleDraw.id, "discovery", 9);
