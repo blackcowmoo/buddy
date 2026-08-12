@@ -501,6 +501,23 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
 });
 
 describe("ArticleQuiz page — word lookup while reading", () => {
+  it("uses the same anchored panel for responsive placement in portrait and landscape", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+
+    await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
+    await user.click(screen.getByRole("button", { name: "discovery" }));
+
+    const panel = screen.getByRole("menu");
+    expect(panel).toHaveClass("word-lookup-panel");
+    // Placement is controlled by the orientation media query in styles.css:
+    // portrait remains below the token, while landscape centers this same
+    // panel in the viewport so an edge token cannot clip it.
+    expect(panel.closest(".article-word-anchor")).toBeInTheDocument();
+  });
+
   it("waits for confirmation before looking up a tapped word, then saves it to the vocabulary list", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
