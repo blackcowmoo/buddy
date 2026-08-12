@@ -35,6 +35,8 @@ type Article struct {
 	// verbatim copy of the source article. Empty while Status is
 	// StatusPending.
 	Summary string
+	// Translation is the complete native-language translation of Summary.
+	Translation string
 	// SubQuestions are several independent 2-choice reading-comprehension
 	// checks against Summary — see SubQuestion's doc for why this shape,
 	// not one 4-choice "which paraphrase is right" question. At least 2,
@@ -146,7 +148,7 @@ type Store interface {
 	// row if it's no longer StatusPending (e.g. another attempt already
 	// completed it first) — same race-tolerant idempotence ReserveArticle's
 	// insert-ignore gives the reservation itself.
-	CompleteArticle(ctx context.Context, id, summary string, subQuestions []SubQuestion) (Article, error)
+	CompleteArticle(ctx context.Context, id, summary, translation string, subQuestions []SubQuestion) (Article, error)
 	// FailArticle marks a StatusPending Article StatusFailed after a
 	// pipeline.GenerateArticleStudy attempt errored — observability only; the
 	// asyncjob reaper still retries the job from scratch regardless (see

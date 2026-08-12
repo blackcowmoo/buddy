@@ -64,6 +64,7 @@ const sampleDraw: ArticleDraw = {
   source: "BBC",
   title: "Scientists make discovery",
   summary: "Scientists announced a new discovery today.",
+  translation: "과학자들이 오늘 새로운 발견을 발표했습니다.",
   subQuestions: [
     { prompt: "어떤 내용이었나요?", options: ["정확한 해석", "틀린 해석"] },
     { prompt: "언제 일어났나요?", options: ["오늘", "어제"] },
@@ -250,6 +251,7 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
 
     expect(answerArticle).toHaveBeenCalledWith("i1", [0, 0]);
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
+    expect(screen.getByText(sampleDraw.translation)).toBeInTheDocument();
     expect(screen.getByText("원문의 의미를 정확히 반영하기 때문입니다.")).toBeInTheDocument();
     expect(screen.getByText("원문에 명시되어 있습니다.")).toBeInTheDocument();
     expect(screen.getByText(articleSummaryMatcher(sampleDraw.summary))).toBeInTheDocument();

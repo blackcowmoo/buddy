@@ -53,6 +53,7 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 		title              VARCHAR(512)  NOT NULL,
 		url                VARCHAR(1024) NOT NULL,
 		summary            TEXT          NOT NULL,
+		translation        TEXT          NULL,
 		sub_questions_json TEXT          NOT NULL,
 		status             VARCHAR(16)   NOT NULL DEFAULT '` + StatusDone + `',
 		created_at         BIGINT        NOT NULL,
@@ -100,6 +101,9 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 	// feed snippet (see newsfeed.Candidate.Description's doc comment) is
 	// short by construction anyway, same reasoning as title's VARCHAR(512).
 	if err := addColumn(ctx, rw, `ALTER TABLE `+articlesTable+` ADD COLUMN description VARCHAR(2048) NOT NULL DEFAULT ''`, "description"); err != nil {
+		return nil, err
+	}
+	if err := addColumn(ctx, rw, `ALTER TABLE `+articlesTable+` ADD COLUMN translation TEXT NULL AFTER summary`, "translation"); err != nil {
 		return nil, err
 	}
 	if err := addColumn(ctx, rw, `ALTER TABLE `+articlesTable+` ADD COLUMN claimed_at BIGINT NOT NULL DEFAULT 0`, "claimed_at"); err != nil {
@@ -152,7 +156,7 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
-const articleColumns = `id, source, title, url, summary, sub_questions_json, description, status, created_at, published_at`
+const articleColumns = `id, source, title, url, summary, translation, sub_questions_json, description, status, created_at, published_at`
 
 // decodeSubQuestions decodes sub_questions_json — nil for SQL NULL or an
 // empty string (a pre-existing row predating this column, or one whose
@@ -173,8 +177,9 @@ func decodeSubQuestions(ns sql.NullString) ([]SubQuestion, error) {
 func scanArticle(row scanner) (Article, error) {
 	var a Article
 	var subQuestionsJSON sql.NullString
+	var translation sql.NullString
 	var createdAt, publishedAt int64
-	if err := row.Scan(&a.ID, &a.Source, &a.Title, &a.URL, &a.Summary, &subQuestionsJSON, &a.Description, &a.Status, &createdAt, &publishedAt); err != nil {
+	if err := row.Scan(&a.ID, &a.Source, &a.Title, &a.URL, &a.Summary, &translation, &subQuestionsJSON, &a.Description, &a.Status, &createdAt, &publishedAt); err != nil {
 		return Article{}, err
 	}
 	subQuestions, err := decodeSubQuestions(subQuestionsJSON)
@@ -182,6 +187,7 @@ func scanArticle(row scanner) (Article, error) {
 		return Article{}, err
 	}
 	a.SubQuestions = subQuestions
+	a.Translation = translation.String
 	a.CreatedAt = time.Unix(createdAt, 0)
 	if publishedAt > 0 {
 		a.PublishedAt = time.Unix(publishedAt, 0)
@@ -210,8 +216,8 @@ func (s *MySQLStore) ReserveArticle(ctx context.Context, source, title, url, des
 		publishedAtUnix = publishedAt.Unix()
 	}
 	_, err := s.rw.ExecContext(ctx, `
-		INSERT IGNORE INTO `+articlesTable+` (id, source, title, url, summary, sub_questions_json, description, status, created_at, claimed_at, published_at)
-		VALUES (?, ?, ?, ?, '', '[]', ?, ?, ?, ?, ?)
+		INSERT IGNORE INTO `+articlesTable+` (id, source, title, url, summary, translation, sub_questions_json, description, status, created_at, claimed_at, published_at)
+		VALUES (?, ?, ?, ?, '', NULL, '[]', ?, ?, ?, ?, ?)
 	`, uuid.New().String(), source, title, url, description, StatusPending, now, time.Now().UnixNano(), publishedAtUnix)
 	if err != nil {
 		return Article{}, fmt.Errorf("newsarticle: reserve article: insert: %w", err)
@@ -295,15 +301,15 @@ func (s *MySQLStore) ReopenIncompleteArticle(ctx context.Context, id string) (bo
 	return n == 1, nil
 }
 
-func (s *MySQLStore) CompleteArticle(ctx context.Context, id, summary string, subQuestions []SubQuestion) (Article, error) {
+func (s *MySQLStore) CompleteArticle(ctx context.Context, id, summary, translation string, subQuestions []SubQuestion) (Article, error) {
 	subQuestionsJSON, err := json.Marshal(subQuestions)
 	if err != nil {
 		return Article{}, fmt.Errorf("newsarticle: encode sub questions: %w", err)
 	}
 	if _, err := s.rw.ExecContext(ctx, `
-		UPDATE `+articlesTable+` SET summary = ?, sub_questions_json = ?, status = ?
+		UPDATE `+articlesTable+` SET summary = ?, translation = ?, sub_questions_json = ?, status = ?
 		WHERE id = ? AND status = ?
-	`, summary, string(subQuestionsJSON), StatusDone, id, StatusPending); err != nil {
+	`, summary, translation, string(subQuestionsJSON), StatusDone, id, StatusPending); err != nil {
 		return Article{}, fmt.Errorf("newsarticle: complete article: update: %w", err)
 	}
 	saved, err := scanArticle(s.rw.QueryRowContext(ctx, `SELECT `+articleColumns+` FROM `+articlesTable+` WHERE id = ?`, id))

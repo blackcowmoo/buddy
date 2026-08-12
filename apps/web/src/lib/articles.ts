@@ -41,6 +41,7 @@ export interface ArticleDraw {
   source: string;
   title: string;
   summary: string;
+  translation: string;
   subQuestions: ArticleSubQuestion[];
   // unix seconds; 0 if the source feed had no usable pubDate. Present from
   // the very first draw response, even while status is still "pending".

@@ -77,6 +77,9 @@ func validateArticleStudy(s protocol.ArticleStudy) error {
 	if strings.TrimSpace(s.Summary) == "" {
 		return fmt.Errorf("article study: empty summary")
 	}
+	if strings.TrimSpace(s.Translation) == "" {
+		return fmt.Errorf("article study: empty translation")
+	}
 	if len(s.SubQuestions) < articleQuizMinSubQuestions {
 		return fmt.Errorf("article study: got %d sub-questions, want at least %d", len(s.SubQuestions), articleQuizMinSubQuestions)
 	}
@@ -144,9 +147,10 @@ Do two things:
    should find each sub-question genuinely hard to guess on its own,
    independent of the others.
 Return STRICT JSON only, no prose, in exactly this shape:
-{"summary":"<the English paragraph>","subQuestions":[{"prompt":"<%[1]s question about one fact>","options":["<%[1]s option 1>","<%[1]s option 2>"],"correctOptionIndex":<0 or 1>,"explanation":"<%[1]s explanation>"}, ...]}
+{"summary":"<the English paragraph>","translation":"<the full natural translation of the English paragraph>","subQuestions":[{"prompt":"<%[1]s question about one fact>","options":["<%[1]s option 1>","<%[1]s option 2>"],"correctOptionIndex":<0 or 1>,"explanation":"<%[1]s explanation>"}, ...]}
 Rules:
 - "summary" MUST stay in English.
+- "translation" MUST be a complete, natural %[1]s translation of the entire "summary", preserving every fact.
 - "prompt", "options", and "explanation" MUST be written in %[1]s.
 - Each "options" array MUST contain exactly 2 entries.
 - At least %[2]d entries in "subQuestions", each about a different fact from the paragraph.`, native, articleQuizMinSubQuestions)

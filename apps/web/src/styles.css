@@ -325,6 +325,19 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 .article-meta { font-weight: 600; line-height: 1.4; }
 .article-date { font-size: 12px; color: var(--muted); margin-top: -4px; }
 .article-summary { line-height: 1.7; }
+.article-language-label {
+  margin-top: 1rem;
+  color: var(--muted, #777);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+.article-translation {
+  margin-top: -0.5rem;
+  padding: 0.75rem 1rem;
+  border-left: 3px solid var(--accent, #888);
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
 /* Every word/phrase token in the reading paragraph is its own tappable
    button (see ArticleQuiz.tsx's summary tokenizing) so a learner can look up
    any word they don't know without leaving the reading view — styled to
