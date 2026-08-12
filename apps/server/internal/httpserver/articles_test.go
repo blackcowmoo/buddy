@@ -122,7 +122,7 @@ func (f *fakeArticleStore) ReopenIncompleteArticle(ctx context.Context, id strin
 	return false, nil
 }
 
-func (f *fakeArticleStore) CompleteArticle(ctx context.Context, id, summary string, subQuestions []newsarticle.SubQuestion) (newsarticle.Article, error) {
+func (f *fakeArticleStore) CompleteArticle(ctx context.Context, id, summary, translation string, subQuestions []newsarticle.SubQuestion) (newsarticle.Article, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
@@ -133,6 +133,7 @@ func (f *fakeArticleStore) CompleteArticle(ctx context.Context, id, summary stri
 			continue
 		}
 		a.Summary = summary
+		a.Translation = translation
 		a.SubQuestions = subQuestions
 		a.Status = newsarticle.StatusDone
 		f.byURL[url] = a
@@ -323,7 +324,7 @@ func fakeArticlePipeline(raw string) *pipeline.Pipeline {
 	}
 }
 
-const fakeStudyJSON = `{"summary":"A short English study paragraph.","subQuestions":[{"prompt":"어떤 내용이었나요?","options":["정확한 해석","틀린 해석"],"correctOptionIndex":0,"explanation":"정확한 해석이 원문의 의미를 담고 있기 때문입니다."},{"prompt":"언제 일어났나요?","options":["오늘","어제"],"correctOptionIndex":0,"explanation":"원문에 명시되어 있습니다."}]}`
+const fakeStudyJSON = `{"summary":"A short English study paragraph.","translation":"짧은 영어 학습 문단입니다.","subQuestions":[{"prompt":"어떤 내용이었나요?","options":["정확한 해석","틀린 해석"],"correctOptionIndex":0,"explanation":"정확한 해석이 원문의 의미를 담고 있기 때문입니다."},{"prompt":"언제 일어났나요?","options":["오늘","어제"],"correctOptionIndex":0,"explanation":"원문에 명시되어 있습니다."}]}`
 
 func fetchOneCandidate(c newsfeed.Candidate) func(context.Context) ([]newsfeed.Candidate, error) {
 	return func(context.Context) ([]newsfeed.Candidate, error) {

@@ -164,7 +164,7 @@ func runArticleStudy(ctx context.Context, pipe *pipeline.Pipeline, articles news
 		}
 		return fmt.Errorf("article study: generate: %w", err)
 	}
-	if _, err := articles.CompleteArticle(ctx, articleID, study.Summary, toNewsArticleSubQuestions(study.SubQuestions)); err != nil {
+	if _, err := articles.CompleteArticle(ctx, articleID, study.Summary, study.Translation, toNewsArticleSubQuestions(study.SubQuestions)); err != nil {
 		return fmt.Errorf("article study: complete: %w", err)
 	}
 	audio.generate(ctx, articleID, study.Summary)

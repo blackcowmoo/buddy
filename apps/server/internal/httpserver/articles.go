@@ -84,6 +84,7 @@ type articleDraw struct {
 	Source       string             `json:"source"`
 	Title        string             `json:"title"`
 	Summary      string             `json:"summary"`
+	Translation  string             `json:"translation"`
 	SubQuestions []draftSubQuestion `json:"subQuestions"`
 	// PublishedAt is the source feed's own publish time, unix seconds, 0 if
 	// unknown — see articleListItem.PublishedAt's doc comment. Present from
@@ -105,6 +106,7 @@ func toArticleDraw(inst newsarticle.Instance) articleDraw {
 		Source:       inst.Article.Source,
 		Title:        inst.Article.Title,
 		Summary:      inst.Article.Summary,
+		Translation:  inst.Article.Translation,
 		SubQuestions: toDraftSubQuestions(inst.Article.SubQuestions),
 		PublishedAt:  articlePublishedAtUnix(inst.Article),
 		Status:       inst.Article.Status,

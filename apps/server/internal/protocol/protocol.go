@@ -161,7 +161,8 @@ type WordSuggestion struct {
 // what), so there's nothing to diff — every sub-question has to be
 // answered from actually having read Summary.
 type ArticleStudy struct {
-	Summary      string               `json:"summary"` // English, self-contained
+	Summary      string               `json:"summary"`     // English, self-contained
+	Translation  string               `json:"translation"` // native-language translation of Summary
 	SubQuestions []ArticleSubQuestion `json:"subQuestions"`
 }
 

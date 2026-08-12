@@ -476,7 +476,16 @@ export function ArticleQuiz() {
 
         {view === "quiz" && draw && (
           <div className="quiz-panel">
+            <div className="article-language-label">영어 원문</div>
             <p className="article-summary">{draw.summary}</p>
+            {draw.translation && (
+              <>
+                <div className="article-language-label">한글 번역</div>
+                <p className="article-translation" lang="ko">
+                  {draw.translation}
+                </p>
+              </>
+            )}
             <div className="quiz-prompt">이 문단의 내용과 일치하는 것을 각각 고르세요.</div>
             {draw.subQuestions.map((sub, qi) => (
               <div key={qi} className="article-sub-question">
@@ -513,7 +522,16 @@ export function ArticleQuiz() {
             <div className={`quiz-result ${result.correct ? "correct" : "incorrect"}`} role="status">
               {result.correct ? "정답이에요!" : `아쉬워요, ${result.score}/${result.total} 정답이에요.`}
             </div>
+            <div className="article-language-label">영어 원문</div>
             <p className="article-summary">{draw.summary}</p>
+            {draw.translation && (
+              <>
+                <div className="article-language-label">한글 번역</div>
+                <p className="article-translation" lang="ko">
+                  {draw.translation}
+                </p>
+              </>
+            )}
             {result.subQuestions.map((sub, qi) => (
               <div key={qi} className="article-sub-question">
                 <div className="quiz-prompt">{sub.prompt}</div>

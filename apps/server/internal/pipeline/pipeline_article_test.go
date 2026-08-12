@@ -12,6 +12,7 @@ import (
 
 const fakeArticleStudyJSON = `{
 	"summary":"Scientists announced a new discovery today.",
+	"translation":"과학자들이 오늘 새로운 발견을 발표했습니다.",
 	"subQuestions":[
 		{"prompt":"어떤 발견이었나요?","options":["정확한 답","틀린 답"],"correctOptionIndex":0,"explanation":"원문의 의미를 정확히 반영하기 때문입니다."},
 		{"prompt":"언제 발표됐나요?","options":["오늘","어제"],"correctOptionIndex":0,"explanation":"원문에 today라고 명시되어 있습니다."}

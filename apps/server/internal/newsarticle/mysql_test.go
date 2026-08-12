@@ -128,6 +128,7 @@ func mustSaveArticle(t *testing.T, st *MySQLStore, url string) Article {
 	}
 	completed, err := st.CompleteArticle(context.Background(), reserved.ID,
 		"A short English study paragraph about the test headline.",
+		"테스트 헤드라인에 관한 짧은 영어 학습 문단입니다.",
 		testSubQuestions())
 	if err != nil {
 		t.Fatalf("CompleteArticle() error = %v", err)
@@ -181,7 +182,7 @@ func TestCompleteArticleIsNoopIfNoLongerPending(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReserveArticle() error = %v", err)
 	}
-	first, err := st.CompleteArticle(context.Background(), reserved.ID, "first summary", testSubQuestions())
+	first, err := st.CompleteArticle(context.Background(), reserved.ID, "first summary", "첫 번역", testSubQuestions())
 	if err != nil {
 		t.Fatalf("CompleteArticle() #1 error = %v", err)
 	}
@@ -189,7 +190,7 @@ func TestCompleteArticleIsNoopIfNoLongerPending(t *testing.T) {
 		{Prompt: "다른 질문", Options: []string{"w", "x"}, CorrectOptionIndex: 1, Explanation: "e2"},
 		{Prompt: "또 다른 질문", Options: []string{"y", "z"}, CorrectOptionIndex: 0, Explanation: "e3"},
 	}
-	second, err := st.CompleteArticle(context.Background(), reserved.ID, "second summary", otherSubQuestions)
+	second, err := st.CompleteArticle(context.Background(), reserved.ID, "second summary", "두 번째 번역", otherSubQuestions)
 	if err != nil {
 		t.Fatalf("CompleteArticle() #2 error = %v", err)
 	}
@@ -373,7 +374,7 @@ func TestClaimArticleReportsWhetherStillPending(t *testing.T) {
 		t.Fatal("ClaimArticle() on a StatusPending article = false, want true")
 	}
 
-	if _, err := st.CompleteArticle(ctx, reserved.ID, "s", testSubQuestions()); err != nil {
+	if _, err := st.CompleteArticle(ctx, reserved.ID, "s", "번역", testSubQuestions()); err != nil {
 		t.Fatalf("CompleteArticle() error = %v", err)
 	}
 
@@ -455,7 +456,7 @@ func TestReopenIncompleteArticleWinsForADoneArticleWithNoSubQuestions(t *testing
 	if err != nil {
 		t.Fatalf("ReserveArticle() error = %v", err)
 	}
-	if _, err := st.CompleteArticle(ctx, reserved.ID, "old summary", nil); err != nil {
+	if _, err := st.CompleteArticle(ctx, reserved.ID, "old summary", "오래된 번역", nil); err != nil {
 		t.Fatalf("CompleteArticle() error = %v", err)
 	}
 
