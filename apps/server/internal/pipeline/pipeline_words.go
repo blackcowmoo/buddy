@@ -58,17 +58,57 @@ Rules:
 - If the description is too vague to suggest anything meaningful, return an empty "suggestions" array rather than guessing wildly.`, native)
 }
 
-// DefineWord asks the chat model to define one English word/phrase a learner
-// tapped while reading (see httpserver.wordDefineHandler, ArticleQuiz.tsx's
-// clickable article summary) in the sentence it actually appeared in. Unlike
-// SuggestWords (a vague native-language description -> several English
-// candidates), the word here is already known exactly, so this returns a
-// single protocol.WordSuggestion rather than a list — reusing the same wire
-// type keeps httpserver.wordSaveHandler's {word, meaning, example} shape and
-// lib/wordReview.ts's saveWord() usable unchanged for this entry point too.
-// Same single fast-call tier as SuggestWords: this backs an interactive tap
-// mid-reading, not a background job.
+// DefineWord is the common word-search entry point. It first uses the fast
+// chat model to turn an inflected spelling into its dictionary form, then
+// defines that form in context. If either the form-resolution call or the
+// lookup using the resolved form fails, it retries the lookup with the exact
+// spelling the learner supplied. Keeping this fallback here (rather than in
+// HTTP handlers or jobs) makes every word-search caller use the same policy.
 func (p *Pipeline) DefineWord(ctx context.Context, word, passage string) (protocol.WordSuggestion, error) {
+	word = strings.TrimSpace(word)
+	resolved, err := p.resolveWordForm(ctx, word, passage)
+	if err == nil && resolved != "" {
+		result, lookupErr := p.defineWord(ctx, resolved, passage)
+		if lookupErr == nil {
+			return result, nil
+		}
+		// The model may have proposed a form that the definition call cannot
+		// handle. Re-run the same lookup with the learner's original input.
+		if fallback, fallbackErr := p.defineWord(ctx, word, passage); fallbackErr == nil {
+			return fallback, nil
+		} else {
+			return protocol.WordSuggestion{}, fmt.Errorf("word definition: resolved lookup: %w; original lookup: %v", lookupErr, fallbackErr)
+		}
+	}
+
+	// Resolution is deliberately best-effort: an unavailable or malformed
+	// fast-model response must not prevent the ordinary word lookup.
+	return p.defineWord(ctx, word, passage)
+}
+
+func (p *Pipeline) resolveWordForm(ctx context.Context, word, passage string) (string, error) {
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: wordFormSystemPrompt()},
+		{Role: llm.RoleUser, Content: fmt.Sprintf("word: %s\ncontext: %s", word, passage)},
+	}
+	raw, err := p.LLM.Complete(ctx, p.ChatModel, msgs, true)
+	if err != nil {
+		return "", err
+	}
+	parsed, err := parseJSON[struct {
+		Word string `json:"word"`
+	}](raw, "word form")
+	if err != nil {
+		return "", err
+	}
+	resolved := strings.TrimSpace(parsed.Word)
+	if resolved == "" {
+		return "", fmt.Errorf("word form: model returned an empty word")
+	}
+	return resolved, nil
+}
+
+func (p *Pipeline) defineWord(ctx context.Context, word, passage string) (protocol.WordSuggestion, error) {
 	msgs := []llm.Message{
 		{Role: llm.RoleSystem, Content: wordDefineSystemPrompt(p.FeedbackLang)},
 		{Role: llm.RoleUser, Content: fmt.Sprintf("word: %s\ncontext: %s", word, passage)},
@@ -82,6 +122,20 @@ func (p *Pipeline) DefineWord(ctx context.Context, word, passage string) (protoc
 		return protocol.WordSuggestion{}, err
 	}
 	return parsed, nil
+}
+
+func wordFormSystemPrompt() string {
+	return `You normalize one English word or short phrase for a dictionary lookup.
+Given the exact word a learner selected and the context where it appeared,
+return its base dictionary form if it is inflected (for example "running" ->
+"run", "better" -> "good", "children" -> "child"). Preserve the input when
+it is already the appropriate dictionary form. Return STRICT JSON only, with
+exactly this shape:
+{"word":"<dictionary form>"}
+Rules:
+- Keep the result in English.
+- Return only one word or short phrase, with no explanation.
+- Do not translate, define, or add punctuation.`
 }
 
 // wordDefineSystemPrompt builds DefineWord's prompt, reusing the same

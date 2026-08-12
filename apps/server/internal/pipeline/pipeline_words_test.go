@@ -117,6 +117,56 @@ func TestDefineWordParsesDefinition(t *testing.T) {
 	}
 }
 
+func TestDefineWordNormalizesInflectedWordBeforeLookup(t *testing.T) {
+	var inputs []string
+	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		inputs = append(inputs, msgs[len(msgs)-1].Content)
+		if len(inputs) == 1 {
+			return `{"word":"run"}`, nil
+		}
+		return `{"word":"run","meaning":"달리다","example":"They run every morning."}`, nil
+	}}, ChatModel: "m", FeedbackLang: "ko"}
+
+	got, err := p.DefineWord(context.Background(), "running", "They are running every morning.")
+	if err != nil {
+		t.Fatalf("DefineWord() error = %v", err)
+	}
+	if len(inputs) != 2 {
+		t.Fatalf("LLM calls = %d, want 2 (resolve then define)", len(inputs))
+	}
+	if !strings.Contains(inputs[1], "word: run") || strings.Contains(inputs[1], "word: running") {
+		t.Fatalf("definition input = %q, want the normalized word only", inputs[1])
+	}
+	if got.Word != "run" {
+		t.Fatalf("result word = %q, want normalized dictionary form", got.Word)
+	}
+}
+
+func TestDefineWordFallsBackToOriginalWhenResolutionFails(t *testing.T) {
+	var inputs []string
+	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		inputs = append(inputs, msgs[len(msgs)-1].Content)
+		if len(inputs) == 1 {
+			return "not json", nil
+		}
+		return `{"word":"running","meaning":"달리고 있는","example":"They are running."}`, nil
+	}}, ChatModel: "m", FeedbackLang: "ko"}
+
+	got, err := p.DefineWord(context.Background(), "running", "They are running.")
+	if err != nil {
+		t.Fatalf("DefineWord() error = %v", err)
+	}
+	if len(inputs) != 2 {
+		t.Fatalf("LLM calls = %d, want 2 (failed resolve then original lookup)", len(inputs))
+	}
+	if !strings.Contains(inputs[1], "word: running") {
+		t.Fatalf("fallback input = %q, want the original word", inputs[1])
+	}
+	if got.Word != "running" {
+		t.Fatalf("result word = %q, want original fallback spelling", got.Word)
+	}
+}
+
 func TestDefineWordPropagatesLLMError(t *testing.T) {
 	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 		return "", errors.New("down")
