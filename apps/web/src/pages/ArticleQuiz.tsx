@@ -86,6 +86,11 @@ export function ArticleQuiz() {
     saved: boolean;
   } | null>(null);
   const wordLookupRef = useRef<HTMLDivElement>(null);
+  // Successful lookups are kept for this page session so reopening a word
+  // doesn't make the learner confirm (or request) the same lookup again.
+  // Include the token position because the server resolves words in context,
+  // and the same spelling can have different meanings in different places.
+  const wordLookupCacheRef = useRef(new Map<string, WordSuggestion>());
   useDismiss(wordLookup !== null, wordLookupRef, () => setWordLookup(null));
 
   // Poll scaffolding for a draw still generating in the background (see
@@ -232,7 +237,16 @@ export function ArticleQuiz() {
   const openWordLookup = useCallback(
     (key: number, word: string) => {
       if (!draw) return;
-      setWordLookup({ key, word, loading: false, failed: false, result: null, saving: false, saved: false });
+      const cached = wordLookupCacheRef.current.get(`${draw.id}:${key}`);
+      setWordLookup({
+        key,
+        word,
+        loading: false,
+        failed: false,
+        result: cached ?? null,
+        saving: false,
+        saved: false,
+      });
     },
     [draw],
   );
@@ -245,6 +259,7 @@ export function ArticleQuiz() {
     const { key, word } = wordLookup;
     setWordLookup((prev) => (prev && prev.key === key ? { ...prev, loading: true } : prev));
     void defineWord(draw.id, word, key).then((result) => {
+      if (result) wordLookupCacheRef.current.set(`${draw.id}:${key}`, result);
       setWordLookup((prev) =>
         prev && prev.key === key ? { ...prev, loading: false, failed: result === null, result } : prev,
       );
