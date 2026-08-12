@@ -324,7 +324,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
    muted convention as .session-item .time and .recording-sub. */
 .article-meta { font-weight: 600; line-height: 1.4; }
 .article-date { font-size: 12px; color: var(--muted); margin-top: -4px; }
-.article-summary { line-height: 1.7; }
+.article-summary { line-height: 1.7; overflow: visible; }
 .article-language-label {
   margin-top: 1rem;
   color: var(--muted, #777);
@@ -354,12 +354,22 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
   background: transparent;
 }
 .article-word:hover, .article-word:focus-visible { background: var(--panel-2); }
-/* Word-lookup result, opened by tapping a word in .article-summary — a
-   static card in the reading view's own flow (unlike .study-panel's
-   position:absolute popovers, which anchor to a small trigger button;
-   there's no single natural anchor point for a tapped word inside a
-   paragraph), same card visual language as .word-search-results li. */
+.article-word-anchor {
+  position: relative;
+  display: inline-block;
+}
+/* Word-lookup result, opened by tapping a word in .article-summary. It is
+   anchored to the selected word and overlays the paragraph, so its position
+   does not push the rest of a long article down or strand the controls below
+   the scroll position. */
 .word-lookup-panel {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 8px);
+  left: 0;
+  width: min(320px, calc(100vw - 24px));
+  max-height: min(45vh, 320px);
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -367,6 +377,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
   border: 1px solid var(--border-2);
   border-radius: var(--radius);
   padding: 10px 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
 }
 .word-lookup-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .quiz-back-btn { align-self: flex-start; padding: 2px 4px; font-size: 12px; }
