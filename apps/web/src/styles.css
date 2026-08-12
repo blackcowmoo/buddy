@@ -608,6 +608,7 @@ a.icon-btn.ghost {
   justify-content: flex-end;
   gap: 14px;
 }
+.article-quiz-page { justify-content: flex-start; }
 .hint { color: var(--muted); line-height: 1.6; font-size: 15px; }
 
 .recordings-list { gap: 10px; }

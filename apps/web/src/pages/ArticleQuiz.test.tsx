@@ -113,6 +113,20 @@ describe("ArticleQuiz page — list view", () => {
     expect(screen.getByText(/정답/)).toBeInTheDocument();
   });
 
+  it("shows older attempts above newer ones and puts the draw action at the bottom", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([
+      { id: "new", source: "NPR", title: "New story", summary: "s", answered: false, correct: false, createdAt: 1700003600, publishedAt: 0, status: "done" as const },
+      { id: "old", source: "BBC", title: "Old story", summary: "s", answered: false, correct: false, createdAt: 1700000000, publishedAt: 0, status: "done" as const },
+    ]);
+    render(<ArticleQuiz />);
+
+    const oldRow = (await screen.findByText("[BBC] Old story")).closest(".session-row")!;
+    const newRow = screen.getByText("[NPR] New story").closest(".session-row")!;
+    const drawButton = screen.getByRole("button", { name: "새 아티클 뽑기" });
+    expect(oldRow.compareDocumentPosition(newRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(newRow.compareDocumentPosition(drawButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("groups past attempts from the same day under a single date divider", async () => {
     const morning = 1700000000;
     const laterSameDay = morning + 3600;
