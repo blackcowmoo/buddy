@@ -544,6 +544,14 @@ describe("ArticleQuiz page — word lookup while reading", () => {
       example: "Scientists announced a new discovery today.",
     });
     expect(await screen.findByRole("button", { name: "✓ 확인 중" })).toBeInTheDocument();
+
+    // Reopening the same token uses the successful result immediately, so
+    // there is no second confirmation or lookup request.
+    await user.click(screen.getByRole("button", { name: "단어 뜻 닫기" }));
+    await user.click(screen.getByRole("button", { name: "discovery" }));
+    expect(screen.queryByRole("button", { name: "찾기" })).not.toBeInTheDocument();
+    expect(screen.getByText("발견")).toBeInTheDocument();
+    expect(defineWord).toHaveBeenCalledTimes(1);
   });
 
   it("shows a failure message when the lookup fails", async () => {
