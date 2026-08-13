@@ -91,7 +91,7 @@ func generateAndSaveAutoAddWords(ctx context.Context, pipe *pipeline.Pipeline, w
 		if utf8.RuneCountInString(meaning) > maxAutoAddFieldLen || utf8.RuneCountInString(example) > maxAutoAddFieldLen {
 			continue
 		}
-		if _, err := SaveWordAndVerify(ctx, words, pipe, wordVerifyQueue, userID, word, meaning, example); err != nil {
+		if _, err := SaveWordAndVerify(ctx, words, pipe, wordVerifyQueue, userID, word, meaning, example, word); err != nil {
 			return added, fmt.Errorf("word auto-add: save: %w", err)
 		}
 		added++

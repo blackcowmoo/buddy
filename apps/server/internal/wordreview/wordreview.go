@@ -140,6 +140,7 @@ type Word struct {
 	ID             string
 	UserID         string
 	Word           string
+	OriginalWord   string // exact source spelling; empty means legacy/unknown
 	Meaning        string
 	Example        string
 	Stage          int
@@ -208,6 +209,10 @@ type Store interface {
 	// if id doesn't exist or belongs to a different user.
 	Delete(ctx context.Context, userID, id string) error
 	Close() error
+}
+
+type OriginalSaver interface {
+	SaveOriginal(ctx context.Context, userID, word, meaning, example, originalWord string) (Word, error)
 }
 
 // AnswerCache stores the result of an expensive synonym check. A true result

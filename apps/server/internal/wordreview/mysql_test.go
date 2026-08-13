@@ -105,6 +105,9 @@ func TestSaveThenListRoundTrips(t *testing.T) {
 	if saved.Word != "ecstatic" || saved.Stage != 0 || saved.Status != StatusPending {
 		t.Fatalf("Save() = %+v, want fresh stage-0 Pending word", saved)
 	}
+	if saved.OriginalWord != "ecstatic" {
+		t.Errorf("OriginalWord = %q, want the source spelling", saved.OriginalWord)
+	}
 	wantDue := time.Now().Add(stageIntervals[0])
 	if saved.NextReviewAt.Before(wantDue.Add(-time.Minute)) || saved.NextReviewAt.After(wantDue.Add(time.Minute)) {
 		t.Errorf("NextReviewAt = %v, want ~%v", saved.NextReviewAt, wantDue)
@@ -116,6 +119,17 @@ func TestSaveThenListRoundTrips(t *testing.T) {
 	}
 	if len(list) != 1 || list[0].ID != saved.ID {
 		t.Fatalf("List() = %+v, want exactly saved %+v", list, saved)
+	}
+}
+
+func TestSaveOriginalPreservesArticleSpelling(t *testing.T) {
+	st := requireStore(t)
+	saved, err := st.SaveOriginal(context.Background(), "alex-original", "run", "달리다", "They run every day.", "running")
+	if err != nil {
+		t.Fatalf("SaveOriginal() error = %v", err)
+	}
+	if saved.Word != "run" || saved.OriginalWord != "running" {
+		t.Fatalf("SaveOriginal() = %+v, want dictionary word run and source running", saved)
 	}
 }
 

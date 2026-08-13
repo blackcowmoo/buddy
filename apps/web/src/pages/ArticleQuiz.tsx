@@ -334,7 +334,7 @@ export function ArticleQuiz() {
     const key = wordLookup.key;
     const suggestion = wordLookup.result;
     setWordLookup((prev) => (prev && prev.key === key ? { ...prev, saving: true } : prev));
-    void saveWord(suggestion).then((saved) => {
+    void saveWord(suggestion, wordLookup.word).then((saved) => {
       setWordLookup((prev) => (prev && prev.key === key ? { ...prev, saving: false, saved: !!saved } : prev));
     });
   }, [wordLookup]);

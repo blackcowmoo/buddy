@@ -41,6 +41,7 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 		id               VARCHAR(64)  NOT NULL,
 		user_id          VARCHAR(255) NOT NULL,
 		word             VARCHAR(255) NOT NULL,
+		original_word    VARCHAR(255) NOT NULL DEFAULT '',
 		meaning          TEXT         NOT NULL,
 		example          TEXT         NOT NULL,
 		stage            INT          NOT NULL DEFAULT 0,
@@ -57,6 +58,9 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
 	if _, err := rw.ExecContext(ctx, schema); err != nil {
 		return nil, fmt.Errorf("wordreview: schema: %w", err)
+	}
+	if _, err := rw.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN IF NOT EXISTS original_word VARCHAR(255) NOT NULL DEFAULT ''`); err != nil {
+		return nil, fmt.Errorf("wordreview: schema migration: %w", err)
 	}
 	const answerCacheSchema = `CREATE TABLE IF NOT EXISTS ` + answerCacheTable + ` (
 		cache_key BINARY(32) NOT NULL,
@@ -121,7 +125,7 @@ func scanWord(row scanner, userID string) (Word, error) {
 	var w Word
 	var nextReviewAt, lastReviewedAt, createdAt int64
 	if err := row.Scan(
-		&w.ID, &w.Word, &w.Meaning, &w.Example,
+		&w.ID, &w.Word, &w.OriginalWord, &w.Meaning, &w.Example,
 		&w.Stage, &w.ReviewCount, &w.CorrectStreak,
 		&nextReviewAt, &lastReviewedAt, &w.Status, &w.VerifyReason, &createdAt,
 	); err != nil {
@@ -136,9 +140,13 @@ func scanWord(row scanner, userID string) (Word, error) {
 	return w, nil
 }
 
-const wordColumns = `id, word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, created_at`
+const wordColumns = `id, word, original_word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, created_at`
 
 func (s *MySQLStore) Save(ctx context.Context, userID, word, meaning, example string) (Word, error) {
+	return s.SaveOriginal(ctx, userID, word, meaning, example, word)
+}
+
+func (s *MySQLStore) SaveOriginal(ctx context.Context, userID, word, meaning, example, originalWord string) (Word, error) {
 	now := time.Now()
 	// INSERT IGNORE: the UNIQUE KEY on (user_id, word, meaning) makes this a
 	// no-op if the learner already chose to study this exact word+meaning —
@@ -148,9 +156,9 @@ func (s *MySQLStore) Save(ctx context.Context, userID, word, meaning, example st
 	// MarkVerified resets it — a pending word is excluded from Due/DueCount
 	// regardless (see their WHERE clauses).
 	_, err := s.rw.ExecContext(ctx, `
-		INSERT IGNORE INTO `+table+` (id, user_id, word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, created_at)
-		VALUES (?, ?, ?, ?, ?, 0, 0, 0, ?, 0, ?, '', ?)
-	`, uuid.New().String(), userID, word, meaning, example, now.Add(intervalForStage(0)).Unix(), StatusPending, now.Unix())
+		INSERT IGNORE INTO `+table+` (id, user_id, word, original_word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?, 0, ?, '', ?)
+	`, uuid.New().String(), userID, word, originalWord, meaning, example, now.Add(intervalForStage(0)).Unix(), StatusPending, now.Unix())
 	if err != nil {
 		return Word{}, fmt.Errorf("wordreview: save: insert: %w", err)
 	}

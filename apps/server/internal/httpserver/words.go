@@ -118,6 +118,7 @@ type wordItem struct {
 	Word         string `json:"word"`
 	Meaning      string `json:"meaning"`
 	Example      string `json:"example"`
+	OriginalWord string `json:"originalWord"`
 	Stage        int    `json:"stage"`
 	ReviewCount  int    `json:"reviewCount"`
 	NextReviewAt int64  `json:"nextReviewAt"` // unix seconds
@@ -134,6 +135,7 @@ func toWordItem(w wordreview.Word) wordItem {
 		Word:         wordreview.NormalizeWord(w.Word),
 		Meaning:      w.Meaning,
 		Example:      w.Example,
+		OriginalWord: w.OriginalWord,
 		Stage:        w.Stage,
 		ReviewCount:  w.ReviewCount,
 		NextReviewAt: w.NextReviewAt.Unix(),
@@ -163,9 +165,10 @@ func wordSaveHandler(ident identity.Identifier, words wordreview.Store, pipe *pi
 			return
 		}
 		var body struct {
-			Word    string `json:"word"`
-			Meaning string `json:"meaning"`
-			Example string `json:"example"`
+			Word         string `json:"word"`
+			Meaning      string `json:"meaning"`
+			Example      string `json:"example"`
+			OriginalWord string `json:"originalWord"`
 		}
 		if !decodeJSON(w, r, &body) {
 			return
@@ -184,7 +187,7 @@ func wordSaveHandler(ident identity.Identifier, words wordreview.Store, pipe *pi
 			http.Error(w, "meaning/example is too long", http.StatusBadRequest)
 			return
 		}
-		saved, err := transport.SaveWordAndVerify(r.Context(), words, pipe, wordVerifyQueue, userID, word, meaning, example)
+		saved, err := transport.SaveWordAndVerify(r.Context(), words, pipe, wordVerifyQueue, userID, word, meaning, example, strings.TrimSpace(body.OriginalWord))
 		if err != nil {
 			serverError(w, "words: save "+userID, err)
 			return
@@ -269,6 +272,38 @@ func wordDeleteHandler(ident identity.Identifier, words wordreview.Store) http.H
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func wordResearchHandler(ident identity.Identifier, words wordreview.Store, pipe *pipeline.Pipeline) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := requireUser(w, r, ident)
+		if !ok {
+			return
+		}
+		target, err := words.Get(r.Context(), userID, r.PathValue("id"))
+		if err != nil {
+			serverError(w, "words: research get", err)
+			return
+		}
+		if target.ID == "" {
+			http.NotFound(w, r)
+			return
+		}
+		if target.Status != wordreview.StatusRejected && target.OriginalWord != "" {
+			http.Error(w, "only excluded or legacy words can be researched", http.StatusConflict)
+			return
+		}
+		word := target.OriginalWord
+		if word == "" {
+			word = target.Word
+		}
+		results, err := pipe.DefineWordMeanings(r.Context(), word, target.Example)
+		if err != nil {
+			serverError(w, "words: research", err)
+			return
+		}
+		writeJSON(w, map[string]any{"suggestions": results})
 	}
 }
 

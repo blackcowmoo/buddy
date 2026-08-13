@@ -86,6 +86,25 @@ func (p *Pipeline) DefineWord(ctx context.Context, word, passage string) (protoc
 	return p.defineWord(ctx, word, passage)
 }
 
+func (p *Pipeline) DefineWordMeanings(ctx context.Context, word, passage string) ([]protocol.WordSuggestion, error) {
+	native := languageName(p.FeedbackLang)
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: fmt.Sprintf(`You are a dictionary assistant for a %s-speaking English learner. List 3-6 common meanings of the given English word or phrase. Return STRICT JSON only: {"suggestions":[{"word":"...","meaning":"...","example":"..."}]}. Keep word in English, meaning in %s, and give one natural English example for every meaning.`, native, native)},
+		{Role: llm.RoleUser, Content: fmt.Sprintf("word: %s\ncontext: %s", word, passage)},
+	}
+	raw, err := p.LLM.Complete(ctx, p.ChatModel, msgs, true)
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := parseJSON[struct {
+		Suggestions []protocol.WordSuggestion `json:"suggestions"`
+	}](raw, "word meanings")
+	if err != nil {
+		return nil, err
+	}
+	return parsed.Suggestions, nil
+}
+
 func (p *Pipeline) resolveWordForm(ctx context.Context, word, passage string) (string, error) {
 	msgs := []llm.Message{
 		{Role: llm.RoleSystem, Content: wordFormSystemPrompt()},
