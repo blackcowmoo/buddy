@@ -589,5 +589,34 @@ describe("ArticleQuiz page — word lookup while reading", () => {
     await user.click(screen.getByRole("button", { name: "찾기" }));
 
     expect(await screen.findByText("뜻을 가져오지 못했어요.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "단어 뜻 닫기" }));
+    await user.click(screen.getByRole("button", { name: "discovery" }));
+    expect(screen.getByText("뜻을 가져오지 못했어요.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "찾기" })).not.toBeInTheDocument();
+  });
+
+  it("keeps showing a lookup as in progress when reopening its word", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    let resolveLookup!: (result: { word: string; meaning: string; example: string }) => void;
+    vi.mocked(defineWord).mockReturnValue(
+      new Promise((resolve) => {
+        resolveLookup = resolve;
+      }),
+    );
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+
+    await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
+    await user.click(screen.getByRole("button", { name: "discovery" }));
+    await user.click(screen.getByRole("button", { name: "찾기" }));
+    await user.click(screen.getByRole("button", { name: "단어 뜻 닫기" }));
+    await user.click(screen.getByRole("button", { name: "discovery" }));
+
+    expect(screen.getByText("찾는 중…")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "찾기" })).not.toBeInTheDocument();
+
+    resolveLookup({ word: "discovery", meaning: "발견", example: "A new discovery." });
+    expect(await screen.findByText("발견")).toBeInTheDocument();
   });
 });
