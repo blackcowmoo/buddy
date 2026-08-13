@@ -53,4 +53,9 @@ describe("currentPage", () => {
   it("recognizes the article-quiz page under a ROOT_PATH prefix", () => {
     expect(currentPage("/pr/14/article")).toBe("article");
   });
+
+  it("recognizes the writing page at root and under a ROOT_PATH prefix", () => {
+    expect(currentPage("/writing")).toBe("writing");
+    expect(currentPage("/pr/14/writing")).toBe("writing");
+  });
 });

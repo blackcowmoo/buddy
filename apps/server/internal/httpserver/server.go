@@ -101,6 +101,8 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux.HandleFunc("DELETE /api/sessions/{id}", sessionDeleteHandler(ident, st, audio, recordings, pipe, profileRegenerateQueue))
 	mux.HandleFunc("GET /api/settings", settingsGetHandler(ident, st))
 	mux.HandleFunc("PUT /api/settings", settingsSaveHandler(ident, st))
+	mux.HandleFunc("POST /api/writing/prompt", writingPromptHandler(ident, st, pipe))
+	mux.HandleFunc("POST /api/writing/check", writingCheckHandler(ident, pipe))
 	mux.HandleFunc("POST /api/words/suggest", wordSuggestHandler(ident, pipe))
 	mux.HandleFunc("POST /api/words/define", wordDefineHandler(ident, pipe))
 	mux.HandleFunc("POST /api/words/save", wordSaveHandler(ident, words, pipe, wordVerifyQueue))
