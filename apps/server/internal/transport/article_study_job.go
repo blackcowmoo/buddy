@@ -222,16 +222,20 @@ func SweepStaleArticleStudies(ctx context.Context, queue *asyncjob.Queue, pipe *
 			continue
 		}
 		log.Printf("article study: sweep: resuming abandoned generation %s", a.ID)
-		asyncjob.EnqueueOrRunInline(queue, ctx,
-			"articles: sweep enqueue study "+a.ID,
-			func(ctx context.Context) error {
-				return EnqueueArticleStudyJob(ctx, queue, pipe, articles, audio, a.ID, a.Source, a.Title, a.Description)
-			},
-			"articles: sweep study "+a.ID,
-			func(ctx context.Context) error {
-				return RunArticleStudyInline(ctx, pipe, articles, audio, a.ID, a.Source, a.Title, a.Description)
-			},
-		)
+		// Do not put this back through EnqueueArticleStudyJob. A deployment can
+		// kill a worker after it has claimed the Redis job but before it has
+		// completed the DB update. The article row is then stale, while the
+		// Redis dedupe key still says the same job is in flight (until its much
+		// longer claim TTL expires), so enqueueing here would silently do
+		// nothing. The DB claim above is the recovery lock; run the work from
+		// the persisted article fields directly. If the old worker was merely
+		// slow, CompleteArticle's pending-only update makes the two attempts
+		// converge safely.
+		go func(article newsarticle.Article) {
+			if err := RunArticleStudyInline(context.Background(), pipe, articles, audio, article.ID, article.Source, article.Title, article.Description); err != nil {
+				log.Printf("articles: sweep study %s: %v", article.ID, err)
+			}
+		}(a)
 	}
 	return nil
 }
