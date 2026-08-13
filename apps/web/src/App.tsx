@@ -1246,6 +1246,7 @@ export function App() {
     onGoToWords: goTo("words"),
     onGoToMatch: goTo("match"),
     onGoToArticle: goTo("article"),
+    onGoToWriting: goTo("writing"),
     wordDueCount,
     styleInput,
     onStyleInputChange: handleStyleInputChange,

@@ -6,6 +6,7 @@ import { WordReview } from "./pages/WordReview";
 import { WordMatch } from "./pages/WordMatch";
 import { InstantSessions } from "./pages/InstantSessions";
 import { ArticleQuiz } from "./pages/ArticleQuiz";
+import { Writing } from "./pages/Writing";
 import { currentPage } from "./lib/route";
 import "./styles.css";
 
@@ -17,6 +18,7 @@ function renderPage() {
   if (page === "match") return <WordMatch />;
   if (page === "instant") return <InstantSessions />;
   if (page === "article") return <ArticleQuiz />;
+  if (page === "writing") return <Writing />;
   return <App />;
 }
 

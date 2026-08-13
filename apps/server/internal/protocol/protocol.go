@@ -87,6 +87,12 @@ type Correction struct {
 	Issues    []Issue `json:"issues"`
 }
 
+// WritingPrompt is a short Korean-to-English sentence exercise personalized
+// from the learner profile.
+type WritingPrompt struct {
+	Korean string `json:"korean"`
+}
+
 type Issue struct {
 	Type                   string `json:"type"`                   // "grammar" | "vocabulary" | "phrasing" | "context"
 	Span                   string `json:"span"`                   // the problematic text
