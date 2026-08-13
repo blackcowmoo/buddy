@@ -416,21 +416,6 @@ export function WordReview() {
             <p className="hint word-review-due-hint" role="status">
               {dueCount > 0 ? `복습할 단어 ${dueCount}개가 있어요.` : "지금 복습할 단어가 없어요."}
             </p>
-            {dueCount > 0 ? (
-              <button type="button" className="quiz-start-btn" onClick={startQuiz}>
-                복습 시작
-              </button>
-            ) : (
-              <button type="button" className="quiz-start-btn" onClick={() => void handleAutoAdd()} disabled={autoAdding}>
-                {autoAdding ? "새 단어 찾는 중…" : "새 단어 추가로 학습하기"}
-              </button>
-            )}
-            {autoAdding && (
-              <p className="hint">
-                <span className="spinning">⏳</span> 새 단어를 찾는 중이에요. 이 화면을 나갔다 와도 계속 진행돼요.
-              </p>
-            )}
-            {autoAddError && <p className="hint">{autoAddError}</p>}
             {words.length === 0 && (
               <p className="hint">
                 아직 학습 중인 단어가 없어요. 채팅에서 🔎로 단어를 찾아 "학습하기"를 눌러보세요.
@@ -455,6 +440,21 @@ export function WordReview() {
               onDelete={(id) => void handleDelete(id)}
               renderMeta={(w) => (w.verifyReason ? <span className="word-list-reject-reason">{w.verifyReason}</span> : null)}
             />
+            {dueCount > 0 ? (
+              <button type="button" className="quiz-start-btn" onClick={startQuiz}>
+                복습 시작
+              </button>
+            ) : (
+              <button type="button" className="quiz-start-btn" onClick={() => void handleAutoAdd()} disabled={autoAdding}>
+                {autoAdding ? "새 단어 찾는 중…" : "새 단어 추가로 학습하기"}
+              </button>
+            )}
+            {autoAdding && (
+              <p className="hint">
+                <span className="spinning">⏳</span> 새 단어를 찾는 중이에요. 이 화면을 나갔다 와도 계속 진행돼요.
+              </p>
+            )}
+            {autoAddError && <p className="hint">{autoAddError}</p>}
           </>
         )}
 

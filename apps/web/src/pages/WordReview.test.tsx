@@ -170,6 +170,15 @@ describe("WordReview page", () => {
     expect(screen.getByRole("button", { name: "복습 시작" })).toBeInTheDocument();
   });
 
+  it("renders the review action after the word list", async () => {
+    vi.mocked(fetchWords).mockResolvedValue({ words: [dueWord], dueCount: 1 });
+    render(<WordReview />);
+
+    const word = await screen.findByText(dueWord.word);
+    const startButton = screen.getByRole("button", { name: "복습 시작" });
+    expect(word.compareDocumentPosition(startButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("lists each tracked word with its meaning and next review time", async () => {
     vi.mocked(fetchWords).mockResolvedValue({ words: [futureWord], dueCount: 0 });
     render(<WordReview />);
