@@ -17,7 +17,7 @@ import { SubPageHeader } from "../components/SubPageHeader";
 import { usePollScaffold } from "../hooks/usePollScaffold";
 import { requestAmbientAudioSession } from "../lib/audioSession";
 import { loadPlaybackRate } from "../lib/ttsSettings";
-import { defineWord } from "../lib/wordSearch";
+import { checkDefinedWord, defineWord } from "../lib/wordSearch";
 import { saveWord } from "../lib/wordReview";
 import type { WordSuggestion } from "../lib/protocol";
 import { useDismiss } from "../hooks/useDismiss";
@@ -265,22 +265,33 @@ export function ArticleQuiz() {
   }, []);
 
   // Selects one word tapped inside the reading paragraph (see the word-token
-  // buttons in the reading view below). Looking up is deliberately a second
-  // action so an accidental tap while reading never starts a request.
+  // buttons in the reading view below). The server cache is checked first;
+  // only a cache miss leaves the learner a second action to start a lookup.
   const openWordLookup = useCallback(
     (key: number, word: string) => {
       if (!draw) return;
       setCenterWordLookup(false);
       const lookupKey = `${draw.id}:${key}`;
-      const cached = wordLookupCacheRef.current.get(lookupKey);
+      const localResult = wordLookupCacheRef.current.get(lookupKey);
+      const pending = pendingWordLookupsRef.current.has(lookupKey);
       setWordLookup({
         key,
         word,
-        loading: pendingWordLookupsRef.current.has(lookupKey),
-        failed: !pendingWordLookupsRef.current.has(lookupKey) && failedWordLookupsRef.current.has(lookupKey),
-        result: cached ?? null,
+        loading: pending || (!localResult && !failedWordLookupsRef.current.has(lookupKey)),
+        failed: !pending && !localResult && failedWordLookupsRef.current.has(lookupKey),
+        result: localResult ?? null,
         saving: false,
         saved: false,
+      });
+
+      if (localResult || pending || failedWordLookupsRef.current.has(lookupKey)) return;
+      void checkDefinedWord(draw.id, word, key).then((serverResult) => {
+        if (serverResult) wordLookupCacheRef.current.set(lookupKey, serverResult);
+        setWordLookup((prev) =>
+          prev && prev.key === key
+            ? { ...prev, loading: false, result: serverResult, failed: false }
+            : prev,
+        );
       });
     },
     [draw],

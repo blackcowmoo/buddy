@@ -19,11 +19,20 @@ export async function suggestWords(query: string): Promise<WordSuggestion[] | nu
 // how it's actually used there. Returns null on any failure, same reasoning
 // as suggestWords.
 type ArticleWordLookupResponse = {
-  status: "pending" | "done";
+  status: "pending" | "done" | "missing";
   result?: WordSuggestion;
 };
 
 const wordLookupPollIntervalMs = 1000;
+
+// Checks the server-side article lookup cache without starting a new model
+// job. This lets the reading UI distinguish an existing server result from a
+// word that still needs the learner to request a lookup.
+export async function checkDefinedWord(articleID: string, word: string, position: number): Promise<WordSuggestion | null> {
+  const path = `api/articles/${encodeURIComponent(articleID)}/words/define`;
+  const response = await postJSON<ArticleWordLookupResponse | null>(path, { word, position, checkOnly: true }, null);
+  return response?.status === "done" ? response.result ?? null : null;
+}
 
 // Starts a durable article lookup and waits for its Redis-backed result while
 // this page remains open. Leaving the page only stops the caller; the server's
