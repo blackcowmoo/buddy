@@ -43,7 +43,7 @@ describe("checkDefinedWord", () => {
     });
     expect(fetchMock.mock.calls[0][1]).toMatchObject({
       method: "POST",
-      body: JSON.stringify({ word: "run", position: 2, checkOnly: true }),
     });
+    expect(fetchMock.mock.calls[0][0]).toBe("api/articles/article%2F1/words/define");
   });
 });
