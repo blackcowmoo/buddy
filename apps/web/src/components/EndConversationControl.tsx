@@ -286,6 +286,14 @@ function QuizPanel({
 }) {
   const { index, answer, checked, checking, correct, correctCount } = progress;
   const question = questions[index];
+  const answerRef = useRef<HTMLInputElement>(null);
+
+  // The quiz is entered from a learner tap, so focusing on render lets mobile
+  // browsers open the keyboard immediately for the first blank and each next
+  // question.
+  useEffect(() => {
+    if (!checked && !checking) answerRef.current?.focus();
+  }, [index, checked, checking]);
 
   // finalize records one question's outcome once it's fully settled — either
   // immediately (an exact/listed-synonym match) or after checkQuizAnswer's
@@ -356,6 +364,8 @@ function QuizPanel({
               <>
                 <span>{before}</span>
                 <input
+                  autoFocus
+                  ref={answerRef}
                   type="text"
                   className={quizBlankInputClass(checked, correct)}
                   style={{ width: `${Math.min(16, Math.max(3, answer.length + 1))}ch` }}

@@ -318,6 +318,15 @@ export function WordReview() {
   const currentItem = quizQueue?.[index] ?? null;
   const current = currentItem?.word ?? null;
   const recallBlank = currentItem?.mode === "recall" ? computeBlank(currentItem.word.example, currentItem.word.word) : null;
+
+  // Put the learner straight into the first answer field whenever a recall
+  // question appears. This is especially important on mobile, where focusing
+  // the field is what brings up the keyboard without an extra tap.
+  useEffect(() => {
+    if (currentItem?.mode !== "recall" || checked || checkingSimilarity) return;
+    blankRefs.current[0]?.focus();
+  }, [currentItem, checked, checkingSimilarity]);
+
   const isCorrect =
     checked && currentItem
       ? currentItem.mode === "recall"
@@ -538,6 +547,7 @@ export function WordReview() {
                           {part}
                           {i < recallBlank!.answers.length && (
                             <input
+                              autoFocus={i === 0}
                               ref={(el) => {
                                 blankRefs.current[i] = el;
                               }}
