@@ -91,6 +91,11 @@ export function ArticleQuiz() {
   // Include the token position because the server resolves words in context,
   // and the same spelling can have different meanings in different places.
   const wordLookupCacheRef = useRef(new Map<string, WordSuggestion>());
+  // Keep lookup attempts alive while the learner moves between words. A
+  // pending lookup must still look like "찾는 중…" when its word is opened
+  // again, and a failed attempt must not regress to the initial "찾기" action.
+  const pendingWordLookupsRef = useRef(new Map<string, Promise<WordSuggestion | null>>());
+  const failedWordLookupsRef = useRef(new Set<string>());
   useDismiss(wordLookup !== null, wordLookupRef, () => setWordLookup(null));
 
   // Poll scaffolding for a draw still generating in the background (see
@@ -237,12 +242,13 @@ export function ArticleQuiz() {
   const openWordLookup = useCallback(
     (key: number, word: string) => {
       if (!draw) return;
-      const cached = wordLookupCacheRef.current.get(`${draw.id}:${key}`);
+      const lookupKey = `${draw.id}:${key}`;
+      const cached = wordLookupCacheRef.current.get(lookupKey);
       setWordLookup({
         key,
         word,
-        loading: false,
-        failed: false,
+        loading: pendingWordLookupsRef.current.has(lookupKey),
+        failed: !pendingWordLookupsRef.current.has(lookupKey) && failedWordLookupsRef.current.has(lookupKey),
         result: cached ?? null,
         saving: false,
         saved: false,
@@ -257,9 +263,23 @@ export function ArticleQuiz() {
   const requestWordLookup = useCallback(() => {
     if (!draw || !wordLookup || wordLookup.loading) return;
     const { key, word } = wordLookup;
+    const lookupKey = `${draw.id}:${key}`;
+    const pending = pendingWordLookupsRef.current.get(lookupKey);
+    if (pending) {
+      setWordLookup((prev) => (prev && prev.key === key ? { ...prev, loading: true, failed: false } : prev));
+      return;
+    }
     setWordLookup((prev) => (prev && prev.key === key ? { ...prev, loading: true } : prev));
-    void defineWord(draw.id, word, key).then((result) => {
-      if (result) wordLookupCacheRef.current.set(`${draw.id}:${key}`, result);
+    const lookup = defineWord(draw.id, word, key);
+    pendingWordLookupsRef.current.set(lookupKey, lookup);
+    void lookup.then((result) => {
+      pendingWordLookupsRef.current.delete(lookupKey);
+      if (result) {
+        wordLookupCacheRef.current.set(lookupKey, result);
+        failedWordLookupsRef.current.delete(lookupKey);
+      } else {
+        failedWordLookupsRef.current.add(lookupKey);
+      }
       setWordLookup((prev) =>
         prev && prev.key === key ? { ...prev, loading: false, failed: result === null, result } : prev,
       );
