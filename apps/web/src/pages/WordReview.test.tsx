@@ -397,6 +397,13 @@ describe("WordReview page", () => {
     expect(await screen.findByText("1개 중 1개 맞혔어요!")).toBeInTheDocument();
   });
 
+  it("focuses the first blank as soon as a recall question appears", async () => {
+    await startQuiz();
+
+    const input = await screen.findByRole("textbox", { name: "정답 입력" });
+    expect(input).toHaveFocus();
+  });
+
   // The "억지로 맞췄어요" (forced-guess) button: even after answering
   // correctly, the learner can flag it as a lucky/forced guess so the word
   // comes back at the same interval instead of the wider one a confident
