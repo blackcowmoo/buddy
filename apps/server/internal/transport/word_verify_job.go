@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"buddy/server/internal/asyncjob"
@@ -104,9 +105,18 @@ func EnqueueWordVerifyJob(ctx context.Context, queue *asyncjob.Queue, pipe *pipe
 // wordSaveHandler) or a batch of system-suggested ones (runWordAutoAdd in
 // word_auto_add_job.go), so a system-suggested word is fact-checked exactly
 // the same way a manually picked one is, no shortcut.
-func SaveWordAndVerify(ctx context.Context, words wordreview.Store, pipe *pipeline.Pipeline, wordVerifyQueue *asyncjob.Queue, userID, word, meaning, example string) (wordreview.Word, error) {
+func SaveWordAndVerify(ctx context.Context, words wordreview.Store, pipe *pipeline.Pipeline, wordVerifyQueue *asyncjob.Queue, userID, word, meaning, example, originalWord string) (wordreview.Word, error) {
 	word = wordreview.NormalizeWord(word)
-	saved, err := words.Save(ctx, userID, word, meaning, example)
+	if strings.TrimSpace(originalWord) == "" {
+		originalWord = word
+	}
+	var saved wordreview.Word
+	var err error
+	if originalSaver, ok := words.(wordreview.OriginalSaver); ok {
+		saved, err = originalSaver.SaveOriginal(ctx, userID, word, meaning, example, originalWord)
+	} else {
+		saved, err = words.Save(ctx, userID, word, meaning, example)
+	}
 	if err != nil {
 		return wordreview.Word{}, err
 	}

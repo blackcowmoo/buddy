@@ -7,7 +7,10 @@ import {
   reviewWord,
   startAutoAddWords,
   type WordReviewItem,
+  researchWord,
+  saveWord,
 } from "../lib/wordReview";
+import type { WordSuggestion } from "../lib/protocol";
 import { formatAbsoluteDateTime } from "../lib/time";
 import { shuffled } from "../lib/shuffle";
 import { checkQuizAnswer, normalizeQuizAnswer as normalizeAnswer, quizBlankInputClass, quizChoiceClass } from "../lib/quizCheck";
@@ -155,6 +158,8 @@ export function WordReview() {
   const blankRefs = useRef<(HTMLInputElement | null)[]>([]);
   const [autoAdding, setAutoAdding] = useState(false);
   const [autoAddError, setAutoAddError] = useState<string | null>(null);
+  const [researching, setResearching] = useState<string | null>(null);
+  const [researchResults, setResearchResults] = useState<Record<string, WordSuggestion[]>>({});
 
   // Poll scaffolding for an auto-add job still generating in the background
   // (see usePollScaffold's doc comment). Losing this component (navigating
@@ -223,6 +228,41 @@ export function WordReview() {
   }, [pollAutoAdd]);
 
   const handleDelete = (id: string) => confirmThenDelete("이 단어를 삭제할까요?", deleteWord, id, setWords);
+
+  const handleResearch = useCallback(async (word: WordReviewItem) => {
+    setResearching(word.id);
+    const results = await researchWord(word.id);
+    setResearching(null);
+    if (results) setResearchResults((prev) => ({ ...prev, [word.id]: results }));
+  }, []);
+
+  const handleChooseMeaning = useCallback(async (oldWord: WordReviewItem, suggestion: WordSuggestion) => {
+    const saved = await saveWord(suggestion, oldWord.originalWord ?? oldWord.word);
+    if (!saved) return;
+    await deleteWord(oldWord.id);
+    setWords((prev) => [...prev.filter((w) => w.id !== oldWord.id), saved]);
+    setResearchResults((prev) => {
+      const next = { ...prev };
+      delete next[oldWord.id];
+      return next;
+    });
+  }, []);
+
+  const researchControls = (word: WordReviewItem) => {
+    if (word.status !== "rejected" && word.originalWord) return null;
+    return (
+      <>
+        <button type="button" className="ghost word-research-btn" onClick={() => void handleResearch(word)} disabled={researching === word.id}>
+          {researching === word.id ? "다시 찾는 중…" : "다시 검색"}
+        </button>
+        {(researchResults[word.id] ?? []).map((s, i) => (
+          <button key={i} type="button" className="ghost word-research-choice" onClick={() => void handleChooseMeaning(word, s)}>
+            {s.meaning} · {s.example}
+          </button>
+        ))}
+      </>
+    );
+  };
 
   const answersForItem = (item: QuizItem | undefined): string[] =>
     item && item.mode === "recall" ? new Array(computeBlank(item.word.example, item.word.word).answers.length).fill("") : [];
@@ -425,20 +465,25 @@ export function WordReview() {
             <WordListSection
               words={verifiedWords}
               onDelete={(id) => void handleDelete(id)}
-              renderMeta={(w) => <span className="word-list-next">다음 복습: {formatAbsoluteDateTime(w.nextReviewAt)}</span>}
+              renderMeta={(w) => <><span className="word-list-next">다음 복습: {formatAbsoluteDateTime(w.nextReviewAt)}</span>{researchControls(w)}</>}
             />
             <WordListSection
               title="확인 중"
               words={pendingWords}
               onDelete={(id) => void handleDelete(id)}
-              renderMeta={() => <span className="word-list-next">확인 중…</span>}
+              renderMeta={(w) => <><span className="word-list-next">확인 중…</span>{researchControls(w)}</>}
             />
             <WordListSection
               title="제외된 단어"
               words={rejectedWords}
               rowClassName="word-list-row-rejected"
               onDelete={(id) => void handleDelete(id)}
-              renderMeta={(w) => (w.verifyReason ? <span className="word-list-reject-reason">{w.verifyReason}</span> : null)}
+              renderMeta={(w) => (
+                <>
+                  {w.verifyReason && <span className="word-list-reject-reason">{w.verifyReason}</span>}
+                  {researchControls(w)}
+                </>
+              )}
             />
             {dueCount > 0 ? (
               <button type="button" className="quiz-start-btn" onClick={startQuiz}>

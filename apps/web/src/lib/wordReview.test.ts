@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { deleteWord, fetchAutoAddStatus, fetchWords, reviewWord, saveWord, startAutoAddWords } from "./wordReview";
+import { deleteWord, fetchAutoAddStatus, fetchWords, researchWord, reviewWord, saveWord, startAutoAddWords } from "./wordReview";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -47,6 +47,16 @@ describe("fetchWords", () => {
   it("returns null when fetch rejects", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
     await expect(fetchWords()).resolves.toBeNull();
+  });
+});
+
+describe("researchWord", () => {
+  it("returns all meanings from the excluded-word search", async () => {
+    const body = { suggestions: [{ word: "bank", meaning: "강둑", example: "They sat by the bank." }] };
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(body) });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(researchWord("rejected-1")).resolves.toEqual(body.suggestions);
+    expect(fetchMock).toHaveBeenCalledWith("api/words/rejected-1/research", expect.objectContaining({ method: "POST" }));
   });
 });
 

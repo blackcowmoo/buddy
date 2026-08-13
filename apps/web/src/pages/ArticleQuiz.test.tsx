@@ -566,7 +566,7 @@ describe("ArticleQuiz page — word lookup while reading", () => {
       word: "discovery",
       meaning: "발견",
       example: "Scientists announced a new discovery today.",
-    });
+    }, "discovery");
     expect(await screen.findByRole("button", { name: "✓ 확인 중" })).toBeInTheDocument();
 
     // Reopening the same token uses the successful result immediately, so

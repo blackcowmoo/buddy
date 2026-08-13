@@ -12,6 +12,7 @@ export interface WordReviewItem {
   word: string;
   meaning: string;
   example: string;
+  originalWord?: string;
   stage: number;
   reviewCount: number;
   nextReviewAt: number; // unix seconds
@@ -34,8 +35,13 @@ export interface WordReviewItem {
 // separate, independently tracked item). Returns null on any failure
 // (network error, non-200, bad JSON) so the caller can leave the button in
 // its un-saved state instead of assuming success.
-export async function saveWord(s: WordSuggestion): Promise<WordReviewItem | null> {
-  return postJSON<WordReviewItem | null>("api/words/save", { word: s.word, meaning: s.meaning, example: s.example }, null);
+export async function saveWord(s: WordSuggestion, originalWord?: string): Promise<WordReviewItem | null> {
+  return postJSON<WordReviewItem | null>("api/words/save", { word: s.word, meaning: s.meaning, example: s.example, originalWord }, null);
+}
+
+export async function researchWord(id: string): Promise<WordSuggestion[] | null> {
+  const body = await postJSON<{ suggestions: WordSuggestion[] } | null>(`api/words/${encodeURIComponent(id)}/research`, {}, null);
+  return body?.suggestions ?? null;
 }
 
 // Mirrors httpserver's wordAutoAddStatus shape. status is "" (no run has
