@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -15,8 +16,8 @@ func TestNewKokoroNormalizesBaseURLAndDefaultsVoiceAndVolume(t *testing.T) {
 	if k.BaseURL != "http://kokoro:8880/v1" {
 		t.Errorf("BaseURL = %q, want http://kokoro:8880/v1", k.BaseURL)
 	}
-	if k.Voice != "af_heart" {
-		t.Errorf("Voice = %q, want af_heart default", k.Voice)
+	if k.Voice != "" {
+		t.Errorf("Voice = %q, want empty random-voice policy", k.Voice)
 	}
 	if k.VolumeMultiplier != 1.0 {
 		t.Errorf("VolumeMultiplier = %v, want 1.0 default for a zero/unset value", k.VolumeMultiplier)
@@ -49,6 +50,21 @@ func TestVersionChangesWithVoiceOrVolume(t *testing.T) {
 	differentVoice := NewKokoro("http://kokoro:8880", "af_bella", 1.5, "")
 	if base.Version() == differentVoice.Version() {
 		t.Errorf("Version() unchanged (%q) after a voice change", base.Version())
+	}
+}
+
+func TestGenerationVoiceRandomizesWhenVoiceIsUnset(t *testing.T) {
+	k := NewKokoro("http://kokoro:8880", "", 1, "")
+	seen := map[string]bool{}
+	for i := 0; i < 100; i++ {
+		voice := k.generationVoice()
+		if !slices.Contains(randomVoices, voice) {
+			t.Fatalf("generationVoice() = %q, want one of %v", voice, randomVoices)
+		}
+		seen[voice] = true
+	}
+	if len(seen) < 2 {
+		t.Fatalf("generationVoice() returned only %v across 100 generations; want random variety", seen)
 	}
 }
 

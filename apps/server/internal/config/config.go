@@ -71,7 +71,8 @@ type Config struct {
 	// (internal/transport's article study job) and, on demand, per chat
 	// message — both cached in S3 (see S3* below) so the same text is never
 	// resynthesized twice. Same "model@url" format as the LLM *_URL vars
-	// (TTSVoice here names the voice, e.g. "af_heart"); empty URL (the
+	// (TTSVoice here names the voice, e.g. "af_heart"; leave the model part
+	// empty to choose a voice randomly for each generated clip); empty URL (the
 	// zero-setup default) disables server-side TTS entirely, same
 	// "empty = feature off" convention as S3Bucket.
 	TTSVoice string
@@ -282,7 +283,7 @@ func Load() Config {
 
 		TTSVoice:            ttsVoice,
 		TTSURL:              ttsURL,
-		TTSVolumeMultiplier: envFloat("BUDDY_TTS_VOLUME_MULTIPLIER", 1.75),
+		TTSVolumeMultiplier: envFloat("BUDDY_TTS_VOLUME_MULTIPLIER", 2.25),
 
 		FeedbackLang: env("BUDDY_FEEDBACK_LANG", "ko"),
 

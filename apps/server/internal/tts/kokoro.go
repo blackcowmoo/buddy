@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"strings"
 	"time"
@@ -38,7 +39,11 @@ type Speaker interface {
 // Kokoro is an HTTP client for one /v1/audio/speech endpoint.
 type Kokoro struct {
 	BaseURL string // the /v1 root, e.g. http://kokoro:8880/v1
-	Voice   string // e.g. "af_heart" — see kokoro.ts's KokoroVoice for why this app only ever uses one
+	// Voice is a specific Kokoro voice (for example "af_heart"). When empty,
+	// one of the voices in randomVoices is selected for each new generation.
+	// The generated result is still cached by the caller, so this does not
+	// create multiple stored copies of one message.
+	Voice string
 	// VolumeMultiplier scales the generated audio's output level — Kokoro-
 	// FastAPI applies it server-side (see speechReq), not a client-side
 	// <audio>.volume tweak, which is capped at 1.0 and can't make audio any
@@ -63,17 +68,14 @@ const requestTimeout = 2 * time.Minute
 
 // NewKokoro normalizes baseURL to end in exactly one "/v1", so a config
 // value with or without the suffix both reach POST {baseURL}/audio/speech.
-// An empty voice defaults to "af_heart", the one voice this app's UI has
-// ever exposed (see kokoro.ts); a zero/negative volumeMultiplier defaults to
+// An empty voice enables generation-time random voice selection; a
+// zero/negative volumeMultiplier defaults to
 // 1.0 (Kokoro-FastAPI's own unboosted default) rather than silencing output
 // or erroring.
 func NewKokoro(baseURL, voice string, volumeMultiplier float64, apiKey string) *Kokoro {
 	baseURL = strings.TrimRight(baseURL, "/")
 	if !strings.HasSuffix(baseURL, "/v1") {
 		baseURL += "/v1"
-	}
-	if voice == "" {
-		voice = "af_heart"
 	}
 	if volumeMultiplier <= 0 {
 		volumeMultiplier = 1.0
@@ -88,13 +90,32 @@ func NewKokoro(baseURL, voice string, volumeMultiplier float64, apiKey string) *
 }
 
 // Version fingerprints the generation settings that affect the audio
-// itself (voice, volume) — internal/ttsstore compares this against what a
+// itself (voice policy, volume) — internal/ttsstore compares this against what a
 // cached entry was generated with, so changing either here (e.g. boosting
 // VolumeMultiplier) invalidates every existing cached clip instead of
 // leaving old, quieter versions being served indefinitely until their TTL
 // happens to expire.
 func (k *Kokoro) Version() string {
-	return fmt.Sprintf("%s:vol%.2f", k.Voice, k.VolumeMultiplier)
+	voice := k.Voice
+	if voice == "" {
+		voice = "random"
+	}
+	return fmt.Sprintf("%s:vol%.2f", voice, k.VolumeMultiplier)
+}
+
+// These are the English voices shipped by Kokoro commonly used for
+// conversational read-aloud. Keep the list here rather than storing voice
+// variants: a voice is chosen only when a clip is synthesized.
+var randomVoices = []string{
+	"af_heart", "af_bella", "af_nicole", "af_sarah", "af_sky",
+	"am_adam", "am_michael", "bf_emma", "bf_isabella", "bm_george", "bm_lewis",
+}
+
+func (k *Kokoro) generationVoice() string {
+	if k.Voice != "" {
+		return k.Voice
+	}
+	return randomVoices[rand.Intn(len(randomVoices))]
 }
 
 type speechReq struct {
@@ -142,7 +163,7 @@ func (k *Kokoro) do(ctx context.Context, text string, stream bool) (*http.Respon
 	body, err := json.Marshal(speechReq{
 		Model:            "kokoro",
 		Input:            text,
-		Voice:            k.Voice,
+		Voice:            k.generationVoice(),
 		ResponseFormat:   responseFormat,
 		Stream:           stream,
 		VolumeMultiplier: k.VolumeMultiplier,
