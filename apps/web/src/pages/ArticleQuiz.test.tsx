@@ -28,7 +28,7 @@ vi.mock("../lib/wordReview", async () => {
   return { ...actual, saveWord: vi.fn() };
 });
 
-import { ArticleQuiz } from "./ArticleQuiz";
+import { ArticleQuiz, shouldCenterWordLookup } from "./ArticleQuiz";
 import {
   answerArticle,
   articleAudioURL,
@@ -501,7 +501,13 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
 });
 
 describe("ArticleQuiz page — word lookup while reading", () => {
-  it("uses the same anchored panel for responsive placement in portrait and landscape", async () => {
+  it("centers the panel only when the tapped word is too close to a viewport edge", () => {
+    expect(shouldCenterWordLookup(100, 320, 390)).toBe(true);
+    expect(shouldCenterWordLookup(40, 320, 390)).toBe(false);
+    expect(shouldCenterWordLookup(0, 320, 390)).toBe(true);
+  });
+
+  it("uses the same anchored panel for responsive placement", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
     const user = userEvent.setup();

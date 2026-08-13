@@ -30,6 +30,13 @@ import type { LoadState } from "../lib/loadState";
 // App.tsx's pollStudySummary).
 const articleStudyPollIntervalMs = 3000;
 
+// Keep the lookup directly below the tapped word while it fits. If the
+// anchor is too close to either viewport edge, the panel must leave the
+// paragraph's positioning context and use the whole window instead.
+export function shouldCenterWordLookup(anchorLeft: number, panelWidth: number, viewportWidth: number, margin = 12) {
+  return anchorLeft < margin || anchorLeft + panelWidth > viewportWidth - margin;
+}
+
 
 // A single draw walks through these in order: "reading" (English summary,
 // TTS read-aloud) -> "quiz" (a series of independent native-language
@@ -86,12 +93,33 @@ export function ArticleQuiz() {
     saved: boolean;
   } | null>(null);
   const wordLookupRef = useRef<HTMLDivElement>(null);
+  const wordLookupAnchorRef = useRef<HTMLSpanElement>(null);
+  const [centerWordLookup, setCenterWordLookup] = useState(false);
   // Successful lookups are kept for this page session so reopening a word
   // doesn't make the learner confirm (or request) the same lookup again.
   // Include the token position because the server resolves words in context,
   // and the same spelling can have different meanings in different places.
   const wordLookupCacheRef = useRef(new Map<string, WordSuggestion>());
   useDismiss(wordLookup !== null, wordLookupRef, () => setWordLookup(null));
+
+  // Measure after the panel has been laid out. This keeps the usual
+  // word-adjacent placement, but switches to a viewport-centered panel when
+  // an edge word would push it outside the screen.
+  useLayoutEffect(() => {
+    if (!wordLookup) return;
+    const updatePlacement = () => {
+      const panel = wordLookupRef.current;
+      const anchor = wordLookupAnchorRef.current;
+      if (!panel || !anchor) return;
+      const panelRect = panel.getBoundingClientRect();
+      const anchorRect = anchor.getBoundingClientRect();
+      const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+      setCenterWordLookup(shouldCenterWordLookup(anchorRect.left, panelRect.width, viewportWidth));
+    };
+    updatePlacement();
+    window.addEventListener("resize", updatePlacement);
+    return () => window.removeEventListener("resize", updatePlacement);
+  }, [wordLookup]);
 
   // Poll scaffolding for a draw still generating in the background (see
   // usePollScaffold's doc comment). Losing this component (navigating away,
@@ -237,6 +265,7 @@ export function ArticleQuiz() {
   const openWordLookup = useCallback(
     (key: number, word: string) => {
       if (!draw) return;
+      setCenterWordLookup(false);
       const cached = wordLookupCacheRef.current.get(`${draw.id}:${key}`);
       setWordLookup({
         key,
@@ -414,7 +443,7 @@ export function ArticleQuiz() {
                 <p className="article-summary">
                   {draw.summary.split(/([A-Za-z']+)/g).map((part, i) =>
                     /^[A-Za-z']+$/.test(part) ? (
-                      <span className="article-word-anchor" key={i}>
+                      <span className="article-word-anchor" key={i} ref={wordLookup?.key === i ? wordLookupAnchorRef : undefined}>
                         <button
                           type="button"
                           className="article-word"
@@ -423,7 +452,11 @@ export function ArticleQuiz() {
                           {part}
                         </button>
                         {wordLookup?.key === i && (
-                          <div className="word-lookup-panel" role="menu" ref={wordLookupRef}>
+                          <div
+                            className={`word-lookup-panel${centerWordLookup ? " word-lookup-panel-centered" : ""}`}
+                            role="menu"
+                            ref={wordLookupRef}
+                          >
                             <div className="word-lookup-header">
                               <span className="word-search-word">{wordLookup.word}</span>
                               <button

@@ -382,21 +382,18 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
   padding: 10px 12px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
 }
-/* In landscape, the reading line is often wide enough that a popup anchored
-   to a word near either edge would be clipped by the viewport. Keep the
-   portrait behavior (directly below the selected word), but center the panel
-   in the viewport when there is less vertical room and more horizontal room. */
-@media (orientation: landscape) {
-  .word-lookup-panel {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    right: auto;
-    bottom: auto;
-    transform: translate(-50%, -50%);
-    width: min(320px, calc(100vw - 24px));
-    max-height: min(70vh, 320px);
-  }
+/* Edge words cannot keep the panel below themselves without clipping it.
+   ArticleQuiz adds this class after measuring the rendered panel, so normal
+   words retain the useful anchored placement in every orientation. */
+.word-lookup-panel-centered {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  right: auto;
+  bottom: auto;
+  transform: translate(-50%, -50%);
+  width: min(320px, calc(100vw - 24px));
+  max-height: min(70vh, 320px);
 }
 .word-lookup-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .quiz-back-btn { align-self: flex-start; padding: 2px 4px; font-size: 12px; }
