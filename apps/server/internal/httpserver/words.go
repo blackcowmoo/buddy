@@ -51,8 +51,9 @@ func articleWordDefineHandler(ident identity.Identifier, articles newsarticle.St
 			return
 		}
 		var body struct {
-			Word     string `json:"word"`
-			Position int    `json:"position"`
+			Word      string `json:"word"`
+			Position  int    `json:"position"`
+			CheckOnly bool   `json:"checkOnly"`
 		}
 		if !decodeJSON(w, r, &body) {
 			return
@@ -96,6 +97,10 @@ func articleWordDefineHandler(ident identity.Identifier, articles newsarticle.St
 			return
 		} else if found {
 			writeJSON(w, articleWordLookupResponse{Status: "done", Result: &result})
+			return
+		}
+		if body.CheckOnly {
+			writeJSON(w, articleWordLookupResponse{Status: "missing"})
 			return
 		}
 		transport.StartWordDefine(queue, pipe, rdb, lookup)
