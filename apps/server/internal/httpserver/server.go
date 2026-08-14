@@ -20,6 +20,7 @@ import (
 	"buddy/server/internal/store"
 	"buddy/server/internal/transport"
 	"buddy/server/internal/wordreview"
+	"buddy/server/internal/writing"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -65,7 +66,7 @@ import (
 // config.Config's TTSURL doc comment) — articleDrawHandler simply skips
 // read-aloud pre-generation and articleAudioHandler answers 503, instead of
 // each needing its own separate on/off signal.
-func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, words wordreview.Store, articles newsarticle.Store, wordVerifyQueue *asyncjob.Queue, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue, studySummaryQueue *asyncjob.Queue, studyQuizQueue *asyncjob.Queue, profileRegenerateQueue *asyncjob.Queue, articleStudyQueue *asyncjob.Queue, wordAutoAddQueue *asyncjob.Queue, articleAudio *transport.ArticleAudio, rdb redis.UniversalClient, wordDefineQueue *asyncjob.Queue, wordResearchQueue *asyncjob.Queue) *http.Server {
+func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, words wordreview.Store, articles newsarticle.Store, writingStore writing.Store, wordVerifyQueue *asyncjob.Queue, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue, studySummaryQueue *asyncjob.Queue, studyQuizQueue *asyncjob.Queue, profileRegenerateQueue *asyncjob.Queue, articleStudyQueue *asyncjob.Queue, writingQueue *asyncjob.Queue, wordAutoAddQueue *asyncjob.Queue, articleAudio *transport.ArticleAudio, rdb redis.UniversalClient, wordDefineQueue *asyncjob.Queue, wordResearchQueue *asyncjob.Queue) *http.Server {
 	mux := http.NewServeMux()
 
 	// Realtime + API first (exact patterns win over the "/" catch-all).
@@ -101,7 +102,9 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux.HandleFunc("DELETE /api/sessions/{id}", sessionDeleteHandler(ident, st, audio, recordings, pipe, profileRegenerateQueue))
 	mux.HandleFunc("GET /api/settings", settingsGetHandler(ident, st))
 	mux.HandleFunc("PUT /api/settings", settingsSaveHandler(ident, st))
-	mux.HandleFunc("POST /api/writing/prompt", writingPromptHandler(ident, st, pipe))
+	mux.HandleFunc("GET /api/writing", writingListHandler(ident, writingStore))
+	mux.HandleFunc("POST /api/writing/draw", writingDrawHandler(ident, writingStore, st.GetLearnerProfile, pipe, writingQueue))
+	mux.HandleFunc("GET /api/writing/{id}", writingInstanceHandler(ident, writingStore))
 	mux.HandleFunc("POST /api/writing/check", writingCheckHandler(ident, pipe))
 	mux.HandleFunc("POST /api/words/suggest", wordSuggestHandler(ident, pipe))
 	mux.HandleFunc("POST /api/words/define", wordDefineHandler(ident, pipe))
