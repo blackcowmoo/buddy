@@ -318,7 +318,7 @@ func TestHandlerErrorShortensClaimToBackoffNotClaimTTL(t *testing.T) {
 	if err != nil || !claimed {
 		t.Fatalf("claim: claimed=%v err=%v", claimed, err)
 	}
-	if err := q.Execute(ctx, job, func(context.Context, Job) error { return errFake }); err == nil {
+	if err := q.Execute(ctx, job, 25*time.Hour, func(context.Context, Job) error { return errFake }); err == nil {
 		t.Fatalf("Execute should surface the handler error")
 	}
 
@@ -334,6 +334,31 @@ func TestHandlerErrorShortensClaimToBackoffNotClaimTTL(t *testing.T) {
 	w.reapOnce(ctx)
 	if n, _ := rdb.LLen(ctx, queueKey(kind)).Result(); n != 1 {
 		t.Fatalf("queue length = %d, want 1 (job should be requeued once FailureRetryBackoff elapses)", n)
+	}
+}
+
+func TestExecuteRenewsLeaseWhileHandlerRuns(t *testing.T) {
+	rdb := requireRedis(t)
+	kind := testKind(t)
+	q := NewQueue(rdb)
+	ctx := context.Background()
+	job, ok, err := q.Enqueue(ctx, kind, "renew", 1)
+	if err != nil || !ok {
+		t.Fatalf("enqueue: ok=%v err=%v", ok, err)
+	}
+	claimed, err := q.TryClaimByID(ctx, job, time.Second)
+	if err != nil || !claimed {
+		t.Fatalf("claim: claimed=%v err=%v", claimed, err)
+	}
+
+	if err := q.Execute(ctx, job, time.Second, func(context.Context, Job) error {
+		time.Sleep(2200 * time.Millisecond)
+		if exists, _ := rdb.Exists(ctx, claimKey(kind, job.ID)).Result(); exists != 1 {
+			t.Fatal("claim expired while the handler was still running")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("execute: %v", err)
 	}
 }
 
@@ -374,6 +399,31 @@ func TestReapRequeuesAbandonedClaim(t *testing.T) {
 	}
 	if got.Attempts != 1 {
 		t.Fatalf("requeued job Attempts = %d, want 1", got.Attempts)
+	}
+}
+
+func TestRequeueExpiredFindsDedupedAbandonedJobImmediately(t *testing.T) {
+	rdb := requireRedis(t)
+	kind := testKind(t)
+	q := NewQueue(rdb)
+	ctx := context.Background()
+	job, ok, err := q.Enqueue(ctx, kind, "expired", 1)
+	if err != nil || !ok {
+		t.Fatalf("enqueue: ok=%v err=%v", ok, err)
+	}
+	raw, _ := json.Marshal(job)
+	if err := rdb.LRem(ctx, queueKey(kind), 1, raw).Err(); err != nil {
+		t.Fatalf("remove queued copy: %v", err)
+	}
+	if err := rdb.RPush(ctx, processingKey(kind), raw).Err(); err != nil {
+		t.Fatalf("seed processing: %v", err)
+	}
+	moved, err := q.RequeueExpired(ctx, kind, "expired")
+	if err != nil || !moved {
+		t.Fatalf("RequeueExpired: moved=%v err=%v", moved, err)
+	}
+	if n, _ := rdb.LLen(ctx, queueKey(kind)).Result(); n != 1 {
+		t.Fatalf("queue length = %d, want 1", n)
 	}
 }
 

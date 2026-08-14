@@ -142,6 +142,28 @@ func TestDefineWordNormalizesInflectedWordBeforeLookup(t *testing.T) {
 	}
 }
 
+func TestDefineWordMeaningsNormalizesInflectedWordBeforeResearch(t *testing.T) {
+	var inputs []string
+	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		inputs = append(inputs, msgs[len(msgs)-1].Content)
+		if len(inputs) == 1 {
+			return `{"word":"frill"}`, nil
+		}
+		return `{"suggestions":[{"word":"frill","meaning":"장식","example":"The dress has a frill."}]}`, nil
+	}}, ChatModel: "m", FeedbackLang: "ko"}
+
+	got, err := p.DefineWordMeanings(context.Background(), "frills", "The dress has frills.")
+	if err != nil {
+		t.Fatalf("DefineWordMeanings() error = %v", err)
+	}
+	if len(inputs) != 2 || !strings.Contains(inputs[1], "word: frill") || strings.Contains(inputs[1], "word: frills") {
+		t.Fatalf("lookup inputs = %v, want form resolution followed by base-form lookup", inputs)
+	}
+	if got[0].Word != "frill" {
+		t.Fatalf("result word = %q, want frill", got[0].Word)
+	}
+}
+
 func TestDefineWordFallsBackToOriginalWhenResolutionFails(t *testing.T) {
 	var inputs []string
 	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {

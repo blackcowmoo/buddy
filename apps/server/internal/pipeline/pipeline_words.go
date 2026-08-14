@@ -87,9 +87,24 @@ func (p *Pipeline) DefineWord(ctx context.Context, word, passage string) (protoc
 }
 
 func (p *Pipeline) DefineWordMeanings(ctx context.Context, word, passage string) ([]protocol.WordSuggestion, error) {
+	word = strings.TrimSpace(word)
+	lookupWord := word
+	if resolved, err := p.resolveWordForm(ctx, word, passage); err == nil && resolved != "" {
+		lookupWord = resolved
+	}
+	results, err := p.defineWordMeanings(ctx, lookupWord, passage)
+	if err == nil || lookupWord == word {
+		return results, err
+	}
+	// Keep the research feature useful if the form resolver produced a form
+	// the dictionary model cannot handle: retry with the exact spelling.
+	return p.defineWordMeanings(ctx, word, passage)
+}
+
+func (p *Pipeline) defineWordMeanings(ctx context.Context, word, passage string) ([]protocol.WordSuggestion, error) {
 	native := languageName(p.FeedbackLang)
 	msgs := []llm.Message{
-		{Role: llm.RoleSystem, Content: fmt.Sprintf(`You are a dictionary assistant for a %s-speaking English learner. List 3-6 common meanings of the given English word or phrase. Return STRICT JSON only: {"suggestions":[{"word":"...","meaning":"...","example":"..."}]}. Keep word in English, meaning in %s, and give one natural English example for every meaning.`, native, native)},
+		{Role: llm.RoleSystem, Content: fmt.Sprintf(`You are a dictionary assistant for a %s-speaking English learner. List 3-6 common meanings of the given English word or phrase in its base dictionary form. Return STRICT JSON only: {"suggestions":[{"word":"...","meaning":"...","example":"..."}]}. Keep word in English, meaning in %s, and give one natural English example for every meaning.`, native, native)},
 		{Role: llm.RoleUser, Content: fmt.Sprintf("word: %s\ncontext: %s", word, passage)},
 	}
 	raw, err := p.LLM.Complete(ctx, p.ChatModel, msgs, true)
