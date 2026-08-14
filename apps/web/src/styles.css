@@ -717,7 +717,7 @@ a.icon-btn.ghost {
 .word-list-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .word-list-next { font-size: 12px; color: var(--muted); }
 .word-list-delete { width: 32px; height: 32px; min-height: 32px; font-size: 14px; flex-shrink: 0; }
-/* Section headers splitting the word list into 복습 목록/확인 중/제외된 단어
+/* Section headers splitting the word list into 복습중인 단어/확정 전 단어/제외된 단어
    (see WordReview.tsx) — small and muted like other section-y labels
    (.tts-settings-label), not competing with the page's own <h1>. */
 .word-section-title { font-size: 13px; font-weight: 600; color: var(--muted); margin: 4px 0 0; }

@@ -471,8 +471,13 @@ export function WordReview() {
     [checked, answers.length, next, checkRecall],
   );
 
-  const verifiedWords = words.filter((w) => w.status === "verified");
-  const pendingWords = words.filter((w) => w.status === "pending");
+  const verifiedWords = words.filter((w) => w.status === "verified" && w.researchStatus === "confirmed");
+  // Keep every word that still needs learner confirmation together, including
+  // verified rows created from a direct/article definition but not yet
+  // confirmed. Rejected rows remain in their own exclusion section below.
+  const unconfirmedWords = words.filter((w) =>
+    w.status !== "rejected" && (w.status === "pending" || w.researchStatus !== "confirmed"),
+  );
   const rejectedWords = words.filter((w) => w.status === "rejected");
 
   return (
@@ -495,15 +500,16 @@ export function WordReview() {
             )}
 
             <WordListSection
+              title="복습중인 단어"
               words={verifiedWords}
               onDelete={(id) => void handleDelete(id)}
               renderMeta={(w) => <><span className="word-list-next">다음 복습: {formatAbsoluteDateTime(w.nextReviewAt)}</span>{researchControls(w)}</>}
             />
             <WordListSection
-              title="확인 중"
-              words={pendingWords}
+              title="확정 전 단어"
+              words={unconfirmedWords}
               onDelete={(id) => void handleDelete(id)}
-              renderMeta={(w) => <><span className="word-list-next">확인 중…</span>{researchControls(w)}</>}
+              renderMeta={(w) => <><span className="word-list-next">확정 전</span>{researchControls(w)}</>}
             />
             <WordListSection
               title="제외된 단어"
