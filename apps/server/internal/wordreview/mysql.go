@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"buddy/server/internal/mysqlerr"
 )
 
 // table carries a buddy_ prefix for the same reason as internal/store's and
@@ -59,7 +61,13 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 	if _, err := rw.ExecContext(ctx, schema); err != nil {
 		return nil, fmt.Errorf("wordreview: schema: %w", err)
 	}
-	if _, err := rw.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN IF NOT EXISTS original_word VARCHAR(255) NOT NULL DEFAULT ''`); err != nil {
+	// MySQL does not support ADD COLUMN IF NOT EXISTS consistently across
+	// versions. Treat a duplicate-column error as success so this migration
+	// remains idempotent on both fresh and already-migrated databases.
+	if err := mysqlerr.ApplyAdditive(func() error {
+		_, err := rw.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN original_word VARCHAR(255) NOT NULL DEFAULT ''`)
+		return err
+	}, mysqlerr.DupFieldName); err != nil {
 		return nil, fmt.Errorf("wordreview: schema migration: %w", err)
 	}
 	const answerCacheSchema = `CREATE TABLE IF NOT EXISTS ` + answerCacheTable + ` (
