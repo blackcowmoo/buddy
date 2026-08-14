@@ -3,7 +3,7 @@ import type { Correction } from "../lib/protocol";
 import { LoadingHint } from "../components/LoadingHint";
 import { SubPageHeader } from "../components/SubPageHeader";
 import { formatMessageTime } from "../lib/time";
-import { checkWriting, drawWritingPrompt, fetchWritingPrompt, fetchWritingPrompts, type WritingPrompt } from "../lib/writing";
+import { checkWriting, deleteWritingPrompt, drawWritingPrompt, fetchWritingPrompt, fetchWritingPrompts, type WritingPrompt } from "../lib/writing";
 
 type LoadState = "loading" | "ready";
 
@@ -66,6 +66,13 @@ export function Writing() {
     setCreating(false);
   };
 
+  const deletePrompt = async (id: string) => {
+    if (!window.confirm("이 작문 문제를 삭제할까요?")) return;
+    if (await deleteWritingPrompt(id)) {
+      setPrompts((items) => items.filter((item) => item.id !== id));
+    }
+  };
+
   const backToList = () => {
     setPrompt(null);
     setResult(null);
@@ -90,13 +97,16 @@ export function Writing() {
           {state === "loading" && <LoadingHint />}
           {state === "ready" && prompts.length === 0 && <p className="hint">아직 만든 작문 문제가 없어요.</p>}
           {prompts.map((item) => (
-            <button type="button" className="writing-list-row" key={item.id} onClick={() => void openPrompt(item)}>
-              <span className="writing-list-text">{item.korean || "문제를 만드는 중…"}</span>
-              <span className="writing-list-meta">
-                {item.status !== "done" && <span className="study-summary-pending-badge"><span className="spinning">⏳</span> 생성 중</span>}
-                {formatMessageTime(item.createdAt)}
-              </span>
-            </button>
+            <div className="writing-list-row" key={item.id}>
+              <button type="button" className="writing-list-open" onClick={() => void openPrompt(item)}>
+                <span className="writing-list-text">{item.korean || "문제를 만드는 중…"}</span>
+                <span className="writing-list-meta">
+                  {item.status !== "done" && <span className="study-summary-pending-badge"><span className="spinning">⏳</span> 생성 중</span>}
+                  {formatMessageTime(item.createdAt)}
+                </span>
+              </button>
+              <button type="button" className="ghost icon-btn writing-delete" onClick={() => void deletePrompt(item.id)} aria-label="작문 문제 삭제" title="작문 문제 삭제">🗑</button>
+            </div>
           ))}
           <button type="button" className="quiz-start-btn" onClick={() => void createPrompt()} disabled={creating}>
             {creating ? "만드는 중…" : "＋ 새 문제 만들기"}

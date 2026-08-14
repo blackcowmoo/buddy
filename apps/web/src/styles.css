@@ -650,6 +650,21 @@ a.icon-btn.ghost {
   border-radius: var(--radius);
   padding: 14px 16px;
 }
+.writing-list-row { padding: 0; }
+.writing-list-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  min-height: 52px;
+  text-align: left;
+  background: transparent;
+  color: var(--text);
+}
+.writing-delete { flex-shrink: 0; margin-right: 6px; }
 .writing-list-row:hover, .writing-list-row:focus-visible { border-color: var(--accent); }
 .writing-list-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .writing-list-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; color: var(--muted); font-size: 12px; }

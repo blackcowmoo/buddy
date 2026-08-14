@@ -105,6 +105,7 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux.HandleFunc("GET /api/writing", writingListHandler(ident, writingStore))
 	mux.HandleFunc("POST /api/writing/draw", writingDrawHandler(ident, writingStore, st.GetLearnerProfile, pipe, writingQueue))
 	mux.HandleFunc("GET /api/writing/{id}", writingInstanceHandler(ident, writingStore))
+	mux.HandleFunc("DELETE /api/writing/{id}", writingDeleteHandler(ident, writingStore))
 	mux.HandleFunc("POST /api/writing/check", writingCheckHandler(ident, pipe))
 	mux.HandleFunc("POST /api/words/suggest", wordSuggestHandler(ident, pipe))
 	mux.HandleFunc("POST /api/words/define", wordDefineHandler(ident, pipe))

@@ -62,6 +62,20 @@ func writingInstanceHandler(ident identity.Identifier, st writing.Store) http.Ha
 	}
 }
 
+func writingDeleteHandler(ident identity.Identifier, st writing.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := requireUser(w, r, ident)
+		if !ok {
+			return
+		}
+		if err := st.Delete(r.Context(), userID, r.PathValue("id")); err != nil {
+			serverError(w, "delete writing prompt", err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 func writingDrawHandler(ident identity.Identifier, st writing.Store, profile storeProfile, pipe *pipeline.Pipeline, q *asyncjob.Queue) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)
