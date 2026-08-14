@@ -333,7 +333,65 @@ func (f *fakeWordStore) Delete(ctx context.Context, userID, id string) error {
 	return nil
 }
 
+func (f *fakeWordStore) StartResearch(ctx context.Context, userID, id string) (wordreview.Word, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, w := range f.byUser[userID] {
+		if w.ID == id {
+			w.ResearchStatus = wordreview.ResearchPending
+			f.byUser[userID][i] = w
+			return w, nil
+		}
+	}
+	return wordreview.Word{}, nil
+}
+
+func (f *fakeWordStore) FinishResearch(ctx context.Context, userID, id string, results []wordreview.ResearchSuggestion) (wordreview.Word, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, w := range f.byUser[userID] {
+		if w.ID == id {
+			w.ResearchStatus = wordreview.ResearchDone
+			w.ResearchResults = results
+			f.byUser[userID][i] = w
+			return w, nil
+		}
+	}
+	return wordreview.Word{}, nil
+}
+
+func (f *fakeWordStore) ConfirmResearch(ctx context.Context, userID, id string) (wordreview.Word, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, w := range f.byUser[userID] {
+		if w.ID == id {
+			w.ResearchStatus = wordreview.ResearchConfirmed
+			w.ResearchResults = nil
+			f.byUser[userID][i] = w
+			return w, nil
+		}
+	}
+	return wordreview.Word{}, nil
+}
+
 func (f *fakeWordStore) Close() error { return nil }
+
+func TestWordResearchConfirmHidesTheControl(t *testing.T) {
+	words := &fakeWordStore{byUser: map[string][]wordreview.Word{"alex": {{ID: "w1", UserID: "alex", Word: "xyzzy", Status: wordreview.StatusRejected, ResearchStatus: wordreview.ResearchDone}}}}
+	h := wordResearchConfirmHandler(fakeIdentifier{id: "alex", ok: true}, words)
+	req := httptest.NewRequest("POST", "/api/words/w1/research/confirm", nil)
+	req.SetPathValue("id", "w1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	requireStatus(t, rec, http.StatusOK)
+	var out wordItem
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.ResearchStatus != wordreview.ResearchConfirmed {
+		t.Fatalf("research status = %q, want confirmed", out.ResearchStatus)
+	}
+}
 
 // noopVerifyPipeline is passed to wordSaveHandler in tests that don't care
 // about verification's outcome — VerifyWord errors immediately (no Analysis

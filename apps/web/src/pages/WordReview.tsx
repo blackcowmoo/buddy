@@ -7,7 +7,8 @@ import {
   reviewWord,
   startAutoAddWords,
   type WordReviewItem,
-  researchWord,
+  startResearchWord,
+  confirmResearchWord,
   saveWord,
 } from "../lib/wordReview";
 import type { WordSuggestion } from "../lib/protocol";
@@ -158,7 +159,7 @@ export function WordReview() {
   const blankRefs = useRef<(HTMLInputElement | null)[]>([]);
   const [autoAdding, setAutoAdding] = useState(false);
   const [autoAddError, setAutoAddError] = useState<string | null>(null);
-  const [researching, setResearching] = useState<string | null>(null);
+  const [researching, setResearching] = useState<Set<string>>(new Set());
   const [researchResults, setResearchResults] = useState<Record<string, WordSuggestion[]>>({});
 
   // Poll scaffolding for an auto-add job still generating in the background
@@ -227,13 +228,28 @@ export function WordReview() {
     });
   }, [pollAutoAdd]);
 
+  // Research jobs are persisted server-side. Polling the normal word list
+  // makes completion visible again after leaving and reopening this page.
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (!words.some((w) => w.researchStatus === "pending")) return;
+      fetchWords().then((result) => { if (result) { setWords(result.words); setDueCount(result.dueCount); } });
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [words]);
+
   const handleDelete = (id: string) => confirmThenDelete("이 단어를 삭제할까요?", deleteWord, id, setWords);
 
   const handleResearch = useCallback(async (word: WordReviewItem) => {
-    setResearching(word.id);
-    const results = await researchWord(word.id);
-    setResearching(null);
-    if (results) setResearchResults((prev) => ({ ...prev, [word.id]: results }));
+    setResearching((prev) => new Set(prev).add(word.id));
+    const updated = await startResearchWord(word.id);
+    setResearching((prev) => { const next = new Set(prev); next.delete(word.id); return next; });
+    if (updated) setWords((prev) => prev.map((w) => w.id === updated.id ? updated : w));
+  }, []);
+
+  const handleConfirmResearch = useCallback(async (word: WordReviewItem) => {
+    const updated = await confirmResearchWord(word.id);
+    if (updated) setWords((prev) => prev.map((w) => w.id === updated.id ? updated : w));
   }, []);
 
   const handleChooseMeaning = useCallback(async (oldWord: WordReviewItem, suggestion: WordSuggestion) => {
@@ -250,16 +266,18 @@ export function WordReview() {
 
   const researchControls = (word: WordReviewItem) => {
     if (word.status !== "rejected" && word.originalWord) return null;
+    if (word.researchStatus === "confirmed") return <span className="word-list-next">다시 검색 안 함</span>;
     return (
       <>
-        <button type="button" className="ghost word-research-btn" onClick={() => void handleResearch(word)} disabled={researching === word.id}>
-          {researching === word.id ? "다시 찾는 중…" : "다시 검색"}
+        <button type="button" className="ghost word-research-btn" onClick={() => void handleResearch(word)} disabled={researching.has(word.id) || word.researchStatus === "pending"}>
+          {researching.has(word.id) || word.researchStatus === "pending" ? "다시 찾는 중…" : "다시 검색"}
         </button>
-        {(researchResults[word.id] ?? []).map((s, i) => (
+        {(word.researchResults ?? researchResults[word.id] ?? []).map((s, i) => (
           <button key={i} type="button" className="ghost word-research-choice" onClick={() => void handleChooseMeaning(word, s)}>
             {s.meaning} · {s.example}
           </button>
         ))}
+        {word.researchStatus === "done" && <button type="button" className="ghost word-research-btn" onClick={() => void handleConfirmResearch(word)}>확정</button>}
       </>
     );
   };

@@ -23,6 +23,8 @@ export interface WordReviewItem {
   // "제외된 단어" section, where the learner reviews and deletes it.
   status: WordReviewStatus;
   verifyReason?: string;
+  researchStatus?: "pending" | "done" | "confirmed";
+  researchResults?: WordSuggestion[];
 }
 
 // Adds one word-search suggestion the learner explicitly chose to study (the
@@ -39,9 +41,12 @@ export async function saveWord(s: WordSuggestion, originalWord?: string): Promis
   return postJSON<WordReviewItem | null>("api/words/save", { word: s.word, meaning: s.meaning, example: s.example, originalWord }, null);
 }
 
-export async function researchWord(id: string): Promise<WordSuggestion[] | null> {
-  const body = await postJSON<{ suggestions: WordSuggestion[] } | null>(`api/words/${encodeURIComponent(id)}/research`, {}, null);
-  return body?.suggestions ?? null;
+export async function startResearchWord(id: string): Promise<WordReviewItem | null> {
+  return postJSON<WordReviewItem | null>(`api/words/${encodeURIComponent(id)}/research`, {}, null);
+}
+
+export async function confirmResearchWord(id: string): Promise<WordReviewItem | null> {
+  return postJSON<WordReviewItem | null>(`api/words/${encodeURIComponent(id)}/research/confirm`, {}, null);
 }
 
 // Mirrors httpserver's wordAutoAddStatus shape. status is "" (no run has

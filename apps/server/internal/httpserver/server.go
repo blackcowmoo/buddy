@@ -65,7 +65,7 @@ import (
 // config.Config's TTSURL doc comment) — articleDrawHandler simply skips
 // read-aloud pre-generation and articleAudioHandler answers 503, instead of
 // each needing its own separate on/off signal.
-func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, words wordreview.Store, articles newsarticle.Store, wordVerifyQueue *asyncjob.Queue, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue, studySummaryQueue *asyncjob.Queue, studyQuizQueue *asyncjob.Queue, profileRegenerateQueue *asyncjob.Queue, articleStudyQueue *asyncjob.Queue, wordAutoAddQueue *asyncjob.Queue, articleAudio *transport.ArticleAudio, rdb redis.UniversalClient, wordDefineQueue *asyncjob.Queue) *http.Server {
+func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, words wordreview.Store, articles newsarticle.Store, wordVerifyQueue *asyncjob.Queue, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue, studySummaryQueue *asyncjob.Queue, studyQuizQueue *asyncjob.Queue, profileRegenerateQueue *asyncjob.Queue, articleStudyQueue *asyncjob.Queue, wordAutoAddQueue *asyncjob.Queue, articleAudio *transport.ArticleAudio, rdb redis.UniversalClient, wordDefineQueue *asyncjob.Queue, wordResearchQueue *asyncjob.Queue) *http.Server {
 	mux := http.NewServeMux()
 
 	// Realtime + API first (exact patterns win over the "/" catch-all).
@@ -111,7 +111,8 @@ func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identit
 	mux.HandleFunc("GET /api/words", wordsListHandler(ident, words))
 	mux.HandleFunc("POST /api/words/{id}/review", wordReviewHandler(ident, words))
 	mux.HandleFunc("DELETE /api/words/{id}", wordDeleteHandler(ident, words))
-	mux.HandleFunc("POST /api/words/{id}/research", wordResearchHandler(ident, words, pipe))
+	mux.HandleFunc("POST /api/words/{id}/research", wordResearchHandler(ident, words, pipe, wordResearchQueue))
+	mux.HandleFunc("POST /api/words/{id}/research/confirm", wordResearchConfirmHandler(ident, words))
 	mux.HandleFunc("GET /api/recordings", recordingsListHandler(ident, recordings))
 	mux.HandleFunc("GET /api/recordings/{id}/audio", recordingAudioHandler(ident, recordings))
 	mux.HandleFunc("DELETE /api/recordings/{id}", recordingDeleteHandler(ident, audio, recordings))
