@@ -223,8 +223,8 @@ func (s *MySQLStore) List(ctx context.Context, userID string) ([]Word, error) {
 func (s *MySQLStore) DueCount(ctx context.Context, userID string, now time.Time) (int, error) {
 	var n int
 	err := s.ro.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM `+table+` WHERE user_id = ? AND status = ? AND next_review_at <= ?
-	`, userID, StatusVerified, now.Unix()).Scan(&n)
+		SELECT COUNT(*) FROM `+table+` WHERE user_id = ? AND status = ? AND research_status = ? AND next_review_at <= ?
+	`, userID, StatusVerified, ResearchConfirmed, now.Unix()).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("wordreview: due count: %w", err)
 	}
@@ -328,7 +328,7 @@ func (s *MySQLStore) FinishResearch(ctx context.Context, userID, id string, resu
 }
 
 func (s *MySQLStore) ConfirmResearch(ctx context.Context, userID, id string) (Word, error) {
-	if _, err := s.rw.ExecContext(ctx, `UPDATE `+table+` SET research_status = ?, research_results = NULL WHERE id = ? AND user_id = ?`, ResearchConfirmed, id, userID); err != nil {
+	if _, err := s.rw.ExecContext(ctx, `UPDATE `+table+` SET status = ?, verify_reason = '', research_status = ?, research_results = NULL WHERE id = ? AND user_id = ?`, StatusVerified, ResearchConfirmed, id, userID); err != nil {
 		return Word{}, fmt.Errorf("wordreview: research confirm: %w", err)
 	}
 	return s.Get(ctx, userID, id)
