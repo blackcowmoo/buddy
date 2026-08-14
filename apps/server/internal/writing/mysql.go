@@ -74,6 +74,13 @@ func (s *MySQLStore) Get(ctx context.Context, userID, id string) (Prompt, error)
 	return p, nil
 }
 
+func (s *MySQLStore) Delete(ctx context.Context, userID, id string) error {
+	if _, err := s.rw.ExecContext(ctx, `DELETE FROM `+promptsTable+` WHERE user_id=? AND id=?`, userID, id); err != nil {
+		return fmt.Errorf("writing: delete: %w", err)
+	}
+	return nil
+}
+
 func (s *MySQLStore) Complete(ctx context.Context, id, korean string) error {
 	_, err := s.rw.ExecContext(ctx, `UPDATE `+promptsTable+` SET korean=?, status=? WHERE id=? AND status IN (?, ?)`, korean, StatusDone, id, StatusPending, StatusFailed)
 	if err != nil {

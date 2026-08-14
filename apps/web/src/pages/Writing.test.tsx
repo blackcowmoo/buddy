@@ -11,10 +11,11 @@ vi.mock("../lib/writing", () => ({
   fetchWritingPrompt: vi.fn(),
   drawWritingPrompt: vi.fn(),
   checkWriting: vi.fn(),
+  deleteWritingPrompt: vi.fn(),
 }));
 
 import { Writing } from "./Writing";
-import { drawWritingPrompt, fetchWritingPrompt, fetchWritingPrompts } from "../lib/writing";
+import { deleteWritingPrompt, drawWritingPrompt, fetchWritingPrompt, fetchWritingPrompts } from "../lib/writing";
 
 const oldPrompt = { id: "p1", korean: "어제 영화를 봤어요.", status: "done" as const, createdAt: 1700000000 };
 const newPrompt = { id: "p2", korean: "오늘은 책을 읽어요.", status: "done" as const, createdAt: 1700000100 };
@@ -23,6 +24,7 @@ beforeEach(() => {
   vi.mocked(fetchWritingPrompts).mockResolvedValue([oldPrompt]);
   vi.mocked(fetchWritingPrompt).mockImplementation(async (id) => id === oldPrompt.id ? oldPrompt : newPrompt);
   vi.mocked(drawWritingPrompt).mockResolvedValue(newPrompt);
+  vi.mocked(deleteWritingPrompt).mockResolvedValue(true);
 });
 
 afterEach(() => {
@@ -54,5 +56,15 @@ describe("Writing page list/detail flow", () => {
     expect(await screen.findByText("오늘은 책을 읽어요.")).toBeInTheDocument();
     expect(screen.getByPlaceholderText("영어로 한 문장을 써보세요")).toBeInTheDocument();
     expect(drawWritingPrompt).toHaveBeenCalledOnce();
+  });
+
+  it("deletes a problem from the list after confirmation", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<Writing />);
+    await screen.findByRole("button", { name: /어제 영화를 봤어요/ });
+    await user.click(screen.getByRole("button", { name: "작문 문제 삭제" }));
+    expect(deleteWritingPrompt).toHaveBeenCalledWith("p1");
+    expect(screen.queryByText("어제 영화를 봤어요.")).not.toBeInTheDocument();
   });
 });

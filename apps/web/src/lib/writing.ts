@@ -1,4 +1,4 @@
-import { fetchJSON, postJSON } from "./fetchJSON";
+import { fetchJSON, postJSON, requestOK } from "./fetchJSON";
 import type { Correction } from "./protocol";
 
 export type WritingStatus = "pending" | "done" | "failed";
@@ -14,6 +14,10 @@ export function drawWritingPrompt(): Promise<WritingPrompt | null> {
 
 export function fetchWritingPrompt(id: string): Promise<WritingPrompt | null> {
   return fetchJSON<WritingPrompt | null>(`api/writing/${encodeURIComponent(id)}`, null);
+}
+
+export function deleteWritingPrompt(id: string): Promise<boolean> {
+	return requestOK(`api/writing/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export function checkWriting(prompt: string, answer: string): Promise<Correction | null> {

@@ -27,7 +27,17 @@ func generateWritingPrompt(ctx context.Context, pipe *pipeline.Pipeline, st writ
 	if p.ID == "" || (p.Status != writing.StatusPending && p.Status != writing.StatusFailed) {
 		return nil
 	}
-	result, err := pipe.GenerateWritingPrompt(ctx, profile)
+	previousPrompts, err := st.List(ctx, userID)
+	if err != nil {
+		return err
+	}
+	previous := make([]string, 0, len(previousPrompts))
+	for _, old := range previousPrompts {
+		if old.Korean != "" {
+			previous = append(previous, old.Korean)
+		}
+	}
+	result, err := pipe.GenerateWritingPrompt(ctx, profile, previous, id)
 	if err != nil {
 		_ = st.Fail(context.Background(), id)
 		return err

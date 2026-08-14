@@ -24,6 +24,7 @@ type Store interface {
 	Create(ctx context.Context, userID string) (Prompt, error)
 	List(ctx context.Context, userID string) ([]Prompt, error)
 	Get(ctx context.Context, userID, id string) (Prompt, error)
+	Delete(ctx context.Context, userID, id string) error
 	Complete(ctx context.Context, id, korean string) error
 	Fail(ctx context.Context, id string) error
 	Close() error

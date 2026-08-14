@@ -25,6 +25,15 @@ func (f *fakeWritingStore) Get(_ context.Context, userID, id string) (writing.Pr
 	}
 	return writing.Prompt{}, nil
 }
+func (f *fakeWritingStore) Delete(_ context.Context, userID, id string) error {
+	for i, p := range f.prompts {
+		if p.UserID == userID && p.ID == id {
+			f.prompts = append(f.prompts[:i], f.prompts[i+1:]...)
+			return nil
+		}
+	}
+	return nil
+}
 func (f *fakeWritingStore) Complete(context.Context, string, string) error { return nil }
 func (f *fakeWritingStore) Fail(context.Context, string) error             { return nil }
 func (f *fakeWritingStore) Close() error                                   { return nil }
@@ -52,5 +61,19 @@ func TestWritingInstanceHandlerDoesNotExposeAnotherUsersPrompt(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != 404 {
 		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestWritingDeleteHandlerOnlyDeletesCallersPrompt(t *testing.T) {
+	st := &fakeWritingStore{prompts: []writing.Prompt{
+		{ID: "mine", UserID: "alex"}, {ID: "other", UserID: "other"},
+	}}
+	h := writingDeleteHandler(fakeIdentifier{id: "alex", ok: true}, st)
+	req := httptest.NewRequest("DELETE", "/api/writing/mine", nil)
+	req.SetPathValue("id", "mine")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 204 || len(st.prompts) != 1 || st.prompts[0].ID != "other" {
+		t.Fatalf("status=%d prompts=%+v, want caller's prompt deleted only", rec.Code, st.prompts)
 	}
 }
