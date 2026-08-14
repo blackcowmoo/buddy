@@ -259,13 +259,33 @@ describe("WordReview page", () => {
     expect(screen.queryByRole("button", { name: "확정" })).not.toBeInTheDocument();
   });
 
-  it("shows a 확인 중 section for words still being verified", async () => {
+  it("shows a 확정 전 단어 section for words still awaiting confirmation", async () => {
     vi.mocked(fetchWords).mockResolvedValue({ words: [pendingWord], dueCount: 0 });
     render(<WordReview />);
 
-    expect(await screen.findByText("확인 중")).toBeInTheDocument();
+    expect(await screen.findByText("확정 전 단어")).toBeInTheDocument();
     expect(screen.getByText("wistful")).toBeInTheDocument();
-    expect(screen.getByText("확인 중…")).toBeInTheDocument();
+    expect(screen.getByText("확정 전")).toBeInTheDocument();
+  });
+
+  it("groups the word list and start action in the requested order", async () => {
+    const unconfirmedWord = { ...dueWord, id: "w-unconfirmed", word: "uncertain", researchStatus: undefined };
+    vi.mocked(fetchWords).mockResolvedValue({
+      words: [rejectedWord, pendingWord, unconfirmedWord, dueWord],
+      dueCount: 1,
+    });
+    render(<WordReview />);
+
+    const reviewingTitle = await screen.findByText("복습중인 단어");
+    const unconfirmedTitle = screen.getByText("확정 전 단어");
+    const rejectedTitle = screen.getByText("제외된 단어");
+    const startButton = screen.getByRole("button", { name: "복습 시작" });
+
+    expect(reviewingTitle.compareDocumentPosition(unconfirmedTitle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(unconfirmedTitle.compareDocumentPosition(rejectedTitle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(rejectedTitle.compareDocumentPosition(startButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByText("uncertain")).toBeInTheDocument();
+    expect(screen.getByText("wistful")).toBeInTheDocument();
   });
 
   it("can delete a rejected word", async () => {
@@ -319,7 +339,7 @@ describe("WordReview page", () => {
     // tick reads fetchAutoAddStatus() as "done", so these tests drive that
     // poll with fake timers, the same pattern as ArticleQuiz.test.tsx's
     // "generating hint" test.
-    it("starts the background job and adds the returned words into the 확인 중 section once it completes", async () => {
+    it("starts the background job and adds the returned words into the 확정 전 단어 section once it completes", async () => {
       vi.mocked(fetchWords)
         .mockResolvedValueOnce({ words: [], dueCount: 0 }) // initial load
         .mockResolvedValueOnce({ words: [newWord], dueCount: 0 }); // re-fetched once the job completes
@@ -338,7 +358,7 @@ describe("WordReview page", () => {
         await vi.advanceTimersByTimeAsync(3000);
       });
 
-      expect(screen.getByText("확인 중")).toBeInTheDocument();
+      expect(screen.getByText("확정 전 단어")).toBeInTheDocument();
       expect(screen.getByText("resilient")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "새 단어 추가로 학습하기" })).toBeInTheDocument();
     });
