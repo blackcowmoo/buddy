@@ -652,7 +652,7 @@ export function WordReview() {
                       <button type="button" className="quiz-next-btn" onClick={next}>
                         {index + 1 < quizQueue.length ? "다음 단어" : "결과 보기"}
                       </button>
-                      {isCorrect && (
+                      {isCorrect && current.stage > 0 && (
                         <button
                           type="button"
                           className="ghost quiz-forced-btn"

@@ -478,14 +478,24 @@ describe("WordReview page", () => {
     expect(input).toHaveFocus();
   });
 
+  it("does not show the forced-guess button when a correct answer schedules the word for tomorrow", async () => {
+    const user = await startQuiz();
+    await user.type(await screen.findByRole("textbox", { name: "정답 입력" }), "ecstatic");
+    await user.click(screen.getByRole("button", { name: "확인" }));
+
+    expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "😅 억지로 맞춘 것 같아요" })).not.toBeInTheDocument();
+  });
+
   // The "억지로 맞췄어요" (forced-guess) button: even after answering
   // correctly, the learner can flag it as a lucky/forced guess so the word
   // comes back at the same interval instead of the wider one a confident
   // correct answer would earn (see wordreview.nextSchedule's repeat doc
   // server-side).
   it("sends repeat=true and still advances when the forced-guess button is pressed on a correct answer", async () => {
-    vi.mocked(reviewWord).mockResolvedValue({ ...dueWord, stage: 0, reviewCount: 1 });
-    const user = await startQuiz();
+    const establishedWord = { ...dueWord, stage: 1, reviewCount: 1 };
+    vi.mocked(reviewWord).mockResolvedValue(establishedWord);
+    const user = await startQuiz([establishedWord]);
     await user.type(await screen.findByRole("textbox", { name: "정답 입력" }), "ecstatic");
     await user.click(screen.getByRole("button", { name: "확인" }));
 
