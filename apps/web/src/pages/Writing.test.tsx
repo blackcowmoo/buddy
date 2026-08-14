@@ -1,0 +1,58 @@
+/**
+ * @vitest-environment jsdom
+ */
+import "@testing-library/jest-dom/vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../lib/writing", () => ({
+  fetchWritingPrompts: vi.fn(),
+  fetchWritingPrompt: vi.fn(),
+  drawWritingPrompt: vi.fn(),
+  checkWriting: vi.fn(),
+}));
+
+import { Writing } from "./Writing";
+import { drawWritingPrompt, fetchWritingPrompt, fetchWritingPrompts } from "../lib/writing";
+
+const oldPrompt = { id: "p1", korean: "어제 영화를 봤어요.", status: "done" as const, createdAt: 1700000000 };
+const newPrompt = { id: "p2", korean: "오늘은 책을 읽어요.", status: "done" as const, createdAt: 1700000100 };
+
+beforeEach(() => {
+  vi.mocked(fetchWritingPrompts).mockResolvedValue([oldPrompt]);
+  vi.mocked(fetchWritingPrompt).mockImplementation(async (id) => id === oldPrompt.id ? oldPrompt : newPrompt);
+  vi.mocked(drawWritingPrompt).mockResolvedValue(newPrompt);
+});
+
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
+
+describe("Writing page list/detail flow", () => {
+  it("starts on a list and opens the selected problem as a detail view", async () => {
+    const user = userEvent.setup();
+    render(<Writing />);
+
+    expect(await screen.findByRole("button", { name: /어제 영화를 봤어요/ })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /어제 영화를 봤어요/ }));
+
+    expect(await screen.findByRole("heading", { name: "오늘의 한 문장" })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("영어로 한 문장을 써보세요")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "← 목록으로" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /새 문제 만들기/ })).not.toBeInTheDocument();
+  });
+
+  it("opens a newly created problem directly in the detail view", async () => {
+    const user = userEvent.setup();
+    render(<Writing />);
+
+    await screen.findByRole("button", { name: /어제 영화를 봤어요/ });
+    await user.click(screen.getByRole("button", { name: /새 문제 만들기/ }));
+
+    expect(await screen.findByText("오늘은 책을 읽어요.")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("영어로 한 문장을 써보세요")).toBeInTheDocument();
+    expect(drawWritingPrompt).toHaveBeenCalledOnce();
+  });
+});

@@ -638,7 +638,23 @@ a.icon-btn.ghost {
 .article-quiz-page { justify-content: flex-start; }
 
 .writing-page { justify-content: flex-start; }
+.writing-list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  background: var(--panel);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+.writing-list-row:hover, .writing-list-row:focus-visible { border-color: var(--accent); }
+.writing-list-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.writing-list-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; color: var(--muted); font-size: 12px; }
 .writing-card { width: min(680px, calc(100% - 32px)); margin: 48px auto; padding: 28px; background: var(--panel); border: 1px solid var(--border); border-radius: 16px; }
+.writing-detail-card { margin-top: 0; }
 .writing-card h2 { margin: 4px 0 22px; }
 .eyebrow { color: var(--muted); font-size: 12px; letter-spacing: .12em; }
 .writing-prompt { font-size: 22px; line-height: 1.6; padding: 20px; background: var(--panel-2); border-radius: 12px; }
