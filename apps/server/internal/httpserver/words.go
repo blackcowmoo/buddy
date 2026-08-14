@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -125,22 +126,26 @@ type wordItem struct {
 	// Status is "pending" (still being fact-checked in the background),
 	// "verified" (passed, in normal review rotation), or "rejected" (failed
 	// the model-consensus check — see VerifyReason). See wordreview.Status*.
-	Status       string `json:"status"`
-	VerifyReason string `json:"verifyReason,omitempty"`
+	Status          string                          `json:"status"`
+	VerifyReason    string                          `json:"verifyReason,omitempty"`
+	ResearchStatus  string                          `json:"researchStatus,omitempty"`
+	ResearchResults []wordreview.ResearchSuggestion `json:"researchResults,omitempty"`
 }
 
 func toWordItem(w wordreview.Word) wordItem {
 	return wordItem{
-		ID:           w.ID,
-		Word:         wordreview.NormalizeWord(w.Word),
-		Meaning:      w.Meaning,
-		Example:      w.Example,
-		OriginalWord: w.OriginalWord,
-		Stage:        w.Stage,
-		ReviewCount:  w.ReviewCount,
-		NextReviewAt: w.NextReviewAt.Unix(),
-		Status:       w.Status,
-		VerifyReason: w.VerifyReason,
+		ID:              w.ID,
+		Word:            wordreview.NormalizeWord(w.Word),
+		Meaning:         w.Meaning,
+		Example:         w.Example,
+		OriginalWord:    w.OriginalWord,
+		Stage:           w.Stage,
+		ReviewCount:     w.ReviewCount,
+		NextReviewAt:    w.NextReviewAt.Unix(),
+		Status:          w.Status,
+		VerifyReason:    w.VerifyReason,
+		ResearchStatus:  w.ResearchStatus,
+		ResearchResults: w.ResearchResults,
 	}
 }
 
@@ -275,7 +280,7 @@ func wordDeleteHandler(ident identity.Identifier, words wordreview.Store) http.H
 	}
 }
 
-func wordResearchHandler(ident identity.Identifier, words wordreview.Store, pipe *pipeline.Pipeline) http.HandlerFunc {
+func wordResearchHandler(ident identity.Identifier, words wordreview.Store, pipe *pipeline.Pipeline, queue *asyncjob.Queue) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)
 		if !ok {
@@ -298,12 +303,51 @@ func wordResearchHandler(ident identity.Identifier, words wordreview.Store, pipe
 		if word == "" {
 			word = target.Word
 		}
-		results, err := pipe.DefineWordMeanings(r.Context(), word, target.Example)
-		if err != nil {
-			serverError(w, "words: research", err)
+		store, ok := words.(wordreview.ResearchStore)
+		if !ok {
+			http.Error(w, "research is unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		writeJSON(w, map[string]any{"suggestions": results})
+		updated, err := store.StartResearch(r.Context(), userID, target.ID)
+		if err != nil {
+			serverError(w, "words: research start", err)
+			return
+		}
+		asyncjob.EnqueueOrRunInline(queue, r.Context(), "words: enqueue research", func(ctx context.Context) error {
+			return transport.EnqueueWordResearchJob(ctx, queue, pipe, words, userID, target.ID)
+		}, "words: research", func(ctx context.Context) error {
+			return transport.WordResearchJobHandler(pipe, words)(ctx, asyncjob.Job{Kind: asyncjob.KindWordResearch, Payload: mustResearchPayload(userID, target.ID)})
+		})
+		writeJSON(w, toWordItem(updated))
+	}
+}
+
+func mustResearchPayload(userID, wordID string) json.RawMessage {
+	b, _ := json.Marshal(map[string]string{"UserID": userID, "WordID": wordID})
+	return b
+}
+
+func wordResearchConfirmHandler(ident identity.Identifier, words wordreview.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := requireUser(w, r, ident)
+		if !ok {
+			return
+		}
+		store, ok := words.(wordreview.ResearchStore)
+		if !ok {
+			http.Error(w, "research is unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		updated, err := store.ConfirmResearch(r.Context(), userID, r.PathValue("id"))
+		if err != nil {
+			serverError(w, "words: research confirm", err)
+			return
+		}
+		if updated.ID == "" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, toWordItem(updated))
 	}
 }
 

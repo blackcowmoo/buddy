@@ -25,6 +25,7 @@ package wordreview
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"time"
 )
@@ -157,7 +158,36 @@ type Word struct {
 	// verdict — set on MarkRejected (surfaced to the learner so they know
 	// why), and left "" for a word that's still pending or was verified
 	// (nothing to explain about a pass).
-	VerifyReason string
+	VerifyReason    string
+	ResearchStatus  string
+	ResearchResults []ResearchSuggestion
+}
+
+type ResearchSuggestion struct {
+	Word    string `json:"word"`
+	Meaning string `json:"meaning"`
+	Example string `json:"example"`
+}
+
+const (
+	ResearchNone      = ""
+	ResearchPending   = "pending"
+	ResearchDone      = "done"
+	ResearchConfirmed = "confirmed"
+)
+
+// ResearchStore is optional so small in-memory stores remain useful in tests.
+// The MySQL store persists this state with the word row, allowing the page to
+// reconstruct an in-flight search after navigation or reload.
+type ResearchStore interface {
+	StartResearch(context.Context, string, string) (Word, error)
+	FinishResearch(context.Context, string, string, []ResearchSuggestion) (Word, error)
+	ConfirmResearch(context.Context, string, string) (Word, error)
+}
+
+func EncodeResearchResults(results []ResearchSuggestion) (string, error) {
+	b, err := json.Marshal(results)
+	return string(b), err
 }
 
 // Store persists the learner's study words (chosen or auto-captured — see

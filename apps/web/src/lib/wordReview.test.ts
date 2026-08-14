@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { deleteWord, fetchAutoAddStatus, fetchWords, researchWord, reviewWord, saveWord, startAutoAddWords } from "./wordReview";
+import { confirmResearchWord, deleteWord, fetchAutoAddStatus, fetchWords, reviewWord, saveWord, startAutoAddWords, startResearchWord } from "./wordReview";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -50,13 +50,19 @@ describe("fetchWords", () => {
   });
 });
 
-describe("researchWord", () => {
-  it("returns all meanings from the excluded-word search", async () => {
-    const body = { suggestions: [{ word: "bank", meaning: "강둑", example: "They sat by the bank." }] };
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(body) });
+describe("async research", () => {
+  it("starts a persisted research job and returns its pending item", async () => {
+    const pending = { ...item, researchStatus: "pending" };
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(pending) });
     vi.stubGlobal("fetch", fetchMock);
-    await expect(researchWord("rejected-1")).resolves.toEqual(body.suggestions);
-    expect(fetchMock).toHaveBeenCalledWith("api/words/rejected-1/research", expect.objectContaining({ method: "POST" }));
+    await expect(startResearchWord("w1")).resolves.toEqual(pending);
+    expect(fetchMock).toHaveBeenCalledWith("api/words/w1/research", expect.objectContaining({ method: "POST" }));
+  });
+
+  it("confirms a research result so the control can stay hidden", async () => {
+    const confirmed = { ...item, researchStatus: "confirmed" };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(confirmed) }));
+    await expect(confirmResearchWord("w1")).resolves.toEqual(confirmed);
   });
 });
 

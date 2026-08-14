@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -53,6 +54,8 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 		last_reviewed_at BIGINT       NOT NULL DEFAULT 0,
 		status           VARCHAR(16)  NOT NULL DEFAULT 'pending',
 		verify_reason    TEXT         NOT NULL,
+		research_status  VARCHAR(16)  NOT NULL DEFAULT '',
+		research_results JSON         NULL,
 		created_at       BIGINT       NOT NULL,
 		PRIMARY KEY (id),
 		UNIQUE KEY idx_user_word_meaning (user_id, word(191), meaning(191)),
@@ -69,6 +72,14 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 		return err
 	}, mysqlerr.DupFieldName); err != nil {
 		return nil, fmt.Errorf("wordreview: schema migration: %w", err)
+	}
+	for _, migration := range []string{
+		`ALTER TABLE ` + table + ` ADD COLUMN research_status VARCHAR(16) NOT NULL DEFAULT ''`,
+		`ALTER TABLE ` + table + ` ADD COLUMN research_results JSON NULL`,
+	} {
+		if err := mysqlerr.ApplyAdditive(func() error { _, err := rw.ExecContext(ctx, migration); return err }, mysqlerr.DupFieldName); err != nil {
+			return nil, fmt.Errorf("wordreview: research schema migration: %w", err)
+		}
 	}
 	const answerCacheSchema = `CREATE TABLE IF NOT EXISTS ` + answerCacheTable + ` (
 		cache_key BINARY(32) NOT NULL,
@@ -132,10 +143,11 @@ type scanner interface {
 func scanWord(row scanner, userID string) (Word, error) {
 	var w Word
 	var nextReviewAt, lastReviewedAt, createdAt int64
+	var researchResults []byte
 	if err := row.Scan(
 		&w.ID, &w.Word, &w.OriginalWord, &w.Meaning, &w.Example,
 		&w.Stage, &w.ReviewCount, &w.CorrectStreak,
-		&nextReviewAt, &lastReviewedAt, &w.Status, &w.VerifyReason, &createdAt,
+		&nextReviewAt, &lastReviewedAt, &w.Status, &w.VerifyReason, &w.ResearchStatus, &researchResults, &createdAt,
 	); err != nil {
 		return Word{}, err
 	}
@@ -145,10 +157,13 @@ func scanWord(row scanner, userID string) (Word, error) {
 		w.LastReviewedAt = time.Unix(lastReviewedAt, 0)
 	}
 	w.CreatedAt = time.Unix(createdAt, 0)
+	if len(researchResults) > 0 {
+		_ = json.Unmarshal(researchResults, &w.ResearchResults)
+	}
 	return w, nil
 }
 
-const wordColumns = `id, word, original_word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, created_at`
+const wordColumns = `id, word, original_word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, research_status, research_results, created_at`
 
 func (s *MySQLStore) Save(ctx context.Context, userID, word, meaning, example string) (Word, error) {
 	return s.SaveOriginal(ctx, userID, word, meaning, example, word)
@@ -164,8 +179,8 @@ func (s *MySQLStore) SaveOriginal(ctx context.Context, userID, word, meaning, ex
 	// MarkVerified resets it — a pending word is excluded from Due/DueCount
 	// regardless (see their WHERE clauses).
 	_, err := s.rw.ExecContext(ctx, `
-		INSERT IGNORE INTO `+table+` (id, user_id, word, original_word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?, 0, ?, '', ?)
+		INSERT IGNORE INTO `+table+` (id, user_id, word, original_word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, research_status, research_results, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?, 0, ?, '', '', NULL, ?)
 	`, uuid.New().String(), userID, word, originalWord, meaning, example, now.Add(intervalForStage(0)).Unix(), StatusPending, now.Unix())
 	if err != nil {
 		return Word{}, fmt.Errorf("wordreview: save: insert: %w", err)
@@ -292,6 +307,31 @@ func (s *MySQLStore) Delete(ctx context.Context, userID, id string) error {
 		return fmt.Errorf("wordreview: delete: %w", err)
 	}
 	return nil
+}
+
+func (s *MySQLStore) StartResearch(ctx context.Context, userID, id string) (Word, error) {
+	if _, err := s.rw.ExecContext(ctx, `UPDATE `+table+` SET research_status = ?, research_results = NULL WHERE id = ? AND user_id = ?`, ResearchPending, id, userID); err != nil {
+		return Word{}, fmt.Errorf("wordreview: research start: %w", err)
+	}
+	return s.Get(ctx, userID, id)
+}
+
+func (s *MySQLStore) FinishResearch(ctx context.Context, userID, id string, results []ResearchSuggestion) (Word, error) {
+	b, err := json.Marshal(results)
+	if err != nil {
+		return Word{}, err
+	}
+	if _, err = s.rw.ExecContext(ctx, `UPDATE `+table+` SET research_status = ?, research_results = ? WHERE id = ? AND user_id = ?`, ResearchDone, b, id, userID); err != nil {
+		return Word{}, fmt.Errorf("wordreview: research finish: %w", err)
+	}
+	return s.Get(ctx, userID, id)
+}
+
+func (s *MySQLStore) ConfirmResearch(ctx context.Context, userID, id string) (Word, error) {
+	if _, err := s.rw.ExecContext(ctx, `UPDATE `+table+` SET research_status = ?, research_results = NULL WHERE id = ? AND user_id = ?`, ResearchConfirmed, id, userID); err != nil {
+		return Word{}, fmt.Errorf("wordreview: research confirm: %w", err)
+	}
+	return s.Get(ctx, userID, id)
 }
 
 // Close is a no-op: the rw/ro pools are owned by internal/store's

@@ -135,6 +135,7 @@ const (
 	// article. The result is stored separately from the queue so a learner can
 	// leave the page and retrieve it when they return.
 	KindWordDefine Kind = "word-define"
+	KindWordResearch Kind = "word-research"
 )
 
 // Job is the durable Redis envelope for one unit of background work.
