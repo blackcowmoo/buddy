@@ -120,6 +120,41 @@ func (q *Queue) Enqueue(ctx context.Context, kind Kind, dedupeKey string, payloa
 	return job, true, nil
 }
 
+// RequeueExpired moves an abandoned processing entry back to its queue when
+// its claim has already expired. This is useful on a new enqueue attempt:
+// the dedupe key intentionally survives reaping, so the new request must not
+// create a duplicate job, but it should be able to kick an expired one
+// immediately instead of waiting for reapLoop's next 30-second tick.
+func (q *Queue) RequeueExpired(ctx context.Context, kind Kind, dedupeKey string) (bool, error) {
+	if q == nil {
+		return false, nil
+	}
+	raws, err := q.rdb.LRange(ctx, processingKey(kind), 0, -1).Result()
+	if err != nil {
+		return false, fmt.Errorf("asyncjob: inspect expired job: %w", err)
+	}
+	for _, raw := range raws {
+		var job Job
+		if err := json.Unmarshal([]byte(raw), &job); err != nil || job.DedupeKey != dedupeKey {
+			continue
+		}
+		job.Attempts++
+		requeued, err := json.Marshal(job)
+		if err != nil {
+			return false, fmt.Errorf("asyncjob: marshal expired job: %w", err)
+		}
+		n, err := reapOneScript.Run(ctx, q.rdb,
+			[]string{processingKey(kind), claimKey(kind, job.ID), queueKey(kind)},
+			raw, requeued,
+		).Int()
+		if err != nil {
+			return false, fmt.Errorf("asyncjob: requeue expired job: %w", err)
+		}
+		return n == 1, nil
+	}
+	return false, nil
+}
+
 // TryClaimByID attempts to claim job (just returned by Enqueue) directly
 // out of its queue, before any pooled Worker's blocking dequeue gets to it.
 // This is what lets the connection/request that created a job run it
@@ -158,11 +193,13 @@ func (q *Queue) TryClaimByID(ctx context.Context, job Job, claimTTL time.Duratio
 // caller run a job inline (e.g. transport's fast path, streaming tokens
 // straight to a connection that's still open) with the same durability
 // guarantees as the background Worker pool.
-func (q *Queue) Execute(ctx context.Context, job Job, handler Handler) error {
+func (q *Queue) Execute(ctx context.Context, job Job, claimTTL time.Duration, handler Handler) error {
 	if q == nil {
 		return nil
 	}
-	if err := handler(ctx, job); err != nil {
+	if err := runWithLease(ctx, q.rdb, job.Kind, job.ID, claimTTL, func(handlerCtx context.Context) error {
+		return handler(handlerCtx, job)
+	}); err != nil {
 		if expireErr := q.rdb.PExpire(ctx, claimKey(job.Kind, job.ID), FailureRetryBackoff).Err(); expireErr != nil {
 			log.Printf("asyncjob: %s: shorten claim after failure %s: %v", job.Kind, job.ID, expireErr)
 		}
@@ -209,7 +246,7 @@ func (q *Queue) EnqueueAndTryRun(ctx context.Context, kind Kind, dedupeKey, logI
 	if !claimed {
 		return false, nil // lost the race to a pooled Worker
 	}
-	if err := q.Execute(ctx, job, handler); err != nil {
+	if err := q.Execute(ctx, job, claimTTL, handler); err != nil {
 		log.Printf("asyncjob: %s: inline execute %s: %v", kind, logID, err)
 		return true, err
 	}
@@ -235,7 +272,13 @@ func (q *Queue) EnqueueAndRunInBackground(ctx context.Context, kind Kind, dedupe
 		return fmt.Errorf("asyncjob: %s: enqueue %s: %w", kind, logID, err)
 	}
 	if !ok {
-		return nil // deduped: another attempt already owns this job
+		// A deduped job can still be an abandoned processing entry whose claim
+		// expired just before this request arrived. Requeue it now; the normal
+		// worker will execute the same durable job, without creating a duplicate.
+		if _, err := q.RequeueExpired(ctx, kind, dedupeKey); err != nil {
+			log.Printf("asyncjob: %s: retry expired %s: %v", kind, logID, err)
+		}
+		return nil
 	}
 	go func() {
 		claimed, err := q.TryClaimByID(context.Background(), job, claimTTL)
@@ -246,7 +289,7 @@ func (q *Queue) EnqueueAndRunInBackground(ctx context.Context, kind Kind, dedupe
 		if !claimed {
 			return // lost the race to a pooled Worker, which owns it now
 		}
-		if err := q.Execute(context.Background(), job, handler); err != nil {
+		if err := q.Execute(context.Background(), job, claimTTL, handler); err != nil {
 			log.Printf("asyncjob: %s: background execute %s: %v", kind, logID, err)
 		}
 	}()

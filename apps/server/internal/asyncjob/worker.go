@@ -142,7 +142,9 @@ func (w *Worker) run(raw string) {
 		// handler twice concurrently rather than assuming it can't occur.
 		return
 	}
-	if handlerErr := w.handler(context.Background(), job); handlerErr != nil {
+	if handlerErr := runWithLease(context.Background(), w.rdb, w.kind, job.ID, w.claimTTL, func(ctx context.Context) error {
+		return w.handler(ctx, job)
+	}); handlerErr != nil {
 		// Deliberately do NOT complete the job here: leave it claimed, but
 		// shorten that claim to FailureRetryBackoff (rather than the full,
 		// possibly many-hours-long claimTTL) so reapOnce retries it from
