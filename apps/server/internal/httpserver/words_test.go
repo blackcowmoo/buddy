@@ -260,7 +260,7 @@ func (f *fakeWordStore) DueCount(ctx context.Context, userID string, now time.Ti
 	}
 	n := 0
 	for _, w := range f.byUser[userID] {
-		if w.Status == wordreview.StatusVerified && !w.NextReviewAt.After(now) {
+		if w.Status == wordreview.StatusVerified && w.ResearchStatus == wordreview.ResearchConfirmed && !w.NextReviewAt.After(now) {
 			n++
 		}
 	}
@@ -365,6 +365,8 @@ func (f *fakeWordStore) ConfirmResearch(ctx context.Context, userID, id string) 
 	defer f.mu.Unlock()
 	for i, w := range f.byUser[userID] {
 		if w.ID == id {
+			w.Status = wordreview.StatusVerified
+			w.VerifyReason = ""
 			w.ResearchStatus = wordreview.ResearchConfirmed
 			w.ResearchResults = nil
 			f.byUser[userID][i] = w
@@ -390,6 +392,9 @@ func TestWordResearchConfirmHidesTheControl(t *testing.T) {
 	}
 	if out.ResearchStatus != wordreview.ResearchConfirmed {
 		t.Fatalf("research status = %q, want confirmed", out.ResearchStatus)
+	}
+	if out.Status != wordreview.StatusVerified {
+		t.Fatalf("status = %q, want verified", out.Status)
 	}
 }
 
@@ -495,8 +500,8 @@ func TestWordsListReturnsOwnWordsAndDueCount(t *testing.T) {
 	now := time.Now()
 	store := &fakeWordStore{byUser: map[string][]wordreview.Word{
 		"alex": {
-			{ID: "w1", UserID: "alex", Word: "ecstatic", Status: wordreview.StatusVerified, NextReviewAt: now.Add(-time.Hour)},   // due
-			{ID: "w2", UserID: "alex", Word: "elated", Status: wordreview.StatusVerified, NextReviewAt: now.Add(48 * time.Hour)}, // not due yet
+			{ID: "w1", UserID: "alex", Word: "ecstatic", Status: wordreview.StatusVerified, ResearchStatus: wordreview.ResearchConfirmed, NextReviewAt: now.Add(-time.Hour)}, // due
+			{ID: "w2", UserID: "alex", Word: "elated", Status: wordreview.StatusVerified, NextReviewAt: now.Add(48 * time.Hour)},                                             // not due yet
 		},
 		"sam": {{ID: "w4", UserID: "sam", Word: "other", Status: wordreview.StatusVerified, NextReviewAt: now.Add(-time.Hour)}},
 	}}

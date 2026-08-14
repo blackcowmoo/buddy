@@ -13,6 +13,7 @@ vi.mock("../lib/wordReview", async () => {
     fetchWords: vi.fn(),
     deleteWord: vi.fn(),
     reviewWord: vi.fn(),
+    confirmResearchWord: vi.fn(),
     startAutoAddWords: vi.fn(),
     fetchAutoAddStatus: vi.fn(),
   };
@@ -24,6 +25,7 @@ import {
   fetchAutoAddStatus,
   fetchWords,
   reviewWord,
+  confirmResearchWord,
   startAutoAddWords,
   type WordReviewItem,
 } from "../lib/wordReview";
@@ -53,6 +55,7 @@ const dueWord: WordReviewItem = {
   reviewCount: 0,
   nextReviewAt: Math.floor(Date.now() / 1000) - 3600, // 1 hour ago: due
   status: "verified",
+  researchStatus: "confirmed",
 };
 
 const idiomWord: WordReviewItem = {
@@ -64,6 +67,7 @@ const idiomWord: WordReviewItem = {
   reviewCount: 0,
   nextReviewAt: Math.floor(Date.now() / 1000) - 3600, // 1 hour ago: due
   status: "verified",
+  researchStatus: "confirmed",
 };
 
 const optimizeWord: WordReviewItem = {
@@ -75,6 +79,7 @@ const optimizeWord: WordReviewItem = {
   reviewCount: 0,
   nextReviewAt: Math.floor(Date.now() / 1000) - 3600, // 1 hour ago: due
   status: "verified",
+  researchStatus: "confirmed",
 };
 
 const futureWord: WordReviewItem = {
@@ -86,6 +91,7 @@ const futureWord: WordReviewItem = {
   reviewCount: 1,
   nextReviewAt: Math.floor(Date.now() / 1000) + 48 * 3600, // in 2 days: not due
   status: "verified",
+  researchStatus: "confirmed",
 };
 
 const pendingWord: WordReviewItem = {
@@ -115,9 +121,9 @@ const rejectedWord: WordReviewItem = {
 // question about dueWord has enough distractor meanings (see
 // minRecognitionDistractors in WordReview.tsx).
 const otherVerifiedWords: WordReviewItem[] = [
-  { id: "w3", word: "gloomy", meaning: "우울한", example: "a gloomy day", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(Date.now() / 1000) + 999999, status: "verified" },
-  { id: "w4", word: "jaded", meaning: "지친", example: "a jaded look", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(Date.now() / 1000) + 999999, status: "verified" },
-  { id: "w5", word: "content", meaning: "만족하는", example: "feeling content", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(Date.now() / 1000) + 999999, status: "verified" },
+  { id: "w3", word: "gloomy", meaning: "우울한", example: "a gloomy day", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(Date.now() / 1000) + 999999, status: "verified", researchStatus: "confirmed" },
+  { id: "w4", word: "jaded", meaning: "지친", example: "a jaded look", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(Date.now() / 1000) + 999999, status: "verified", researchStatus: "confirmed" },
+  { id: "w5", word: "content", meaning: "만족하는", example: "feeling content", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(Date.now() / 1000) + 999999, status: "verified", researchStatus: "confirmed" },
 ];
 
 // Mocks fetchWords to return `words` (always dueCount: 1 — every quiz test
@@ -212,6 +218,45 @@ describe("WordReview page", () => {
     expect(await screen.findByText("제외된 단어")).toBeInTheDocument();
     expect(screen.getByText("xyzzy")).toBeInTheDocument();
     expect(screen.getByText("실제로 사용되는 영단어가 아니에요")).toBeInTheDocument();
+  });
+
+  it("offers 확정 without searching and keeps an unconfirmed word out of review", async () => {
+    const needsDecision = { ...dueWord, researchStatus: undefined };
+    vi.mocked(fetchWords).mockResolvedValue({ words: [needsDecision], dueCount: 0 });
+    render(<WordReview />);
+
+    expect(await screen.findByRole("button", { name: "다시 검색" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "확정" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "복습 시작" })).not.toBeInTheDocument();
+  });
+
+  it("shows only 확정 for a directly defined word", async () => {
+    const articleWord = { ...dueWord, originalWord: "ecstatic", researchStatus: undefined };
+    vi.mocked(fetchWords).mockResolvedValue({ words: [articleWord], dueCount: 0 });
+    render(<WordReview />);
+
+    expect(await screen.findByRole("button", { name: "확정" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "다시 검색" })).not.toBeInTheDocument();
+  });
+
+  it("moves a rejected word into the confirmed review list and hides research controls", async () => {
+    vi.mocked(fetchWords).mockResolvedValue({ words: [rejectedWord], dueCount: 0 });
+    vi.mocked(confirmResearchWord).mockResolvedValue({
+      ...rejectedWord,
+      status: "verified",
+      verifyReason: undefined,
+      researchStatus: "confirmed",
+    });
+    const user = userEvent.setup();
+    render(<WordReview />);
+
+    await user.click(await screen.findByRole("button", { name: "확정" }));
+
+    expect(confirmResearchWord).toHaveBeenCalledWith(rejectedWord.id);
+    expect(screen.queryByText("제외된 단어")).not.toBeInTheDocument();
+    expect(screen.getByText(rejectedWord.word)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "다시 검색" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "확정" })).not.toBeInTheDocument();
   });
 
   it("shows a 확인 중 section for words still being verified", async () => {

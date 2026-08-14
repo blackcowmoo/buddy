@@ -453,6 +453,12 @@ func TestDueCountOnlyCountsVerifiedWordsPastDue(t *testing.T) {
 	if _, err := st.MarkVerified(ctx, "alex-due", notYet.ID, now); err != nil {
 		t.Fatalf("MarkVerified(notYet) error = %v", err)
 	}
+	if _, err := st.ConfirmResearch(ctx, "alex-due", overdue.ID); err != nil {
+		t.Fatalf("ConfirmResearch(overdue) error = %v", err)
+	}
+	if _, err := st.ConfirmResearch(ctx, "alex-due", notYet.ID); err != nil {
+		t.Fatalf("ConfirmResearch(notYet) error = %v", err)
+	}
 	_ = stillPending
 
 	count, err := st.DueCount(ctx, "alex-due", now)

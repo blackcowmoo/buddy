@@ -265,8 +265,13 @@ export function WordReview() {
   }, []);
 
   const researchControls = (word: WordReviewItem) => {
-    if (word.status !== "rejected" && word.originalWord) return null;
-    if (word.researchStatus === "confirmed") return <span className="word-list-next">다시 검색 안 함</span>;
+    if (word.researchStatus === "confirmed") return null;
+    // Words defined directly from an article already have a trustworthy
+    // lookup context, so they only need the learner's approval — no noisy
+    // "다시 검색" action.
+    if (word.status !== "rejected" && word.originalWord) {
+      return <button type="button" className="ghost word-research-btn" onClick={() => void handleConfirmResearch(word)}>확정</button>;
+    }
     return (
       <>
         <button type="button" className="ghost word-research-btn" onClick={() => void handleResearch(word)} disabled={researching.has(word.id) || word.researchStatus === "pending"}>
@@ -277,7 +282,7 @@ export function WordReview() {
             {s.meaning} · {s.example}
           </button>
         ))}
-        {word.researchStatus === "done" && <button type="button" className="ghost word-research-btn" onClick={() => void handleConfirmResearch(word)}>확정</button>}
+        {word.researchStatus !== "pending" && <button type="button" className="ghost word-research-btn" onClick={() => void handleConfirmResearch(word)}>확정</button>}
       </>
     );
   };
@@ -287,7 +292,7 @@ export function WordReview() {
 
   const startQuiz = useCallback(() => {
     const now = Date.now() / 1000;
-    const verified = words.filter((w) => w.status === "verified");
+    const verified = words.filter((w) => w.status === "verified" && w.researchStatus === "confirmed");
     const due = verified.filter((w) => w.nextReviewAt <= now);
     const queue: QuizItem[] = shuffled(due).map((w) => {
       const otherMeanings = verified.filter((other) => other.id !== w.id).map((other) => other.meaning);
