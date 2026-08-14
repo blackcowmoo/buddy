@@ -1,47 +1,94 @@
 package httpserver
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
+	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/identity"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/protocol"
-	"buddy/server/internal/store"
+	"buddy/server/internal/transport"
+	"buddy/server/internal/writing"
 )
 
 type writingPromptResponse struct {
-	Korean string `json:"korean"`
+	ID        string `json:"id"`
+	Korean    string `json:"korean"`
+	Status    string `json:"status"`
+	CreatedAt int64  `json:"createdAt"`
 }
 
-// writingPromptHandler generates a fresh, profile-aware one-sentence prompt.
-func writingPromptHandler(ident identity.Identifier, st store.Store, pipe *pipeline.Pipeline) http.HandlerFunc {
+func toWritingResponse(p writing.Prompt) writingPromptResponse {
+	return writingPromptResponse{ID: p.ID, Korean: p.Korean, Status: p.Status, CreatedAt: p.CreatedAt.Unix()}
+}
+
+func writingListHandler(ident identity.Identifier, st writing.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)
 		if !ok {
 			return
 		}
-		profile, err := st.GetLearnerProfile(r.Context(), userID)
+		items, err := st.List(r.Context(), userID)
 		if err != nil {
-			serverError(w, "get learner profile for writing", err)
+			serverError(w, "list writing prompts", err)
 			return
 		}
-		prompt, err := pipe.GenerateWritingPrompt(r.Context(), profile)
-		if err != nil {
-			serverError(w, "generate writing prompt", err)
-			return
+		out := make([]writingPromptResponse, len(items))
+		for i, p := range items {
+			out[i] = toWritingResponse(p)
 		}
-		writeJSON(w, writingPromptResponse{Korean: prompt.Korean})
+		writeJSON(w, out)
 	}
 }
+
+func writingInstanceHandler(ident identity.Identifier, st writing.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := requireUser(w, r, ident)
+		if !ok {
+			return
+		}
+		p, err := st.Get(r.Context(), userID, r.PathValue("id"))
+		if err != nil {
+			serverError(w, "get writing prompt", err)
+			return
+		}
+		if p.ID == "" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, toWritingResponse(p))
+	}
+}
+
+func writingDrawHandler(ident identity.Identifier, st writing.Store, profile storeProfile, pipe *pipeline.Pipeline, q *asyncjob.Queue) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := requireUser(w, r, ident)
+		if !ok {
+			return
+		}
+		p, err := st.Create(r.Context(), userID)
+		if err != nil {
+			serverError(w, "create writing prompt", err)
+			return
+		}
+		asyncjob.EnqueueOrRunInline(q, r.Context(), "writing: enqueue prompt", func(ctx context.Context) error {
+			return transport.EnqueueWritingPromptJob(ctx, q, pipe, st, profile, p.ID, userID)
+		}, "writing: generate prompt", func(ctx context.Context) error {
+			return transport.RunWritingPromptInline(ctx, pipe, st, profile, p.ID, userID)
+		})
+		writeJSON(w, toWritingResponse(p))
+	}
+}
+
+type storeProfile func(context.Context, string) (string, error)
 
 type writingCheckRequest struct {
 	Prompt string `json:"prompt"`
 	Answer string `json:"answer"`
 }
 
-// writingCheckHandler deliberately delegates to the same correction engine
-// used by chat turns, while adding the target sentence as delimited context.
 func writingCheckHandler(ident identity.Identifier, pipe *pipeline.Pipeline) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := requireUser(w, r, ident); !ok {

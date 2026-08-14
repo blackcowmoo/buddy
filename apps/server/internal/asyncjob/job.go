@@ -136,6 +136,7 @@ const (
 	// leave the page and retrieve it when they return.
 	KindWordDefine Kind = "word-define"
 	KindWordResearch Kind = "word-research"
+	KindWritingPrompt Kind = "writing-prompt"
 )
 
 // Job is the durable Redis envelope for one unit of background work.

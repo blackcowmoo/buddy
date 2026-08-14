@@ -29,6 +29,7 @@ import (
 	"buddy/server/internal/ttsstore"
 	"buddy/server/internal/webassets"
 	"buddy/server/internal/wordreview"
+	"buddy/server/internal/writing"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -151,6 +152,14 @@ func main() {
 	// dependency beyond MySQL, always on" convention as wordReviews above.
 	articles := buildNewsArticleStore(context.Background(), st)
 	defer articles.Close()
+	writingStore := buildWritingStore(context.Background(), st)
+	defer writingStore.Close()
+
+	var writingQueue *asyncjob.Queue
+	if rdb != nil {
+		writingQueue = startWorker(rdb, jobsCtx, asyncjob.KindWritingPrompt, transport.WritingWorkerConcurrency, transport.WritingClaimTTL,
+			transport.WritingJobHandler(pipe, writingStore, st.GetLearnerProfile))
+	}
 
 	// "오늘의 아티클" read-aloud + (on demand) chat message read-aloud TTS:
 	// optional, disabled unless both BUDDY_TTS_URL and S3Bucket are set (see
@@ -294,7 +303,7 @@ func main() {
 		defer recordings.Close()
 	}
 
-	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, wordReviews, articles, wordVerifyQueue, translateQueue, correctionBackfillQueue, studySummaryQueue, studyQuizQueue, profileRegenerateQueue, articleStudyQueue, wordAutoAddQueue, articleAudio, rdb, wordDefineQueue, wordResearchQueue)
+	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, wordReviews, articles, writingStore, wordVerifyQueue, translateQueue, correctionBackfillQueue, studySummaryQueue, studyQuizQueue, profileRegenerateQueue, articleStudyQueue, writingQueue, wordAutoAddQueue, articleAudio, rdb, wordDefineQueue, wordResearchQueue)
 
 	go func() {
 		log.Printf("buddy up on %s  env=%s  stt=%v  feedback=%s",
@@ -447,6 +456,15 @@ func buildNewsArticleStore(ctx context.Context, st *store.MySQLStore) *newsartic
 		log.Fatalf("news article store: %v", err)
 	}
 	return articles
+}
+
+func buildWritingStore(ctx context.Context, st *store.MySQLStore) *writing.MySQLStore {
+	rw, ro := st.DB()
+	result, err := writing.NewMySQL(ctx, rw, ro)
+	if err != nil {
+		log.Fatalf("writing store: %v", err)
+	}
+	return result
 }
 
 // buildSTT builds the STT ensemble for pipeline.Pipeline.STT: one Recognizer
