@@ -56,7 +56,7 @@ export function Writing() {
       <aside><strong>문제 목록</strong>{prompts.map(item => <button className="ghost" key={item.id} onClick={() => void openPrompt(item)}>{item.korean || "만드는 중…"}</button>)}<button onClick={() => void loadPrompt()}>＋ 새 문제 만들기</button></aside>
       <p className="eyebrow">KOREAN → ENGLISH</p>
       <h2>오늘의 한 문장</h2>
-      {loading ? <p className="hint">문제를 만드는 중이에요…</p> : error ? <><p className="hint">문제를 불러오지 못했어요.</p><button onClick={() => void loadPrompt()}>다시 시도</button></> : <>
+      {loading ? <p className="hint">문제를 만드는 중이에요…</p> : error ? <><p className="hint">문제를 불러오지 못했어요.</p><button onClick={() => void loadPrompt()}>다시 시도</button></> : !prompt ? <><p className="hint">아직 문제가 없어요.</p><button onClick={() => void loadPrompt()}>새 문제 만들기</button></> : <>
         {prompt.status === "pending" ? <p className="hint">문제를 만드는 중이에요…</p> : prompt.status === "failed" ? <p className="hint">문제 생성에 실패했어요. 잠시 후 다시 확인해 주세요.</p> : <p className="writing-prompt">{prompt.korean}</p>}
         {prompt.status === "done" && <form onSubmit={submit}>
           <textarea value={answer} onChange={e => setAnswer(e.target.value)} placeholder="영어로 한 문장을 써보세요" rows={3} disabled={checking} />
