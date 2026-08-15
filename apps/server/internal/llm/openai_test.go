@@ -268,3 +268,10 @@ func TestNewOpenAIDoesNotDoubleV1(t *testing.T) {
 		t.Fatalf("BaseURL = %q, want /v1 kept as-is, not doubled", c.BaseURL)
 	}
 }
+
+func TestNewOpenAIUsesLongTimeoutForSlowLocalModels(t *testing.T) {
+	c := NewOpenAI("http://localhost:8081/v1", "")
+	if c.http.Timeout != 24*time.Hour {
+		t.Fatalf("HTTP timeout = %s, want 24h for slow local LLM inference", c.http.Timeout)
+	}
+}

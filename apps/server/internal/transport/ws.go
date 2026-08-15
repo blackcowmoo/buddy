@@ -23,9 +23,13 @@ import (
 )
 
 const (
-	maxAudioBytes    = 16 << 20 // 16 MiB per utterance frame
-	saveInterval     = 30 * time.Second
-	audioSaveTimeout = 30 * time.Second
+	maxAudioBytes = 16 << 20 // 16 MiB per utterance frame
+	saveInterval  = 30 * time.Second
+	// Audio persistence is deliberately detached from the WebSocket and may
+	// target a slow local or remote object store. Keep the same long-running
+	// policy as local LLM/STT inference so a temporary timeout cannot trigger
+	// duplicate background uploads.
+	audioSaveTimeout = 24 * time.Hour
 
 	// pcmSampleRate matches the wire format documented in internal/protocol:
 	// mono, 16 kHz, signed 16-bit little-endian PCM.
