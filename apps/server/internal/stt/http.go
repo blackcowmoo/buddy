@@ -37,12 +37,17 @@ type HTTPTranscriber struct {
 	name string // built once in NewHTTPTranscriber; Transcribe calls Name() on every utterance
 }
 
+// requestTimeout matches the long-running local inference policy used by the
+// LLM client. A cold or contended local STT model can take much longer than a
+// normal web request, and timing it out would invite duplicate work.
+const requestTimeout = 24 * time.Hour
+
 func NewHTTPTranscriber(engine string, urls, models []string) *HTTPTranscriber {
 	return &HTTPTranscriber{
 		Engine: engine,
 		URLs:   urls,
 		Models: models,
-		http:   &http.Client{Timeout: 60 * time.Second},
+		http:   &http.Client{Timeout: requestTimeout},
 		name:   engine + "-server(" + strings.Join(uniqueNonEmpty(models), ",") + ")",
 	}
 }

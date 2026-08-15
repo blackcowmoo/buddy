@@ -8,7 +8,15 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
+
+func TestNewHTTPTranscriberUsesLongTimeoutForSlowLocalModels(t *testing.T) {
+	h := NewHTTPTranscriber("whisper", []string{"http://localhost:8082"}, nil)
+	if h.http.Timeout != 24*time.Hour {
+		t.Fatalf("HTTP timeout = %s, want 24h for slow local STT inference", h.http.Timeout)
+	}
+}
 
 func TestHTTPTranscriberPostsMultipartWithModel(t *testing.T) {
 	var gotPath, gotModel, gotResponseFormat string
