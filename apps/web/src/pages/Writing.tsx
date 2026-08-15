@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { Correction } from "../lib/protocol";
 import { LoadingHint } from "../components/LoadingHint";
 import { SubPageHeader } from "../components/SubPageHeader";
+import { WordSearchControl } from "../components/WordSearchControl";
 import { formatMessageTime } from "../lib/time";
 import { checkWriting, deleteWritingPrompt, drawWritingPrompt, fetchWritingPrompt, fetchWritingPrompts, type WritingPrompt } from "../lib/writing";
 
@@ -128,6 +129,10 @@ export function Writing() {
             {prompt.status === "done" && <>
               <p className="writing-prompt">{prompt.korean}</p>
               <form onSubmit={submit}>
+                <div className="writing-answer-tools">
+                  <WordSearchControl />
+                  <span className="hint">모르는 단어가 있으면 검색해 보세요.</span>
+                </div>
                 <textarea value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="영어로 한 문장을 써보세요" rows={3} disabled={checking} />
                 <button type="submit" disabled={checking || !answer.trim()}>{checking ? "검사 중…" : "답안 확인"}</button>
               </form>
