@@ -337,6 +337,55 @@ func TestHandlerErrorShortensClaimToBackoffNotClaimTTL(t *testing.T) {
 	}
 }
 
+func TestFailedJobStopsAfterMaxAttempts(t *testing.T) {
+	rdb := requireRedis(t)
+	kind := testKind(t)
+	q := NewQueue(rdb)
+	ctx := context.Background()
+
+	oldBackoff, oldMax := FailureRetryBackoff, MaxAttempts
+	FailureRetryBackoff = 10 * time.Millisecond
+	MaxAttempts = 2
+	t.Cleanup(func() {
+		FailureRetryBackoff, MaxAttempts = oldBackoff, oldMax
+	})
+
+	job, ok, err := q.Enqueue(ctx, kind, "terminal", 1)
+	if err != nil || !ok {
+		t.Fatalf("enqueue: ok=%v err=%v", ok, err)
+	}
+	var calls int
+	w := NewWorker(rdb, kind, 1, time.Minute, func(context.Context, Job) error {
+		calls++
+		return errFake
+	})
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); w.Run(runCtx) }()
+	defer func() { cancel(); <-done }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if calls >= 1 {
+			time.Sleep(30 * time.Millisecond)
+			w.reapOnce(ctx)
+		}
+		if calls >= 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if calls != 2 {
+		t.Fatalf("handler calls = %d, want exactly 2", calls)
+	}
+	if n, _ := rdb.LLen(ctx, queueKey(kind)).Result(); n != 0 {
+		t.Fatalf("queue length = %d, want terminal failure removed", n)
+	}
+	if n, _ := rdb.SIsMember(ctx, dedupeSetKey(kind), job.DedupeKey).Result(); n {
+		t.Fatal("terminal failure must release its dedupe key")
+	}
+}
+
 func TestExecuteRenewsLeaseWhileHandlerRuns(t *testing.T) {
 	rdb := requireRedis(t)
 	kind := testKind(t)

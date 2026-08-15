@@ -200,6 +200,15 @@ func (q *Queue) Execute(ctx context.Context, job Job, claimTTL time.Duration, ha
 	if err := runWithLease(ctx, q.rdb, job.Kind, job.ID, claimTTL, func(handlerCtx context.Context) error {
 		return handler(handlerCtx, job)
 	}); err != nil {
+		if job.Attempts+1 >= MaxAttempts {
+			raw, marshalErr := json.Marshal(job)
+			if marshalErr == nil {
+				if abandonErr := abandonJob(ctx, q.rdb, job.Kind, job.ID, raw, job.DedupeKey); abandonErr != nil {
+					log.Printf("asyncjob: %s: abandon job %s: %v", job.Kind, job.ID, abandonErr)
+				}
+			}
+			return err
+		}
 		if expireErr := q.rdb.PExpire(ctx, claimKey(job.Kind, job.ID), FailureRetryBackoff).Err(); expireErr != nil {
 			log.Printf("asyncjob: %s: shorten claim after failure %s: %v", job.Kind, job.ID, expireErr)
 		}
@@ -333,4 +342,11 @@ func completeJob(ctx context.Context, rdb redis.UniversalClient, kind Kind, id s
 	return completeScript.Run(ctx, rdb,
 		[]string{processingKey(kind), claimKey(kind, id), dedupeSetKey(kind)}, raw, dedupeKey,
 	).Err()
+}
+
+// abandonJob permanently removes a failed job and releases its dedupe key.
+// It intentionally uses the same atomic cleanup as successful completion so
+// a later user action can enqueue a fresh attempt.
+func abandonJob(ctx context.Context, rdb redis.UniversalClient, kind Kind, id string, raw any, dedupeKey string) error {
+	return completeJob(ctx, rdb, kind, id, raw, dedupeKey)
 }
