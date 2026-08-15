@@ -122,6 +122,23 @@ func TestSaveThenListRoundTrips(t *testing.T) {
 	}
 }
 
+func TestFinishResearchStoresJSONAsText(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	saved, err := st.Save(ctx, "alex-research-json", "bank", "은행", "I went to the bank.")
+	if err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	want := []ResearchSuggestion{{Word: "bank", Meaning: "은행", Example: "I went to the bank."}}
+	got, err := st.FinishResearch(ctx, "alex-research-json", saved.ID, want)
+	if err != nil {
+		t.Fatalf("FinishResearch() error = %v", err)
+	}
+	if got.ResearchStatus != ResearchDone || len(got.ResearchResults) != 1 || got.ResearchResults[0] != want[0] {
+		t.Fatalf("FinishResearch() = %+v, want done results %+v", got, want)
+	}
+}
+
 func TestSaveOriginalPreservesArticleSpelling(t *testing.T) {
 	st := requireStore(t)
 	saved, err := st.SaveOriginal(context.Background(), "alex-original", "run", "달리다", "They run every day.", "running")

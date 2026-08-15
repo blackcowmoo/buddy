@@ -321,7 +321,11 @@ func (s *MySQLStore) FinishResearch(ctx context.Context, userID, id string, resu
 	if err != nil {
 		return Word{}, err
 	}
-	if _, err = s.rw.ExecContext(ctx, `UPDATE `+table+` SET research_status = ?, research_results = ? WHERE id = ? AND user_id = ?`, ResearchDone, b, id, userID); err != nil {
+	// database/sql drivers bind []byte as a binary value. MySQL rejects that
+	// value when it is assigned to a JSON column (ER_INVALID_JSON_CHARSET,
+	// 3144), even though the bytes contain valid UTF-8 JSON. Bind the JSON as
+	// text so the connection's utf8mb4 character set is used.
+	if _, err = s.rw.ExecContext(ctx, `UPDATE `+table+` SET research_status = ?, research_results = ? WHERE id = ? AND user_id = ?`, ResearchDone, string(b), id, userID); err != nil {
 		return Word{}, fmt.Errorf("wordreview: research finish: %w", err)
 	}
 	return s.Get(ctx, userID, id)

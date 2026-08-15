@@ -45,6 +45,13 @@ const (
 // production interval.
 var FailureRetryBackoff = 2 * time.Minute
 
+// MaxAttempts bounds automatic retries for a job whose handler keeps failing.
+// Attempts is incremented when a failed claim is reaped, so the initial run
+// has Attempts == 0. A finite bound prevents permanent failures (bad data,
+// invalid JSON, schema mismatches) from retrying forever while still giving
+// transient LLM capacity failures several chances to recover.
+var MaxAttempts = 5
+
 // Worker runs one job Kind's handler across concurrency goroutines, each
 // independently blocking on Redis to claim the next job. Unlike
 // internal/backfill's single cluster-wide-locked drainer, any number of
@@ -145,6 +152,13 @@ func (w *Worker) run(raw string) {
 	if handlerErr := runWithLease(context.Background(), w.rdb, w.kind, job.ID, w.claimTTL, func(ctx context.Context) error {
 		return w.handler(ctx, job)
 	}); handlerErr != nil {
+		if job.Attempts+1 >= MaxAttempts {
+			log.Printf("asyncjob: %s: giving up job %s after %d attempts: %v", w.kind, job.ID, job.Attempts+1, handlerErr)
+			if err := abandonJob(context.Background(), w.rdb, w.kind, job.ID, raw, job.DedupeKey); err != nil {
+				log.Printf("asyncjob: %s: abandon job %s: %v", w.kind, job.ID, err)
+			}
+			return
+		}
 		// Deliberately do NOT complete the job here: leave it claimed, but
 		// shorten that claim to FailureRetryBackoff (rather than the full,
 		// possibly many-hours-long claimTTL) so reapOnce retries it from
