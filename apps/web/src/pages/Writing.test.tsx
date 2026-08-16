@@ -17,6 +17,7 @@ vi.mock("../lib/wordSearch", () => ({ suggestWords: vi.fn() }));
 vi.mock("../lib/wordReview", () => ({ saveWord: vi.fn() }));
 
 import { Writing } from "./Writing";
+import "../styles.css";
 import { deleteWritingPrompt, drawWritingPrompt, fetchWritingPrompt, fetchWritingPrompts } from "../lib/writing";
 import { suggestWords } from "../lib/wordSearch";
 
@@ -87,5 +88,17 @@ describe("Writing page list/detail flow", () => {
     expect(suggestWords).toHaveBeenCalledWith("보다의 과거형");
     expect(await screen.findByText("watched")).toBeInTheDocument();
     expect(screen.getByPlaceholderText("영어로 한 문장을 써보세요")).toBeInTheDocument();
+  });
+
+  it("centers the word search overlay within the writing layout", async () => {
+    const user = userEvent.setup();
+    render(<Writing />);
+
+    await user.click(await screen.findByRole("button", { name: /어제 영화를 봤어요/ }));
+    await user.click(screen.getByRole("button", { name: "모르는 단어 찾기" }));
+
+    const panel = screen.getByRole("menu");
+    expect(panel).toHaveClass("word-search-panel");
+    expect(panel.closest(".writing-detail-card")).toBeInTheDocument();
   });
 });
