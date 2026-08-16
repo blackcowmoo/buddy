@@ -669,7 +669,12 @@ a.icon-btn.ghost {
 .writing-list-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .writing-list-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; color: var(--muted); font-size: 12px; }
 .writing-card { width: min(680px, calc(100% - 32px)); margin: 48px auto; padding: 28px; background: var(--panel); border: 1px solid var(--border); border-radius: 16px; }
-.writing-detail-card { margin-top: 0; }
+.writing-detail-card {
+  margin-top: 0;
+  /* Gives the word-search overlay a stable, centered reference frame on the
+     writing page instead of the small search button (see the rule below). */
+  position: relative;
+}
 .writing-card h2 { margin: 4px 0 22px; }
 .eyebrow { color: var(--muted); font-size: 12px; letter-spacing: .12em; }
 .writing-prompt { font-size: 22px; line-height: 1.6; padding: 20px; background: var(--panel-2); border-radius: 12px; }
@@ -985,6 +990,14 @@ a.icon-btn.ghost {
      out of place next to it. */
   border-radius: var(--radius);
   padding: 12px;
+}
+/* The writing answer card can be narrower than the lookup panel. Centering
+   from the search button therefore makes the panel overflow to the right on
+   phones. Center it against the whole detail card instead; the generic
+   composer lookup keeps its button-relative placement above. */
+.writing-detail-card .word-search-panel {
+  left: 50%;
+  transform: translateX(-50%);
 }
 .word-search-panel form { display: flex; gap: 8px; align-items: stretch; }
 .word-search-panel input[type="text"] {
