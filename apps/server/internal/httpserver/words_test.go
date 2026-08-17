@@ -398,6 +398,37 @@ func TestWordResearchConfirmHidesTheControl(t *testing.T) {
 	}
 }
 
+func TestWordResearchConfirmRemovesDuplicateAndKeepsExistingWord(t *testing.T) {
+	words := &fakeWordStore{byUser: map[string][]wordreview.Word{"alex": {
+		{ID: "duplicate", UserID: "alex", Word: "discovery", Meaning: "발견", Status: wordreview.StatusRejected},
+		{ID: "existing", UserID: "alex", Word: "discovery", Meaning: "발견", Status: wordreview.StatusVerified, ResearchStatus: wordreview.ResearchConfirmed, ReviewCount: 4},
+	}}}
+	h := wordResearchConfirmHandler(fakeIdentifier{id: "alex", ok: true}, words)
+	req := httptest.NewRequest("POST", "/api/words/duplicate/research/confirm", nil)
+	req.SetPathValue("id", "duplicate")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	requireStatus(t, rec, http.StatusOK)
+	var out wordItem
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.ID != "existing" {
+		t.Fatalf("returned id = %q, want existing row", out.ID)
+	}
+	if out.ReviewCount != 4 {
+		t.Fatalf("returned review count = %d, want existing history preserved", out.ReviewCount)
+	}
+	list, err := words.List(context.Background(), "alex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].ID != "existing" {
+		t.Fatalf("words after duplicate confirmation = %+v, want only existing row", list)
+	}
+}
+
 // noopVerifyPipeline is passed to wordSaveHandler in tests that don't care
 // about verification's outcome — VerifyWord errors immediately (no Analysis
 // candidates configured), which enqueueOrRunInline's inline path just logs,
