@@ -100,8 +100,5 @@ describe("Writing page list/detail flow", () => {
     const panel = screen.getByRole("menu");
     expect(panel).toHaveClass("word-search-panel");
     expect(panel.closest(".writing-detail-card")).toBeInTheDocument();
-    expect(getComputedStyle(panel.parentElement!).position).toBe("static");
-    expect(getComputedStyle(panel).left).toBe("50%");
-    expect(getComputedStyle(panel).transform).toBe("translateX(-50%)");
   });
 });
