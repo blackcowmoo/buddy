@@ -295,14 +295,6 @@ func wordResearchHandler(ident identity.Identifier, words wordreview.Store, pipe
 			http.NotFound(w, r)
 			return
 		}
-		if target.Status != wordreview.StatusRejected && target.OriginalWord != "" {
-			http.Error(w, "only excluded or legacy words can be researched", http.StatusConflict)
-			return
-		}
-		word := target.OriginalWord
-		if word == "" {
-			word = target.Word
-		}
 		store, ok := words.(wordreview.ResearchStore)
 		if !ok {
 			http.Error(w, "research is unavailable", http.StatusServiceUnavailable)
@@ -336,6 +328,35 @@ func wordResearchConfirmHandler(ident identity.Identifier, words wordreview.Stor
 		store, ok := words.(wordreview.ResearchStore)
 		if !ok {
 			http.Error(w, "research is unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		// Confirming a researched item must not create a second row when the
+		// same word and meaning was already saved through another entry point.
+		// Keep the existing row (and its review history) and remove only the
+		// duplicate being confirmed. Different meanings remain independent.
+		target, err := words.Get(r.Context(), userID, r.PathValue("id"))
+		if err != nil {
+			serverError(w, "words: research duplicate lookup", err)
+			return
+		}
+		if target.ID == "" {
+			http.NotFound(w, r)
+			return
+		}
+		list, err := words.List(r.Context(), userID)
+		if err != nil {
+			serverError(w, "words: research duplicate list", err)
+			return
+		}
+		for _, existing := range list {
+			if existing.ID == target.ID || wordreview.NormalizeWord(existing.Word) != wordreview.NormalizeWord(target.Word) || existing.Meaning != target.Meaning {
+				continue
+			}
+			if err := words.Delete(r.Context(), userID, target.ID); err != nil {
+				serverError(w, "words: research duplicate delete", err)
+				return
+			}
+			writeJSON(w, toWordItem(existing))
 			return
 		}
 		updated, err := store.ConfirmResearch(r.Context(), userID, r.PathValue("id"))

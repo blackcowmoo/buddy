@@ -13,6 +13,7 @@ vi.mock("../lib/wordReview", async () => {
     fetchWords: vi.fn(),
     deleteWord: vi.fn(),
     reviewWord: vi.fn(),
+    startResearchWord: vi.fn(),
     confirmResearchWord: vi.fn(),
     startAutoAddWords: vi.fn(),
     fetchAutoAddStatus: vi.fn(),
@@ -25,6 +26,7 @@ import {
   fetchAutoAddStatus,
   fetchWords,
   reviewWord,
+  startResearchWord,
   confirmResearchWord,
   startAutoAddWords,
   type WordReviewItem,
@@ -230,13 +232,19 @@ describe("WordReview page", () => {
     expect(screen.queryByRole("button", { name: "복습 시작" })).not.toBeInTheDocument();
   });
 
-  it("shows only 확정 for a directly defined word", async () => {
+  it("offers 다시 검색 and 확정 for a directly defined word", async () => {
     const articleWord = { ...dueWord, originalWord: "ecstatic", researchStatus: undefined };
     vi.mocked(fetchWords).mockResolvedValue({ words: [articleWord], dueCount: 0 });
+    vi.mocked(startResearchWord).mockResolvedValue({ ...articleWord, researchStatus: "pending" });
+    const user = userEvent.setup();
     render(<WordReview />);
 
+    const researchButton = await screen.findByRole("button", { name: "다시 검색" });
+    expect(researchButton).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "확정" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "다시 검색" })).not.toBeInTheDocument();
+
+    await user.click(researchButton);
+    expect(startResearchWord).toHaveBeenCalledWith(articleWord.id);
   });
 
   it("moves a rejected word into the confirmed review list and hides research controls", async () => {

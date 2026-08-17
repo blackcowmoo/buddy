@@ -249,7 +249,16 @@ export function WordReview() {
 
   const handleConfirmResearch = useCallback(async (word: WordReviewItem) => {
     const updated = await confirmResearchWord(word.id);
-    if (updated) setWords((prev) => prev.map((w) => w.id === updated.id ? updated : w));
+    if (updated) {
+      setWords((prev) => {
+        const withoutConfirmed = prev.filter((w) => w.id !== word.id);
+        const existingIndex = withoutConfirmed.findIndex((w) => w.id === updated.id);
+        if (existingIndex < 0) return [...withoutConfirmed, updated];
+        const next = [...withoutConfirmed];
+        next[existingIndex] = updated;
+        return next;
+      });
+    }
   }, []);
 
   const handleChooseMeaning = useCallback(async (oldWord: WordReviewItem, suggestion: WordSuggestion) => {
@@ -266,12 +275,6 @@ export function WordReview() {
 
   const researchControls = (word: WordReviewItem) => {
     if (word.researchStatus === "confirmed") return null;
-    // Words defined directly from an article already have a trustworthy
-    // lookup context, so they only need the learner's approval — no noisy
-    // "다시 검색" action.
-    if (word.status !== "rejected" && word.originalWord) {
-      return <button type="button" className="ghost word-research-btn" onClick={() => void handleConfirmResearch(word)}>확정</button>;
-    }
     return (
       <>
         <button type="button" className="ghost word-research-btn" onClick={() => void handleResearch(word)} disabled={researching.has(word.id) || word.researchStatus === "pending"}>
