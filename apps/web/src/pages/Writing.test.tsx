@@ -90,7 +90,7 @@ describe("Writing page list/detail flow", () => {
     expect(screen.getByPlaceholderText("영어로 한 문장을 써보세요")).toBeInTheDocument();
   });
 
-  it("centers the word search overlay within the writing layout", async () => {
+  it("centers the word search overlay against the whole writing card", async () => {
     const user = userEvent.setup();
     render(<Writing />);
 

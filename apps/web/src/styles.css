@@ -672,7 +672,7 @@ a.icon-btn.ghost {
 .writing-detail-card {
   margin-top: 0;
   /* Gives the word-search overlay a stable, centered reference frame on the
-     writing page instead of the small search button (see the rule below). */
+     writing page instead of the small search button. */
   position: relative;
 }
 .writing-card h2 { margin: 4px 0 22px; }
@@ -991,10 +991,14 @@ a.icon-btn.ghost {
   border-radius: var(--radius);
   padding: 12px;
 }
-/* The writing answer card can be narrower than the lookup panel. Centering
-   from the search button therefore makes the panel overflow to the right on
-   phones. Center it against the whole detail card instead; the generic
-   composer lookup keeps its button-relative placement above. */
+/* The writing answer card can be narrower than the lookup panel. Make the
+   control wrapper transparent to absolute positioning so this panel is
+   centered against the whole detail card, rather than against the small
+   search button. The generic composer lookup keeps its button-relative
+   placement above. */
+.writing-detail-card .word-search {
+  position: static;
+}
 .writing-detail-card .word-search-panel {
   left: 50%;
   transform: translateX(-50%);
