@@ -991,17 +991,11 @@ a.icon-btn.ghost {
   border-radius: var(--radius);
   padding: 12px;
 }
-/* The writing answer card can be narrower than the lookup panel. Make the
-   control wrapper transparent to absolute positioning so this panel is
-   centered against the whole detail card, rather than against the small
-   search button. The generic composer lookup keeps its button-relative
-   placement above. */
-.writing-detail-card .word-search {
-  position: static;
-}
+/* Keep the writing popup anchored to the search button. If the wrapper is
+   static, bottom:100% resolves against the whole detail card and sends the
+   popup above the card (and often out of view). */
 .writing-detail-card .word-search-panel {
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
 }
 .word-search-panel form { display: flex; gap: 8px; align-items: stretch; }
 .word-search-panel input[type="text"] {
