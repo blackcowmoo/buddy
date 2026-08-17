@@ -679,7 +679,7 @@ a.icon-btn.ghost {
 .eyebrow { color: var(--muted); font-size: 12px; letter-spacing: .12em; }
 .writing-prompt { font-size: 22px; line-height: 1.6; padding: 20px; background: var(--panel-2); border-radius: 12px; }
 .writing-card form { display: flex; flex-direction: column; gap: 12px; }
-.writing-answer-tools { display: flex; align-items: center; gap: 8px; min-height: 44px; }
+.writing-answer-tools { position: relative; display: flex; align-items: center; gap: 8px; min-height: 44px; }
 .writing-answer-tools .hint { font-size: 13px; }
 .writing-card textarea { width: 100%; box-sizing: border-box; resize: vertical; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); color: var(--text); font: inherit; }
 .writing-feedback { margin-top: 26px; padding-top: 22px; border-top: 1px solid var(--border); }
@@ -991,11 +991,15 @@ a.icon-btn.ghost {
   border-radius: var(--radius);
   padding: 12px;
 }
-/* Keep the writing popup anchored to the search button. If the wrapper is
-   static, bottom:100% resolves against the whole detail card and sends the
-   popup above the card (and often out of view). */
+/* Keep the popup horizontally centered in the writing card while using the
+   answer-tools row as its vertical reference. Anchoring to the whole card
+   would send bottom:100% above the card and often out of view. */
+.writing-detail-card .word-search {
+  position: static;
+}
 .writing-detail-card .word-search-panel {
-  left: 0;
+  left: 50%;
+  transform: translateX(-50%);
 }
 .word-search-panel form { display: flex; gap: 8px; align-items: stretch; }
 .word-search-panel input[type="text"] {
