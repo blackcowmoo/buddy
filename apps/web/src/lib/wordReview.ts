@@ -16,6 +16,8 @@ export interface WordReviewItem {
   stage: number;
   reviewCount: number;
   nextReviewAt: number; // unix seconds
+  /** Unix seconds of the most recent answered review; 0 when never reviewed. */
+  lastReviewedAt?: number;
   // pending: still being fact-checked in the background (see
   // wordSaveHandler's doc comment — never blocks the save response).
   // verified: passed the model-consensus check, in normal review rotation.

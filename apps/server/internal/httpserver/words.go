@@ -115,14 +115,15 @@ func articleWordDefineHandler(ident identity.Identifier, articles newsarticle.St
 // reviewed less and less often as NextReviewAt drifts further out (see
 // wordreview.stageIntervals' doc for why there's no ceiling).
 type wordItem struct {
-	ID           string `json:"id"`
-	Word         string `json:"word"`
-	Meaning      string `json:"meaning"`
-	Example      string `json:"example"`
-	OriginalWord string `json:"originalWord"`
-	Stage        int    `json:"stage"`
-	ReviewCount  int    `json:"reviewCount"`
-	NextReviewAt int64  `json:"nextReviewAt"` // unix seconds
+	ID             string `json:"id"`
+	Word           string `json:"word"`
+	Meaning        string `json:"meaning"`
+	Example        string `json:"example"`
+	OriginalWord   string `json:"originalWord"`
+	Stage          int    `json:"stage"`
+	ReviewCount    int    `json:"reviewCount"`
+	NextReviewAt   int64  `json:"nextReviewAt"`             // unix seconds
+	LastReviewedAt int64  `json:"lastReviewedAt,omitempty"` // unix seconds; 0 if never reviewed
 	// Status is "pending" (still being fact-checked in the background),
 	// "verified" (passed, in normal review rotation), or "rejected" (failed
 	// the model-consensus check — see VerifyReason). See wordreview.Status*.
@@ -133,6 +134,10 @@ type wordItem struct {
 }
 
 func toWordItem(w wordreview.Word) wordItem {
+	var lastReviewedAt int64
+	if !w.LastReviewedAt.IsZero() {
+		lastReviewedAt = w.LastReviewedAt.Unix()
+	}
 	return wordItem{
 		ID:              w.ID,
 		Word:            wordreview.NormalizeWord(w.Word),
@@ -142,6 +147,7 @@ func toWordItem(w wordreview.Word) wordItem {
 		Stage:           w.Stage,
 		ReviewCount:     w.ReviewCount,
 		NextReviewAt:    w.NextReviewAt.Unix(),
+		LastReviewedAt:  lastReviewedAt,
 		Status:          w.Status,
 		VerifyReason:    w.VerifyReason,
 		ResearchStatus:  w.ResearchStatus,

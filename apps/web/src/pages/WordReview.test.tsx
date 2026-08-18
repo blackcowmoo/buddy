@@ -55,6 +55,7 @@ const dueWord: WordReviewItem = {
   example: "She was ecstatic.",
   stage: 0,
   reviewCount: 0,
+  lastReviewedAt: Math.floor(Date.now() / 1000) - 8 * 24 * 3600,
   nextReviewAt: Math.floor(Date.now() / 1000) - 3600, // 1 hour ago: due
   status: "verified",
   researchStatus: "confirmed",
@@ -462,6 +463,7 @@ describe("WordReview page", () => {
     // masked out (replaced by an input to type directly into), not given
     // away.
     expect(await screen.findByText("매우 행복한")).toBeInTheDocument();
+    expect(screen.getByText("마지막 복습: 8일 전 복습함")).toBeInTheDocument();
     expect(screen.getByText("She was")).toBeInTheDocument();
     expect(screen.getByText(".")).toBeInTheDocument();
 
