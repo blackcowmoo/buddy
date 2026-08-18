@@ -141,7 +141,7 @@ export function Writing() {
               <p className="writing-prompt">{prompt.korean}</p>
               <form onSubmit={submit}>
                 <div className="writing-answer-tools">
-                  <WordSearchControl />
+                  <WordSearchControl placement="below" />
                   <span className="hint">모르는 단어가 있으면 검색해 보세요.</span>
                 </div>
                 <textarea value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="영어로 한 문장을 써보세요" rows={3} disabled={checking} />
