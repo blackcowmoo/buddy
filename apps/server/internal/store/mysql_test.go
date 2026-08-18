@@ -151,6 +151,11 @@ func TestMySQLNewMySQLResetsLegacyPlainTextStudySummaries(t *testing.T) {
 	ctx := context.Background()
 	const userID = "legacy-summary-user"
 	legacySession, jsonSession := "sess-legacy", "sess-json"
+	// TestMain has already bootstrapped the shared container. Remove only this
+	// marker so the rows below model data that existed before this migration.
+	if _, err := st.rw.ExecContext(ctx, `DELETE FROM buddy_schema_migrations WHERE component = 'store' AND version = 14`); err != nil {
+		t.Fatalf("reset migration marker: %v", err)
+	}
 
 	if err := st.SaveTurn(ctx, userID, legacySession, 1, "user", "first message", false, protocol.SourceText); err != nil {
 		t.Fatalf("SaveTurn(legacy) error = %v", err)
@@ -193,5 +198,23 @@ func TestMySQLNewMySQLResetsLegacyPlainTextStudySummaries(t *testing.T) {
 	}
 	if jsonMeta.StudySummaryStatus != JobStatusDone || len(jsonMeta.StudySummary) != 1 || jsonMeta.StudySummary[0] != wantJSON[0] {
 		t.Fatalf("json meta = %+v, want the bilingual summary left untouched by the legacy-reset migration", jsonMeta)
+	}
+
+	// A later startup must not run the data rewrite again after the step has
+	// been recorded.
+	if _, err := reopened.rw.ExecContext(ctx, `UPDATE `+sessionsTable+` SET study_summary = ?, study_summary_status = 'done' WHERE user_id = ? AND id = ?`, "legacy text after migration", userID, legacySession); err != nil {
+		t.Fatalf("seed post-migration value: %v", err)
+	}
+	again, err := NewMySQL(sharedStoreConfig)
+	if err != nil {
+		t.Fatalf("second NewMySQL() error = %v", err)
+	}
+	defer again.Close()
+	var summary, status string
+	if err := again.rw.QueryRowContext(ctx, `SELECT study_summary, study_summary_status FROM `+sessionsTable+` WHERE user_id = ? AND id = ?`, userID, legacySession).Scan(&summary, &status); err != nil {
+		t.Fatalf("read post-migration value: %v", err)
+	}
+	if summary != "legacy text after migration" || status != JobStatusDone {
+		t.Fatalf("post-migration value = (%q, %q), want unchanged data", summary, status)
 	}
 }

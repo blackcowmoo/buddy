@@ -32,6 +32,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
+	"buddy/server/internal/migration"
 	"buddy/server/internal/mysqlerr"
 	"buddy/server/internal/s3util"
 )
@@ -104,11 +105,14 @@ func New(ctx context.Context, cfg Config, rw, ro *sql.DB) (*Store, error) {
 	// internal/newsarticle/mysql.go's published_at column for why an
 	// idempotent ALTER (swallowing "already there") is needed alongside
 	// CREATE TABLE IF NOT EXISTS rather than instead of it.
-	if err := mysqlerr.ApplyAdditive(func() error {
-		_, err := rw.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN version VARCHAR(64) NOT NULL DEFAULT '' AFTER s3_key`)
-		return err
-	}, mysqlerr.DupFieldName); err != nil {
-		return nil, fmt.Errorf("ttsstore: migrate version: %w", err)
+	steps := []migration.Step{{1, "tts_cache.version", func(ctx context.Context, db *sql.DB) error {
+		return mysqlerr.ApplyAdditive(func() error {
+			_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN version VARCHAR(64) NOT NULL DEFAULT '' AFTER s3_key`)
+			return err
+		}, mysqlerr.DupFieldName)
+	}}}
+	if err := migration.Apply(ctx, rw, "ttsstore", steps); err != nil {
+		return nil, fmt.Errorf("ttsstore: migrations: %w", err)
 	}
 
 	return &Store{
