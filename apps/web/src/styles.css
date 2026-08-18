@@ -995,11 +995,15 @@ a.icon-btn.ghost {
    answer-tools row as its vertical reference. Anchoring to the whole card
    would send bottom:100% above the card and often out of view. */
 .writing-detail-card .word-search {
-  position: static;
+  position: relative;
 }
-.writing-detail-card .word-search-panel {
+.writing-detail-card .word-search-panel-below {
+  position: fixed;
+  top: auto;
+  bottom: auto;
   left: 50%;
   transform: translateX(-50%);
+  z-index: 20;
 }
 .word-search-panel form { display: flex; gap: 8px; align-items: stretch; }
 .word-search-panel input[type="text"] {

@@ -106,7 +106,7 @@ describe("Writing page list/detail flow", () => {
     expect(screen.getByPlaceholderText("영어로 한 문장을 써보세요")).toBeInTheDocument();
   });
 
-  it("centers the word search overlay and anchors it above the answer tools", async () => {
+  it("centers the word search overlay and places it below the answer tools", async () => {
     const user = userEvent.setup();
     render(<Writing />);
 
@@ -115,6 +115,9 @@ describe("Writing page list/detail flow", () => {
 
     const panel = screen.getByRole("menu");
     expect(panel).toHaveClass("word-search-panel");
+    expect(panel).toHaveClass("word-search-panel-below");
+    expect(panel).toHaveStyle({ left: "50vw" });
+    expect(panel).toHaveStyle({ top: "6px" });
     expect(panel.parentElement).toHaveClass("word-search");
     expect(panel.closest(".writing-answer-tools")).toBeInTheDocument();
     expect(panel.closest(".writing-detail-card")).toBeInTheDocument();
