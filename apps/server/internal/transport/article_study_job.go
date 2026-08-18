@@ -2,6 +2,8 @@ package transport
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"time"
@@ -28,11 +30,14 @@ type ArticleAudio struct {
 	Cache  ttsstore.Cache
 }
 
-// ArticleAudioKey is the ttsstore.Store cache key for articleID's read-aloud
-// audio — one function so the job below and httpserver's audio handler
-// (which also needs it, to check the cache before falling back to
-// on-demand generation) never drift apart on the "article:" prefix.
-func ArticleAudioKey(articleID string) string { return "article:" + articleID }
+// ArticleAudioKey is the ttsstore.Store cache key for one article summary's
+// read-aloud audio. Include a fingerprint of the text as well as the article
+// ID: an article can be regenerated in place, and an ID-only key would then
+// serve audio for the previous summary.
+func ArticleAudioKey(articleID, text string) string {
+	digest := sha256.Sum256([]byte(text))
+	return "article:" + articleID + ":" + hex.EncodeToString(digest[:])
+}
 
 // Generate synthesizes text via Client and caches it under key, returning
 // the generated audio bytes. Shared by generate below (the article study
@@ -61,7 +66,7 @@ func (a *ArticleAudio) generate(ctx context.Context, articleID, text string) {
 	if a == nil {
 		return
 	}
-	if _, err := a.Generate(ctx, ArticleAudioKey(articleID), text); err != nil {
+	if _, err := a.Generate(ctx, ArticleAudioKey(articleID, text), text); err != nil {
 		log.Printf("article study: tts: %s: %v", articleID, err)
 	}
 }
