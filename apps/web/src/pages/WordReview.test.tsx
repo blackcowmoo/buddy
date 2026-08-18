@@ -120,13 +120,17 @@ const rejectedWord: WordReviewItem = {
   verifyReason: "실제로 사용되는 영단어가 아니에요",
 };
 
-// Three other verified words distinct from dueWord, so a recognition-mode
+// Seven other verified words distinct from dueWord, so a recognition-mode
 // question about dueWord has enough distractor meanings (see
 // minRecognitionDistractors in WordReview.tsx).
 const otherVerifiedWords: WordReviewItem[] = [
   { id: "w3", word: "gloomy", meaning: "우울한", example: "a gloomy day", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(Date.now() / 1000) + 999999, status: "verified", researchStatus: "confirmed" },
   { id: "w4", word: "jaded", meaning: "지친", example: "a jaded look", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(Date.now() / 1000) + 999999, status: "verified", researchStatus: "confirmed" },
   { id: "w5", word: "content", meaning: "만족하는", example: "feeling content", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(Date.now() / 1000) + 999999, status: "verified", researchStatus: "confirmed" },
+  { id: "w6", word: "vivid", meaning: "생생한", example: "a vivid memory", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(Date.now() / 1000) + 999999, status: "verified", researchStatus: "confirmed" },
+  { id: "w7", word: "fragile", meaning: "깨지기 쉬운", example: "a fragile vase", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(Date.now() / 1000) + 999999, status: "verified", researchStatus: "confirmed" },
+  { id: "w8", word: "reliable", meaning: "믿을 수 있는", example: "a reliable source", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(Date.now() / 1000) + 999999, status: "verified", researchStatus: "confirmed" },
+  { id: "w9", word: "concise", meaning: "간결한", example: "a concise answer", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(Date.now() / 1000) + 999999, status: "verified", researchStatus: "confirmed" },
 ];
 
 // Mocks fetchWords to return `words` (always dueCount: 1 — every quiz test
@@ -659,6 +663,8 @@ describe("WordReview page", () => {
     // — nothing to hide, since recognizing the word is what's being tested.
     expect(await screen.findByText("ecstatic")).toBeInTheDocument();
     expect(screen.getByText("She was ecstatic.")).toBeInTheDocument();
+    expect(screen.getAllByRole("button")).toHaveLength(10); // back + 8 meanings + "잘 모르겠어요"
+    expect(screen.getByRole("button", { name: "잘 모르겠어요" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "매우 행복한" }));
 
@@ -678,6 +684,25 @@ describe("WordReview page", () => {
 
     expect(await screen.findByText(/아쉬워요\. 정답: 매우 행복한/)).toBeInTheDocument();
     expect(reviewWord).toHaveBeenCalledWith("w1", false);
+  });
+
+  it("resets the review day when the learner does not know a recognition answer", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    vi.mocked(reviewWord)
+      .mockResolvedValueOnce({ ...dueWord, stage: 0, reviewCount: 2 })
+      .mockResolvedValueOnce({ ...dueWord, stage: 1, reviewCount: 3 });
+    const user = await startQuiz([dueWord, ...otherVerifiedWords]);
+
+    await user.click(screen.getByRole("button", { name: "잘 모르겠어요" }));
+    expect(await screen.findByText(/아쉬워요\. 정답: 매우 행복한/)).toBeInTheDocument();
+    expect(reviewWord).toHaveBeenCalledWith("w1", false);
+
+    // "모르겠어요" resets the word and puts it back at the end of the
+    // session for an immediate day-1 retry.
+    await user.click(screen.getByRole("button", { name: "다음 단어" }));
+    await user.click(screen.getByRole("button", { name: "매우 행복한" }));
+    await user.click(screen.getByRole("button", { name: "결과 보기" }));
+    expect(reviewWord).toHaveBeenLastCalledWith("w1", true, false);
   });
 
   it("returns to the list from the quiz view", async () => {
