@@ -119,8 +119,8 @@ function blanksMatch(expected: string[], given: string[]): boolean {
 // A review session mixes two question shapes so a learner practices both
 // producing English (writing) and understanding it (reading), not just one:
 // - "recall": meaning + masked example -> type the word.
-// - "recognition": word + example -> pick the correct meaning from 4
-//   choices, 3 of them pulled from the learner's own other verified words'
+// - "recognition": word + example -> pick the correct meaning from 8
+//   choices, 7 of them pulled from the learner's own other verified words'
 //   meanings (see startQuiz) — no LLM call, built entirely from data already
 //   loaded, and no new asyncjob (this app assumes a slow local LLM — see
 //   wordreview's package doc — so a review session must never wait on one).
@@ -128,7 +128,7 @@ type QuizMode = "recall" | "recognition";
 interface QuizItem {
   word: WordReviewItem;
   mode: QuizMode;
-  choices?: string[]; // recognition only: the 4 shuffled options
+  choices?: string[]; // recognition only: the 8 shuffled meaning options
 }
 
 function formatReviewAge(unixSeconds: number | undefined): string {
@@ -137,11 +137,11 @@ function formatReviewAge(unixSeconds: number | undefined): string {
   return days === 0 ? "오늘 복습함" : `${days}일 전 복습함`;
 }
 
-// minRecognitionChoices-1 other verified words' meanings are needed to fill
-// out a 4-option multiple-choice question — below that, recognition mode
-// would either repeat an option or show fewer than 4, so that word gets
+// minRecognitionDistractors other verified words' meanings are needed to fill
+// out an 8-option multiple-choice question — below that, recognition mode
+// would either repeat an option or show fewer than 8, so that word gets
 // recall mode instead.
-const minRecognitionDistractors = 3;
+const minRecognitionDistractors = 7;
 
 export function WordReview() {
   const [state, setState] = useState<LoadState>("loading");
@@ -623,7 +623,7 @@ export function WordReview() {
                             {checkingSimilarity ? "확인 중…" : "확인"}
                           </button>
                           <button type="button" className="ghost quiz-forced-btn" onClick={() => finishCheck(currentItem, false)} disabled={checkingSimilarity}>
-                            모르겠어요
+                            잘 모르겠어요
                           </button>
                         </div>
                       </>
@@ -650,6 +650,14 @@ export function WordReview() {
                           </button>
                         );
                       })}
+                      <button
+                        type="button"
+                        className="ghost quiz-forced-btn"
+                        onClick={() => finishCheck(currentItem, false)}
+                        disabled={checked}
+                      >
+                        잘 모르겠어요
+                      </button>
                     </div>
                   </>
                 )}
