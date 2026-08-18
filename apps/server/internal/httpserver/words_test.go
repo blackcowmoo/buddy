@@ -59,6 +59,20 @@ func TestWordSuggestHandlerReturnsSuggestions(t *testing.T) {
 	}
 }
 
+func TestToWordItemUsesZeroForNeverReviewedWord(t *testing.T) {
+	out, err := json.Marshal(toWordItem(wordreview.Word{ID: "w1", Word: "ecstatic"}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(out, &fields); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, present := fields["lastReviewedAt"]; present {
+		t.Fatal("lastReviewedAt should be omitted for a word never reviewed")
+	}
+}
+
 func TestWordSuggestHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
 	h := wordSuggestHandler(fakeIdentifier{ok: false}, &pipeline.Pipeline{})
 
@@ -310,6 +324,7 @@ func (f *fakeWordStore) Review(ctx context.Context, userID, id string, correct, 
 	for i, w := range f.byUser[userID] {
 		if w.ID == id {
 			w.ReviewCount++
+			w.LastReviewedAt = now
 			f.byUser[userID][i] = w
 			return w, nil
 		}
@@ -610,13 +625,17 @@ func TestWordReviewUpdatesAndReturnsWord(t *testing.T) {
 
 	requireStatus(t, rec, http.StatusOK)
 	var out struct {
-		ReviewCount int `json:"reviewCount"`
+		ReviewCount    int   `json:"reviewCount"`
+		LastReviewedAt int64 `json:"lastReviewedAt"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("bad JSON body: %v", err)
 	}
 	if out.ReviewCount != 1 {
 		t.Fatalf("reviewCount = %d, want 1", out.ReviewCount)
+	}
+	if out.LastReviewedAt == 0 {
+		t.Fatal("lastReviewedAt = 0, want the review timestamp")
 	}
 }
 

@@ -131,6 +131,12 @@ interface QuizItem {
   choices?: string[]; // recognition only: the 4 shuffled options
 }
 
+function formatReviewAge(unixSeconds: number | undefined): string {
+  if (!unixSeconds) return "아직 복습한 적 없음";
+  const days = Math.max(0, Math.floor((Date.now() / 1000 - unixSeconds) / (24 * 60 * 60)));
+  return days === 0 ? "오늘 복습함" : `${days}일 전 복습함`;
+}
+
 // minRecognitionChoices-1 other verified words' meanings are needed to fill
 // out a 4-option multiple-choice question — below that, recognition mode
 // would either repeat an option or show fewer than 4, so that word gets
@@ -564,6 +570,9 @@ export function WordReview() {
               <div className="quiz-question">
                 <div className="quiz-progress">
                   {index + 1} / {quizQueue.length}
+                </div>
+                <div className="quiz-review-age" role="note">
+                  마지막 복습: {formatReviewAge(current.lastReviewedAt)}
                 </div>
                 {currentItem.mode === "recall" ? (
                   <>
