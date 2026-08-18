@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 
+	"buddy/server/internal/migration"
 	"buddy/server/internal/mysqlerr"
 )
 
@@ -175,123 +176,126 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 		}
 		return nil
 	}
-	// buddy_turns predates input-source tracking, same as translation above.
-	if err := addColumn(turnsTable, "translation TEXT NULL", "translation"); err != nil {
-		return nil, err
-	}
-	if err := addColumn(turnsTable, "source VARCHAR(8) NOT NULL DEFAULT ''", "source"); err != nil {
-		return nil, err
-	}
-	// Predates the auto-title feature. Tracks whether a session's title has
-	// already been LLM-generated (see SaveGeneratedTitle) so a reconnect can
-	// never re-trigger and flap it.
-	if err := addColumn(sessionsTable, "title_generated TINYINT(1) NOT NULL DEFAULT 0", "title_generated"); err != nil {
-		return nil, err
-	}
-	// Predates the permanent end-conversation feature. ended+study_summary
-	// together let a learner's confirmed "end this conversation" wrap-up
-	// survive a reload instead of being regenerated (or lost) — see
-	// EndSession.
-	if err := addColumn(sessionsTable, "ended TINYINT(1) NOT NULL DEFAULT 0", "ended"); err != nil {
-		return nil, err
-	}
-	// No DEFAULT clause: MySQL rejects a literal default on a TEXT column
-	// (error 1101) — same reason summary/recent/interlocutor_style above
-	// never carry one either. ADD COLUMN still backfills existing rows with
-	// '' on its own; every INSERT that can create a new row from here on
-	// just has to list this column explicitly (see ensureSessionRow /
-	// SaveGeneratedTitle below).
-	if err := addColumn(sessionsTable, "study_summary TEXT NOT NULL", "study_summary"); err != nil {
-		return nil, err
-	}
-	// Predates the cross-session learner-profile feature. Unlike
-	// interlocutor_style (a learner-set preference), this is LLM-maintained —
-	// see Pipeline.UpdateLearnerProfile — and layered into BuildSystemPrompt
-	// alongside it so a brand-new conversation still carries forward what
-	// earlier, unrelated conversations revealed about this learner. Same
-	// no-DEFAULT reasoning as study_summary above.
-	if err := addColumn(settingsTable, "learner_profile TEXT NOT NULL", "learner_profile"); err != nil {
-		return nil, err
-	}
-	// Predates asyncjob.KindWordAutoAdd: lets httpserver.wordAutoAddHandler
-	// return immediately after marking this row JobStatusPending, before
-	// pipeline.Pipeline.SuggestNewWords' LLM call even starts, with these two
-	// columns tracking that background job's progress for a reopened word-
-	// review page to poll — see store.MySQLStore.StartWordAutoAdd/
-	// CompleteWordAutoAdd/FailWordAutoAdd. VARCHAR (not TEXT) so it can carry
-	// a DEFAULT, same reasoning as quiz_status above.
-	if err := addColumn(settingsTable, "word_auto_add_status VARCHAR(16) NOT NULL DEFAULT ''", "word_auto_add_status"); err != nil {
-		return nil, err
-	}
-	if err := addColumn(settingsTable, "word_auto_add_count INT NOT NULL DEFAULT 0", "word_auto_add_count"); err != nil {
-		return nil, err
-	}
-	// Predates asyncjob.KindStudySummary: lets EndSession freeze a room and
-	// return immediately, before the wrap-up LLM call even starts, with this
-	// column tracking that background job's progress (JobStatusPending/Done/
-	// Failed) for a reopened room or the room list to poll — see
-	// CompleteStudySummary/FailStudySummary. A VARCHAR, unlike study_summary
-	// above, so it can carry a DEFAULT: existing ended rows (frozen back when
-	// the wrap-up was generated synchronously, before this column existed)
-	// backfill to '' automatically, which SessionMeta.StudySummaryStatus's
-	// doc comment treats the same as JobStatusDone.
-	if err := addColumn(sessionsTable, "study_summary_status VARCHAR(16) NOT NULL DEFAULT ''", "study_summary_status"); err != nil {
-		return nil, err
-	}
-	// Predates asyncjob.KindStudyQuiz: pre-generates the practice quiz
-	// alongside the wrap-up, right when EndSession freezes the room, instead
-	// of on demand when the learner opens it — so tapping "퀴즈 풀기" shows an
-	// already-finished quiz instantly. Same no-DEFAULT reasoning as
-	// study_summary above.
-	if err := addColumn(sessionsTable, "quiz TEXT NOT NULL", "quiz"); err != nil {
-		return nil, err
-	}
-	// Tracks asyncjob.KindStudyQuiz's own progress independently of
-	// study_summary_status — the two jobs run in parallel from the same
-	// EndSession call, not one after the other, so they need separate status
-	// columns. Same DEFAULT reasoning as study_summary_status above.
-	if err := addColumn(sessionsTable, "quiz_status VARCHAR(16) NOT NULL DEFAULT ''", "quiz_status"); err != nil {
-		return nil, err
-	}
-	// A one-way "studied this" checkmark for the room list — see
-	// SessionMeta.QuizCompleted's doc comment.
-	if err := addColumn(sessionsTable, "quiz_completed TINYINT(1) NOT NULL DEFAULT 0", "quiz_completed"); err != nil {
-		return nil, err
-	}
-	// Marks a room opened from "오늘의 한 문장"/instant mode (see MarkInstant) —
-	// set right after the server mints the session ID, independently of
-	// SaveTurn's own row-creating upsert (ensureSessionRow), since the two
-	// writes race the same way SaveGeneratedTitle already does against it.
-	// ListSessions excludes these (WHERE instant = 0) so they never clutter
-	// the main room list; ListInstantSessions is the one place that reads
-	// them back, for their own dedicated list page.
-	if err := addColumn(sessionsTable, "instant TINYINT(1) NOT NULL DEFAULT 0", "instant"); err != nil {
-		return nil, err
-	}
-	// One-time reset for rows written before GenerateStudySummary switched to
-	// the bilingual (English + native-translation, sentence-by-sentence) JSON
-	// shape decodeStudySummary now expects: a pre-existing "done" summary is
-	// plain native-language prose, not JSON, so leaving it in place would
-	// make it silently vanish (decodeStudySummary treats anything that
-	// doesn't parse as nil) with no way for the learner to tell a wrap-up
-	// once existed. Reset back to JobStatusPending — not "" — so it reads as
-	// "regenerating", not "done, nothing to show": httpserver.sessionDetailHandler's
-	// needsStudySummaryBackfill re-enqueues asyncjob.KindStudySummary for
-	// exactly this state (Ended, StudySummaryStatus == JobStatusPending, no
-	// StudySummary yet) the next time the learner opens the session, and
-	// regenerates it from each turn's still-intact store.Turn.Correction —
-	// the underlying issues were never touched by this migration, only the
-	// old free-text wrap-up column was. Guarded by the LEFT(...) <> '[' check
-	// so it only ever touches legacy plain-text rows: a summary already in
-	// the new JSON-array shape (from a session ended after this migration
-	// first ran) always starts with '[' and is left untouched, so this is
-	// safe to run unconditionally on every startup.
-	if _, err := rw.Exec(`
+	steps := []migration.Step{
+		{1, "turns.translation", func(context.Context, *sql.DB) error {
+			return addColumn(turnsTable, "translation TEXT NULL", "translation")
+		}},
+		{2, "turns.source", func(context.Context, *sql.DB) error {
+			return addColumn(turnsTable, "source VARCHAR(8) NOT NULL DEFAULT ''", "source")
+		}},
+		// Predates the auto-title feature. Tracks whether a session's title has
+		// already been LLM-generated (see SaveGeneratedTitle) so a reconnect can
+		// never re-trigger and flap it.
+		{3, "sessions.title_generated", func(context.Context, *sql.DB) error {
+			return addColumn(sessionsTable, "title_generated TINYINT(1) NOT NULL DEFAULT 0", "title_generated")
+		}},
+		// Predates the permanent end-conversation feature. ended+study_summary
+		// together let a learner's confirmed "end this conversation" wrap-up
+		// survive a reload instead of being regenerated (or lost) — see
+		// EndSession.
+		{4, "sessions.ended", func(context.Context, *sql.DB) error {
+			return addColumn(sessionsTable, "ended TINYINT(1) NOT NULL DEFAULT 0", "ended")
+		}},
+		// No DEFAULT clause: MySQL rejects a literal default on a TEXT column
+		// (error 1101) — same reason summary/recent/interlocutor_style above
+		// never carry one either. ADD COLUMN still backfills existing rows with
+		// '' on its own; every INSERT that can create a new row from here on
+		// just has to list this column explicitly (see ensureSessionRow /
+		// SaveGeneratedTitle below).
+		{5, "sessions.study_summary", func(context.Context, *sql.DB) error {
+			return addColumn(sessionsTable, "study_summary TEXT NOT NULL", "study_summary")
+		}},
+		// Predates the cross-session learner-profile feature. Unlike
+		// interlocutor_style (a learner-set preference), this is LLM-maintained —
+		// see Pipeline.UpdateLearnerProfile — and layered into BuildSystemPrompt
+		// alongside it so a brand-new conversation still carries forward what
+		// earlier, unrelated conversations revealed about this learner. Same
+		// no-DEFAULT reasoning as study_summary above.
+		{6, "settings.learner_profile", func(context.Context, *sql.DB) error {
+			return addColumn(settingsTable, "learner_profile TEXT NOT NULL", "learner_profile")
+		}},
+		// Predates asyncjob.KindWordAutoAdd: lets httpserver.wordAutoAddHandler
+		// return immediately after marking this row JobStatusPending, before
+		// pipeline.Pipeline.SuggestNewWords' LLM call even starts, with these two
+		// columns tracking that background job's progress for a reopened word-
+		// review page to poll — see store.MySQLStore.StartWordAutoAdd/
+		// CompleteWordAutoAdd/FailWordAutoAdd. VARCHAR (not TEXT) so it can carry
+		// a DEFAULT, same reasoning as quiz_status above.
+		{7, "settings.word_auto_add_status", func(context.Context, *sql.DB) error {
+			return addColumn(settingsTable, "word_auto_add_status VARCHAR(16) NOT NULL DEFAULT ''", "word_auto_add_status")
+		}},
+		{8, "settings.word_auto_add_count", func(context.Context, *sql.DB) error {
+			return addColumn(settingsTable, "word_auto_add_count INT NOT NULL DEFAULT 0", "word_auto_add_count")
+		}},
+		// Predates asyncjob.KindStudySummary: lets EndSession freeze a room and
+		// return immediately, before the wrap-up LLM call even starts, with this
+		// column tracking that background job's progress (JobStatusPending/Done/
+		// Failed) for a reopened room or the room list to poll — see
+		// CompleteStudySummary/FailStudySummary. A VARCHAR, unlike study_summary
+		// above, so it can carry a DEFAULT: existing ended rows (frozen back when
+		// the wrap-up was generated synchronously, before this column existed)
+		// backfill to '' automatically, which SessionMeta.StudySummaryStatus's
+		// doc comment treats the same as JobStatusDone.
+		{9, "sessions.study_summary_status", func(context.Context, *sql.DB) error {
+			return addColumn(sessionsTable, "study_summary_status VARCHAR(16) NOT NULL DEFAULT ''", "study_summary_status")
+		}},
+		// Predates asyncjob.KindStudyQuiz: pre-generates the practice quiz
+		// alongside the wrap-up, right when EndSession freezes the room, instead
+		// of on demand when the learner opens it — so tapping "퀴즈 풀기" shows an
+		// already-finished quiz instantly. Same no-DEFAULT reasoning as
+		// study_summary above.
+		{10, "sessions.quiz", func(context.Context, *sql.DB) error { return addColumn(sessionsTable, "quiz TEXT NOT NULL", "quiz") }},
+		// Tracks asyncjob.KindStudyQuiz's own progress independently of
+		// study_summary_status — the two jobs run in parallel from the same
+		// EndSession call, not one after the other, so they need separate status
+		// columns. Same DEFAULT reasoning as study_summary_status above.
+		{11, "sessions.quiz_status", func(context.Context, *sql.DB) error {
+			return addColumn(sessionsTable, "quiz_status VARCHAR(16) NOT NULL DEFAULT ''", "quiz_status")
+		}},
+		// A one-way "studied this" checkmark for the room list — see
+		// SessionMeta.QuizCompleted's doc comment.
+		{12, "sessions.quiz_completed", func(context.Context, *sql.DB) error {
+			return addColumn(sessionsTable, "quiz_completed TINYINT(1) NOT NULL DEFAULT 0", "quiz_completed")
+		}},
+		// Marks a room opened from "오늘의 한 문장"/instant mode (see MarkInstant) —
+		// set right after the server mints the session ID, independently of
+		// SaveTurn's own row-creating upsert (ensureSessionRow), since the two
+		// writes race the same way SaveGeneratedTitle already does against it.
+		// ListSessions excludes these (WHERE instant = 0) so they never clutter
+		// the main room list; ListInstantSessions is the one place that reads
+		// them back, for their own dedicated list page.
+		{13, "sessions.instant", func(context.Context, *sql.DB) error {
+			return addColumn(sessionsTable, "instant TINYINT(1) NOT NULL DEFAULT 0", "instant")
+		}},
+		// One-time reset for rows written before GenerateStudySummary switched to
+		// the bilingual (English + native-translation, sentence-by-sentence) JSON
+		// shape decodeStudySummary now expects: a pre-existing "done" summary is
+		// plain native-language prose, not JSON, so leaving it in place would
+		// make it silently vanish (decodeStudySummary treats anything that
+		// doesn't parse as nil) with no way for the learner to tell a wrap-up
+		// once existed. Reset back to JobStatusPending — not "" — so it reads as
+		// "regenerating", not "done, nothing to show": httpserver.sessionDetailHandler's
+		// needsStudySummaryBackfill re-enqueues asyncjob.KindStudySummary for
+		// exactly this state (Ended, StudySummaryStatus == JobStatusPending, no
+		// StudySummary yet) the next time the learner opens the session, and
+		// regenerates it from each turn's still-intact store.Turn.Correction —
+		// the underlying issues were never touched by this migration, only the
+		// old free-text wrap-up column was. Guarded by the LEFT(...) <> '[' check
+		// so it only ever touches legacy plain-text rows: a summary already in
+		// the new JSON-array shape (from a session ended after this migration
+		// first ran) always starts with '[' and is left untouched. The migration
+		// marker makes this compatibility rewrite run only once.
+		{14, "reset_legacy_study_summaries", func(ctx context.Context, db *sql.DB) error {
+			_, err := db.ExecContext(ctx, `
 		UPDATE `+sessionsTable+` SET study_summary = '', study_summary_status = ?
 		WHERE study_summary_status = 'done' AND study_summary <> '' AND LEFT(study_summary, 1) <> '['
-	`, JobStatusPending); err != nil {
+	`, JobStatusPending)
+			return err
+		}},
+	}
+	if err := migration.Apply(context.Background(), rw, "store", steps); err != nil {
 		closeAll()
-		return nil, fmt.Errorf("store: schema: reset legacy study summaries: %w", err)
+		return nil, fmt.Errorf("store: schema migrations: %w", err)
 	}
 	return &MySQLStore{rw: rw, ro: ro}, nil
 }

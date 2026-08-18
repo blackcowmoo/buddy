@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"buddy/server/internal/migration"
 	"buddy/server/internal/mysqlerr"
 )
 
@@ -77,45 +78,50 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 	// dropped — harmless, unused dead weight, and DROP COLUMN has no
 	// idempotent "already applied" story to swallow the way ADD COLUMN does
 	// via mysqlerr.ApplyAdditive.
-	if err := addColumn(ctx, rw, `ALTER TABLE `+articlesTable+` ADD COLUMN sub_questions_json TEXT NULL AFTER summary`, "sub_questions_json"); err != nil {
-		return nil, err
+	steps := []migration.Step{
+		{1, "articles.sub_questions_json", func(ctx context.Context, db *sql.DB) error {
+			return addColumn(ctx, db, `ALTER TABLE `+articlesTable+` ADD COLUMN sub_questions_json TEXT NULL AFTER summary`, "sub_questions_json")
+		}},
+		// Predates asyncjob.KindArticleStudy, back when SaveArticle only ever
+		// inserted an already-fully-generated row (the LLM call ran synchronously
+		// in httpserver.articleDrawHandler's request path) — every pre-existing
+		// row is therefore already StatusDone, hence the DEFAULT above backfilling
+		// them automatically. See mysqlerr's doc for why this ADD COLUMN needs to
+		// swallow "already applied" rather than use IF NOT EXISTS.
+		{2, "articles.status", func(ctx context.Context, db *sql.DB) error {
+			return addColumn(ctx, db, `ALTER TABLE `+articlesTable+` ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT '`+StatusDone+`'`, "status")
+		}},
+		// description backs Article.Description — see its doc comment for why
+		// it's persisted rather than only passed transiently through the draw
+		// request. claimed_at backs StalePending/ClaimArticle's DB-only orphan
+		// sweep; defaulting both new columns to '' / created_at-equivalent 0
+		// leaves every pre-existing row (all already StatusDone, per the status
+		// column above) permanently ineligible for the sweep's `status =
+		// StatusPending` filter regardless of claimed_at's backfilled value.
+		// VARCHAR, not TEXT: MySQL rejects a literal DEFAULT on BLOB/TEXT/JSON
+		// columns outright (only expression defaults are allowed there), and a
+		// feed snippet (see newsfeed.Candidate.Description's doc comment) is
+		// short by construction anyway, same reasoning as title's VARCHAR(512).
+		{3, "articles.description", func(ctx context.Context, db *sql.DB) error {
+			return addColumn(ctx, db, `ALTER TABLE `+articlesTable+` ADD COLUMN description VARCHAR(2048) NOT NULL DEFAULT ''`, "description")
+		}},
+		{4, "articles.translation", func(ctx context.Context, db *sql.DB) error {
+			return addColumn(ctx, db, `ALTER TABLE `+articlesTable+` ADD COLUMN translation TEXT NULL AFTER summary`, "translation")
+		}},
+		{5, "articles.claimed_at", func(ctx context.Context, db *sql.DB) error {
+			return addColumn(ctx, db, `ALTER TABLE `+articlesTable+` ADD COLUMN claimed_at BIGINT NOT NULL DEFAULT 0`, "claimed_at")
+		}},
+		// published_at backs Article.PublishedAt — the source feed's own <pubDate>
+		// (see newsfeed.Candidate.PublishedAt), separate from created_at (when
+		// this row was reserved). DEFAULT 0 leaves every pre-existing row with a
+		// zero PublishedAt, same "unknown, render nothing" fallback a fresh row
+		// gets if its feed item had no parseable pubDate.
+		{6, "articles.published_at", func(ctx context.Context, db *sql.DB) error {
+			return addColumn(ctx, db, `ALTER TABLE `+articlesTable+` ADD COLUMN published_at BIGINT NOT NULL DEFAULT 0`, "published_at")
+		}},
 	}
-	// Predates asyncjob.KindArticleStudy, back when SaveArticle only ever
-	// inserted an already-fully-generated row (the LLM call ran synchronously
-	// in httpserver.articleDrawHandler's request path) — every pre-existing
-	// row is therefore already StatusDone, hence the DEFAULT above backfilling
-	// them automatically. See mysqlerr's doc for why this ADD COLUMN needs to
-	// swallow "already applied" rather than use IF NOT EXISTS.
-	if err := addColumn(ctx, rw, `ALTER TABLE `+articlesTable+` ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT '`+StatusDone+`'`, "status"); err != nil {
-		return nil, err
-	}
-	// description backs Article.Description — see its doc comment for why
-	// it's persisted rather than only passed transiently through the draw
-	// request. claimed_at backs StalePending/ClaimArticle's DB-only orphan
-	// sweep; defaulting both new columns to '' / created_at-equivalent 0
-	// leaves every pre-existing row (all already StatusDone, per the status
-	// column above) permanently ineligible for the sweep's `status =
-	// StatusPending` filter regardless of claimed_at's backfilled value.
-	// VARCHAR, not TEXT: MySQL rejects a literal DEFAULT on BLOB/TEXT/JSON
-	// columns outright (only expression defaults are allowed there), and a
-	// feed snippet (see newsfeed.Candidate.Description's doc comment) is
-	// short by construction anyway, same reasoning as title's VARCHAR(512).
-	if err := addColumn(ctx, rw, `ALTER TABLE `+articlesTable+` ADD COLUMN description VARCHAR(2048) NOT NULL DEFAULT ''`, "description"); err != nil {
-		return nil, err
-	}
-	if err := addColumn(ctx, rw, `ALTER TABLE `+articlesTable+` ADD COLUMN translation TEXT NULL AFTER summary`, "translation"); err != nil {
-		return nil, err
-	}
-	if err := addColumn(ctx, rw, `ALTER TABLE `+articlesTable+` ADD COLUMN claimed_at BIGINT NOT NULL DEFAULT 0`, "claimed_at"); err != nil {
-		return nil, err
-	}
-	// published_at backs Article.PublishedAt — the source feed's own <pubDate>
-	// (see newsfeed.Candidate.PublishedAt), separate from created_at (when
-	// this row was reserved). DEFAULT 0 leaves every pre-existing row with a
-	// zero PublishedAt, same "unknown, render nothing" fallback a fresh row
-	// gets if its feed item had no parseable pubDate.
-	if err := addColumn(ctx, rw, `ALTER TABLE `+articlesTable+` ADD COLUMN published_at BIGINT NOT NULL DEFAULT 0`, "published_at"); err != nil {
-		return nil, err
+	if err := migration.Apply(ctx, rw, "newsarticle", steps); err != nil {
+		return nil, fmt.Errorf("newsarticle: migrations: %w", err)
 	}
 
 	// selected_options_json defaults to NULL — not yet answered, distinct
@@ -145,8 +151,11 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 	// picks) — same clean-break, NULL-with-no-default reasoning as
 	// sub_questions_json above. A pre-existing row's backfilled NULL scans
 	// as SelectedOptions == nil, same as any other never-answered Instance.
-	if err := addColumn(ctx, rw, `ALTER TABLE `+instancesTable+` ADD COLUMN selected_options_json TEXT NULL AFTER answered`, "selected_options_json"); err != nil {
-		return nil, err
+	instanceSteps := []migration.Step{{7, "article_instances.selected_options_json", func(ctx context.Context, db *sql.DB) error {
+		return addColumn(ctx, db, `ALTER TABLE `+instancesTable+` ADD COLUMN selected_options_json TEXT NULL AFTER answered`, "selected_options_json")
+	}}}
+	if err := migration.Apply(ctx, rw, "newsarticle", instanceSteps); err != nil {
+		return nil, fmt.Errorf("newsarticle: migrations: %w", err)
 	}
 	return &MySQLStore{rw: rw, ro: ro}, nil
 }

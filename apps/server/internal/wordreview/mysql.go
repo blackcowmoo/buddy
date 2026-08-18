@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"buddy/server/internal/migration"
 	"buddy/server/internal/mysqlerr"
 )
 
@@ -67,19 +68,28 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 	// MySQL does not support ADD COLUMN IF NOT EXISTS consistently across
 	// versions. Treat a duplicate-column error as success so this migration
 	// remains idempotent on both fresh and already-migrated databases.
-	if err := mysqlerr.ApplyAdditive(func() error {
-		_, err := rw.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN original_word VARCHAR(255) NOT NULL DEFAULT ''`)
-		return err
-	}, mysqlerr.DupFieldName); err != nil {
-		return nil, fmt.Errorf("wordreview: schema migration: %w", err)
+	steps := []migration.Step{
+		{1, "word_reviews.original_word", func(ctx context.Context, db *sql.DB) error {
+			return mysqlerr.ApplyAdditive(func() error {
+				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN original_word VARCHAR(255) NOT NULL DEFAULT ''`)
+				return err
+			}, mysqlerr.DupFieldName)
+		}},
+		{2, "word_reviews.research_status", func(ctx context.Context, db *sql.DB) error {
+			return mysqlerr.ApplyAdditive(func() error {
+				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN research_status VARCHAR(16) NOT NULL DEFAULT ''`)
+				return err
+			}, mysqlerr.DupFieldName)
+		}},
+		{3, "word_reviews.research_results", func(ctx context.Context, db *sql.DB) error {
+			return mysqlerr.ApplyAdditive(func() error {
+				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN research_results JSON NULL`)
+				return err
+			}, mysqlerr.DupFieldName)
+		}},
 	}
-	for _, migration := range []string{
-		`ALTER TABLE ` + table + ` ADD COLUMN research_status VARCHAR(16) NOT NULL DEFAULT ''`,
-		`ALTER TABLE ` + table + ` ADD COLUMN research_results JSON NULL`,
-	} {
-		if err := mysqlerr.ApplyAdditive(func() error { _, err := rw.ExecContext(ctx, migration); return err }, mysqlerr.DupFieldName); err != nil {
-			return nil, fmt.Errorf("wordreview: research schema migration: %w", err)
-		}
+	if err := migration.Apply(ctx, rw, "wordreview", steps); err != nil {
+		return nil, fmt.Errorf("wordreview: migrations: %w", err)
 	}
 	const answerCacheSchema = `CREATE TABLE IF NOT EXISTS ` + answerCacheTable + ` (
 		cache_key BINARY(32) NOT NULL,

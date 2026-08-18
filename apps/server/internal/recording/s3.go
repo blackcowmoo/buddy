@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
+	"buddy/server/internal/migration"
 	"buddy/server/internal/mysqlerr"
 	"buddy/server/internal/s3util"
 )
@@ -91,17 +92,22 @@ func NewS3(ctx context.Context, cfg S3Config, rw, ro *sql.DB) (*S3Store, error) 
 	// supported by every MySQL 8.0 point release this app has run against, so
 	// the idempotency comes from ignoring the specific "already there" errors
 	// instead of relying on that clause.
-	if err := mysqlerr.ApplyAdditive(func() error {
-		_, err := rw.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN session_id VARCHAR(64) NOT NULL DEFAULT '' AFTER user_id`)
-		return err
-	}, mysqlerr.DupFieldName); err != nil {
-		return nil, fmt.Errorf("recording: migrate session_id: %w", err)
+	steps := []migration.Step{
+		{1, "recordings.session_id", func(ctx context.Context, db *sql.DB) error {
+			return mysqlerr.ApplyAdditive(func() error {
+				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN session_id VARCHAR(64) NOT NULL DEFAULT '' AFTER user_id`)
+				return err
+			}, mysqlerr.DupFieldName)
+		}},
+		{2, "recordings.session_id_index", func(ctx context.Context, db *sql.DB) error {
+			return mysqlerr.ApplyAdditive(func() error {
+				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD INDEX idx_user_session (user_id, session_id)`)
+				return err
+			}, mysqlerr.DupKeyName)
+		}},
 	}
-	if err := mysqlerr.ApplyAdditive(func() error {
-		_, err := rw.ExecContext(ctx, `ALTER TABLE `+table+` ADD INDEX idx_user_session (user_id, session_id)`)
-		return err
-	}, mysqlerr.DupKeyName); err != nil {
-		return nil, fmt.Errorf("recording: migrate session_id index: %w", err)
+	if err := migration.Apply(ctx, rw, "recording", steps); err != nil {
+		return nil, fmt.Errorf("recording: migrations: %w", err)
 	}
 
 	return &S3Store{
