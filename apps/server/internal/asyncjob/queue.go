@@ -276,7 +276,13 @@ func (q *Queue) EnqueueAndRunInBackground(ctx context.Context, kind Kind, dedupe
 	if q == nil {
 		return nil
 	}
-	job, ok, err := q.Enqueue(ctx, kind, dedupeKey, payload)
+	// The database mutation that created this job may already be committed
+	// when the HTTP client disconnects. Do not let that request cancellation
+	// strand the durable job between "pending" in the database and Redis.
+	// Enqueue is cheap and bounded by Redis' own client timeouts; the actual
+	// handler is detached below and never uses the request context either.
+	enqueueCtx := context.WithoutCancel(ctx)
+	job, ok, err := q.Enqueue(enqueueCtx, kind, dedupeKey, payload)
 	if err != nil {
 		return fmt.Errorf("asyncjob: %s: enqueue %s: %w", kind, logID, err)
 	}
@@ -284,7 +290,7 @@ func (q *Queue) EnqueueAndRunInBackground(ctx context.Context, kind Kind, dedupe
 		// A deduped job can still be an abandoned processing entry whose claim
 		// expired just before this request arrived. Requeue it now; the normal
 		// worker will execute the same durable job, without creating a duplicate.
-		if _, err := q.RequeueExpired(ctx, kind, dedupeKey); err != nil {
+		if _, err := q.RequeueExpired(enqueueCtx, kind, dedupeKey); err != nil {
 			log.Printf("asyncjob: %s: retry expired %s: %v", kind, logID, err)
 		}
 		return nil

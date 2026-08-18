@@ -11,7 +11,11 @@ import (
 )
 
 const (
-	WritingClaimTTL          = 25 * time.Hour
+	// A writing prompt is one model call. Keep enough time for the slow local
+	// model, while allowing a new process to recover a claim after the old
+	// process died. asyncjob renews this lease while the handler is alive, so
+	// this is a crash-recovery bound rather than a maximum runtime.
+	WritingClaimTTL          = 15 * time.Minute
 	WritingWorkerConcurrency = 4
 )
 
