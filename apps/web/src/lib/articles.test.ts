@@ -94,6 +94,7 @@ describe("answerArticle", () => {
       correct: true,
       score: 1,
       total: 1,
+      translation: "한글 번역",
       subQuestions: [
         { prompt: "p", options: ["a", "b"], correctOptionIndex: 1, selectedOptionIndex: 1, correct: true, explanation: "왜냐하면" },
       ],

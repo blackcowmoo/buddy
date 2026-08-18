@@ -630,11 +630,11 @@ export function ArticleQuiz() {
             </div>
             <div className="article-language-label">영어 원문</div>
             <p className="article-summary">{draw.summary}</p>
-            {draw.translation && (
+            {(result.translation || draw.translation) && (
               <>
                 <div className="article-language-label">한글 번역</div>
                 <p className="article-translation" lang="ko">
-                  {draw.translation}
+                  {result.translation || draw.translation}
                 </p>
               </>
             )}

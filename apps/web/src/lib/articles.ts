@@ -70,6 +70,7 @@ export interface ArticleAnswerResult {
   correct: boolean;
   score: number;
   total: number;
+  translation: string; // native-language translation of the full English summary
   subQuestions: ArticleSubQuestionResult[];
 }
 
