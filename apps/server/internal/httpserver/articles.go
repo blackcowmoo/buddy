@@ -142,9 +142,13 @@ type articleSubQuestionResult struct {
 // (Correct is true only if every sub-question was), a Score/Total for a
 // partial-credit summary line, and each sub-question's own reveal.
 type articleResult struct {
-	Correct      bool                       `json:"correct"`
-	Score        int                        `json:"score"`
-	Total        int                        `json:"total"`
+	Correct bool `json:"correct"`
+	Score   int  `json:"score"`
+	Total   int  `json:"total"`
+	// Translation is revealed together with the answer key so the result
+	// response is self-contained. The translation was generated and stored
+	// alongside Summary when the article study was created.
+	Translation  string                     `json:"translation"`
 	SubQuestions []articleSubQuestionResult `json:"subQuestions"`
 }
 
@@ -173,6 +177,7 @@ func toArticleResult(inst newsarticle.Instance) articleResult {
 		Correct:      inst.Correct,
 		Score:        score,
 		Total:        len(inst.Article.SubQuestions),
+		Translation:  inst.Article.Translation,
 		SubQuestions: subs,
 	}
 }

@@ -559,6 +559,7 @@ func postAnswerRequest(t *testing.T, id string, selectedOptions []int) *http.Req
 func TestArticleAnswerHandlerComputesCorrectnessServerSide(t *testing.T) {
 	st := &fakeArticleStore{byUser: map[string][]newsarticle.Instance{
 		"alex": {{ID: "i1", UserID: "alex", Article: newsarticle.Article{
+			Translation: "영어 원문의 한글 번역입니다.",
 			SubQuestions: []newsarticle.SubQuestion{
 				{Prompt: "p1", Options: []string{"a", "b"}, CorrectOptionIndex: 1, Explanation: "왜냐하면1"},
 				{Prompt: "p2", Options: []string{"c", "d"}, CorrectOptionIndex: 0, Explanation: "왜냐하면2"},
@@ -576,7 +577,7 @@ func TestArticleAnswerHandlerComputesCorrectnessServerSide(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !got.Correct || got.Score != 2 || got.Total != 2 {
+	if !got.Correct || got.Score != 2 || got.Total != 2 || got.Translation != "영어 원문의 한글 번역입니다." {
 		t.Fatalf("result = %+v, want Correct=true Score=2 Total=2", got)
 	}
 	if len(got.SubQuestions) != 2 || !got.SubQuestions[0].Correct || got.SubQuestions[0].Explanation != "왜냐하면1" {

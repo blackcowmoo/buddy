@@ -229,6 +229,7 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
       correct: true,
       score: 2,
       total: 2,
+      translation: sampleDraw.translation,
       subQuestions: [
         {
           prompt: sampleDraw.subQuestions[0].prompt,
@@ -469,6 +470,7 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
       correct: false,
       score: 1,
       total: 2,
+      translation: sampleDraw.translation,
       subQuestions: [
         {
           prompt: sampleDraw.subQuestions[0].prompt,
