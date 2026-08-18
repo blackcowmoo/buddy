@@ -460,7 +460,7 @@ func articleAudioHandler(ident identity.Identifier, articles newsarticle.Store, 
 			return
 		}
 
-		key := transport.ArticleAudioKey(inst.Article.ID)
+		key := transport.ArticleAudioKey(inst.Article.ID, inst.Article.Summary)
 		body, err := audio.Cache.Open(r.Context(), key, audio.Client.Version())
 		if errors.Is(err, ttsstore.ErrNotFound) {
 			generated, genErr := audio.Generate(r.Context(), key, inst.Article.Summary)

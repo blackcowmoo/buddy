@@ -754,7 +754,7 @@ func TestArticleAudioHandlerServesCachedAudioWithoutGenerating(t *testing.T) {
 		"alex": {{ID: "i1", UserID: "alex", Article: newsarticle.Article{ID: "a1", Status: newsarticle.StatusDone, Summary: "hello"}, CreatedAt: time.Now()}},
 	}}
 	speaker := &fakeAudioSpeaker{}
-	cache := &fakeAudioCache{byKey: map[string][]byte{transport.ArticleAudioKey("a1"): []byte("cached-mp3-bytes")}}
+	cache := &fakeAudioCache{byKey: map[string][]byte{transport.ArticleAudioKey("a1", "hello"): []byte("cached-mp3-bytes")}}
 	h := articleAudioHandler(fakeIdentifier{id: "alex", ok: true}, st, &transport.ArticleAudio{Client: speaker, Cache: cache})
 
 	req := httptest.NewRequest("GET", "/api/articles/i1/audio", nil)
@@ -798,7 +798,7 @@ func TestArticleAudioHandlerGeneratesOnCacheMiss(t *testing.T) {
 	if speaker.calls != 1 {
 		t.Fatalf("Speak() called %d times, want exactly 1", speaker.calls)
 	}
-	if _, ok := cache.byKey[transport.ArticleAudioKey("a1")]; !ok {
+	if _, ok := cache.byKey[transport.ArticleAudioKey("a1", "hello there")]; !ok {
 		t.Fatal("freshly generated audio was not cached for the next request")
 	}
 }

@@ -282,9 +282,9 @@ func TestRunArticleStudyGeneratesAndCachesReadAloudAudio(t *testing.T) {
 	if got := speaker.spokenTexts(); len(got) != 1 || got[0] != wantText {
 		t.Fatalf("spoken texts = %v, want exactly [%q]", got, wantText)
 	}
-	rc, err := cache.Open(context.Background(), ArticleAudioKey("a1"), speaker.Version())
+	rc, err := cache.Open(context.Background(), ArticleAudioKey("a1", wantText), speaker.Version())
 	if err != nil {
-		t.Fatalf("cache.Open(%q) error = %v, want the generated audio to be cached under that key", ArticleAudioKey("a1"), err)
+		t.Fatalf("cache.Open(%q) error = %v, want the generated audio to be cached under that key", ArticleAudioKey("a1", wantText), err)
 	}
 	defer rc.Close()
 	got, _ := io.ReadAll(rc)
@@ -339,7 +339,7 @@ func TestArticleAudioGenerateCachesUnderArticleAudioKey(t *testing.T) {
 	cache := &fakeCache{}
 	audio := &ArticleAudio{Client: speaker, Cache: cache}
 
-	got, err := audio.Generate(context.Background(), ArticleAudioKey("a2"), "hello there")
+	got, err := audio.Generate(context.Background(), ArticleAudioKey("a2", "hello there"), "hello there")
 	if err != nil {
 		t.Fatalf("Generate() error = %v", err)
 	}
@@ -348,6 +348,14 @@ func TestArticleAudioGenerateCachesUnderArticleAudioKey(t *testing.T) {
 	}
 	if cache.putCount() != 1 {
 		t.Fatalf("cache Put called %d times, want 1", cache.putCount())
+	}
+}
+
+func TestArticleAudioKeyChangesWhenSummaryChanges(t *testing.T) {
+	first := ArticleAudioKey("a1", "The first summary.")
+	second := ArticleAudioKey("a1", "The revised summary.")
+	if first == second {
+		t.Fatalf("ArticleAudioKey returned the same key for different summaries: %q", first)
 	}
 }
 
