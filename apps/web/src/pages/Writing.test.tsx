@@ -20,6 +20,7 @@ import { Writing } from "./Writing";
 import "../styles.css";
 import { deleteWritingPrompt, drawWritingPrompt, fetchWritingPrompt, fetchWritingPrompts } from "../lib/writing";
 import { suggestWords } from "../lib/wordSearch";
+import { formatDateDivider } from "../lib/time";
 
 const oldPrompt = { id: "p1", korean: "어제 영화를 봤어요.", status: "done" as const, createdAt: 1700000000 };
 const newPrompt = { id: "p2", korean: "오늘은 책을 읽어요.", status: "done" as const, createdAt: 1700000100 };
@@ -38,6 +39,21 @@ afterEach(() => {
 });
 
 describe("Writing page list/detail flow", () => {
+  it("groups prompts by calendar day with the same date dividers as articles", async () => {
+    const firstDay = new Date(2024, 0, 1, 12).getTime() / 1000;
+    const secondDay = new Date(2024, 0, 2, 12).getTime() / 1000;
+    vi.mocked(fetchWritingPrompts).mockResolvedValue([
+      { ...oldPrompt, createdAt: secondDay },
+      { ...newPrompt, createdAt: firstDay },
+    ]);
+    render(<Writing />);
+
+    expect(await screen.findByRole("button", { name: /어제 영화를 봤어요/ })).toBeInTheDocument();
+    expect(screen.getAllByText(formatDateDivider(firstDay))).toHaveLength(1);
+    expect(screen.getAllByText(formatDateDivider(secondDay))).toHaveLength(1);
+    expect(screen.getByText(formatDateDivider(firstDay)).compareDocumentPosition(screen.getByText(formatDateDivider(secondDay))) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("starts on a list and opens the selected problem as a detail view", async () => {
     const user = userEvent.setup();
     render(<Writing />);

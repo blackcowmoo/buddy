@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import type { Correction } from "../lib/protocol";
 import { LoadingHint } from "../components/LoadingHint";
 import { SubPageHeader } from "../components/SubPageHeader";
 import { WordSearchControl } from "../components/WordSearchControl";
-import { formatMessageTime } from "../lib/time";
+import { formatDateDivider, formatMessageTime, shouldShowDateDivider } from "../lib/time";
 import { checkWriting, deleteWritingPrompt, drawWritingPrompt, fetchWritingPrompt, fetchWritingPrompts, type WritingPrompt } from "../lib/writing";
 
 type LoadState = "loading" | "ready";
@@ -97,18 +97,29 @@ export function Writing() {
         <>
           {state === "loading" && <LoadingHint />}
           {state === "ready" && prompts.length === 0 && <p className="hint">아직 만든 작문 문제가 없어요.</p>}
-          {prompts.map((item) => (
-            <div className="writing-list-row" key={item.id}>
-              <button type="button" className="writing-list-open" onClick={() => void openPrompt(item)}>
-                <span className="writing-list-text">{item.korean || "문제를 만드는 중…"}</span>
-                <span className="writing-list-meta">
-                  {item.status !== "done" && <span className="study-summary-pending-badge"><span className="spinning">⏳</span> 생성 중</span>}
-                  {formatMessageTime(item.createdAt)}
-                </span>
-              </button>
-              <button type="button" className="ghost icon-btn writing-delete" onClick={() => void deletePrompt(item.id)} aria-label="작문 문제 삭제" title="작문 문제 삭제">🗑</button>
-            </div>
-          ))}
+          {prompts.map((item, i) => {
+            const prev = prompts[i - 1];
+            const showDivider = shouldShowDateDivider(prev?.createdAt, item.createdAt);
+            return (
+              <Fragment key={item.id}>
+                {showDivider && (
+                  <div className="date-divider">
+                    <span>{formatDateDivider(item.createdAt)}</span>
+                  </div>
+                )}
+                <div className="writing-list-row">
+                  <button type="button" className="writing-list-open" onClick={() => void openPrompt(item)}>
+                    <span className="writing-list-text">{item.korean || "문제를 만드는 중…"}</span>
+                    <span className="writing-list-meta">
+                      {item.status !== "done" && <span className="study-summary-pending-badge"><span className="spinning">⏳</span> 생성 중</span>}
+                      {formatMessageTime(item.createdAt)}
+                    </span>
+                  </button>
+                  <button type="button" className="ghost icon-btn writing-delete" onClick={() => void deletePrompt(item.id)} aria-label="작문 문제 삭제" title="작문 문제 삭제">🗑</button>
+                </div>
+              </Fragment>
+            );
+          })}
           <button type="button" className="quiz-start-btn" onClick={() => void createPrompt()} disabled={creating}>
             {creating ? "만드는 중…" : "＋ 새 문제 만들기"}
           </button>
