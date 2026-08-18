@@ -703,6 +703,28 @@ func TestEnqueueAndTryRunOnNilQueueIsNoOp(t *testing.T) {
 	}
 }
 
+func TestEnqueueAndRunInBackgroundSurvivesRequestCancellation(t *testing.T) {
+	rdb := requireRedis(t)
+	kind := testKind(t)
+	q := NewQueue(rdb)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan struct{})
+	if err := q.EnqueueAndRunInBackground(ctx, kind, "cancelled-request", "test", 1, time.Minute, func(context.Context, Job) error {
+		close(done)
+		return nil
+	}); err != nil {
+		t.Fatalf("EnqueueAndRunInBackground: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("job was not executed after the request context was cancelled")
+	}
+}
+
 // ---- test helpers ---------------------------------------------------------
 
 func waitForCondition(t *testing.T, timeout time.Duration, cond func() bool) {
