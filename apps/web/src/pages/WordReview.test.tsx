@@ -20,6 +20,11 @@ vi.mock("../lib/wordReview", async () => {
   };
 });
 
+vi.mock("../lib/quizCheck", async () => {
+  const actual = await vi.importActual<typeof import("../lib/quizCheck")>("../lib/quizCheck");
+  return { ...actual, checkQuizAnswer: vi.fn() };
+});
+
 import { WordReview } from "./WordReview";
 import {
   deleteWord,
@@ -32,6 +37,7 @@ import {
   type WordReviewItem,
 } from "../lib/wordReview";
 import { formatAbsoluteDateTime } from "../lib/time";
+import { checkQuizAnswer } from "../lib/quizCheck";
 
 // WordReview.tsx checks for an in-flight auto-add job on every mount (so
 // reopening the page resumes watching one — see the mount effect), so every
@@ -39,6 +45,7 @@ import { formatAbsoluteDateTime } from "../lib/time";
 // against an unmocked vi.fn(). Individual tests below override it.
 beforeEach(() => {
   vi.mocked(fetchAutoAddStatus).mockResolvedValue({ status: "", count: 0 });
+  vi.mocked(checkQuizAnswer).mockResolvedValue(false);
 });
 
 afterEach(() => {
@@ -624,6 +631,17 @@ describe("WordReview page", () => {
     await user.click(screen.getByRole("button", { name: "확인" }));
 
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
+  });
+
+  it("asks learners to retry a similar answer without referring to tense", async () => {
+    vi.mocked(checkQuizAnswer).mockResolvedValue(true);
+    const user = await startQuiz();
+
+    await user.type(await screen.findByRole("textbox", { name: "정답 입력" }), "thrilled");
+    await user.click(screen.getByRole("button", { name: "확인" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("유사한 정답이에요! 다시 입력해보세요.");
+    expect(screen.queryByText(/시제에 맞춰/)).not.toBeInTheDocument();
   });
 
   it("rejects the dictionary base form when the sentence grammar requires the inflected spelling", async () => {

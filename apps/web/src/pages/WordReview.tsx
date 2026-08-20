@@ -659,7 +659,7 @@ export function WordReview() {
                     </div>
                     {!checked && (
                       <>
-                        {similarHint && <p className="quiz-result similar" role="status">유사한 정답이에요! 시제에 맞춰 다시 입력해보세요.</p>}
+                        {similarHint && <p className="quiz-result similar" role="status">유사한 정답이에요! 다시 입력해보세요.</p>}
                         <div className="quiz-next-actions">
                           <button type="button" className="quiz-check-btn" onClick={() => void checkRecall()} disabled={checkingSimilarity || answers.length === 0 || answers.some((a) => !a.trim())}>
                             {checkingSimilarity ? "확인 중…" : "확인"}
