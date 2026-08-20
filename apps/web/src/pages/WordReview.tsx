@@ -398,6 +398,13 @@ export function WordReview() {
       void reviewWord(item.word.id, false).then((updated) => {
         if (!updated) return;
         setWords((prev) => prev.map((w) => (w.id === updated.id ? updated : w)));
+        // The item is also present in the in-progress queue. Keep that copy
+        // in sync with the server immediately after a miss: an incorrect
+        // answer resets stage to 0, and a later same-session retry must not
+        // offer the "forced guess" action based on the stale pre-miss stage.
+        setQuizQueue((prev) => prev?.map((queued) =>
+          queued.word.id === updated.id ? { ...queued, word: updated } : queued,
+        ) ?? prev);
         setDueCount((c) => Math.max(0, c - 1));
       });
     },
