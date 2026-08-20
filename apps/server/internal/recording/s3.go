@@ -106,7 +106,7 @@ func NewS3(ctx context.Context, cfg S3Config, rw, ro *sql.DB) (*S3Store, error) 
 			}, mysqlerr.DupKeyName)
 		}},
 	}
-	if err := migration.Apply(ctx, rw, "recording", steps); err != nil {
+	if err := migration.ApplyLegacy(ctx, rw, "recording", steps); err != nil {
 		return nil, fmt.Errorf("recording: migrations: %w", err)
 	}
 

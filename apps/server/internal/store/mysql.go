@@ -85,6 +85,15 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 		rw.Close()
 		return nil, roErr
 	}
+	if err := migration.Apply(context.Background(), rw, cfg.Database); err != nil {
+		if rw != nil {
+			rw.Close()
+		}
+		if ro != nil && ro != rw {
+			ro.Close()
+		}
+		return nil, fmt.Errorf("store: schema migrations: %w", err)
+	}
 	if !distinctRO {
 		ro = rw
 	}
@@ -293,7 +302,7 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 			return err
 		}},
 	}
-	if err := migration.Apply(context.Background(), rw, "store", steps); err != nil {
+	if err := migration.ApplyLegacy(context.Background(), rw, "store", steps); err != nil {
 		closeAll()
 		return nil, fmt.Errorf("store: schema migrations: %w", err)
 	}
@@ -330,6 +339,10 @@ func openPool(cfg MySQLConfig, host string) (*sql.DB, error) {
 	// server-side prepare round trip that database/sql otherwise does on
 	// every call — this runs on every WS save tick, not just at startup.
 	c.InterpolateParams = true
+	// golang-migrate's MySQL driver executes a migration file as one
+	// multi-statement query. Keep this enabled on every pool because the
+	// migration driver borrows a connection from the same pool.
+	c.Params = map[string]string{"multiStatements": "true"}
 
 	db, err := sql.Open("mysql", c.FormatDSN())
 	if err != nil {

@@ -123,7 +123,7 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 			return addColumn(ctx, db, `ALTER TABLE `+articlesTable+` ADD COLUMN translation_claimed_at BIGINT NOT NULL DEFAULT 0`, "translation_claimed_at")
 		}},
 	}
-	if err := migration.Apply(ctx, rw, "newsarticle", steps); err != nil {
+	if err := migration.ApplyLegacy(ctx, rw, "newsarticle", steps); err != nil {
 		return nil, fmt.Errorf("newsarticle: migrations: %w", err)
 	}
 
@@ -163,7 +163,7 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 	instanceSteps := []migration.Step{{8, "article_instances.selected_options_json", func(ctx context.Context, db *sql.DB) error {
 		return addColumn(ctx, db, `ALTER TABLE `+instancesTable+` ADD COLUMN selected_options_json TEXT NULL AFTER answered`, "selected_options_json")
 	}}}
-	if err := migration.Apply(ctx, rw, "newsarticle", instanceSteps); err != nil {
+	if err := migration.ApplyLegacy(ctx, rw, "newsarticle", instanceSteps); err != nil {
 		return nil, fmt.Errorf("newsarticle: migrations: %w", err)
 	}
 	return &MySQLStore{rw: rw, ro: ro}, nil

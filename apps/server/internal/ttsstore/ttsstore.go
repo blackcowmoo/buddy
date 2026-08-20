@@ -111,7 +111,7 @@ func New(ctx context.Context, cfg Config, rw, ro *sql.DB) (*Store, error) {
 			return err
 		}, mysqlerr.DupFieldName)
 	}}}
-	if err := migration.Apply(ctx, rw, "ttsstore", steps); err != nil {
+	if err := migration.ApplyLegacy(ctx, rw, "ttsstore", steps); err != nil {
 		return nil, fmt.Errorf("ttsstore: migrations: %w", err)
 	}
 

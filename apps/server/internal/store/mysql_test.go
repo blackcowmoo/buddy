@@ -136,6 +136,22 @@ func TestMySQLNewMySQLIsIdempotent(t *testing.T) {
 	_ = st.Close()
 }
 
+// TestMySQLUsesGolangMigrateHistory verifies that startup records the
+// baseline in golang-migrate's version/dirty table. A clean version marker is
+// what prevents a second replica from re-running DDL after the advisory lock
+// is released.
+func TestMySQLUsesGolangMigrateHistory(t *testing.T) {
+	st := requireStore(t)
+	var version int
+	var dirty bool
+	if err := st.rw.QueryRow(`SELECT version, dirty FROM buddy_migrate_schema_migrations`).Scan(&version, &dirty); err != nil {
+		t.Fatalf("golang-migrate history: %v", err)
+	}
+	if version != 1 || dirty {
+		t.Fatalf("golang-migrate history = version %d, dirty %v; want version 1, clean", version, dirty)
+	}
+}
+
 // TestMySQLNewMySQLResetsLegacyPlainTextStudySummaries guards the migration
 // that protects decodeStudySummary from a real hazard: a "done" study_summary
 // row written before GenerateStudySummary switched to the bilingual JSON
