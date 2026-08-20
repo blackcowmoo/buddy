@@ -757,6 +757,26 @@ describe("WordReview page", () => {
     expect(reviewWord).toHaveBeenLastCalledWith("w1", true, false);
   });
 
+  it("treats 모르겠어요 as an incorrect answer even when the retry is answered correctly", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    vi.mocked(reviewWord)
+      .mockResolvedValueOnce({ ...dueWord, stage: 0, reviewCount: 1 })
+      .mockResolvedValueOnce({ ...dueWord, stage: 1, reviewCount: 2 });
+    const user = await startQuiz([{ ...dueWord, stage: 1, reviewCount: 1 }, ...otherVerifiedWords]);
+
+    await user.click(screen.getByRole("button", { name: "잘 모르겠어요" }));
+    expect(await screen.findByText(/아쉬워요\. 정답: 매우 행복한/)).toBeInTheDocument();
+    expect(reviewWord).toHaveBeenCalledWith("w1", false);
+
+    await user.click(screen.getByRole("button", { name: "다음 단어" }));
+    await user.click(screen.getByRole("button", { name: "매우 행복한" }));
+
+    expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "😅 억지로 맞춘 것 같아요" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "결과 보기" }));
+    expect(reviewWord).toHaveBeenLastCalledWith("w1", true, false);
+  });
+
   it("returns to the list from the quiz view", async () => {
     const user = await startQuiz();
     await user.click(await screen.findByRole("button", { name: "← 목록으로" }));
