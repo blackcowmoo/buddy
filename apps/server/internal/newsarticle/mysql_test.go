@@ -566,6 +566,43 @@ func TestCreateInstanceListAndGetRoundTrip(t *testing.T) {
 	}
 }
 
+// TestCreateInstanceListAndGetAllowMissingArticleTranslation guards the draw
+// path: the instance is created while article study generation is still
+// pending, so translation is legitimately SQL NULL until the async job
+// completes. Joined instance reads must preserve that as an empty string.
+func TestCreateInstanceListAndGetAllowMissingArticleTranslation(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	article, err := st.ReserveArticle(ctx, "BBC", "Pending translation", "https://example.com/pending-translation", "snippet", time.Time{})
+	if err != nil {
+		t.Fatalf("ReserveArticle() error = %v", err)
+	}
+
+	created, err := st.CreateInstance(ctx, "alex-pending-translation", article.ID)
+	if err != nil {
+		t.Fatalf("CreateInstance() error = %v", err)
+	}
+	if created.Article.Translation != "" {
+		t.Fatalf("CreateInstance() Translation = %q, want empty while generation is pending", created.Article.Translation)
+	}
+
+	got, err := st.Get(ctx, "alex-pending-translation", created.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Article.Translation != "" {
+		t.Fatalf("Get() Translation = %q, want empty for SQL NULL", got.Article.Translation)
+	}
+
+	list, err := st.List(ctx, "alex-pending-translation")
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(list) != 1 || list[0].Article.Translation != "" {
+		t.Fatalf("List() = %+v, want one instance with empty translation", list)
+	}
+}
+
 func TestGetMissingOrOtherUser(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
