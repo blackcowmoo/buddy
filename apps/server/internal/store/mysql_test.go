@@ -136,6 +136,29 @@ func TestMySQLNewMySQLIsIdempotent(t *testing.T) {
 	_ = st.Close()
 }
 
+// TestMySQLNewMySQLLeavesPoolOpenAfterMigration guards the ownership
+// boundary between migration.Apply and NewMySQL. golang-migrate's
+// Migrate.Close closes the *sql.DB supplied to NewWithInstance; that DB is
+// borrowed here and must remain usable for schema setup and application
+// queries after migration completes.
+func TestMySQLNewMySQLLeavesPoolOpenAfterMigration(t *testing.T) {
+	requireStore(t)
+
+	st, err := NewMySQL(sharedStoreConfig)
+	if err != nil {
+		t.Fatalf("NewMySQL() error = %v", err)
+	}
+	defer st.Close()
+
+	var got int
+	if err := st.rw.QueryRow(`SELECT 1`).Scan(&got); err != nil {
+		t.Fatalf("primary pool after NewMySQL() = %v", err)
+	}
+	if got != 1 {
+		t.Fatalf("SELECT 1 = %d, want 1", got)
+	}
+}
+
 // TestMySQLUsesGolangMigrateHistory verifies that startup records the
 // baseline in golang-migrate's version/dirty table. A clean version marker is
 // what prevents a second replica from re-running DDL after the advisory lock

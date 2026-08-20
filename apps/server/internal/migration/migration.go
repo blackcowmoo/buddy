@@ -95,7 +95,10 @@ func Apply(ctx context.Context, db *sql.DB, databaseName string) error {
 	if err != nil {
 		return fmt.Errorf("migration runner: %w", err)
 	}
-	defer func() { _, _ = m.Close() }()
+	// Do not call m.Close here. NewWithInstance borrows db, and the MySQL
+	// driver's Close method closes that *sql.DB as well as its migration
+	// connection. The caller still owns db and must use it for the rest of
+	// startup (and for the lifetime of the application).
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		version, dirty, versionErr := m.Version()
 		if versionErr == nil && dirty {
