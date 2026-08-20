@@ -88,7 +88,7 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 			}, mysqlerr.DupFieldName)
 		}},
 	}
-	if err := migration.Apply(ctx, rw, "wordreview", steps); err != nil {
+	if err := migration.ApplyLegacy(ctx, rw, "wordreview", steps); err != nil {
 		return nil, fmt.Errorf("wordreview: migrations: %w", err)
 	}
 	const answerCacheSchema = `CREATE TABLE IF NOT EXISTS ` + answerCacheTable + ` (
