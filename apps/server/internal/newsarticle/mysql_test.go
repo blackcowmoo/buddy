@@ -94,6 +94,21 @@ func requireStore(t *testing.T) *MySQLStore {
 	return sharedStore
 }
 
+func TestSchemaIncludesArticleInstanceSelectionColumn(t *testing.T) {
+	st := requireStore(t)
+	var count int
+	err := st.ro.QueryRowContext(context.Background(), `
+		SELECT COUNT(*) FROM information_schema.columns
+		WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?
+	`, instancesTable, "selected_options_json").Scan(&count)
+	if err != nil {
+		t.Fatalf("check selected_options_json schema: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("selected_options_json column count = %d, want 1", count)
+	}
+}
+
 // testSubQuestions returns a fixed, valid 2-entry SubQuestions slice — the
 // minimum articleQuizMinSubQuestions requires — for tests that just need
 // *a* valid quiz to build an Instance against, not to exercise its content.

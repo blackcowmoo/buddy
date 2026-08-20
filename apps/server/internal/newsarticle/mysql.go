@@ -154,7 +154,13 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 	// picks) — same clean-break, NULL-with-no-default reasoning as
 	// sub_questions_json above. A pre-existing row's backfilled NULL scans
 	// as SelectedOptions == nil, same as any other never-answered Instance.
-	instanceSteps := []migration.Step{{7, "article_instances.selected_options_json", func(ctx context.Context, db *sql.DB) error {
+	// Version 7 is already used above for articles.translation_claimed_at.
+	// Migration versions are component-wide (the primary key is
+	// (component, version)), so this instance-column migration must have its
+	// own version. Reusing 7 makes it look applied on databases that have
+	// already recorded the article-column step, leaving CreateInstance/List
+	// broken because selected_options_json does not exist.
+	instanceSteps := []migration.Step{{8, "article_instances.selected_options_json", func(ctx context.Context, db *sql.DB) error {
 		return addColumn(ctx, db, `ALTER TABLE `+instancesTable+` ADD COLUMN selected_options_json TEXT NULL AFTER answered`, "selected_options_json")
 	}}}
 	if err := migration.Apply(ctx, rw, "newsarticle", instanceSteps); err != nil {
