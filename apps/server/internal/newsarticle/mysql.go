@@ -445,12 +445,12 @@ func scanInstance(row scanner, userID string) (Instance, error) {
 	var inst Instance
 	var answered, correct int
 	var instCreatedAt int64
-	var selectedOptionsJSON, subQuestionsJSON sql.NullString
+	var selectedOptionsJSON, translation, subQuestionsJSON sql.NullString
 	var articleCreatedAt, articlePublishedAt int64
 	if err := row.Scan(
 		&inst.ID, &answered, &selectedOptionsJSON, &correct, &instCreatedAt,
 		&inst.Article.ID, &inst.Article.Source, &inst.Article.Title, &inst.Article.URL, &inst.Article.Summary,
-		&inst.Article.Translation,
+		&translation,
 		&subQuestionsJSON, &inst.Article.Description, &inst.Article.Status, &articleCreatedAt, &articlePublishedAt,
 	); err != nil {
 		return Instance{}, err
@@ -465,6 +465,7 @@ func scanInstance(row scanner, userID string) (Instance, error) {
 	}
 	inst.SelectedOptions = selectedOptions
 	inst.Article.SubQuestions = subQuestions
+	inst.Article.Translation = translation.String
 	inst.UserID = userID
 	inst.Answered = answered != 0
 	inst.Correct = correct != 0
