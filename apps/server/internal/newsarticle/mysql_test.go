@@ -530,7 +530,7 @@ func TestCreateInstanceListAndGetRoundTrip(t *testing.T) {
 	if created.Answered || len(created.SelectedOptions) != 0 {
 		t.Errorf("CreateInstance() = %+v, want a fresh unanswered instance", created)
 	}
-	if created.Article.URL != article.URL || len(created.Article.SubQuestions) != len(testSubQuestions()) {
+	if created.Article.URL != article.URL || created.Article.Translation != article.Translation || len(created.Article.SubQuestions) != len(testSubQuestions()) {
 		t.Errorf("CreateInstance() Article = %+v, want the joined article populated", created.Article)
 	}
 

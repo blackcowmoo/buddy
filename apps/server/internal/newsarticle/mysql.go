@@ -119,6 +119,9 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 		{6, "articles.published_at", func(ctx context.Context, db *sql.DB) error {
 			return addColumn(ctx, db, `ALTER TABLE `+articlesTable+` ADD COLUMN published_at BIGINT NOT NULL DEFAULT 0`, "published_at")
 		}},
+		{7, "articles.translation_claimed_at", func(ctx context.Context, db *sql.DB) error {
+			return addColumn(ctx, db, `ALTER TABLE `+articlesTable+` ADD COLUMN translation_claimed_at BIGINT NOT NULL DEFAULT 0`, "translation_claimed_at")
+		}},
 	}
 	if err := migration.Apply(ctx, rw, "newsarticle", steps); err != nil {
 		return nil, fmt.Errorf("newsarticle: migrations: %w", err)
@@ -328,6 +331,37 @@ func (s *MySQLStore) CompleteArticle(ctx context.Context, id, summary, translati
 	return saved, nil
 }
 
+// ClaimMissingTranslation atomically claims a completed article whose
+// translation is blank. This repairs rows generated before article
+// translations became part of the study-generation prompt without allowing
+// every poll request to start another slow LLM call.
+func (s *MySQLStore) ClaimMissingTranslation(ctx context.Context, id string) (bool, error) {
+	res, err := s.rw.ExecContext(ctx, `
+		UPDATE `+articlesTable+` SET translation_claimed_at = ?
+		WHERE id = ? AND status = ? AND summary <> ''
+		  AND (translation IS NULL OR TRIM(translation) = '')
+		  AND (translation_claimed_at = 0 OR translation_claimed_at < ?)
+	`, time.Now().UnixNano(), id, StatusDone, time.Now().Add(-10*time.Minute).UnixNano())
+	if err != nil {
+		return false, fmt.Errorf("newsarticle: claim missing translation: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("newsarticle: claim missing translation rows affected: %w", err)
+	}
+	return n == 1, nil
+}
+
+func (s *MySQLStore) CompleteArticleTranslation(ctx context.Context, id, translation string) error {
+	if _, err := s.rw.ExecContext(ctx, `
+		UPDATE `+articlesTable+` SET translation = ?
+		WHERE id = ? AND status = ? AND (translation IS NULL OR TRIM(translation) = '')
+	`, translation, id, StatusDone); err != nil {
+		return fmt.Errorf("newsarticle: complete article translation: %w", err)
+	}
+	return nil
+}
+
 func (s *MySQLStore) FailArticle(ctx context.Context, id string) error {
 	if _, err := s.rw.ExecContext(ctx, `
 		UPDATE `+articlesTable+` SET status = ? WHERE id = ? AND status = ?
@@ -380,7 +414,7 @@ func (s *MySQLStore) CreateInstance(ctx context.Context, userID, articleID strin
 }
 
 const instanceColumns = `i.id, i.answered, i.selected_options_json, i.correct, i.created_at, ` +
-	`a.id, a.source, a.title, a.url, a.summary, a.sub_questions_json, a.description, a.status, a.created_at, a.published_at`
+	`a.id, a.source, a.title, a.url, a.summary, a.translation, a.sub_questions_json, a.description, a.status, a.created_at, a.published_at`
 
 // decodeSelectedOptions decodes selected_options_json the same "NULL/empty
 // means nil, not an error" way decodeSubQuestions treats
@@ -410,6 +444,7 @@ func scanInstance(row scanner, userID string) (Instance, error) {
 	if err := row.Scan(
 		&inst.ID, &answered, &selectedOptionsJSON, &correct, &instCreatedAt,
 		&inst.Article.ID, &inst.Article.Source, &inst.Article.Title, &inst.Article.URL, &inst.Article.Summary,
+		&inst.Article.Translation,
 		&subQuestionsJSON, &inst.Article.Description, &inst.Article.Status, &articleCreatedAt, &articlePublishedAt,
 	); err != nil {
 		return Instance{}, err

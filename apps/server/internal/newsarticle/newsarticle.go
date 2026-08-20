@@ -225,3 +225,12 @@ type Store interface {
 	Delete(ctx context.Context, userID, id string) error
 	Close() error
 }
+
+// ArticleTranslationBackfiller is implemented by stores that can claim and
+// persist a missing translation on an already-completed article. It is kept
+// separate from Store so lightweight stores and tests do not need to support
+// the legacy-data repair path.
+type ArticleTranslationBackfiller interface {
+	ClaimMissingTranslation(ctx context.Context, id string) (bool, error)
+	CompleteArticleTranslation(ctx context.Context, id, translation string) error
+}

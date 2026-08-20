@@ -367,6 +367,14 @@ func articleInstanceHandler(ident identity.Identifier, articles newsarticle.Stor
 			inst.Article = healed
 			dispatchArticleStudy(r.Context(), articleStudyQueue, pipe, articles, audio, healed, " (reopen)")
 		}
+		if inst.Article.Status == newsarticle.StatusDone && inst.Article.Translation == "" {
+			articleID := inst.Article.ID
+			go func() {
+				if err := transport.RunArticleTranslationBackfill(context.Background(), pipe, articles, articleID); err != nil {
+					log.Printf("articles: translation backfill %s: %v", articleID, err)
+				}
+			}()
+		}
 		writeJSON(w, toArticleDraw(inst))
 	}
 }
