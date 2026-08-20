@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -199,6 +199,40 @@ describe("WordReview page", () => {
     expect(screen.getByText("신이 난")).toBeInTheDocument();
     const expectedNextReview = formatAbsoluteDateTime(futureWord.nextReviewAt);
     expect(screen.getByText((content) => content.includes(expectedNextReview))).toBeInTheDocument();
+  });
+
+  it("shows the review count, sorts newest reviews at the bottom, and loads older words at the top", async () => {
+    const manyWords = Array.from({ length: 21 }, (_, i): WordReviewItem => ({
+      id: `review-${i}`,
+      word: `review-word-${i}`,
+      meaning: `뜻 ${i}`,
+      example: `Example ${i}.`,
+      stage: 1,
+      reviewCount: i + 1,
+      lastReviewedAt: (i + 1) * 1000,
+      nextReviewAt: Math.floor(Date.now() / 1000) + 86400,
+      status: "verified",
+      researchStatus: "confirmed",
+    }));
+    vi.mocked(fetchWords).mockResolvedValue({ words: manyWords, dueCount: 0 });
+    render(<WordReview />);
+
+    expect(await screen.findByText("복습중인 단어")).toBeInTheDocument();
+    expect(screen.getByText("(21개)")).toBeInTheDocument();
+    expect(screen.queryByText("review-word-0")).not.toBeInTheDocument();
+    expect(screen.getByText("review-word-1")).toBeInTheDocument();
+    expect(screen.getByText("review-word-20")).toBeInTheDocument();
+
+    const visibleWords = [...document.querySelectorAll(".word-list-scroll .word-search-word")].map((el) => el.textContent);
+    expect(visibleWords[0]).toBe("review-word-1");
+    expect(visibleWords.at(-1)).toBe("review-word-20");
+
+    const scrollList = document.querySelector(".word-list-scroll") as HTMLDivElement;
+    await act(async () => {
+      scrollList.scrollTop = 0;
+      fireEvent.scroll(scrollList);
+    });
+    expect(await screen.findByText("review-word-0")).toBeInTheDocument();
   });
 
   // A word never leaves review rotation, however many times it's been

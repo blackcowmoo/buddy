@@ -24,6 +24,7 @@ import type { LoadState } from "../lib/loadState";
 // background (see asyncjob.KindWordAutoAdd) — a poll, not a push, same
 // reasoning as ArticleQuiz.tsx's articleStudyPollIntervalMs.
 const wordAutoAddPollIntervalMs = 3000;
+const reviewWordsPageSize = 20;
 
 // Phrase words that carry no meaning of their own and are often swapped
 // out by the LLM's example sentence (e.g. "one's" → "my"/"his"), so they
@@ -147,6 +148,11 @@ export function WordReview() {
   const [state, setState] = useState<LoadState>("loading");
   const [words, setWords] = useState<WordReviewItem[]>([]);
   const [dueCount, setDueCount] = useState(0);
+  // The newest 20 reviewed words are shown first. Older words are prepended
+  // when the learner scrolls to the top of the list.
+  const [reviewOlderCount, setReviewOlderCount] = useState(0);
+  const reviewListRef = useRef<HTMLDivElement>(null);
+  const reviewScrollAdjustment = useRef<{ top: number; height: number } | null>(null);
 
   // null = list view; an array (possibly empty) = quiz in progress, built
   // once from the due words at the moment "복습 시작" was pressed so the
@@ -243,6 +249,12 @@ export function WordReview() {
     }, 2000);
     return () => window.clearInterval(timer);
   }, [words]);
+
+  // A newly added word can change which slice is the newest page. Keep the
+  // initial view focused on the latest words after that happens.
+  useEffect(() => {
+    setReviewOlderCount(0);
+  }, [words.length]);
 
   const handleDelete = (id: string) => confirmThenDelete("이 단어를 삭제할까요?", deleteWord, id, setWords);
 
@@ -489,6 +501,31 @@ export function WordReview() {
   );
   const rejectedWords = words.filter((w) => w.status === "rejected");
 
+  const sortedVerifiedWords = [...verifiedWords].sort((a, b) => {
+    const lastReviewedDifference = (a.lastReviewedAt ?? 0) - (b.lastReviewedAt ?? 0);
+    return lastReviewedDifference !== 0 ? lastReviewedDifference : a.id.localeCompare(b.id);
+  });
+  const reviewStart = Math.max(0, sortedVerifiedWords.length - reviewWordsPageSize * (reviewOlderCount + 1));
+  const visibleVerifiedWords = sortedVerifiedWords.slice(reviewStart);
+  const hasOlderReviewWords = reviewStart > 0;
+
+  const loadOlderReviewWords = useCallback(() => {
+    if (!reviewListRef.current || !hasOlderReviewWords) return;
+    reviewScrollAdjustment.current = {
+      top: reviewListRef.current.scrollTop,
+      height: reviewListRef.current.scrollHeight,
+    };
+    setReviewOlderCount((count) => count + 1);
+  }, [hasOlderReviewWords]);
+
+  useEffect(() => {
+    const adjustment = reviewScrollAdjustment.current;
+    const container = reviewListRef.current;
+    if (!adjustment || !container) return;
+    container.scrollTop = adjustment.top + (container.scrollHeight - adjustment.height);
+    reviewScrollAdjustment.current = null;
+  }, [visibleVerifiedWords.length]);
+
   return (
     <div className="app">
       <SubPageHeader title="단어 복습" />
@@ -509,8 +546,13 @@ export function WordReview() {
             )}
 
             <WordListSection
-              title="복습중인 단어"
-              words={verifiedWords}
+              title={<><span>복습중인 단어</span> <span>({verifiedWords.length}개)</span></>}
+              words={visibleVerifiedWords}
+              listRef={reviewListRef}
+              hasMoreAbove={hasOlderReviewWords}
+              onScroll={(event) => {
+                if (event.currentTarget.scrollTop <= 8) loadOlderReviewWords();
+              }}
               onDelete={(id) => void handleDelete(id)}
               renderMeta={(w) => <><span className="word-list-next">다음 복습: {formatAbsoluteDateTime(w.nextReviewAt)}</span>{researchControls(w)}</>}
             />
@@ -700,37 +742,46 @@ function WordListSection({
   rowClassName,
   renderMeta,
   onDelete,
+  listRef,
+  hasMoreAbove = false,
+  onScroll,
 }: {
-  title?: string;
+  title?: React.ReactNode;
   words: WordReviewItem[];
   rowClassName?: string;
   renderMeta: (w: WordReviewItem) => React.ReactNode;
   onDelete: (id: string) => void;
+  listRef?: React.RefObject<HTMLDivElement | null>;
+  hasMoreAbove?: boolean;
+  onScroll?: React.UIEventHandler<HTMLDivElement>;
 }) {
   if (words.length === 0) return null;
   return (
     <>
       {title && <h2 className="word-section-title">{title}</h2>}
-      <ul className="word-list">
-        {words.map((w) => (
-          <li key={w.id} className={rowClassName ? `word-list-row ${rowClassName}` : "word-list-row"}>
-            <div className="word-list-meta">
-              <span className="word-search-word">{w.word}</span>
-              <span className="word-search-meaning">{w.meaning}</span>
-              {renderMeta(w)}
-            </div>
-            <button
-              type="button"
-              className="ghost icon-btn word-list-delete"
-              onClick={() => onDelete(w.id)}
-              aria-label="단어 삭제"
-              title="단어 삭제"
-            >
-              🗑
-            </button>
-          </li>
-        ))}
-      </ul>
+      <div className={listRef ? "word-list-scroll" : undefined} ref={listRef} onScroll={onScroll}>
+        {listRef && hasMoreAbove && <p className="word-list-more-hint">위로 스크롤하면 이전 단어를 더 볼 수 있어요.</p>}
+        <ul className="word-list">
+          {words.map((w) => (
+            <li key={w.id} className={rowClassName ? `word-list-row ${rowClassName}` : "word-list-row"}>
+              <div className="word-list-meta">
+                <span className="word-search-word">{w.word}</span>
+                <span className="word-search-meaning">{w.meaning}</span>
+                {renderMeta(w)}
+              </div>
+              <button
+                type="button"
+                className="ghost icon-btn word-list-delete"
+                onClick={() => onDelete(w.id)}
+                aria-label="단어 삭제"
+                title="단어 삭제"
+              >
+                🗑
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
     </>
   );
 }
