@@ -150,7 +150,7 @@ export function ArticleQuiz() {
           return;
         }
         setDraw(updated);
-        if (updated.status !== "done") schedulePoll(tick, articleStudyPollIntervalMs);
+        if (updated.status !== "done" || !updated.translation) schedulePoll(tick, articleStudyPollIntervalMs);
       };
       schedulePoll(tick, articleStudyPollIntervalMs);
     },
@@ -215,7 +215,7 @@ export function ArticleQuiz() {
       setTts("idle");
       setWordLookup(null);
       setView("reading");
-      if (found.status !== "done") {
+      if (found.status !== "done" || !found.translation) {
         const token = {};
         pollTokenRef.current = token;
         pollDraw(found.id, token);

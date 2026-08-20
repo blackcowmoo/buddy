@@ -112,11 +112,12 @@ type fakeNewsArticleStore struct {
 	// racing a real clock. A fresh reservation is never stale (mirrors
 	// MySQLStore.ReserveArticle setting claimed_at = created_at); tests that
 	// want to simulate an abandoned job call markStale.
-	stale map[string]bool
+	stale              map[string]bool
+	translationClaimed map[string]bool
 }
 
 func newFakeNewsArticleStore(articles ...newsarticle.Article) *fakeNewsArticleStore {
-	s := &fakeNewsArticleStore{articles: map[string]newsarticle.Article{}, stale: map[string]bool{}}
+	s := &fakeNewsArticleStore{articles: map[string]newsarticle.Article{}, stale: map[string]bool{}, translationClaimed: map[string]bool{}}
 	for _, a := range articles {
 		s.articles[a.ID] = a
 	}
@@ -198,6 +199,28 @@ func (s *fakeNewsArticleStore) CompleteArticle(ctx context.Context, id, summary,
 	return a, nil
 }
 
+func (s *fakeNewsArticleStore) ClaimMissingTranslation(ctx context.Context, id string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.articles[id]
+	if !ok || a.Status != newsarticle.StatusDone || strings.TrimSpace(a.Summary) == "" || strings.TrimSpace(a.Translation) != "" || s.translationClaimed[id] {
+		return false, nil
+	}
+	s.translationClaimed[id] = true
+	return true, nil
+}
+
+func (s *fakeNewsArticleStore) CompleteArticleTranslation(ctx context.Context, id, translation string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.articles[id]
+	if ok && strings.TrimSpace(a.Translation) == "" {
+		a.Translation = translation
+		s.articles[id] = a
+	}
+	return nil
+}
+
 func (s *fakeNewsArticleStore) FailArticle(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -257,6 +280,29 @@ func TestRunArticleStudyCompletesAPendingArticle(t *testing.T) {
 	}
 	if got := articles.status("a1"); got != newsarticle.StatusDone {
 		t.Fatalf("status = %q, want %q", got, newsarticle.StatusDone)
+	}
+}
+
+func TestRunArticleTranslationBackfillRepairsLegacyArticle(t *testing.T) {
+	pipe := &pipeline.Pipeline{
+		Analysis:     []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{complete: "우크라이나의 선거는 계엄령으로 중단되었습니다."}}},
+		FeedbackLang: "ko",
+	}
+	articles := newFakeNewsArticleStore(newsarticle.Article{
+		ID: "legacy", Summary: "Elections in Ukraine are suspended due to martial law.", Status: newsarticle.StatusDone,
+	})
+
+	if err := RunArticleTranslationBackfill(context.Background(), pipe, articles, "legacy"); err != nil {
+		t.Fatalf("RunArticleTranslationBackfill() error = %v", err)
+	}
+	a, _, _ := articles.GetArticle(context.Background(), "legacy")
+	if a.Translation != "우크라이나의 선거는 계엄령으로 중단되었습니다." {
+		t.Fatalf("translation = %q, want saved backfill", a.Translation)
+	}
+	// A second poll must not spend another slow LLM call or overwrite the
+	// already-repaired value.
+	if err := RunArticleTranslationBackfill(context.Background(), pipe, articles, "legacy"); err != nil {
+		t.Fatalf("second backfill error = %v", err)
 	}
 }
 
