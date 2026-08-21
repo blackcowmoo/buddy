@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -126,6 +126,32 @@ describe("ArticleQuiz page — list view", () => {
     const drawButton = screen.getByRole("button", { name: "새 아티클 뽑기" });
     expect(oldRow.compareDocumentPosition(newRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(newRow.compareDocumentPosition(drawButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("renders the newest page first and loads older attempts when scrolled to the top", async () => {
+    const attempts = Array.from({ length: 22 }, (_, i) => ({
+      id: `i${i}`,
+      source: "BBC",
+      title: `Story ${i}`,
+      summary: "s",
+      answered: false,
+      correct: false,
+      createdAt: 1700000000 + i,
+      publishedAt: 0,
+      status: "done" as const,
+    }));
+    vi.mocked(fetchArticleInstances).mockResolvedValue(attempts.slice().reverse());
+    render(<ArticleQuiz />);
+
+    await screen.findByText("[BBC] Story 2");
+    expect(screen.queryByText("[BBC] Story 0")).not.toBeInTheDocument();
+    expect(screen.getByText("위로 스크롤하면 이전 아티클을 더 불러와요.")).toBeInTheDocument();
+
+    const page = document.querySelector(".article-quiz-page")!;
+    fireEvent.scroll(page, { target: { scrollTop: 0 } });
+
+    expect(await screen.findByText("[BBC] Story 0")).toBeInTheDocument();
+    expect(screen.queryByText("위로 스크롤하면 이전 아티클을 더 불러와요.")).not.toBeInTheDocument();
   });
 
   it("groups past attempts from the same day under a single date divider", async () => {
