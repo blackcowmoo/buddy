@@ -220,6 +220,7 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     expect(screen.getByText("틀린 해석")).toBeInTheDocument();
     expect(screen.getByText("오늘")).toBeInTheDocument();
     expect(screen.getByText(articleSummaryMatcher(sampleDraw.summary))).toBeInTheDocument();
+    expect(screen.queryByText(sampleDraw.translation)).not.toBeInTheDocument();
   });
 
   it("only enables submission once every sub-question has a pick, then submits all selections at once", async () => {
