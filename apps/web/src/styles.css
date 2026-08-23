@@ -396,13 +396,8 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
   max-height: min(70vh, 320px);
 }
 .word-lookup-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.article-searched-words-control {
-  position: sticky;
-  bottom: calc(var(--sab) + 10px);
-  align-self: flex-end;
-  z-index: 12;
-  margin-top: 2px;
-}
+.article-reading-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.article-searched-words-control { position: relative; z-index: 12; margin-top: 2px; }
 .article-searched-words-btn { min-height: 40px; padding: 8px 14px; border-radius: 999px; box-shadow: 0 4px 16px rgba(0, 0, 0, .18); }
 .article-searched-words-panel {
   position: absolute;

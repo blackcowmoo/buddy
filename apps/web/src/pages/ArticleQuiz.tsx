@@ -357,7 +357,6 @@ export function ArticleQuiz() {
       if (localResult || pending || failedWordLookupsRef.current.has(lookupKey)) return;
       void checkDefinedWord(draw.id, word, key).then((serverResult) => {
         if (serverResult) wordLookupCacheRef.current.set(lookupKey, serverResult);
-        if (serverResult) updateSearchedWord(key, word, { result: serverResult });
         setWordLookup((prev) =>
           prev && prev.key === key
             ? { ...prev, loading: false, result: serverResult, failed: false }
@@ -420,36 +419,6 @@ export function ArticleQuiz() {
       updateSearchedWord(item.key, item.word, { saving: false, saved: !!saved });
     });
   }, [updateSearchedWord]);
-
-  const openSearchedWords = useCallback(() => {
-    if (!draw || draw.status !== "done") return;
-    const seen = new Set<string>();
-    const tokens = draw.summary.split(/([A-Za-z']+)/g).flatMap((part, key) => {
-      if (!/^[A-Za-z']+$/.test(part)) return [];
-      const normalized = part.toLowerCase();
-      if (seen.has(normalized)) return [];
-      seen.add(normalized);
-      return [{ key, word: part }];
-    });
-    for (const token of tokens) {
-      const existing = searchedWords.find((item) => item.word.toLowerCase() === token.word.toLowerCase());
-      const key = existing?.key ?? token.key;
-      const result = existing?.result ?? wordLookupCacheRef.current.get(`${draw.id}:${key}`) ?? null;
-      updateSearchedWord(key, token.word, { result, loading: !result });
-      if (result) continue;
-      const lookupKey = `${draw.id}:${key}`;
-      if (pendingWordLookupsRef.current.has(lookupKey)) continue;
-      const lookup = defineWord(draw.id, token.word, key);
-      pendingWordLookupsRef.current.set(lookupKey, lookup);
-      void lookup.then((resolved) => {
-        pendingWordLookupsRef.current.delete(lookupKey);
-        if (resolved) wordLookupCacheRef.current.set(lookupKey, resolved);
-        else failedWordLookupsRef.current.add(lookupKey);
-        updateSearchedWord(key, token.word, { loading: false, result: resolved });
-      });
-    }
-    setSearchedWordsOpen(true);
-  }, [draw, searchedWords, updateSearchedWord]);
 
   const startQuiz = useCallback(() => {
     setSelections((prev) => (draw ? draw.subQuestions.map(() => null) : prev));
@@ -697,11 +666,12 @@ export function ArticleQuiz() {
                 계속 진행돼요.
               </p>
             )}
-            <button type="button" className="ghost quiz-back-btn" onClick={backToList}>
-              ← 목록으로
-            </button>
-            {draw.status === "done" && (
-              <div className="article-searched-words-control">
+            <div className="article-reading-actions">
+              <button type="button" className="ghost quiz-back-btn" onClick={backToList}>
+                ← 목록으로
+              </button>
+              {draw.status === "done" && searchedWords.length > 0 && (
+                <div className="article-searched-words-control">
                 {searchedWordsOpen && (
                   <div className="article-searched-words-panel" role="dialog" aria-label="검색한 단어 목록">
                     <div className="word-lookup-header">
@@ -723,11 +693,12 @@ export function ArticleQuiz() {
                     ))}
                   </div>
                 )}
-                <button type="button" className="article-searched-words-btn" onClick={() => (searchedWordsOpen ? setSearchedWordsOpen(false) : openSearchedWords())} aria-expanded={searchedWordsOpen}>
-                  🔎 단어 목록 {searchedWords.length > 0 ? searchedWords.length : "열기"}
+                <button type="button" className="article-searched-words-btn" onClick={() => setSearchedWordsOpen((open) => !open)} aria-expanded={searchedWordsOpen}>
+                  🔎 검색한 단어 {searchedWords.length}
                 </button>
-              </div>
-            )}
+                </div>
+              )}
+            </div>
           </div>
         )}
 

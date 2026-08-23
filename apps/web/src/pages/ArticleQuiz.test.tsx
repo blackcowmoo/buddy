@@ -650,10 +650,11 @@ describe("ArticleQuiz page — word lookup while reading", () => {
 
     await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
     await user.click(screen.getByRole("button", { name: "discovery" }));
+    expect(screen.queryByRole("button", { name: /검색한 단어/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "찾기" }));
     expect(await screen.findByText("발견")).toBeInTheDocument();
 
-    const searchedWordsButton = screen.getByRole("button", { name: /단어 목록 1/ });
+    const searchedWordsButton = screen.getByRole("button", { name: /검색한 단어 1/ });
     expect(searchedWordsButton).toBeInTheDocument();
     await user.click(searchedWordsButton);
     expect(screen.getByRole("dialog", { name: "검색한 단어 목록" })).toBeInTheDocument();
@@ -692,7 +693,7 @@ describe("ArticleQuiz page — word lookup while reading", () => {
     render(<ArticleQuiz />);
 
     await user.click(await screen.findByText("[BBC] Scientists make discovery"));
-    await user.click(screen.getByRole("button", { name: /단어 목록 1/ }));
+    await user.click(screen.getByRole("button", { name: /검색한 단어 1/ }));
     const panel = screen.getByRole("dialog", { name: "검색한 단어 목록" });
     expect(within(panel).getByText("discovery")).toBeInTheDocument();
     expect(within(panel).getAllByText("발견").length).toBeGreaterThan(0);
