@@ -356,7 +356,14 @@ export function ArticleQuiz() {
 
       if (localResult || pending || failedWordLookupsRef.current.has(lookupKey)) return;
       void checkDefinedWord(draw.id, word, key).then((serverResult) => {
-        if (serverResult) wordLookupCacheRef.current.set(lookupKey, serverResult);
+        if (serverResult) {
+          wordLookupCacheRef.current.set(lookupKey, serverResult);
+          // Keep the searched-words overlay in sync with the popover when
+          // the server already has a cached definition. Without this, the
+          // popover shows the meaning while the overlay still has a null
+          // result and incorrectly renders the failure message.
+          updateSearchedWord(key, word, { loading: false, result: serverResult });
+        }
         setWordLookup((prev) =>
           prev && prev.key === key
             ? { ...prev, loading: false, result: serverResult, failed: false }
