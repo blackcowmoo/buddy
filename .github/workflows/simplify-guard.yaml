@@ -45,7 +45,7 @@ jobs:
             echo "Test files:"
             echo "$TEST_FILES"
 
-            echo "::warning::Temporary verification run: continuing to coverage checks after mixed changes."
+            exit 1
           fi
 
           echo "go_tests=$(grep -Eq '^apps/server/.*(_test\.go$|(^|/)(tests?)/)' changed_files.txt && echo true || echo false)" >> "$GITHUB_OUTPUT"
