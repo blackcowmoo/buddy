@@ -625,6 +625,14 @@ describe("ArticleQuiz page — word lookup while reading", () => {
     expect(screen.queryByRole("button", { name: "찾기" })).not.toBeInTheDocument();
     expect(defineWord).not.toHaveBeenCalled();
     expect(checkDefinedWord).toHaveBeenCalledWith(sampleDraw.id, "discovery", 9);
+
+    // A cached result must also populate the searched-words overlay; the
+    // popover and the overlay represent the same lookup.
+    const searchedWordsButton = screen.getByRole("button", { name: /검색한 단어 1/ });
+    await user.click(searchedWordsButton);
+    const searchedWordsPanel = screen.getByRole("dialog", { name: "검색한 단어 목록" });
+    expect(within(searchedWordsPanel).getByText("발견")).toBeInTheDocument();
+    expect(within(searchedWordsPanel).queryByText("뜻을 가져오지 못했어요.")).not.toBeInTheDocument();
   });
 
   it("keeps searched words in a bottom overlay so they can be saved later", async () => {
