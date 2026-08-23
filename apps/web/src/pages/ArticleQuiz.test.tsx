@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -625,6 +625,78 @@ describe("ArticleQuiz page — word lookup while reading", () => {
     expect(screen.queryByRole("button", { name: "찾기" })).not.toBeInTheDocument();
     expect(defineWord).not.toHaveBeenCalled();
     expect(checkDefinedWord).toHaveBeenCalledWith(sampleDraw.id, "discovery", 9);
+  });
+
+  it("keeps searched words in a bottom overlay so they can be saved later", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    vi.mocked(defineWord).mockResolvedValue({
+      word: "discovery",
+      meaning: "발견",
+      example: "Scientists announced a new discovery today.",
+    });
+    vi.mocked(saveWord).mockResolvedValue({
+      id: "w1",
+      word: "discovery",
+      meaning: "발견",
+      example: "Scientists announced a new discovery today.",
+      stage: 0,
+      reviewCount: 0,
+      nextReviewAt: 0,
+      status: "pending",
+    });
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+
+    await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
+    await user.click(screen.getByRole("button", { name: "discovery" }));
+    expect(screen.queryByRole("button", { name: /검색한 단어/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "찾기" }));
+    expect(await screen.findByText("발견")).toBeInTheDocument();
+
+    const searchedWordsButton = screen.getByRole("button", { name: /검색한 단어 1/ });
+    expect(searchedWordsButton).toBeInTheDocument();
+    await user.click(searchedWordsButton);
+    expect(screen.getByRole("dialog", { name: "검색한 단어 목록" })).toBeInTheDocument();
+    const searchedWordsPanel = screen.getByRole("dialog", { name: "검색한 단어 목록" });
+    expect(within(searchedWordsPanel).getByText("discovery")).toBeInTheDocument();
+    expect(within(searchedWordsPanel).getAllByText("발견").length).toBeGreaterThan(0);
+
+    await user.click(within(searchedWordsPanel).getAllByRole("button", { name: "학습하기" })[0]);
+    expect(saveWord).toHaveBeenCalledWith({
+      word: "discovery",
+      meaning: "발견",
+      example: "Scientists announced a new discovery today.",
+    }, "discovery");
+    expect(await screen.findByRole("button", { name: "✓ 확인 중" })).toBeInTheDocument();
+  });
+
+  it("restores an article's searched words after returning to the list", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([{
+      id: "i1",
+      source: "BBC",
+      title: sampleDraw.title,
+      summary: sampleDraw.summary,
+      answered: false,
+      correct: false,
+      createdAt: 1710494400,
+      publishedAt: sampleDraw.publishedAt,
+      status: "done",
+    }]);
+    vi.mocked(fetchArticleInstance).mockResolvedValue(sampleDraw);
+    localStorage.setItem("buddy.article.searched-words.i1", JSON.stringify([{
+      key: 9,
+      word: "discovery",
+      result: { word: "discovery", meaning: "발견", example: "A discovery." },
+    }]));
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+
+    await user.click(await screen.findByText("[BBC] Scientists make discovery"));
+    await user.click(screen.getByRole("button", { name: /검색한 단어 1/ }));
+    const panel = screen.getByRole("dialog", { name: "검색한 단어 목록" });
+    expect(within(panel).getByText("discovery")).toBeInTheDocument();
+    expect(within(panel).getAllByText("발견").length).toBeGreaterThan(0);
   });
 
   it("shows a failure message when the lookup fails", async () => {
