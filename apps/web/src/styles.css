@@ -396,6 +396,34 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
   max-height: min(70vh, 320px);
 }
 .word-lookup-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.article-searched-words-control {
+  position: sticky;
+  bottom: calc(var(--sab) + 10px);
+  align-self: flex-end;
+  z-index: 12;
+  margin-top: 2px;
+}
+.article-searched-words-btn { min-height: 40px; padding: 8px 14px; border-radius: 999px; box-shadow: 0 4px 16px rgba(0, 0, 0, .18); }
+.article-searched-words-panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  width: min(340px, calc(100vw - 32px));
+  max-height: min(55vh, 420px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .22);
+}
+.searched-word-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px; background: var(--panel); border-radius: 10px; }
+.searched-word-definition { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.searched-word-definition strong { overflow-wrap: anywhere; }
+.searched-word-definition span { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
 .quiz-back-btn { align-self: flex-start; padding: 2px 4px; font-size: 12px; }
 .quiz-question { display: flex; flex-direction: column; gap: 8px; }
 .quiz-progress { font-size: 12px; color: var(--muted); }

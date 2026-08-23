@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -625,6 +625,49 @@ describe("ArticleQuiz page — word lookup while reading", () => {
     expect(screen.queryByRole("button", { name: "찾기" })).not.toBeInTheDocument();
     expect(defineWord).not.toHaveBeenCalled();
     expect(checkDefinedWord).toHaveBeenCalledWith(sampleDraw.id, "discovery", 9);
+  });
+
+  it("keeps searched words in a bottom overlay so they can be saved later", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    vi.mocked(defineWord).mockResolvedValue({
+      word: "discovery",
+      meaning: "발견",
+      example: "Scientists announced a new discovery today.",
+    });
+    vi.mocked(saveWord).mockResolvedValue({
+      id: "w1",
+      word: "discovery",
+      meaning: "발견",
+      example: "Scientists announced a new discovery today.",
+      stage: 0,
+      reviewCount: 0,
+      nextReviewAt: 0,
+      status: "pending",
+    });
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+
+    await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
+    await user.click(screen.getByRole("button", { name: "discovery" }));
+    await user.click(screen.getByRole("button", { name: "찾기" }));
+    expect(await screen.findByText("발견")).toBeInTheDocument();
+
+    const searchedWordsButton = screen.getByRole("button", { name: /검색한 단어 1/ });
+    expect(searchedWordsButton).toBeInTheDocument();
+    await user.click(searchedWordsButton);
+    expect(screen.getByRole("dialog", { name: "검색한 단어 목록" })).toBeInTheDocument();
+    const searchedWordsPanel = screen.getByRole("dialog", { name: "검색한 단어 목록" });
+    expect(within(searchedWordsPanel).getByText("discovery")).toBeInTheDocument();
+    expect(within(searchedWordsPanel).getByText("발견")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "학습하기" }));
+    expect(saveWord).toHaveBeenCalledWith({
+      word: "discovery",
+      meaning: "발견",
+      example: "Scientists announced a new discovery today.",
+    }, "discovery");
+    expect(await screen.findByRole("button", { name: "✓ 확인 중" })).toBeInTheDocument();
   });
 
   it("shows a failure message when the lookup fails", async () => {
