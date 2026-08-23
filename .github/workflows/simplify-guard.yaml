@@ -48,8 +48,8 @@ jobs:
             echo "::warning::Temporary verification run: continuing to coverage checks after mixed changes."
           fi
 
-          echo "go_tests=$(grep -Eq '^apps/server/.*(_test\\.go$|(^|/)(tests?)/)' changed_files.txt && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          echo "web_tests=$(grep -Eq '^apps/web/.*(\\.(test|spec)\\.[cm]?[jt]sx?$|(^|/)(__tests__|tests?)/)' changed_files.txt && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "go_tests=$(grep -Eq '^apps/server/.*(_test\.go$|(^|/)(tests?)/)' changed_files.txt && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "web_tests=$(grep -Eq '^apps/web/.*(\.(test|spec)\.[cm]?[jt]sx?$|(^|/)(__tests__|tests?)/)' changed_files.txt && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Go
         if: steps.changed-files.outputs.go_tests == 'true'
