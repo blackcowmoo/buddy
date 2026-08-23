@@ -23,6 +23,7 @@ import type { WordSuggestion } from "../lib/protocol";
 import { useDismiss } from "../hooks/useDismiss";
 import { LoadingHint } from "../components/LoadingHint";
 import type { LoadState } from "../lib/loadState";
+import { readStored, writeStored } from "../lib/storedValue";
 
 // How often to re-check a draw that's still generating in the background
 // (see asyncjob.KindArticleStudy) — a poll, not a push, since nothing on the
@@ -58,6 +59,22 @@ type SearchedWord = {
   saving: boolean;
   saved: boolean;
 };
+
+function searchedWordsStorageKey(articleID: string) {
+  return `buddy.article.searched-words.${articleID}`;
+}
+
+function loadSearchedWords(articleID: string): SearchedWord[] {
+  return readStored(searchedWordsStorageKey(articleID), (raw) => {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return undefined;
+    return parsed.filter((item): item is SearchedWord => {
+      if (!item || typeof item !== "object") return false;
+      const value = item as Partial<SearchedWord>;
+      return typeof value.key === "number" && typeof value.word === "string" && (value.result === null || typeof value.result === "object");
+    }).map((item) => ({ ...item, loading: false, saving: false, saved: false }));
+  }, []);
+}
 
 // "오늘의 아티클": draws a news article the learner hasn't seen before (see
 // lib/articles.ts's drawArticle, which excludes every article already drawn
@@ -125,10 +142,15 @@ export function ArticleQuiz() {
   const updateSearchedWord = useCallback((key: number, word: string, update: Partial<SearchedWord>) => {
     setSearchedWords((prev) => {
       const existing = prev.find((item) => item.key === key);
-      if (existing) return prev.map((item) => (item.key === key ? { ...item, ...update } : item));
-      return [...prev, { key, word, result: null, loading: false, saving: false, saved: false, ...update }];
+      const next = existing
+        ? prev.map((item) => (item.key === key ? { ...item, ...update } : item))
+        : [...prev, { key, word, result: null, loading: false, saving: false, saved: false, ...update }];
+      if (draw) {
+        writeStored(searchedWordsStorageKey(draw.id), JSON.stringify(next.map(({ key: itemKey, word: itemWord, result }) => ({ key: itemKey, word: itemWord, result }))));
+      }
+      return next;
     });
-  }, []);
+  }, [draw]);
 
   // Measure after the panel has been laid out. This keeps the usual
   // word-adjacent placement, but switches to a viewport-centered panel when
@@ -235,7 +257,7 @@ export function ArticleQuiz() {
       setDrawState("idle");
       setTts("idle");
       setWordLookup(null);
-      setSearchedWords([]);
+      setSearchedWords(loadSearchedWords(res.draw.id));
       setSearchedWordsOpen(false);
       if (res.draw.status !== "done") {
         const token = {};
@@ -260,7 +282,7 @@ export function ArticleQuiz() {
       setDrawState("idle");
       setTts("idle");
       setWordLookup(null);
-      setSearchedWords([]);
+      setSearchedWords(loadSearchedWords(found.id));
       setSearchedWordsOpen(false);
       setView("reading");
       if (found.status !== "done" || !found.translation) {
@@ -320,7 +342,7 @@ export function ArticleQuiz() {
       if (!draw) return;
       setCenterWordLookup(false);
       const lookupKey = `${draw.id}:${key}`;
-      const localResult = wordLookupCacheRef.current.get(lookupKey);
+      const localResult = wordLookupCacheRef.current.get(lookupKey) ?? searchedWords.find((item) => item.key === key)?.result ?? null;
       const pending = pendingWordLookupsRef.current.has(lookupKey);
       setWordLookup({
         key,
@@ -343,7 +365,7 @@ export function ArticleQuiz() {
         );
       });
     },
-    [draw, updateSearchedWord],
+    [draw, searchedWords, updateSearchedWord],
   );
 
   // The whole study paragraph is short (one paragraph), so it's sent as
@@ -399,6 +421,36 @@ export function ArticleQuiz() {
     });
   }, [updateSearchedWord]);
 
+  const openSearchedWords = useCallback(() => {
+    if (!draw || draw.status !== "done") return;
+    const seen = new Set<string>();
+    const tokens = draw.summary.split(/([A-Za-z']+)/g).flatMap((part, key) => {
+      if (!/^[A-Za-z']+$/.test(part)) return [];
+      const normalized = part.toLowerCase();
+      if (seen.has(normalized)) return [];
+      seen.add(normalized);
+      return [{ key, word: part }];
+    });
+    for (const token of tokens) {
+      const existing = searchedWords.find((item) => item.word.toLowerCase() === token.word.toLowerCase());
+      const key = existing?.key ?? token.key;
+      const result = existing?.result ?? wordLookupCacheRef.current.get(`${draw.id}:${key}`) ?? null;
+      updateSearchedWord(key, token.word, { result, loading: !result });
+      if (result) continue;
+      const lookupKey = `${draw.id}:${key}`;
+      if (pendingWordLookupsRef.current.has(lookupKey)) continue;
+      const lookup = defineWord(draw.id, token.word, key);
+      pendingWordLookupsRef.current.set(lookupKey, lookup);
+      void lookup.then((resolved) => {
+        pendingWordLookupsRef.current.delete(lookupKey);
+        if (resolved) wordLookupCacheRef.current.set(lookupKey, resolved);
+        else failedWordLookupsRef.current.add(lookupKey);
+        updateSearchedWord(key, token.word, { loading: false, result: resolved });
+      });
+    }
+    setSearchedWordsOpen(true);
+  }, [draw, searchedWords, updateSearchedWord]);
+
   const startQuiz = useCallback(() => {
     setSelections((prev) => (draw ? draw.subQuestions.map(() => null) : prev));
     setWordLookup(null);
@@ -444,7 +496,6 @@ export function ArticleQuiz() {
     // whatever's opened next.
     setTts("idle");
     setWordLookup(null);
-    setSearchedWords([]);
     setSearchedWordsOpen(false);
     loadInstances();
   }, [loadInstances]);
@@ -649,7 +700,7 @@ export function ArticleQuiz() {
             <button type="button" className="ghost quiz-back-btn" onClick={backToList}>
               ← 목록으로
             </button>
-            {draw.status === "done" && searchedWords.length > 0 && (
+            {draw.status === "done" && (
               <div className="article-searched-words-control">
                 {searchedWordsOpen && (
                   <div className="article-searched-words-panel" role="dialog" aria-label="검색한 단어 목록">
@@ -672,8 +723,8 @@ export function ArticleQuiz() {
                     ))}
                   </div>
                 )}
-                <button type="button" className="article-searched-words-btn" onClick={() => setSearchedWordsOpen((open) => !open)} aria-expanded={searchedWordsOpen}>
-                  🔎 검색한 단어 {searchedWords.length}
+                <button type="button" className="article-searched-words-btn" onClick={() => (searchedWordsOpen ? setSearchedWordsOpen(false) : openSearchedWords())} aria-expanded={searchedWordsOpen}>
+                  🔎 단어 목록 {searchedWords.length > 0 ? searchedWords.length : "열기"}
                 </button>
               </div>
             )}
