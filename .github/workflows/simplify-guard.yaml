@@ -22,6 +22,7 @@ jobs:
           fetch-depth: 0
 
       - name: Check changed files
+        id: changed-files
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -46,3 +47,64 @@ jobs:
 
             exit 1
           fi
+
+          echo "go_tests=$(grep -Eq '^apps/server/.*(_test\.go$|(^|/)(tests?)/)' changed_files.txt && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "web_tests=$(grep -Eq '^apps/web/.*(\.(test|spec)\.[cm]?[jt]sx?$|(^|/)(__tests__|tests?)/)' changed_files.txt && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        if: steps.changed-files.outputs.go_tests == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/server/go.mod
+
+      - name: Check Go coverage regression
+        if: steps.changed-files.outputs.go_tests == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          (cd apps/server && go test ./... -p 2 -covermode=atomic -coverprofile=/tmp/simplify-head-go.out)
+          head=$(cd apps/server && go tool cover -func=/tmp/simplify-head-go.out | tail -1 | awk '{print $3}')
+
+          git worktree add /tmp/simplify-base "${BASE_SHA}"
+          if ! (cd /tmp/simplify-base/apps/server && go test ./... -p 2 -covermode=atomic -coverprofile=/tmp/simplify-base-go.out); then
+            git worktree remove /tmp/simplify-base --force
+            echo "::error::Unable to calculate base Go coverage."
+            exit 1
+          fi
+          base=$(cd /tmp/simplify-base/apps/server && go tool cover -func=/tmp/simplify-base-go.out | tail -1 | awk '{print $3}')
+          git worktree remove /tmp/simplify-base --force
+
+          node .github/scripts/check-coverage-regression.mjs \
+            --label "apps/server (Go)" --base "$base" --head "$head"
+
+      - name: Set up pnpm
+        if: steps.changed-files.outputs.web_tests == 'true'
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        if: steps.changed-files.outputs.web_tests == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+          cache: pnpm
+
+      - name: Check web coverage regression
+        if: steps.changed-files.outputs.web_tests == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @buddy/web test:coverage
+          head=$(node -e "console.log(require('./apps/web/coverage/coverage-summary.json').total.lines.pct + '%')")
+
+          git worktree add /tmp/simplify-base "${BASE_SHA}"
+          if ! (cd /tmp/simplify-base && pnpm install --frozen-lockfile && pnpm --filter @buddy/web test:coverage); then
+            git worktree remove /tmp/simplify-base --force
+            echo "::error::Unable to calculate base web coverage."
+            exit 1
+          fi
+          base=$(node -e "console.log(require('/tmp/simplify-base/apps/web/coverage/coverage-summary.json').total.lines.pct + '%')")
+          git worktree remove /tmp/simplify-base --force
+
+          node .github/scripts/check-coverage-regression.mjs \
+            --label "apps/web (vitest)" --base "$base" --head "$head"
