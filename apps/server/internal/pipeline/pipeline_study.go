@@ -133,7 +133,9 @@ so answering requires applying the rule, not recalling a specific sentence.
 For each question:
 - "prompt" is a natural English sentence with exactly one blank, written as
   "___", where the tested word or phrase belongs.
-- "answer" is the exact word or phrase that correctly fills that blank.
+- "answer" is the exact word or phrase that correctly fills that blank,
+  including the grammatical form required by the sentence (for example,
+  use "reflects" rather than the base form "reflect" in "He ___ on it").
 - "answerMeaning" is a SHORT %[1]s gloss of "answer" alone — its meaning as
   used in this sentence, not a translation of the whole sentence. Shown to
   the learner next to "prompt" BEFORE they answer: a blanked English

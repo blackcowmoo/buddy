@@ -78,9 +78,11 @@ func TestGenerateStudySummaryPropagatesAnalyzeError(t *testing.T) {
 
 func TestGenerateStudyQuizSendsIssueDetails(t *testing.T) {
 	var gotInput string
+	var gotPrompt string
 	p := &Pipeline{
 		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 			gotInput = msgs[len(msgs)-1].Content
+			gotPrompt = msgs[0].Content
 			return `{"questions":[
 				{"prompt":"She ___ to the store every day.","answer":"goes","translation":"그녀는 매일 가게에 가요.","explanation":"third person singular needs -s","explanationTranslation":"3인칭 단수는 -s가 필요해요"}
 			]}`, nil
@@ -107,6 +109,9 @@ func TestGenerateStudyQuizSendsIssueDetails(t *testing.T) {
 	}
 	if !strings.Contains(gotInput, "He go to school.") || !strings.Contains(gotInput, "subject-verb agreement") {
 		t.Fatalf("analyze input missing issue details: %q", gotInput)
+	}
+	if !strings.Contains(gotPrompt, "including the grammatical form required by the sentence") {
+		t.Fatalf("quiz prompt does not require the sentence's grammatical form: %q", gotPrompt)
 	}
 }
 
