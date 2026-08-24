@@ -236,6 +236,11 @@ describe("WordReview page", () => {
 
     const scrollList = document.querySelector(".word-list-scroll") as HTMLDivElement;
     await act(async () => {
+      // Simulate an actual scroll reaching the top. Setting 0 when jsdom's
+      // default is already 0 can be ignored by the event machinery on some
+      // runners, making this pagination test flaky.
+      scrollList.scrollTop = 24;
+      fireEvent.scroll(scrollList);
       scrollList.scrollTop = 0;
       fireEvent.scroll(scrollList);
     });
