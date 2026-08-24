@@ -132,6 +132,20 @@ interface QuizItem {
   choices?: string[]; // recognition only: the 8 shuffled meaning options
 }
 
+// A missed recognition question is put back into the current session for an
+// immediate retry. Give that retry a fresh choice order so remembering the
+// previous button position cannot substitute for knowing the meaning. The
+// fallback swap matters when a mocked or unlucky shuffle returns the exact
+// same order; a retry should visibly move the choices whenever possible.
+function reshuffleRecognitionChoices(item: QuizItem): QuizItem {
+  if (item.mode !== "recognition" || !item.choices || item.choices.length < 2) return item;
+  const choices = shuffled(item.choices);
+  if (choices.every((choice, i) => choice === item.choices![i])) {
+    [choices[0], choices[1]] = [choices[1], choices[0]];
+  }
+  return { ...item, choices };
+}
+
 function formatReviewAge(unixSeconds: number | undefined): string {
   if (!unixSeconds) return "아직 복습한 적 없음";
   const days = Math.max(0, Math.floor((Date.now() / 1000 - unixSeconds) / (24 * 60 * 60)));
@@ -394,7 +408,7 @@ export function WordReview() {
       // at the back of this session's queue, so the learner actually gets
       // that same-day retry now rather than only next time they open
       // review.
-      setQuizQueue((prev) => (prev ? [...prev, item] : prev));
+      setQuizQueue((prev) => (prev ? [...prev, reshuffleRecognitionChoices(item)] : prev));
       void reviewWord(item.word.id, false).then((updated) => {
         if (!updated) return;
         setWords((prev) => prev.map((w) => (w.id === updated.id ? updated : w)));

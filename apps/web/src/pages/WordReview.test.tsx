@@ -738,6 +738,21 @@ describe("WordReview page", () => {
     expect(reviewWord).toHaveBeenCalledWith("w1", false);
   });
 
+  it("reshuffles recognition choices when a missed word is retried", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    vi.mocked(reviewWord).mockResolvedValue({ ...dueWord, stage: 0, reviewCount: 1 });
+    const user = await startQuiz([dueWord, ...otherVerifiedWords]);
+
+    const choiceButtons = () => [...document.querySelectorAll<HTMLButtonElement>(".quiz-choice-btn")];
+    const initialChoices = choiceButtons().map((button) => button.textContent);
+    await user.click(screen.getByRole("button", { name: "우울한" }));
+    await user.click(screen.getByRole("button", { name: "다음 단어" }));
+
+    const retryChoices = choiceButtons().map((button) => button.textContent);
+    expect(retryChoices).not.toEqual(initialChoices);
+    expect(retryChoices.indexOf("매우 행복한")).not.toBe(initialChoices.indexOf("매우 행복한"));
+  });
+
   it("resets the review day when the learner does not know a recognition answer", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0);
     vi.mocked(reviewWord)
