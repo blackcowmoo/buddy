@@ -93,13 +93,13 @@ func NewS3(ctx context.Context, cfg S3Config, rw, ro *sql.DB) (*S3Store, error) 
 	// the idempotency comes from ignoring the specific "already there" errors
 	// instead of relying on that clause.
 	steps := []migration.Step{
-		{1, "recordings.session_id", func(ctx context.Context, db *sql.DB) error {
+		{Version: 1, Name: "recordings.session_id", Up: func(ctx context.Context, db *sql.DB) error {
 			return mysqlerr.ApplyAdditive(func() error {
 				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN session_id VARCHAR(64) NOT NULL DEFAULT '' AFTER user_id`)
 				return err
 			}, mysqlerr.DupFieldName)
 		}},
-		{2, "recordings.session_id_index", func(ctx context.Context, db *sql.DB) error {
+		{Version: 2, Name: "recordings.session_id_index", Up: func(ctx context.Context, db *sql.DB) error {
 			return mysqlerr.ApplyAdditive(func() error {
 				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD INDEX idx_user_session (user_id, session_id)`)
 				return err

@@ -79,7 +79,7 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 	// idempotent "already applied" story to swallow the way ADD COLUMN does
 	// via mysqlerr.ApplyAdditive.
 	steps := []migration.Step{
-		{1, "articles.sub_questions_json", func(ctx context.Context, db *sql.DB) error {
+		{Version: 1, Name: "articles.sub_questions_json", Up: func(ctx context.Context, db *sql.DB) error {
 			return addColumn(ctx, db, `ALTER TABLE `+articlesTable+` ADD COLUMN sub_questions_json TEXT NULL AFTER summary`, "sub_questions_json")
 		}},
 		// Predates asyncjob.KindArticleStudy, back when SaveArticle only ever
@@ -88,7 +88,7 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 		// row is therefore already StatusDone, hence the DEFAULT above backfilling
 		// them automatically. See mysqlerr's doc for why this ADD COLUMN needs to
 		// swallow "already applied" rather than use IF NOT EXISTS.
-		{2, "articles.status", func(ctx context.Context, db *sql.DB) error {
+		{Version: 2, Name: "articles.status", Up: func(ctx context.Context, db *sql.DB) error {
 			return addColumn(ctx, db, `ALTER TABLE `+articlesTable+` ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT '`+StatusDone+`'`, "status")
 		}},
 		// description backs Article.Description — see its doc comment for why
@@ -102,13 +102,13 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 		// columns outright (only expression defaults are allowed there), and a
 		// feed snippet (see newsfeed.Candidate.Description's doc comment) is
 		// short by construction anyway, same reasoning as title's VARCHAR(512).
-		{3, "articles.description", func(ctx context.Context, db *sql.DB) error {
+		{Version: 3, Name: "articles.description", Up: func(ctx context.Context, db *sql.DB) error {
 			return addColumn(ctx, db, `ALTER TABLE `+articlesTable+` ADD COLUMN description VARCHAR(2048) NOT NULL DEFAULT ''`, "description")
 		}},
-		{4, "articles.translation", func(ctx context.Context, db *sql.DB) error {
+		{Version: 4, Name: "articles.translation", Up: func(ctx context.Context, db *sql.DB) error {
 			return addColumn(ctx, db, `ALTER TABLE `+articlesTable+` ADD COLUMN translation TEXT NULL AFTER summary`, "translation")
 		}},
-		{5, "articles.claimed_at", func(ctx context.Context, db *sql.DB) error {
+		{Version: 5, Name: "articles.claimed_at", Up: func(ctx context.Context, db *sql.DB) error {
 			return addColumn(ctx, db, `ALTER TABLE `+articlesTable+` ADD COLUMN claimed_at BIGINT NOT NULL DEFAULT 0`, "claimed_at")
 		}},
 		// published_at backs Article.PublishedAt — the source feed's own <pubDate>
@@ -116,10 +116,10 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 		// this row was reserved). DEFAULT 0 leaves every pre-existing row with a
 		// zero PublishedAt, same "unknown, render nothing" fallback a fresh row
 		// gets if its feed item had no parseable pubDate.
-		{6, "articles.published_at", func(ctx context.Context, db *sql.DB) error {
+		{Version: 6, Name: "articles.published_at", Up: func(ctx context.Context, db *sql.DB) error {
 			return addColumn(ctx, db, `ALTER TABLE `+articlesTable+` ADD COLUMN published_at BIGINT NOT NULL DEFAULT 0`, "published_at")
 		}},
-		{7, "articles.translation_claimed_at", func(ctx context.Context, db *sql.DB) error {
+		{Version: 7, Name: "articles.translation_claimed_at", Up: func(ctx context.Context, db *sql.DB) error {
 			return addColumn(ctx, db, `ALTER TABLE `+articlesTable+` ADD COLUMN translation_claimed_at BIGINT NOT NULL DEFAULT 0`, "translation_claimed_at")
 		}},
 	}
@@ -160,7 +160,7 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 	// own version. Reusing 7 makes it look applied on databases that have
 	// already recorded the article-column step, leaving CreateInstance/List
 	// broken because selected_options_json does not exist.
-	instanceSteps := []migration.Step{{8, "article_instances.selected_options_json", func(ctx context.Context, db *sql.DB) error {
+	instanceSteps := []migration.Step{{Version: 8, Name: "article_instances.selected_options_json", Up: func(ctx context.Context, db *sql.DB) error {
 		return addColumn(ctx, db, `ALTER TABLE `+instancesTable+` ADD COLUMN selected_options_json TEXT NULL AFTER answered`, "selected_options_json")
 	}}}
 	if err := migration.ApplyLegacy(ctx, rw, "newsarticle", instanceSteps); err != nil {
