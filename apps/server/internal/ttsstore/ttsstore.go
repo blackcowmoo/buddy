@@ -105,7 +105,7 @@ func New(ctx context.Context, cfg Config, rw, ro *sql.DB) (*Store, error) {
 	// internal/newsarticle/mysql.go's published_at column for why an
 	// idempotent ALTER (swallowing "already there") is needed alongside
 	// CREATE TABLE IF NOT EXISTS rather than instead of it.
-	steps := []migration.Step{{1, "tts_cache.version", func(ctx context.Context, db *sql.DB) error {
+	steps := []migration.Step{{Version: 1, Name: "tts_cache.version", Up: func(ctx context.Context, db *sql.DB) error {
 		return mysqlerr.ApplyAdditive(func() error {
 			_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN version VARCHAR(64) NOT NULL DEFAULT '' AFTER s3_key`)
 			return err

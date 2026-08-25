@@ -69,19 +69,19 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 	// versions. Treat a duplicate-column error as success so this migration
 	// remains idempotent on both fresh and already-migrated databases.
 	steps := []migration.Step{
-		{1, "word_reviews.original_word", func(ctx context.Context, db *sql.DB) error {
+		{Version: 1, Name: "word_reviews.original_word", Up: func(ctx context.Context, db *sql.DB) error {
 			return mysqlerr.ApplyAdditive(func() error {
 				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN original_word VARCHAR(255) NOT NULL DEFAULT ''`)
 				return err
 			}, mysqlerr.DupFieldName)
 		}},
-		{2, "word_reviews.research_status", func(ctx context.Context, db *sql.DB) error {
+		{Version: 2, Name: "word_reviews.research_status", Up: func(ctx context.Context, db *sql.DB) error {
 			return mysqlerr.ApplyAdditive(func() error {
 				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN research_status VARCHAR(16) NOT NULL DEFAULT ''`)
 				return err
 			}, mysqlerr.DupFieldName)
 		}},
-		{3, "word_reviews.research_results", func(ctx context.Context, db *sql.DB) error {
+		{Version: 3, Name: "word_reviews.research_results", Up: func(ctx context.Context, db *sql.DB) error {
 			return mysqlerr.ApplyAdditive(func() error {
 				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN research_results JSON NULL`)
 				return err
