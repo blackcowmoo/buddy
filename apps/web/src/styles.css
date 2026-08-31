@@ -1,22 +1,40 @@
 :root {
-  /* Dark palette — also the fallback if [data-theme] isn't set yet. */
-  --bg: #0f1115;
-  --panel: #171a21;
-  --panel-2: #1e222b;
-  --text: #e6e8ee;
-  --muted: #9aa3b2;
-  --accent: #6ea8fe;
-  --accent-text: #0b1020;
-  --user: #24406b;
-  --assistant: #232833;
-  --ok: #3fb950;
-  --err: #f85149;
-  --warn: #d29922;
-  --phrase: #b083f0;
-  --border: #262b36;
-  --border-2: #2c3240;
-  --border-3: #3a4150;
-  --radius: 14px;
+  /* Midnight violet: calm enough for long reading sessions, but warmer and
+     more distinctive than a neutral developer-tool palette. */
+  --bg: #100f18;
+  --bg-deep: #0a0910;
+  --panel: #1a1824;
+  --panel-2: #23202f;
+  --panel-3: #2b2739;
+  --overlay: rgba(26, 24, 36, 0.92);
+  --text: #f5f2fa;
+  --muted: #aaa4b7;
+  --accent: #9484f6;
+  --accent-strong: #b1a6ff;
+  --accent-text: #171226;
+  --accent-soft: rgba(148, 132, 246, 0.14);
+  --accent-border: rgba(177, 166, 255, 0.34);
+  --accent-shadow: rgba(121, 102, 225, 0.28);
+  --user: #745fd6;
+  --user-strong: #7a64d8;
+  --assistant: #201e2b;
+  --ok: #58c995;
+  --err: #ff716b;
+  --warn: #e9b95d;
+  --phrase: #c997f3;
+  --border: rgba(255, 255, 255, 0.075);
+  --border-2: rgba(255, 255, 255, 0.11);
+  --border-3: rgba(255, 255, 255, 0.18);
+  --app-bg: linear-gradient(180deg, rgba(20, 18, 30, 0.99), rgba(12, 11, 18, 0.995));
+  --header-bg: rgba(16, 15, 24, 0.78);
+  --composer-bg: rgba(16, 15, 24, 0.86);
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.24), 0 4px 14px rgba(0, 0, 0, 0.12);
+  --shadow-sm: 0 8px 24px rgba(0, 0, 0, 0.2);
+  --shadow-lg: 0 22px 60px rgba(0, 0, 0, 0.42);
+  --focus-ring: 0 0 0 3px rgba(148, 132, 246, 0.3);
+  --radius-sm: 11px;
+  --radius: 16px;
+  --radius-lg: 22px;
   /* Extra horizontal breathing room keeps text clear of edge damage on
      phones whose left or right display area is partially unusable. */
   --layout-inline-padding: 21px;
@@ -24,29 +42,49 @@
      (bottom) on notched iPhones. 0px fallback keeps this harmless elsewhere. */
   --sat: env(safe-area-inset-top, 0px);
   --sab: env(safe-area-inset-bottom, 0px);
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color-scheme: dark;
+  font-family: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 /* [data-theme] is set on <html> by index.html's bootstrap script and kept in
    sync by src/lib/theme.ts — "white", "dark", or resolved-from-"system". */
 :root[data-theme="white"] {
-  --bg: #ffffff;
-  --panel: #f5f6f8;
-  --panel-2: #eceef2;
-  --text: #14161c;
-  --muted: #5b6472;
-  --accent: #2f6fed;
-  --user: #dbe6fb;
-  --assistant: #eef0f4;
-  --ok: #1a7f37;
-  --err: #cf222e;
-  --warn: #9a6700;
-  --border: #e4e6ea;
-  --border-2: #d8dbe1;
-  --border-3: #c7ccd6;
+  --bg: #f5f3f8;
+  --bg-deep: #ece8f2;
+  --panel: #ffffff;
+  --panel-2: #f0edf5;
+  --panel-3: #e6e0ef;
+  --overlay: rgba(255, 255, 255, 0.94);
+  --text: #241f2d;
+  --muted: #716a7c;
+  --accent: #6048bf;
+  --accent-strong: #765dcc;
+  --accent-text: #ffffff;
+  --accent-soft: rgba(113, 91, 211, 0.1);
+  --accent-border: rgba(113, 91, 211, 0.26);
+  --accent-shadow: rgba(83, 62, 175, 0.22);
+  --user: #6048bf;
+  --user-strong: #765dcc;
+  --assistant: #ffffff;
+  --ok: #25865b;
+  --err: #cf4b4b;
+  --warn: #9b6814;
+  --phrase: #8c58ae;
+  --border: rgba(48, 35, 68, 0.075);
+  --border-2: rgba(48, 35, 68, 0.12);
+  --border-3: rgba(48, 35, 68, 0.2);
+  --app-bg: linear-gradient(180deg, rgba(251, 250, 253, 0.99), rgba(245, 243, 248, 0.995));
+  --header-bg: rgba(250, 249, 252, 0.82);
+  --composer-bg: rgba(250, 249, 252, 0.9);
+  --shadow-xs: 0 1px 2px rgba(45, 30, 66, 0.05), 0 5px 16px rgba(45, 30, 66, 0.055);
+  --shadow-sm: 0 10px 30px rgba(45, 30, 66, 0.1);
+  --shadow-lg: 0 24px 70px rgba(45, 30, 66, 0.18);
+  --focus-ring: 0 0 0 3px rgba(113, 91, 211, 0.2);
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+::selection { background: var(--accent-soft); color: var(--text); }
 
 html, body {
   height: 100%;
@@ -56,7 +94,18 @@ html, body {
   overscroll-behavior: none;
   -webkit-text-size-adjust: 100%;
 }
-body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at 18% -8%, var(--accent-soft), transparent 34%),
+    radial-gradient(circle at 86% 108%, var(--accent-soft), transparent 30%),
+    var(--bg-deep);
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.5;
+  letter-spacing: -0.012em;
+  text-rendering: optimizeLegibility;
+}
 
 /* Designed for iPhone 16 Pro (402×874pt) and phone widths generally; capped
    so it still reads as a phone layout on a wider viewport. */
@@ -72,7 +121,16 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
      something that stretches the whole layout past the viewport. */
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto 1fr auto;
-  background: var(--bg);
+  position: relative;
+  isolation: isolate;
+  background: var(--app-bg);
+}
+
+@media (min-width: 481px) {
+  .app {
+    border-inline: 1px solid var(--border);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.015), var(--shadow-lg);
+  }
 }
 
 /* Base size for every round icon-only button (topbar actions, per-message
@@ -90,19 +148,45 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
   place-items: center;
   font-size: 16px;
   border-radius: 999px;
-  transition: background-color 0.15s ease;
+  transition: transform 0.16s ease, background-color 0.18s ease, border-color 0.18s ease;
 }
 
 .topbar {
+  position: relative;
+  z-index: 30;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px var(--layout-inline-padding);
-  padding-top: calc(12px + var(--sat));
+  min-height: 62px;
+  padding: 13px var(--layout-inline-padding);
+  padding-top: calc(13px + var(--sat));
+  background: var(--header-bg);
+  -webkit-backdrop-filter: blur(18px) saturate(1.25);
+  backdrop-filter: blur(18px) saturate(1.25);
   border-bottom: 1px solid var(--border);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.018);
 }
-.brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.topbar h1 { font-size: 17px; margin: 0; font-weight: 700; }
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.brand-mark {
+  width: 31px;
+  height: 31px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 10px 10px 10px 4px;
+  background: linear-gradient(145deg, var(--accent-strong), var(--accent));
+  color: var(--accent-text);
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  box-shadow: 0 8px 20px var(--accent-shadow);
+}
+.topbar h1 {
+  font-size: 18px;
+  margin: 0;
+  font-weight: 760;
+  letter-spacing: -0.035em;
+}
 
 .menu {
   position: relative;
@@ -110,10 +194,11 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
   display: flex;
   align-items: center;
   gap: 2px;
-  background: var(--panel-2);
+  background: color-mix(in srgb, var(--panel-2) 86%, transparent);
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 4px;
+  box-shadow: var(--shadow-xs);
 }
 .menu-panel {
   position: absolute;
@@ -123,19 +208,29 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
   max-width: calc(100vw - 32px);
   max-height: calc(100vh - var(--sat) - 96px);
   overflow-y: auto;
-  background: var(--panel);
+  background: var(--overlay);
+  -webkit-backdrop-filter: blur(24px) saturate(1.2);
+  backdrop-filter: blur(24px) saturate(1.2);
   border: 1px solid var(--border-2);
-  border-radius: var(--radius);
-  padding: 10px;
+  border-radius: var(--radius-lg);
+  padding: 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  z-index: 10;
+  box-shadow: var(--shadow-lg);
+  z-index: 40;
 }
 .menu-row { display: flex; }
 .menu-row .pill, .menu-row > button { width: 100%; justify-content: center; }
-.menu-item { width: 100%; text-align: left; display: flex; align-items: center; gap: 6px; }
+.menu-item {
+  width: 100%;
+  min-height: 42px;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-color: transparent;
+}
 /* Due-review count on the "단어 복습" menu item — the only proactive nudge
    this feature gives (no push notifications, see wordreview's package doc),
    so it needs to actually catch the eye: filled accent pill, not a muted
@@ -154,12 +249,13 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
   align-items: center;
   justify-content: center;
 }
-.menu-divider { height: 1px; background: var(--border-2); margin: 2px 0; }
+.menu-divider { height: 1px; background: var(--border); margin: 3px 2px; }
 
-.user-info { padding: 2px 4px; }
+.user-info { padding: 3px 6px 5px; }
 .user-email {
   font-size: 13px;
   color: var(--muted);
+  font-weight: 560;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -180,9 +276,13 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
   border-radius: 999px;
   background: var(--panel-2);
   color: var(--text);
-  border: 1px solid transparent;
+  border: 1px solid var(--border);
 }
-.rate-preset-btn.active { border-color: var(--accent); color: var(--accent); }
+.rate-preset-btn.active {
+  border-color: var(--accent-border);
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
 
 /* Per-row toolbar: source/refined markers plus the grammar-feedback button
    sit next to the study (rate-playback) button, all vertically centered so
@@ -197,7 +297,9 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
   gap: 4px;
   padding: 3px 6px;
   border-radius: 999px;
-  background: var(--panel-2);
+  background: color-mix(in srgb, var(--panel-2) 84%, transparent);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-xs);
 }
 
 /* study-btn (App.tsx StudyControl) is a plain, immediate-play button — no
@@ -219,11 +321,13 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 .study-panel {
   position: absolute;
   top: calc(100% + 6px);
-  background: var(--panel);
+  background: var(--overlay);
+  -webkit-backdrop-filter: blur(20px) saturate(1.15);
+  backdrop-filter: blur(20px) saturate(1.15);
   border: 1px solid var(--border-2);
-  border-radius: 10px;
-  padding: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  border-radius: var(--radius);
+  padding: 10px;
+  box-shadow: var(--shadow-lg);
   z-index: 10;
 }
 .row.user .study-panel { right: 0; }
@@ -376,11 +480,13 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
   display: flex;
   flex-direction: column;
   gap: 6px;
-  background: var(--panel-2);
+  background: var(--overlay);
+  -webkit-backdrop-filter: blur(20px) saturate(1.15);
+  backdrop-filter: blur(20px) saturate(1.15);
   border: 1px solid var(--border-2);
   border-radius: var(--radius);
   padding: 10px 12px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--shadow-lg);
 }
 /* Edge words cannot keep the panel below themselves without clipping it.
    ArticleQuiz adds this class after measuring the rendered panel, so normal
@@ -398,7 +504,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 .word-lookup-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .article-reading-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .article-searched-words-control { position: relative; z-index: 12; margin-top: 2px; }
-.article-searched-words-btn { min-height: 40px; padding: 8px 14px; border-radius: 999px; box-shadow: 0 4px 16px rgba(0, 0, 0, .18); }
+.article-searched-words-btn { min-height: 40px; padding: 8px 14px; border-radius: 999px; box-shadow: 0 8px 22px var(--accent-shadow); }
 .article-searched-words-panel {
   position: absolute;
   right: 0;
@@ -410,12 +516,14 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
   flex-direction: column;
   gap: 8px;
   padding: 12px;
-  background: var(--panel-2);
+  background: var(--overlay);
+  -webkit-backdrop-filter: blur(20px) saturate(1.15);
+  backdrop-filter: blur(20px) saturate(1.15);
   border: 1px solid var(--border-2);
   border-radius: var(--radius);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, .22);
+  box-shadow: var(--shadow-lg);
 }
-.searched-word-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px; background: var(--panel); border-radius: 10px; }
+.searched-word-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-sm); }
 .searched-word-definition { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .searched-word-definition strong { overflow-wrap: anywhere; }
 .searched-word-definition span { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
@@ -475,8 +583,8 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
   background: var(--panel-2);
   border: 1px solid var(--border-2);
   color: var(--text);
-  border-radius: 10px;
-  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  padding: 10px 11px;
   resize: vertical;
   -webkit-appearance: none;
   appearance: none;
@@ -504,7 +612,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
   padding: 6px 8px;
   background: var(--panel-2);
   border: 1px solid var(--border-2);
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
 }
 .learner-profile-empty { font-size: 13px; color: var(--muted); }
 
@@ -519,7 +627,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
   background: var(--panel-2);
   border: 1px solid var(--border-2);
   color: var(--text);
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   padding: 11px 12px;
   min-height: 44px;
   -webkit-appearance: none;
@@ -528,25 +636,46 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; }
 .path-row button { flex-shrink: 0; padding: 10px 12px; }
 .path-error { margin: 0; font-size: 12px; color: var(--err); }
 
-.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
-.dot.open { background: var(--ok); }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex-shrink: 0; box-shadow: 0 0 0 3px var(--border); }
+.dot.open { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 14%, transparent); }
 .dot.connecting { background: var(--warn); }
 .dot.closed, .dot.error { background: var(--err); }
 
 button {
   font: inherit;
   cursor: pointer;
-  border: none;
-  border-radius: 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
   padding: 10px 14px;
   min-height: 44px; /* Apple HIG minimum touch target */
-  background: var(--accent);
+  background: linear-gradient(135deg, var(--accent-strong), var(--accent));
   color: var(--accent-text);
-  font-weight: 600;
+  font-weight: 680;
+  letter-spacing: -0.015em;
+  box-shadow: 0 8px 20px var(--accent-shadow);
+  transition: transform 0.16s ease, box-shadow 0.18s ease, filter 0.18s ease, background-color 0.18s ease, border-color 0.18s ease;
   touch-action: manipulation;
 }
-button.ghost { background: var(--panel-2); color: var(--text); }
-button:active { filter: brightness(0.92); }
+button.ghost {
+  background: var(--panel-2);
+  color: var(--text);
+  border-color: var(--border);
+  box-shadow: var(--shadow-xs);
+}
+button:disabled { cursor: default; opacity: 0.55; box-shadow: none; }
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1px); }
+
+@media (hover: hover) {
+  button:hover:not(:disabled) { filter: brightness(1.045); transform: translateY(-1px); }
+  button.ghost:hover:not(:disabled) { background: var(--panel-3); border-color: var(--border-2); }
+}
 
 /* The back-to-chat link on the recordings page is an <a>, not a <button> —
    the base button/.ghost rules above only target the button element, so
@@ -557,6 +686,8 @@ a.icon-btn.ghost {
   cursor: pointer;
   text-decoration: none;
   touch-action: manipulation;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-xs);
 }
 
 /* Inside a grouped toolbar pill (.menu, .msg-tools) the container itself
@@ -566,8 +697,10 @@ a.icon-btn.ghost {
    specificity, the hover state still wins on hover. */
 .menu .icon-btn, .msg-tools .icon-btn {
   background: transparent;
+  border-color: transparent;
+  box-shadow: none;
 }
-.icon-btn:hover { background: var(--border-2); }
+.icon-btn:hover { background: var(--accent-soft); }
 
 .pill {
   font-size: 12px;
@@ -577,6 +710,7 @@ a.icon-btn.ghost {
   display: inline-flex;
   align-items: center;
   background: var(--panel-2);
+  border: 1px solid var(--border);
   border-radius: 999px;
   white-space: nowrap;
 }
@@ -587,13 +721,19 @@ a.icon-btn.ghost {
   overflow-y: auto;
   overscroll-behavior-y: contain;
   -webkit-overflow-scrolling: touch;
-  padding: 16px var(--layout-inline-padding);
+  padding: 20px var(--layout-inline-padding);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
-.new-chat { width: 100%; }
-.session-list ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.new-chat {
+  width: 100%;
+  min-height: 50px;
+  border-radius: var(--radius);
+}
+.new-chat:not(.ghost) { box-shadow: 0 12px 28px var(--accent-shadow); }
+.quick-chat { background: var(--accent-soft); border-color: var(--accent-border); color: var(--text); }
+.session-list ul { list-style: none; margin: 2px 0 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
 .session-row { display: flex; align-items: center; gap: 8px; }
 .session-item {
   /* flex: 1 (not width: 100%) so this button shares the row with its
@@ -609,7 +749,7 @@ a.icon-btn.ghost {
   gap: 10px;
   text-align: left;
   background: var(--panel);
-  border: 1px solid var(--border-2);
+  border: 1px solid var(--border);
   color: var(--text);
   font-weight: 400;
   /* Restates the base `button` rule's box model (border-radius/padding/
@@ -617,9 +757,10 @@ a.icon-btn.ghost {
      <a> here (real navigation to "#chat/<id>", not in-page state) rather
      than a <button> — without these, that row rendered flat and cramped
      next to the main room list's button-based rows. */
-  border-radius: 10px;
-  padding: 10px 14px;
-  min-height: 44px;
+  border-radius: var(--radius);
+  padding: 13px 14px;
+  min-height: 54px;
+  box-shadow: var(--shadow-xs);
   text-decoration: none;
   cursor: pointer;
   touch-action: manipulation;
@@ -630,6 +771,8 @@ a.icon-btn.ghost {
   white-space: nowrap;
   flex: 1;
   min-width: 0;
+  font-weight: 620;
+  letter-spacing: -0.018em;
 }
 .session-item .time { flex-shrink: 0; font-size: 12px; color: var(--muted); }
 .session-item .ended-badge { flex-shrink: 0; font-size: 13px; }
@@ -646,17 +789,22 @@ a.icon-btn.ghost {
   font-size: 12px;
   color: var(--ok);
 }
-.session-delete { width: 36px; height: 36px; min-height: 36px; font-size: 14px; flex-shrink: 0; }
+.session-delete { width: 36px; height: 36px; min-height: 36px; font-size: 14px; flex-shrink: 0; background: transparent; box-shadow: none; }
+
+@media (hover: hover) {
+  .session-item:hover { border-color: var(--accent-border); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+}
 
 .convo {
   overflow-y: auto;
   overscroll-behavior-y: contain;
   -webkit-overflow-scrolling: touch;
-  padding: 16px var(--layout-inline-padding);
+  padding: 20px var(--layout-inline-padding);
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  gap: 14px;
+  gap: 16px;
+  background: radial-gradient(circle at 50% -12%, var(--accent-soft), transparent 32%);
 }
 .article-quiz-page { justify-content: flex-start; }
 
@@ -669,9 +817,10 @@ a.icon-btn.ghost {
   width: 100%;
   text-align: left;
   background: var(--panel);
-  border: 1px solid var(--border-2);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 14px 16px;
+  box-shadow: var(--shadow-xs);
 }
 .writing-list-row { padding: 0; }
 .writing-list-open {
@@ -688,10 +837,10 @@ a.icon-btn.ghost {
   color: var(--text);
 }
 .writing-delete { flex-shrink: 0; margin-right: 6px; }
-.writing-list-row:hover, .writing-list-row:focus-visible { border-color: var(--accent); }
+.writing-list-row:hover, .writing-list-row:focus-visible { border-color: var(--accent-border); box-shadow: var(--shadow-sm); }
 .writing-list-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .writing-list-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; color: var(--muted); font-size: 12px; }
-.writing-card { width: min(680px, calc(100% - 32px)); margin: 48px auto; padding: 28px; background: var(--panel); border: 1px solid var(--border); border-radius: 16px; }
+.writing-card { width: min(680px, calc(100% - 32px)); margin: 48px auto; padding: 28px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); }
 .writing-detail-card {
   margin-top: 0;
   /* Gives the word-search overlay a stable, centered reference frame on the
@@ -700,16 +849,25 @@ a.icon-btn.ghost {
 }
 .writing-card h2 { margin: 4px 0 22px; }
 .eyebrow { color: var(--muted); font-size: 12px; letter-spacing: .12em; }
-.writing-prompt { font-size: 22px; line-height: 1.6; padding: 20px; background: var(--panel-2); border-radius: 12px; }
+.writing-prompt { font-size: 22px; line-height: 1.6; padding: 20px; background: var(--accent-soft); border: 1px solid var(--accent-border); border-radius: var(--radius); }
 .writing-card form { display: flex; flex-direction: column; gap: 12px; }
 .writing-answer-tools { position: relative; display: flex; align-items: center; gap: 8px; min-height: 44px; }
 .writing-answer-tools .hint { font-size: 13px; }
-.writing-card textarea { width: 100%; box-sizing: border-box; resize: vertical; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); color: var(--text); font: inherit; }
+.writing-card textarea { width: 100%; box-sizing: border-box; resize: vertical; padding: 14px; border: 1px solid var(--border-2); border-radius: var(--radius-sm); background: var(--panel-2); color: var(--text); font: inherit; }
 .writing-feedback { margin-top: 26px; padding-top: 22px; border-top: 1px solid var(--border); }
-.writing-corrected { font-size: 18px; padding: 14px; background: var(--panel-2); border-radius: 10px; }
+.writing-corrected { font-size: 18px; padding: 14px; background: var(--accent-soft); border-radius: var(--radius); }
 .writing-issue { margin: 12px 0; padding: 12px; border-left: 3px solid var(--accent); }
 .writing-issue p { margin: 5px 0 0; color: var(--muted); }
-.hint { color: var(--muted); line-height: 1.6; font-size: 15px; }
+.hint { color: var(--muted); line-height: 1.65; font-size: 14px; }
+.session-list > .hint,
+.convo > .hint:not(.transcribing) {
+  margin: 4px 0;
+  padding: 14px 16px;
+  background: color-mix(in srgb, var(--panel) 72%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.quick-mode-hint { color: var(--text); border-color: var(--accent-border) !important; background: var(--accent-soft) !important; }
 
 .recordings-list { gap: 10px; }
 .recording-row {
@@ -717,16 +875,17 @@ a.icon-btn.ghost {
   flex-direction: column;
   gap: 8px;
   background: var(--panel);
-  border: 1px solid var(--border-2);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 12px 14px;
+  padding: 14px;
+  box-shadow: var(--shadow-xs);
 }
 .recording-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .recording-meta { display: flex; flex-direction: column; gap: 2px; }
 .recording-time { font-size: 14px; font-weight: 600; }
 .recording-sub { font-size: 12px; color: var(--muted); }
 .recording-row audio { width: 100%; height: 36px; }
-.recording-delete { width: 32px; height: 32px; min-height: 32px; font-size: 14px; flex-shrink: 0; }
+.recording-delete { width: 32px; height: 32px; min-height: 32px; font-size: 14px; flex-shrink: 0; background: transparent; box-shadow: none; }
 
 /* Word-review page (pages/WordReview.tsx) — reuses .recording-row's card
    shape for each tracked word, and .quiz-* (App.tsx's QuizPanel) for the
@@ -742,13 +901,14 @@ a.icon-btn.ghost {
   justify-content: space-between;
   gap: 10px;
   background: var(--panel);
-  border: 1px solid var(--border-2);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 12px 14px;
+  padding: 14px;
+  box-shadow: var(--shadow-xs);
 }
 .word-list-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .word-list-next { font-size: 12px; color: var(--muted); }
-.word-list-delete { width: 32px; height: 32px; min-height: 32px; font-size: 14px; flex-shrink: 0; }
+.word-list-delete { width: 32px; height: 32px; min-height: 32px; font-size: 14px; flex-shrink: 0; background: transparent; box-shadow: none; }
 /* Section headers splitting the word list into 복습중인 단어/확정 전 단어/제외된 단어
    (see WordReview.tsx) — small and muted like other section-y labels
    (.tts-settings-label), not competing with the page's own <h1>. */
@@ -766,13 +926,14 @@ a.icon-btn.ghost {
   background: var(--panel-2);
   color: var(--text);
   border: 1px solid var(--border-2);
+  box-shadow: none;
 }
-.quiz-choice-btn.correct { border-color: var(--ok); color: var(--ok); }
-.quiz-choice-btn.incorrect { border-color: var(--err); color: var(--err); }
+.quiz-choice-btn.correct { border-color: var(--ok); color: var(--ok); background: color-mix(in srgb, var(--ok) 9%, var(--panel-2)); }
+.quiz-choice-btn.incorrect { border-color: var(--err); color: var(--err); background: color-mix(in srgb, var(--err) 8%, var(--panel-2)); }
 /* A learner's not-yet-submitted pick for one of ArticleQuiz's independent
    2-choice sub-questions (see pipeline.articleStudySystemPrompt) — distinct
    from .correct/.incorrect, which only apply once the reveal comes back. */
-.quiz-choice-btn.selected { border-color: var(--accent, var(--ok)); }
+.quiz-choice-btn.selected { border-color: var(--accent); background: var(--accent-soft); }
 /* Groups one sub-question's prompt + its 2 choices (and, in the reveal,
    its own explanation) with a visible gap from the next one — several of
    these stack inside one .quiz-panel, one per fact the summary asserts. */
@@ -801,53 +962,69 @@ a.icon-btn.ghost {
   color: var(--text);
   border: 1px solid var(--border-2);
   border-radius: var(--radius);
+  box-shadow: var(--shadow-xs);
 }
-.word-match-card-flipped { border-color: var(--accent); color: var(--accent); }
+.word-match-card-flipped { border-color: var(--accent); color: var(--accent-strong); background: var(--accent-soft); box-shadow: var(--focus-ring); }
 .word-match-card-matched { border-color: var(--ok); color: var(--ok); opacity: 0.6; }
 .word-match-won { display: flex; flex-direction: column; gap: 8px; text-align: center; }
 
 .date-divider {
   display: flex;
   justify-content: center;
-  margin: 4px 0;
+  margin: 6px 0;
   font-size: 12px;
   color: var(--muted);
 }
 .date-divider span {
-  background: var(--panel);
-  border-radius: 10px;
-  padding: 3px 12px;
+  background: var(--accent-soft);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 12px;
 }
 
-.row { display: flex; flex-direction: column; gap: 6px; }
+.row { display: flex; flex-direction: column; gap: 5px; }
 .row.user { align-items: flex-end; }
 .row.assistant { align-items: flex-start; }
 .msg-time { font-size: 11px; color: var(--muted); padding: 0 4px; }
 
 .bubble {
   max-width: 85%;
-  padding: 11px 14px;
-  border-radius: var(--radius);
-  line-height: 1.5;
+  padding: 12px 15px;
+  border-radius: 19px;
+  line-height: 1.55;
   white-space: pre-wrap;
   word-wrap: break-word;
   font-size: 16px;
 }
-.row.user .bubble { background: var(--user); border-bottom-right-radius: 4px; }
-.row.assistant .bubble { background: var(--assistant); border-bottom-left-radius: 4px; }
+.row.user .bubble {
+  background: linear-gradient(145deg, var(--user-strong), var(--user));
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom-right-radius: 6px;
+  box-shadow: 0 8px 24px var(--accent-shadow);
+}
+.row.assistant .bubble {
+  background: var(--assistant);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 6px;
+  box-shadow: var(--shadow-xs);
+}
 
 .translation {
   max-width: 85%;
   padding: 0 4px;
-  font-size: 12px;
-  line-height: 1.4;
+  font-size: 12.5px;
+  line-height: 1.5;
   color: var(--muted);
 }
 
 .tag {
   font-size: 11px;
   color: var(--muted);
-  padding: 1px 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
 }
 .source-icon {
   font-size: 13px;
@@ -872,12 +1049,13 @@ a.icon-btn.ghost {
 }
 
 .correction {
-  background: var(--panel);
+  background: var(--overlay);
   border: 1px solid var(--border-2);
   border-left: 3px solid var(--warn);
-  border-radius: 10px;
-  padding: 10px 12px;
+  border-radius: var(--radius);
+  padding: 12px 13px;
   font-size: 14px;
+  box-shadow: var(--shadow-xs);
 }
 .correction .fix { color: var(--ok); margin-bottom: 6px; }
 .correction .lbl { opacity: 0.8; }
@@ -888,18 +1066,24 @@ a.icon-btn.ghost {
 .issue .why-translation { color: var(--muted); font-size: 13px; font-style: italic; margin-top: 2px; }
 .badge {
   font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em;
-  padding: 1px 6px; border-radius: 6px; margin-right: 6px; background: var(--panel-2); color: var(--muted);
+  padding: 2px 7px; border-radius: 999px; margin-right: 6px; background: var(--panel-2); color: var(--muted);
 }
 .badge.grammar { color: var(--accent); }
 .badge.vocabulary { color: var(--warn); }
 .badge.phrasing { color: var(--phrase); }
 
 .composer {
+  position: relative;
+  z-index: 20;
   display: flex;
   gap: 10px;
-  padding: 12px var(--layout-inline-padding);
-  padding-bottom: calc(12px + var(--sab));
+  padding: 13px var(--layout-inline-padding);
+  padding-bottom: calc(13px + var(--sab));
+  background: var(--composer-bg);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  backdrop-filter: blur(20px) saturate(1.2);
   border-top: 1px solid var(--border);
+  box-shadow: 0 -12px 34px rgba(0, 0, 0, 0.08);
   /* Bottom-align rather than center now the textarea can grow taller than
      the mic/send buttons. */
   align-items: flex-end;
@@ -912,10 +1096,10 @@ a.icon-btn.ghost {
   /* 16px is the iOS Safari threshold below which focusing an input
      auto-zooms the page — keep it at/above that. */
   font-size: 16px;
-  background: var(--panel-2);
+  background: var(--panel);
   border: 1px solid var(--border-2);
   color: var(--text);
-  border-radius: 10px;
+  border-radius: 15px;
   padding: 11px 12px;
   min-height: 44px;
   /* Caps the auto-grow (see the JS that sets height from scrollHeight);
@@ -926,7 +1110,10 @@ a.icon-btn.ghost {
   resize: none;
   -webkit-appearance: none;
   appearance: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.018), var(--shadow-xs);
 }
+.composer textarea::placeholder { color: var(--muted); opacity: 0.72; }
+.composer textarea:focus { border-color: var(--accent-border); }
 /* Scoped to the send-btn class (not a bare button[type="submit"] selector)
    so this round treatment doesn't also catch the word-search popup's "찾기"
    submit button, which needs to stay a normal pill-shaped text button. */
@@ -940,7 +1127,7 @@ a.icon-btn.ghost {
   display: grid;
   place-items: center;
   font-size: 18px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 8px 20px var(--accent-shadow);
 }
 /* Unify the composer row's mixed icon buttons (search trigger, voice-draft
    discard) into the same size/bordered/elevated look as .mic and the round
@@ -954,7 +1141,7 @@ a.icon-btn.ghost {
   min-height: 44px;
   font-size: 18px;
   border: 1px solid var(--border-2);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--shadow-xs);
 }
 .composer button,
 .composer .icon-btn {
@@ -1039,7 +1226,7 @@ a.icon-btn.ghost {
   background: var(--panel-2);
   border: 1px solid var(--border-2);
   color: var(--text);
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   padding: 8px 12px;
   min-height: 40px;
 }
@@ -1050,7 +1237,7 @@ a.icon-btn.ghost {
   flex-shrink: 0;
   min-height: 40px;
   padding: 0 16px;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
 }
 .word-search-status { font-size: 13px; color: var(--muted); padding: 2px 4px; }
 .word-search-results { display: flex; flex-direction: column; gap: 8px; list-style: none; margin: 0; padding: 0; }
@@ -1062,8 +1249,9 @@ a.icon-btn.ghost {
   flex-direction: column;
   gap: 3px;
   background: var(--panel-2);
-  border-radius: 10px;
-  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 11px;
 }
 .word-search-word { font-weight: 600; }
 .word-search-meaning { font-size: 13px; color: var(--muted); }
@@ -1081,6 +1269,8 @@ a.icon-btn.ghost {
   border-radius: 999px;
   background: var(--panel);
   color: var(--text);
+  border: 1px solid var(--border);
+  box-shadow: none;
 }
 .word-learn-btn:disabled { opacity: 0.7; }
 
@@ -1095,12 +1285,12 @@ a.icon-btn.ghost {
   padding: 0;
   border: 1px solid var(--border-2);
   border-radius: 50%;
-  background: var(--panel-2);
+  background: var(--panel);
   color: var(--text);
   font-size: 18px;
   display: grid;
   place-items: center;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-xs);
 }
 .mic.on {
   background: var(--err);
@@ -1121,5 +1311,29 @@ a.icon-btn.ghost {
   font-weight: 600;
   padding: 8px 6px;
   min-height: 36px;
+  border: 1px solid transparent;
+  box-shadow: none;
 }
-.theme-option.active { background: var(--accent); color: var(--accent-text); }
+.theme-option.active { background: var(--accent-soft); color: var(--accent-strong); border-color: var(--accent-border); }
+
+/* Page-level learning panels get a shared elevated surface. This keeps the
+   existing one-column layout while giving article, quiz, and review content
+   a clear visual home. */
+.convo > .quiz-panel,
+.convo > .word-match-won {
+  width: 100%;
+  padding: 16px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
