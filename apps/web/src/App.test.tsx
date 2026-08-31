@@ -268,6 +268,8 @@ async function flushUntil(check: () => boolean, maxTicks = 50) {
 describe("room list", () => {
   it("is the initial view — no WS connection until a room is opened", () => {
     render(<App />);
+    expect(screen.getByRole("heading", { name: "Buddy" })).toBeInTheDocument();
+    expect(document.querySelector(".brand-mark")).toHaveAttribute("aria-hidden", "true");
     expect(screen.getByRole("button", { name: "+ 새 대화" })).toBeInTheDocument();
     expect(vi.mocked(BuddyClient).mock.instances[0]).toBeDefined();
     expect(lastClientInstance().connect).not.toHaveBeenCalled();

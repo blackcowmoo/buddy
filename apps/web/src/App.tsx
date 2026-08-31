@@ -1261,7 +1261,15 @@ export function App() {
   if (view === "list") {
     return (
       <div className="app">
-        <TopBar brand={<h1>Buddy</h1>} {...topBarProps} />
+        <TopBar
+          brand={
+            <>
+              <span className="brand-mark" aria-hidden="true">B</span>
+              <h1>Buddy</h1>
+            </>
+          }
+          {...topBarProps}
+        />
 
         <main className="session-list">
           <button className="new-chat" onClick={() => void enterChat()}>
