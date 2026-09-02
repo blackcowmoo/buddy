@@ -6,7 +6,10 @@
   --panel: #1a1824;
   --panel-2: #23202f;
   --panel-3: #2b2739;
-  --overlay: rgba(26, 24, 36, 0.92);
+  /* Popovers sit over live content, so their surface must fully mask it.
+     A translucent overlay makes text and gradients behind a panel compete
+     with the panel's own content. */
+  --overlay: var(--panel);
   --text: #f5f2fa;
   --muted: #aaa4b7;
   --accent: #9484f6;
@@ -54,7 +57,7 @@
   --panel: #ffffff;
   --panel-2: #f0edf5;
   --panel-3: #e6e0ef;
-  --overlay: rgba(255, 255, 255, 0.94);
+  --overlay: var(--panel);
   --text: #241f2d;
   --muted: #716a7c;
   --accent: #6048bf;
@@ -209,8 +212,6 @@ body {
   max-height: calc(100vh - var(--sat) - 96px);
   overflow-y: auto;
   background: var(--overlay);
-  -webkit-backdrop-filter: blur(24px) saturate(1.2);
-  backdrop-filter: blur(24px) saturate(1.2);
   border: 1px solid var(--border-2);
   border-radius: var(--radius-lg);
   padding: 12px;
@@ -322,8 +323,6 @@ body {
   position: absolute;
   top: calc(100% + 6px);
   background: var(--overlay);
-  -webkit-backdrop-filter: blur(20px) saturate(1.15);
-  backdrop-filter: blur(20px) saturate(1.15);
   border: 1px solid var(--border-2);
   border-radius: var(--radius);
   padding: 10px;
@@ -481,8 +480,6 @@ body {
   flex-direction: column;
   gap: 6px;
   background: var(--overlay);
-  -webkit-backdrop-filter: blur(20px) saturate(1.15);
-  backdrop-filter: blur(20px) saturate(1.15);
   border: 1px solid var(--border-2);
   border-radius: var(--radius);
   padding: 10px 12px;
@@ -517,8 +514,6 @@ body {
   gap: 8px;
   padding: 12px;
   background: var(--overlay);
-  -webkit-backdrop-filter: blur(20px) saturate(1.15);
-  backdrop-filter: blur(20px) saturate(1.15);
   border: 1px solid var(--border-2);
   border-radius: var(--radius);
   box-shadow: var(--shadow-lg);
