@@ -139,11 +139,15 @@ export function Writing() {
             {prompt.status === "failed" && <p className="hint">문제 생성에 실패했어요. 잠시 후 다시 확인해 주세요.</p>}
             {prompt.status === "done" && <>
               <p className="writing-prompt">{prompt.korean}</p>
-              <form onSubmit={submit}>
-                <div className="writing-answer-tools">
-                  <WordSearchControl placement="below" />
-                  <span className="hint">모르는 단어가 있으면 검색해 보세요.</span>
-                </div>
+              {/* Keep the word search beside the answer form, not inside it:
+                  WordSearchControl owns its own search <form>, and nested
+                  forms make Enter in that field submit the writing answer in
+                  some browsers. */}
+              <div className="writing-answer-tools">
+                <WordSearchControl placement="below" />
+                <span className="hint">모르는 단어가 있으면 검색해 보세요.</span>
+              </div>
+              <form className="writing-answer-form" onSubmit={submit}>
                 <textarea value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="영어로 한 문장을 써보세요" rows={3} disabled={checking} />
                 <button type="submit" disabled={checking || !answer.trim()}>{checking ? "검사 중…" : "답안 확인"}</button>
               </form>

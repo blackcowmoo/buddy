@@ -570,7 +570,10 @@ export function ArticleQuiz() {
             )}
             {draw.status === "done" ? (
               <>
-                <p className="article-summary">
+                {/* This container includes the block-level lookup popover for
+                    the selected token. A <p> cannot legally contain that
+                    panel and browsers may re-parent it unpredictably. */}
+                <div className="article-summary">
                   {draw.summary.split(/([A-Za-z']+)/g).map((part, i) =>
                     /^[A-Za-z']+$/.test(part) ? (
                       <span className="article-word-anchor" key={i} ref={wordLookup?.key === i ? wordLookupAnchorRef : undefined}>
@@ -628,7 +631,7 @@ export function ArticleQuiz() {
                       <span key={i}>{part}</span>
                     ),
                   )}
-                </p>
+                </div>
                 <audio
                   ref={audioRef}
                   style={{ display: "none" }}

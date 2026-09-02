@@ -93,16 +93,18 @@ export interface SessionCompaction {
 
 // Fetches the caller's own chat rooms, most recently active first. Instant/
 // "오늘의 한 문장" rooms (see markInstant) are excluded — fetchInstantSessions
-// is their own separate list. Returns [] on any failure so the room list can
-// render an empty state instead of throwing.
-export async function fetchSessions(): Promise<SessionSummary[]> {
-  return fetchJSON<SessionSummary[]>("api/sessions", []);
+// is their own separate list. Returns null on failure so the main room list
+// can distinguish "there are no conversations yet" from "the conversations
+// could not be loaded" and offer a retry instead of showing a false-empty
+// state.
+export async function fetchSessions(): Promise<SessionSummary[] | null> {
+  return fetchJSON<SessionSummary[] | null>("api/sessions", null);
 }
 
 // Fetches the caller's own instant/"오늘의 한 문장" rooms, most recently active
 // first — the mirror image of fetchSessions' exclusion, for that feature's
-// own dedicated list page (pages/InstantSessions.tsx). Returns [] on any
-// failure, same as fetchSessions.
+// own dedicated list page (pages/InstantSessions.tsx). That page keeps its
+// existing [] fallback and previous empty-state-on-failure behavior.
 export async function fetchInstantSessions(): Promise<SessionSummary[]> {
   return fetchJSON<SessionSummary[]>("api/instant-sessions", []);
 }

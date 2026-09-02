@@ -98,6 +98,9 @@ describe("Writing page list/detail flow", () => {
 
     await user.click(await screen.findByRole("button", { name: /어제 영화를 봤어요/ }));
     await user.click(screen.getByRole("button", { name: "모르는 단어 찾기" }));
+    const searchForm = screen.getByRole("button", { name: "찾기" }).closest("form");
+    expect(searchForm).toBeInTheDocument();
+    expect(searchForm?.parentElement?.closest("form")).toBeNull();
     await user.type(screen.getByPlaceholderText("예: 화가 나서 참을 수 없는 느낌"), "보다의 과거형");
     await user.click(screen.getByRole("button", { name: "찾기" }));
 

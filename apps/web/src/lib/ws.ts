@@ -32,9 +32,11 @@ export class BuddyClient {
   private closedByCaller = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelayMs = initialReconnectDelayMs;
-  // Messages sent while the socket isn't OPEN (mid-connect or mid-reconnect)
-  // — flushed in order once a new socket opens.
-  private pending: ClientMsg[] = [];
+  // Messages/audio sent while the socket isn't OPEN (mid-connect or mid-
+  // reconnect) — flushed in order once a new socket opens. Audio used to be
+  // silently dropped here while text was queued, leaving the UI stuck on
+  // "transcribing" forever after a brief mobile-network interruption.
+  private pending: Array<ClientMsg | ArrayBuffer> = [];
 
   constructor(
     private onEvent: (e: ServerEvent) => void,
@@ -110,8 +112,12 @@ export class BuddyClient {
 
   /** Send one complete utterance (16 kHz mono s16le PCM). */
   sendAudio(pcm: Int16Array) {
-    if (this.ws?.readyState === WebSocket.OPEN)
-      this.ws.send(pcm.buffer as ArrayBuffer);
+    // Copy exactly this view's bytes: an Int16Array can be a slice of a
+    // larger backing buffer, and sending that whole buffer would include
+    // unrelated samples before/after the utterance.
+    const audio = pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength) as ArrayBuffer;
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(audio);
+    else this.pending.push(audio);
   }
 
   /**
@@ -142,7 +148,7 @@ export class BuddyClient {
     else this.pending.push(m);
   }
 
-  private rawSend(m: ClientMsg) {
-    this.ws?.send(JSON.stringify(m));
+  private rawSend(m: ClientMsg | ArrayBuffer) {
+    this.ws?.send(m instanceof ArrayBuffer ? m : JSON.stringify(m));
   }
 }

@@ -552,6 +552,7 @@ describe("ArticleQuiz page — word lookup while reading", () => {
     // portrait remains below the token, while landscape centers this same
     // panel in the viewport so an edge token cannot clip it.
     expect(panel.closest(".article-word-anchor")).toBeInTheDocument();
+    expect(panel.closest(".article-summary")?.tagName).toBe("DIV");
   });
 
   it("waits for confirmation before looking up a tapped word, then saves it to the vocabulary list", async () => {

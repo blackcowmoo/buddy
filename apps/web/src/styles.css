@@ -635,6 +635,7 @@ body {
 .dot.open { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 14%, transparent); }
 .dot.connecting { background: var(--warn); }
 .dot.closed, .dot.error { background: var(--err); }
+.dot.ended { background: var(--muted); box-shadow: 0 0 0 3px var(--border); }
 
 button {
   font: inherit;
@@ -728,6 +729,27 @@ a.icon-btn.ghost {
 }
 .new-chat:not(.ghost) { box-shadow: 0 12px 28px var(--accent-shadow); }
 .quick-chat { background: var(--accent-soft); border-color: var(--accent-border); color: var(--text); }
+.list-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  box-shadow: var(--shadow-xs);
+}
+.list-notice.error { border-color: color-mix(in srgb, var(--err) 45%, var(--border)); }
+.list-notice button {
+  flex-shrink: 0;
+  min-height: 36px;
+  padding: 7px 11px;
+  font-size: 12px;
+}
+.list-loading { margin: 0; }
 .session-list ul { list-style: none; margin: 2px 0 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
 .session-row { display: flex; align-items: center; gap: 8px; }
 .session-item {
@@ -801,6 +823,73 @@ a.icon-btn.ghost {
   gap: 16px;
   background: radial-gradient(circle at 50% -12%, var(--accent-soft), transparent 32%);
 }
+.connection-notice {
+  margin: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: center;
+}
+.connection-notice.error {
+  border-color: color-mix(in srgb, var(--err) 42%, var(--border));
+  color: var(--text);
+  background: color-mix(in srgb, var(--err) 9%, var(--panel));
+}
+
+/* When the transcript is intentionally left at an older turn, keep a
+   thumb-reachable route back to live content. These sit over the scroll
+   surface (not inside it), so loading older rows cannot move them away. */
+.scroll-to-latest {
+  position: absolute;
+  z-index: 24;
+  left: 50%;
+  bottom: calc(96px + var(--sab));
+  translate: -50% 0;
+  min-height: 38px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--accent-border);
+  box-shadow: var(--shadow-lg);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* Live failures need to be visible even when the transcript itself is long
+   and scrolled. The notice remains until dismissed or a successful retry. */
+.chat-error {
+  position: absolute;
+  z-index: 26;
+  left: var(--layout-inline-padding);
+  right: var(--layout-inline-padding);
+  bottom: calc(96px + var(--sab));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 10px 10px 13px;
+  border: 1px solid color-mix(in srgb, var(--err) 52%, var(--border));
+  border-radius: var(--radius);
+  background: var(--overlay);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+  box-shadow: var(--shadow-lg);
+  -webkit-backdrop-filter: blur(20px) saturate(1.15);
+  backdrop-filter: blur(20px) saturate(1.15);
+}
+.chat-error .icon-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  font-size: 13px;
+}
 .article-quiz-page { justify-content: flex-start; }
 
 .writing-page { justify-content: flex-start; }
@@ -845,8 +934,8 @@ a.icon-btn.ghost {
 .writing-card h2 { margin: 4px 0 22px; }
 .eyebrow { color: var(--muted); font-size: 12px; letter-spacing: .12em; }
 .writing-prompt { font-size: 22px; line-height: 1.6; padding: 20px; background: var(--accent-soft); border: 1px solid var(--accent-border); border-radius: var(--radius); }
-.writing-card form { display: flex; flex-direction: column; gap: 12px; }
-.writing-answer-tools { position: relative; display: flex; align-items: center; gap: 8px; min-height: 44px; }
+.writing-answer-form { display: flex; flex-direction: column; gap: 12px; }
+.writing-answer-tools { position: relative; display: flex; align-items: center; gap: 8px; min-height: 44px; margin-bottom: 12px; }
 .writing-answer-tools .hint { font-size: 13px; }
 .writing-card textarea { width: 100%; box-sizing: border-box; resize: vertical; padding: 14px; border: 1px solid var(--border-2); border-radius: var(--radius-sm); background: var(--panel-2); color: var(--text); font: inherit; }
 .writing-feedback { margin-top: 26px; padding-top: 22px; border-top: 1px solid var(--border); }
@@ -1084,6 +1173,19 @@ a.icon-btn.ghost {
   align-items: flex-end;
 }
 .composer form { display: flex; gap: 8px; flex: 1; min-width: 0; align-items: flex-end; }
+.composer-field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.voice-draft-note {
+  padding-left: 4px;
+  color: var(--accent-strong);
+  font-size: 11px;
+  line-height: 1.35;
+}
 .composer textarea {
   flex: 1;
   min-width: 0;
@@ -1107,6 +1209,7 @@ a.icon-btn.ghost {
   appearance: none;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.018), var(--shadow-xs);
 }
+.composer-field textarea { width: 100%; flex: none; }
 .composer textarea::placeholder { color: var(--muted); opacity: 0.72; }
 .composer textarea:focus { border-color: var(--accent-border); }
 /* Scoped to the send-btn class (not a bare button[type="submit"] selector)

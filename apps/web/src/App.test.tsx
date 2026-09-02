@@ -124,10 +124,12 @@ import { suggestWords } from "./lib/wordSearch";
 import { saveWord, fetchWords } from "./lib/wordReview";
 import { checkQuizAnswer } from "./lib/quizCheck";
 import { BuddyClient } from "./lib/ws";
+import { PCMRecorder } from "./audio/recorder";
 
 beforeEach(() => {
   localStorage.clear();
   HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
+  HTMLMediaElement.prototype.pause = vi.fn();
   capturedOnEvent = null;
   capturedPopStateHandler = null;
   vi.mocked(fetchMe).mockResolvedValue(null);
@@ -280,6 +282,32 @@ describe("room list", () => {
     expect(await screen.findByText(/아직 대화 기록이 없어요/)).toBeInTheDocument();
   });
 
+  it("shows a real loading state instead of briefly claiming there are no conversations", () => {
+    vi.mocked(fetchSessions).mockReturnValue(new Promise(() => {}));
+
+    render(<App />);
+
+    expect(screen.getByRole("status")).toHaveTextContent("대화 목록을 불러오는 중이에요");
+    expect(screen.queryByText(/아직 대화 기록이 없어요/)).not.toBeInTheDocument();
+  });
+
+  it("distinguishes a list-load failure from an empty list and retries in place", async () => {
+    vi.mocked(fetchSessions)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce([
+        { id: "s1", title: "recovered room", createdAt: 1, updatedAt: 2 },
+      ]);
+    const user = userEvent.setup();
+
+    render(<App />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("대화 목록을 불러오지 못했어요");
+    expect(screen.queryByText(/아직 대화 기록이 없어요/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "다시 시도" }));
+    expect(await screen.findByText("recovered room")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("lists sessions returned by the server", async () => {
     vi.mocked(fetchSessions).mockResolvedValue([
       { id: "s1", title: "hello there", createdAt: 1, updatedAt: Math.floor(Date.now() / 1000) },
@@ -378,9 +406,9 @@ describe("room list", () => {
     expect(lastClientInstance().connect).toHaveBeenCalledWith("s1"); // fired eagerly...
     expect(lastClientInstance().close).toHaveBeenCalled(); // ...then dropped once `ended` is known
 
-    expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "메시지 보내기" })).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Push to talk" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "음성으로 말하기" })).not.toBeInTheDocument();
     expect(screen.getByText("이 대화는 종료되어 더 이상 메시지를 보낼 수 없어요.")).toBeInTheDocument();
 
     // A stray event arriving anyway (e.g. a slow in-flight job from before
@@ -1223,6 +1251,33 @@ describe("room list", () => {
     scrollHeightSpy.mockRestore();
   });
 
+  it("offers a one-tap jump to the latest turn after the learner scrolls up", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "long room", createdAt: 1, updatedAt: 2 },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
+      session: { id: "s1", title: "long room", createdAt: 1, updatedAt: 2 },
+      turns: [{ turn: 1, role: "user", text: "an older visible turn", refined: false }],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("long room"));
+    await screen.findByText("an older visible turn");
+
+    const convo = document.querySelector(".convo") as HTMLElement;
+    Object.defineProperty(convo, "scrollHeight", { configurable: true, value: 1600 });
+    Object.defineProperty(convo, "clientHeight", { configurable: true, value: 400 });
+    convo.scrollTop = 500;
+    fireEvent.scroll(convo);
+
+    const jump = screen.getByRole("button", { name: "최신 메시지로 이동" });
+    expect(jump).toBeInTheDocument();
+    await user.click(jump);
+    expect(convo.scrollTop).toBe(1600);
+    expect(screen.queryByRole("button", { name: "최신 메시지로 이동" })).not.toBeInTheDocument();
+  });
+
   it("scrolling near the top of a room with more history loads and prepends an older page", async () => {
     vi.mocked(fetchSessions).mockResolvedValue([
       { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },
@@ -1326,6 +1381,22 @@ describe("room list", () => {
 
     expect(deleteSession).toHaveBeenCalledWith("s1");
     expect(screen.getByText("hello there")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("대화를 삭제하지 못했어요");
+    expect(screen.getByRole("button", { name: "대화 삭제" })).toBeEnabled();
+  });
+
+  it("keeps the room list visible and explains when a room cannot be opened", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "unavailable room", createdAt: 1, updatedAt: 2 },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue(null);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByText("unavailable room"));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("대화를 열지 못했어요");
+    expect(screen.getByText("unavailable room")).toBeInTheDocument();
   });
 
   it('"back to list" reuses the room\'s history entry, which closes the connection and re-shows the room list', async () => {
@@ -2356,7 +2427,7 @@ describe("typing indicator", () => {
     expect(screen.queryByRole("status", { name: "답변 생성 중" })).not.toBeInTheDocument();
 
     await user.type(screen.getByPlaceholderText("…or type in English"), "Hello Buddy");
-    await user.click(screen.getByRole("button", { name: "Send" }));
+    await user.click(screen.getByRole("button", { name: "메시지 보내기" }));
     expect(screen.getByRole("status", { name: "답변 생성 중" })).toBeInTheDocument();
 
     act(() => emit({ type: "final_transcript", turn: 1, text: "Hello Buddy" }));
@@ -2373,7 +2444,7 @@ describe("typing indicator", () => {
     act(() => emit({ type: "assistant_done", turn: 0, text: "Hey there!" }));
 
     await user.type(screen.getByPlaceholderText("…or type in English"), "Hello Buddy");
-    await user.click(screen.getByRole("button", { name: "Send" }));
+    await user.click(screen.getByRole("button", { name: "메시지 보내기" }));
     expect(screen.getByRole("status", { name: "답변 생성 중" })).toBeInTheDocument();
 
     const setStatus = vi.mocked(BuddyClient).mock.calls[
@@ -2381,6 +2452,45 @@ describe("typing indicator", () => {
     ][1] as (s: string) => void;
     act(() => setStatus("closed"));
     expect(screen.queryByRole("status", { name: "답변 생성 중" })).not.toBeInTheDocument();
+  });
+});
+
+describe("live status and failures", () => {
+  it("explains a dropped connection and that queued messages will be sent after reconnecting", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+
+    const setStatus = vi.mocked(BuddyClient).mock.calls[0][1] as (s: "closed") => void;
+    act(() => setStatus("closed"));
+
+    expect(screen.getByText(/작성한 메시지는 연결 후 전송돼요/)).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "연결이 끊김 — 다시 연결하는 중" })).toBeInTheDocument();
+  });
+
+  it("turns a server-side speech failure into actionable UI feedback", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+
+    act(() => emit({ type: "error", turn: 1, text: "stt: unavailable" }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent("음성을 인식하지 못했어요");
+  });
+
+  it("shows microphone permission failures instead of only logging them", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    const mockedRecorder = vi.mocked(PCMRecorder);
+    const recorder = mockedRecorder.mock.results[mockedRecorder.mock.results.length - 1].value as {
+      start: ReturnType<typeof vi.fn>;
+    };
+    recorder.start.mockRejectedValueOnce(new Error("permission denied"));
+
+    await user.click(screen.getByRole("button", { name: "음성으로 말하기" }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent("마이크를 사용할 수 없어요");
   });
 });
 
@@ -2417,6 +2527,32 @@ describe("composer", () => {
 
     expect(lastSendText()).not.toHaveBeenCalled();
     expect(textarea).toHaveValue("Hello\nBuddy");
+  });
+
+  it("keeps the send action disabled until there is a non-whitespace message", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+
+    const send = screen.getByRole("button", { name: "메시지 보내기" });
+    expect(send).toBeDisabled();
+    await user.type(screen.getByPlaceholderText("…or type in English"), "   ");
+    expect(send).toBeDisabled();
+    await user.type(screen.getByPlaceholderText("…or type in English"), "Hello");
+    expect(send).toBeEnabled();
+  });
+
+  it("does not send when Enter is confirming an in-progress IME composition", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    const textarea = screen.getByPlaceholderText("…or type in English");
+    fireEvent.change(textarea, { target: { value: "작성 중" } });
+
+    fireEvent.keyDown(textarea, { key: "Enter", code: "Enter", keyCode: 229, isComposing: true });
+
+    expect(lastSendText()).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue("작성 중");
   });
 });
 
@@ -2675,7 +2811,31 @@ describe("voice draft confirmation funnel", () => {
     act(() => emit({ type: "pending_transcript", turn: 0, text: "i are hungry", source: "voice" }));
 
     expect(screen.getByPlaceholderText("…or type in English")).toHaveValue("i are hungry");
+    expect(screen.getByText("음성 인식 결과예요. 확인한 뒤 보내주세요.")).toBeInTheDocument();
     expect(lastSendText()).not.toHaveBeenCalled();
+  });
+
+  it("clears room-local voice state and stops an active recording when leaving", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "pending_transcript", turn: 0, text: "room one draft", source: "voice" }));
+
+    const mockedRecorder = vi.mocked(PCMRecorder);
+    const recorder = mockedRecorder.mock.results[mockedRecorder.mock.results.length - 1].value as {
+      isRecording: boolean;
+      stop: ReturnType<typeof vi.fn>;
+    };
+    Object.defineProperty(recorder, "isRecording", { configurable: true, value: true });
+    recorder.stop.mockResolvedValue(new Int16Array());
+
+    act(() => capturedPopStateHandler?.({ view: "list" }));
+    expect(recorder.stop).toHaveBeenCalled();
+    await screen.findByRole("button", { name: "+ 새 대화" });
+    await user.click(screen.getByRole("button", { name: "+ 새 대화" }));
+
+    expect(screen.getByPlaceholderText("…or type in English")).toHaveValue("");
+    expect(screen.queryByText("음성 인식 결과예요. 확인한 뒤 보내주세요.")).not.toBeInTheDocument();
   });
 
   it("sends the confirmed draft tagged with voice source", async () => {
@@ -2684,7 +2844,7 @@ describe("voice draft confirmation funnel", () => {
     await enterNewChat(user);
     act(() => emit({ type: "pending_transcript", turn: 0, text: "i are hungry", source: "voice" }));
 
-    await user.click(screen.getByRole("button", { name: "Send" }));
+    await user.click(screen.getByRole("button", { name: "메시지 보내기" }));
 
     expect(lastSendText()).toHaveBeenCalledWith("i are hungry", "voice");
     expect(screen.getByPlaceholderText("…or type in English")).toHaveValue("");
@@ -2726,7 +2886,7 @@ describe("voice draft confirmation funnel", () => {
     expect(textarea).toHaveValue("");
 
     await user.type(textarea, "hello");
-    await user.click(screen.getByRole("button", { name: "Send" }));
+    await user.click(screen.getByRole("button", { name: "메시지 보내기" }));
     expect(lastSendText()).toHaveBeenCalledWith("hello", undefined);
   });
 
@@ -2736,7 +2896,7 @@ describe("voice draft confirmation funnel", () => {
     await enterNewChat(user);
     act(() => emit({ type: "pending_transcript", turn: 0, text: "i are hungry", source: "voice" }));
 
-    await user.click(screen.getByRole("button", { name: "Push to talk" }));
+    await user.click(screen.getByRole("button", { name: "음성으로 말하기" }));
 
     expect(screen.getByPlaceholderText("…or type in English")).toHaveValue("");
   });
