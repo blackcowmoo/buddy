@@ -547,7 +547,10 @@ describe("ArticleQuiz page — word lookup while reading", () => {
     await user.click(screen.getByRole("button", { name: "discovery" }));
 
     const panel = screen.getByRole("menu");
+    const selectedWord = screen.getByRole("button", { name: "discovery" });
     expect(panel).toHaveClass("word-lookup-panel");
+    expect(selectedWord).toHaveClass("selected");
+    expect(selectedWord).toHaveAttribute("aria-expanded", "true");
     // Placement is controlled by the orientation media query in styles.css:
     // portrait remains below the token, while landscape centers this same
     // panel in the viewport so an edge token cannot clip it.

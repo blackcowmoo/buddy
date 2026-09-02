@@ -49,4 +49,16 @@ describe("visual design system", () => {
     expect(styles).toContain("button:focus-visible");
     expect(styles).toContain("@media (prefers-reduced-motion: reduce)");
   });
+
+  it("keeps tappable article words flat until one is hovered, focused, or selected", () => {
+    const articleWord = styles.match(/\.article-word\s*\{([\s\S]*?)\n\}/)?.[1] ?? "";
+
+    expect(articleWord).toContain("background: transparent;");
+    expect(articleWord).toContain("border: 0;");
+    expect(articleWord).toContain("box-shadow: none;");
+    expect(articleWord).toContain("filter: none;");
+    expect(articleWord).toContain("transform: none;");
+    expect(styles).toContain(".article-word.selected");
+    expect(styles).toContain(".article-word:hover:not(:disabled)");
+  });
 });

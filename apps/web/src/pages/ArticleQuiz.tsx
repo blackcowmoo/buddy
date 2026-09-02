@@ -579,8 +579,10 @@ export function ArticleQuiz() {
                       <span className="article-word-anchor" key={i} ref={wordLookup?.key === i ? wordLookupAnchorRef : undefined}>
                         <button
                           type="button"
-                          className="article-word"
+                          className={wordLookup?.key === i ? "article-word selected" : "article-word"}
                           onClick={() => openWordLookup(i, part)}
+                          aria-haspopup="menu"
+                          aria-expanded={wordLookup?.key === i}
                         >
                           {part}
                         </button>
