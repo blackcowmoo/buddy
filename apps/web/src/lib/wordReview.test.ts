@@ -71,11 +71,11 @@ describe("reviewWord", () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(item) });
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(reviewWord("weird id/1", true)).resolves.toEqual(item);
+    await expect(reviewWord("weird id/1", true, false, 1)).resolves.toEqual(item);
     expect(fetchMock).toHaveBeenCalledWith("api/words/weird%20id%2F1/review", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ correct: true, repeat: false }),
+      body: JSON.stringify({ correct: true, repeat: false, questionVersion: 1 }),
     });
   });
 
@@ -86,11 +86,11 @@ describe("reviewWord", () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(item) });
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(reviewWord("w1", true, true)).resolves.toEqual(item);
+    await expect(reviewWord("w1", true, true, 1)).resolves.toEqual(item);
     expect(fetchMock).toHaveBeenCalledWith("api/words/w1/review", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ correct: true, repeat: true }),
+      body: JSON.stringify({ correct: true, repeat: true, questionVersion: 1 }),
     });
   });
 

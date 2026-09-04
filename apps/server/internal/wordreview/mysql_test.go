@@ -2,6 +2,7 @@ package wordreview
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -119,6 +120,66 @@ func TestSaveThenListRoundTrips(t *testing.T) {
 	}
 	if len(list) != 1 || list[0].ID != saved.ID {
 		t.Fatalf("List() = %+v, want exactly saved %+v", list, saved)
+	}
+}
+
+func TestSaveQuestionPersistsVersionedSurfaceFormAndRejectsOlderOverwrite(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	saved, err := st.Save(ctx, "alex-question-version", "organize", "정리하다", "They organized the files.")
+	if err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	newer := Question{Version: CurrentQuestionVersion + 1, Prompt: "They ___ the files yesterday.", Answer: "organized"}
+	got, written, err := st.SaveQuestion(ctx, "alex-question-version", saved.ID, newer)
+	if err != nil {
+		t.Fatalf("SaveQuestion(newer) error = %v", err)
+	}
+	if !written || got.ReviewQuestion != newer {
+		t.Fatalf("SaveQuestion(newer) = (%+v, %v), want persisted newer question", got.ReviewQuestion, written)
+	}
+
+	stale := Question{Version: CurrentQuestionVersion, Prompt: "They ___ the files.", Answer: "organize"}
+	got, written, err = st.SaveQuestion(ctx, "alex-question-version", saved.ID, stale)
+	if err != nil {
+		t.Fatalf("SaveQuestion(stale) error = %v", err)
+	}
+	if written || got.ReviewQuestion != newer {
+		t.Fatalf("stale write = (%+v, %v), want newer question preserved", got.ReviewQuestion, written)
+	}
+}
+
+func TestReviewVersionedRejectsQuestionThatWasReplaced(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	saved, err := st.Save(ctx, "alex-versioned-review", "organize", "정리하다", "They organized the files.")
+	if err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if _, err := st.MarkVerified(ctx, "alex-versioned-review", saved.ID, time.Now()); err != nil {
+		t.Fatalf("MarkVerified() error = %v", err)
+	}
+	if _, err := st.ConfirmResearch(ctx, "alex-versioned-review", saved.ID); err != nil {
+		t.Fatalf("ConfirmResearch() error = %v", err)
+	}
+	question := Question{Version: CurrentQuestionVersion, Prompt: "They ___ the files yesterday.", Answer: "organized"}
+	if _, _, err := st.SaveQuestion(ctx, "alex-versioned-review", saved.ID, question); err != nil {
+		t.Fatalf("SaveQuestion() error = %v", err)
+	}
+
+	if _, err := st.ReviewVersioned(ctx, "alex-versioned-review", saved.ID, question.Version-1, true, false, time.Now()); !errors.Is(err, ErrQuestionVersion) {
+		t.Fatalf("ReviewVersioned(stale) error = %v, want ErrQuestionVersion", err)
+	}
+	got, err := st.Get(ctx, "alex-versioned-review", saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ReviewCount != 0 {
+		t.Fatalf("ReviewCount = %d after stale submission, want 0", got.ReviewCount)
+	}
+	if _, err := st.ReviewVersioned(ctx, "alex-versioned-review", saved.ID, question.Version, true, false, time.Now()); err != nil {
+		t.Fatalf("ReviewVersioned(current) error = %v", err)
 	}
 }
 
@@ -454,6 +515,10 @@ func TestDueCountOnlyCountsVerifiedWordsPastDue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
+	staleQuestion, err := st.Save(ctx, "alex-due", "organize", "정리하다", "They organized it.")
+	if err != nil {
+		t.Fatalf("Save(stale question) error = %v", err)
+	}
 
 	// overdue and notYet are both verified; overdue is additionally
 	// backdated into the past via Review to simulate it coming due, while
@@ -470,11 +535,31 @@ func TestDueCountOnlyCountsVerifiedWordsPastDue(t *testing.T) {
 	if _, err := st.MarkVerified(ctx, "alex-due", notYet.ID, now); err != nil {
 		t.Fatalf("MarkVerified(notYet) error = %v", err)
 	}
+	for _, word := range []struct {
+		id       string
+		question Question
+	}{
+		{overdue.ID, Question{Version: CurrentQuestionVersion, Prompt: "A ___ smile crossed her face.", Answer: "wistful"}},
+		{notYet.ID, Question{Version: CurrentQuestionVersion, Prompt: "A ___ tune played.", Answer: "melancholy"}},
+	} {
+		if _, _, err := st.SaveQuestion(ctx, "alex-due", word.id, word.question); err != nil {
+			t.Fatalf("SaveQuestion(%s) error = %v", word.id, err)
+		}
+	}
 	if _, err := st.ConfirmResearch(ctx, "alex-due", overdue.ID); err != nil {
 		t.Fatalf("ConfirmResearch(overdue) error = %v", err)
 	}
 	if _, err := st.ConfirmResearch(ctx, "alex-due", notYet.ID); err != nil {
 		t.Fatalf("ConfirmResearch(notYet) error = %v", err)
+	}
+	if _, err := st.MarkVerified(ctx, "alex-due", staleQuestion.ID, now); err != nil {
+		t.Fatalf("MarkVerified(staleQuestion) error = %v", err)
+	}
+	if _, err := st.Review(ctx, "alex-due", staleQuestion.ID, false, false, now.Add(-48*time.Hour)); err != nil {
+		t.Fatalf("Review(staleQuestion) error = %v", err)
+	}
+	if _, err := st.ConfirmResearch(ctx, "alex-due", staleQuestion.ID); err != nil {
+		t.Fatalf("ConfirmResearch(staleQuestion) error = %v", err)
 	}
 	_ = stillPending
 
@@ -483,7 +568,7 @@ func TestDueCountOnlyCountsVerifiedWordsPastDue(t *testing.T) {
 		t.Fatalf("DueCount() error = %v", err)
 	}
 	if count != 1 {
-		t.Fatalf("DueCount() = %d, want 1 (only the backdated, verified word)", count)
+		t.Fatalf("DueCount() = %d, want 1 (only the backdated, verified word with a current question)", count)
 	}
 }
 

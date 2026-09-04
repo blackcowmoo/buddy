@@ -7,6 +7,7 @@ import {
   reviewWord,
   startAutoAddWords,
   type WordReviewItem,
+  type WordReviewQuestion,
   startResearchWord,
   confirmResearchWord,
   saveWord,
@@ -25,92 +26,22 @@ import type { LoadState } from "../lib/loadState";
 // reasoning as ArticleQuiz.tsx's articleStudyPollIntervalMs.
 const wordAutoAddPollIntervalMs = 3000;
 const reviewWordsPageSize = 20;
+const currentReviewQuestionVersion = 1;
 
-// Phrase words that carry no meaning of their own and are often swapped
-// out by the LLM's example sentence (e.g. "one's" → "my"/"his"), so they
-// shouldn't be required to literally match when masking.
-const maskStopWords = new Set([
-  "a", "an", "the", "to", "of", "in", "on", "at", "for", "and", "or",
-  "one's", "someone's", "somebody's", "one", "oneself", "yourself",
-  "himself", "herself", "themselves", "sb", "sb's", "sth",
-]);
-
-const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-// A token's dictionary spelling doesn't always survive inflection verbatim
-// (optimize -> optimizing drops the "e"; study -> studied swaps "y" for
-// "i"), so `\btoken\w*` alone misses those forms. Try the token as-is first,
-// then progressively shorter stems that match how English spelling changes
-// before "-ing"/"-ed"/"-ies", so e.g. "optimize" also matches via "optimiz".
-function candidateStems(token: string): string[] {
-  const stems = [token];
-  if (/[a-zA-Z]e$/i.test(token)) stems.push(token.slice(0, -1)); // optimize -> optimiz
-  if (/[^aeiou]y$/i.test(token)) stems.push(token.slice(0, -1)); // study -> stud
-  return stems;
+// Recall questions are generated and persisted server-side. Unlike the old
+// client-side substring masking, the stored answer is the complete form the
+// sentence requires ("organized", not dictionary-form "organize" plus a
+// visible trailing "d"). The version check is a defensive rolling-deploy
+// guard for responses served by an older backend replica.
+function currentQuestion(word: WordReviewItem): WordReviewQuestion | null {
+  const question = word.reviewQuestion;
+  if (!question || question.version < currentReviewQuestionVersion) return null;
+  if (question.prompt.split("___").length !== 2 || !question.answer.trim()) return null;
+  return question;
 }
 
-// Placeholder swapped in for each blanked word before splitting the sentence
-// into typeable segments — a character that can never occur in the sentence
-// text itself.
-const BLANK = "\u0000";
-
-// Hides the target word/phrase inside its own example sentence so the
-// recall-mode review question doesn't just hand the learner the answer —
-// same spirit as QuizPanel's LLM-generated fill-in-the-blank prompts,
-// applied here to the plain example sentence saved alongside the word.
-// Returns the sentence split around each blank (`parts.length ===
-// answers.length + 1`; `parts[i]` sits before blank `i`, `parts[i + 1]`
-// after it) so the caller can render a real input in place of each blank,
-// with `answers[i]` being what the learner is expected to type into it.
-function computeBlank(example: string, word: string): { parts: string[]; answers: string[] } {
-  if (!word) return { parts: [example], answers: [] };
-  const exact = new RegExp(escapeRegExp(word), "i");
-  const exactMatch = example.match(exact);
-  if (exactMatch && exactMatch.index !== undefined) {
-    const masked = example.slice(0, exactMatch.index) + BLANK + example.slice(exactMatch.index + exactMatch[0].length);
-    return { parts: masked.split(BLANK), answers: [word] };
-  }
-
-  // The saved example doesn't contain `word` verbatim — this happens when
-  // the LLM inflects a phrase for the sentence's subject/tense (e.g. word
-  // "do one's best" → example "do my best"). Fall back to masking each
-  // significant word of the phrase on its own (tolerant of suffix changes
-  // like run → running and spelling changes like optimize → optimizing, via
-  // candidateStems), leaving words in between — "my" here — visible so
-  // the learner can see where they fit, rather than one blank that either
-  // hands over the whole answer or swallows unrelated sentence words. The
-  // dictionary form's "one's" is never itself blanked (filtered as a stop
-  // word below), so it never shows up in `answers` either.
-  const tokens = word
-    .split(/\s+/)
-    .map((t) => t.replace(/[^a-zA-Z']/g, ""))
-    .filter((t) => t.length > 1 && !maskStopWords.has(t.toLowerCase()));
-
-  let masked = example;
-  // Tokens are looked up (and blanked) in `word`'s own order, which doesn't
-  // always match the order the words fall in the sentence — track where
-  // each match actually landed so `answers` can be sorted back into
-  // left-to-right sentence order, lining up with the blanks in `parts`.
-  const matches: { index: number; matched: string }[] = [];
-  for (const token of tokens) {
-    let m: RegExpMatchArray | null = null;
-    for (const stem of candidateStems(token)) {
-      const regex = new RegExp(`\\b${escapeRegExp(stem)}\\w*`, "i");
-      m = masked.match(regex);
-      if (m) break;
-    }
-    if (!m || m.index === undefined) continue;
-    // Grade against the inflected spelling that's actually in the sentence
-    // (e.g. "optimizing"), not the dictionary form passed in as `word`
-    // ("optimize") — the blank sits where the sentence's grammar demands
-    // the inflected form, so that's the only spelling a learner can
-    // correctly type there.
-    matches.push({ index: m.index, matched: m[0] });
-    masked = masked.slice(0, m.index) + BLANK + masked.slice(m.index + m[0].length);
-  }
-  if (matches.length === 0) return { parts: [example], answers: [] };
-  matches.sort((a, b) => a.index - b.index);
-  return { parts: masked.split(BLANK), answers: matches.map((m) => m.matched) };
+function computeBlank(question: WordReviewQuestion): { parts: string[]; answers: string[] } {
+  return { parts: question.prompt.split("___"), answers: [question.answer] };
 }
 
 function blanksMatch(expected: string[], given: string[]): boolean {
@@ -119,7 +50,8 @@ function blanksMatch(expected: string[], given: string[]): boolean {
 
 // A review session mixes two question shapes so a learner practices both
 // producing English (writing) and understanding it (reading), not just one:
-// - "recall": meaning + masked example -> type the word.
+// - "recall": meaning + a generated sentence blank -> type the complete
+//   grammatical form required there.
 // - "recognition": word + example -> pick the correct meaning from 8
 //   choices, 7 of them pulled from the learner's own other verified words'
 //   meanings (see startQuiz) — no LLM call, built entirely from data already
@@ -173,9 +105,8 @@ export function WordReview() {
   // question order/mode stays stable even as answers update `words` below.
   const [quizQueue, setQuizQueue] = useState<QuizItem[] | null>(null);
   const [index, setIndex] = useState(0);
-  // One entry per blank in the current recall question, typed directly into
-  // the input rendered inline at that blank's position (see recallBlank
-  // below) rather than one shared free-text box.
+  // The current recall answer, typed directly into the generated sentence's
+  // one blank rather than a separate free-text box.
   const [answers, setAnswers] = useState<string[]>([]);
   const [selectedChoice, setSelectedChoice] = useState<string | null>(null);
   const [checked, setChecked] = useState(false);
@@ -254,11 +185,16 @@ export function WordReview() {
     });
   }, [pollAutoAdd]);
 
-  // Research jobs are persisted server-side. Polling the normal word list
-  // makes completion visible again after leaving and reopening this page.
+  // Research jobs and review-question regeneration are persisted server-side.
+  // Polling the normal word list makes either completion visible without a
+  // manual reload. The backend deduplicates these refresh-triggered jobs.
   useEffect(() => {
     const timer = window.setInterval(() => {
-      if (!words.some((w) => w.researchStatus === "pending")) return;
+      const hasPendingWork = words.some((w) =>
+        w.researchStatus === "pending" ||
+        (w.status === "verified" && currentQuestion(w) === null),
+      );
+      if (!hasPendingWork) return;
       fetchWords().then((result) => { if (result) { setWords(result.words); setDueCount(result.dueCount); } });
     }, 2000);
     return () => window.clearInterval(timer);
@@ -322,13 +258,18 @@ export function WordReview() {
     );
   };
 
-  const answersForItem = (item: QuizItem | undefined): string[] =>
-    item && item.mode === "recall" ? new Array(computeBlank(item.word.example, item.word.word).answers.length).fill("") : [];
+  const answersForItem = (item: QuizItem | undefined): string[] => {
+    if (!item || item.mode !== "recall" || !currentQuestion(item.word)) return [];
+    return [""];
+  };
 
   const startQuiz = useCallback(() => {
     const now = Date.now() / 1000;
     const verified = words.filter((w) => w.status === "verified" && w.researchStatus === "confirmed");
-    const due = verified.filter((w) => w.nextReviewAt <= now);
+    // A rolling deployment can briefly return a legacy row alongside a new
+    // dueCount. Do not construct any question until its current version and
+    // exact grammatical answer are both present.
+    const due = verified.filter((w) => w.nextReviewAt <= now && currentQuestion(w) !== null);
     const queue: QuizItem[] = shuffled(due).map((w) => {
       const otherMeanings = verified.filter((other) => other.id !== w.id).map((other) => other.meaning);
       const useRecognition = otherMeanings.length >= minRecognitionDistractors && Math.random() < 0.5;
@@ -375,7 +316,8 @@ export function WordReview() {
 
   const currentItem = quizQueue?.[index] ?? null;
   const current = currentItem?.word ?? null;
-  const recallBlank = currentItem?.mode === "recall" ? computeBlank(currentItem.word.example, currentItem.word.word) : null;
+  const recallQuestion = currentItem?.mode === "recall" ? currentQuestion(currentItem.word) : null;
+  const recallBlank = recallQuestion ? computeBlank(recallQuestion) : null;
 
   // Put the learner straight into the first answer field whenever a recall
   // question appears. This is especially important on mobile, where focusing
@@ -409,7 +351,7 @@ export function WordReview() {
       // that same-day retry now rather than only next time they open
       // review.
       setQuizQueue((prev) => (prev ? [...prev, reshuffleRecognitionChoices(item)] : prev));
-      void reviewWord(item.word.id, false).then((updated) => {
+      void reviewWord(item.word.id, false, false, currentQuestion(item.word)!.version).then((updated) => {
         if (!updated) return;
         setWords((prev) => prev.map((w) => (w.id === updated.id ? updated : w)));
         // The item is also present in the in-progress queue. Keep that copy
@@ -426,8 +368,8 @@ export function WordReview() {
   );
 
   const checkRecall = useCallback(async () => {
-    if (!currentItem || checked || currentItem.mode !== "recall" || answers.some((a) => !a.trim())) return;
-    const expected = computeBlank(currentItem.word.example, currentItem.word.word).answers;
+    if (!currentItem || checked || currentItem.mode !== "recall" || !recallBlank || answers.some((a) => !a.trim())) return;
+    const expected = recallBlank.answers;
     if (blanksMatch(expected, answers)) {
       finishCheck(currentItem, true);
       return;
@@ -472,7 +414,7 @@ export function WordReview() {
   const advanceCorrect = useCallback(
     (repeat: boolean) => {
       if (currentItem) {
-        void reviewWord(currentItem.word.id, true, repeat).then((updated) => {
+        void reviewWord(currentItem.word.id, true, repeat, currentQuestion(currentItem.word)!.version).then((updated) => {
           if (!updated) return;
           setWords((prev) => prev.map((w) => (w.id === updated.id ? updated : w)));
           setDueCount((c) => Math.max(0, c - 1));
@@ -493,9 +435,8 @@ export function WordReview() {
 
   const markForced = useCallback(() => advanceCorrect(true), [advanceCorrect]);
 
-  // Enter in a blank moves to the next blank, submits from the last blank,
-  // or (once checked) advances to the next question -- so the learner never
-  // has to reach for the mouse mid-question.
+  // Enter submits the sentence blank or, once checked, advances to the next
+  // question so the learner never has to reach for the mouse mid-question.
   const handleBlankKeyDown = useCallback(
     (e: KeyboardEvent<HTMLInputElement>, i: number) => {
       if (e.key !== "Enter") return;
@@ -514,6 +455,10 @@ export function WordReview() {
   );
 
   const verifiedWords = words.filter((w) => w.status === "verified" && w.researchStatus === "confirmed");
+  const nowSeconds = Date.now() / 1000;
+  const readyDueCount = verifiedWords.filter((w) => w.nextReviewAt <= nowSeconds && currentQuestion(w) !== null).length;
+  const dueQuestionBackfillCount = verifiedWords.filter((w) => w.nextReviewAt <= nowSeconds && currentQuestion(w) === null).length;
+  const availableDueCount = Math.min(dueCount, readyDueCount);
   // Keep every word that still needs learner confirmation together, including
   // verified rows created from a direct/article definition but not yet
   // confirmed. Rejected rows remain in their own exclusion section below.
@@ -558,7 +503,11 @@ export function WordReview() {
         {state === "ready" && quizQueue === null && (
           <>
             <p className="hint word-review-due-hint" role="status">
-              {dueCount > 0 ? `복습할 단어 ${dueCount}개가 있어요.` : "지금 복습할 단어가 없어요."}
+              {availableDueCount > 0
+                ? `복습할 단어 ${availableDueCount}개가 있어요.`
+                : dueQuestionBackfillCount > 0
+                  ? `복습 문제 ${dueQuestionBackfillCount}개를 새 버전으로 준비 중이에요.`
+                  : "지금 복습할 단어가 없어요."}
             </p>
             {words.length === 0 && (
               <p className="hint">
@@ -595,9 +544,13 @@ export function WordReview() {
                 </>
               )}
             />
-            {dueCount > 0 ? (
+            {availableDueCount > 0 ? (
               <button type="button" className="quiz-start-btn" onClick={startQuiz}>
                 복습 시작
+              </button>
+            ) : dueQuestionBackfillCount > 0 ? (
+              <button type="button" className="quiz-start-btn" disabled>
+                복습 문제 준비 중…
               </button>
             ) : (
               <button type="button" className="quiz-start-btn" onClick={() => void handleAutoAdd()} disabled={autoAdding}>
@@ -640,11 +593,10 @@ export function WordReview() {
                 {currentItem.mode === "recall" ? (
                   <>
                     <div className="quiz-prompt">{current.meaning}</div>
-                    {/* Blanks are typed directly in place inside the
-                        sentence rather than gathered into one separate
-                        textarea below -- each blank is its own input, sized
-                        to what's been typed into it (not the hidden
-                        answer's length, which would give it away). */}
+                    {/* The answer is typed directly in place inside the
+                        sentence rather than in a separate textarea. Its
+                        width follows what has been typed, not the hidden
+                        answer's length, which would give it away. */}
                     <div className="word-search-example quiz-blank-sentence">
                       {recallBlank!.parts.map((part, i) => (
                         <span key={i}>
@@ -661,7 +613,7 @@ export function WordReview() {
                                 normalizeAnswer(answers[i] ?? "") === normalizeAnswer(recallBlank!.answers[i]),
                               )}
                               style={{ width: `${Math.min(16, Math.max(3, (answers[i]?.length ?? 0) + 1))}ch` }}
-                              maxLength={40}
+                              maxLength={255}
                               value={answers[i] ?? ""}
                               onChange={(e) =>
                                 setAnswers((prev) => {

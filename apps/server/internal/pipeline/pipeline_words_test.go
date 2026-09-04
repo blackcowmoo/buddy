@@ -10,6 +10,7 @@ import (
 
 	"buddy/server/internal/llm"
 	"buddy/server/internal/protocol"
+	"buddy/server/internal/wordreview"
 )
 
 func TestSuggestWordsParsesSuggestions(t *testing.T) {
@@ -213,6 +214,49 @@ func TestSuggestNewWordsRejectsBadJSON(t *testing.T) {
 	}}, ChatModel: "m"}
 	if _, err := p.SuggestNewWords(context.Background(), "profile", nil); err == nil {
 		t.Fatal("expected an error when the model's reply isn't valid JSON")
+	}
+}
+
+// ---- GenerateWordReviewQuestion() -----------------------------------------
+
+func TestGenerateWordReviewQuestionUsesCompleteGrammaticalFormAndStampsVersion(t *testing.T) {
+	var systemPrompt, input string
+	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		systemPrompt = msgs[0].Content
+		input = msgs[len(msgs)-1].Content
+		return `{"prompt":"The criminals planned the attack in a highly ___ manner.","answer":"organized"}`, nil
+	}}, ChatModel: "m", FeedbackLang: "ko"}
+
+	got, err := p.GenerateWordReviewQuestion(context.Background(), "organize", "조직하다", "The criminals planned the attack in a highly organized manner.")
+	if err != nil {
+		t.Fatalf("GenerateWordReviewQuestion() error = %v", err)
+	}
+	if got.Version != wordreview.CurrentQuestionVersion || got.Answer != "organized" {
+		t.Fatalf("question = %+v, want current version and complete past form", got)
+	}
+	if strings.Contains(got.Prompt, "___d") {
+		t.Fatalf("prompt leaks an inflectional suffix: %q", got.Prompt)
+	}
+	if !strings.Contains(systemPrompt, "complete grammatical form") || !strings.Contains(systemPrompt, `wrong: "___d"`) {
+		t.Fatalf("system prompt does not prohibit partial-form blanks: %q", systemPrompt)
+	}
+	if !strings.Contains(input, "dictionary word: organize") || !strings.Contains(input, "existing example:") {
+		t.Fatalf("generation input = %q, want word and existing example", input)
+	}
+}
+
+func TestGenerateWordReviewQuestionRejectsMalformedQuestion(t *testing.T) {
+	cases := []string{
+		`{"prompt":"No blank here.","answer":"organized"}`,
+		`{"prompt":"Two ___ blanks ___.","answer":"organized"}`,
+		`{"prompt":"They were highly ___d.","answer":"organize"}`,
+		`{"prompt":"They ___.","answer":"   "}`,
+	}
+	for _, response := range cases {
+		p := &Pipeline{LLM: &fakeLLM{complete: func([]llm.Message) (string, error) { return response, nil }}, ChatModel: "m"}
+		if _, err := p.GenerateWordReviewQuestion(context.Background(), "organize", "정리하다", "They organized it."); err == nil {
+			t.Fatalf("response %s: error = nil, want validation failure", response)
+		}
 	}
 }
 

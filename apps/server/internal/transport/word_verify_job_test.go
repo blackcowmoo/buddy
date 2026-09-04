@@ -117,6 +117,22 @@ func (s *fakeWordReviewStore) Review(ctx context.Context, userID, id string, cor
 
 func (s *fakeWordReviewStore) Delete(ctx context.Context, userID, id string) error { return nil }
 
+func (s *fakeWordReviewStore) SaveQuestion(ctx context.Context, userID, id string, question wordreview.Question) (wordreview.Word, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	w, ok := s.words[id]
+	if !ok || w.UserID != userID {
+		return wordreview.Word{}, false, nil
+	}
+	if w.ReviewQuestion.Version > question.Version ||
+		(w.ReviewQuestion.Version == question.Version && w.ReviewQuestion.Prompt != "" && w.ReviewQuestion.Answer != "") {
+		return w, false, nil
+	}
+	w.ReviewQuestion = question
+	s.words[id] = w
+	return w, true, nil
+}
+
 func (s *fakeWordReviewStore) status(id string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -129,13 +145,21 @@ func (s *fakeWordReviewStore) reason(id string) string {
 	return s.words[id].VerifyReason
 }
 
+func (s *fakeWordReviewStore) question(id string) wordreview.Question {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.words[id].ReviewQuestion
+}
+
 func (s *fakeWordReviewStore) Close() error { return nil }
 
 // TestRunWordVerifyMarksVerifiedWhenAllJudgesAgree guards the primary flow:
 // a Pending word whose judges unanimously agree valid ends up Verified.
 func TestRunWordVerifyMarksVerifiedWhenAllJudgesAgree(t *testing.T) {
 	pipe := &pipeline.Pipeline{
-		Analysis: []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{complete: `{"valid":true,"reason":""}`}}},
+		Analysis:  []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{complete: `{"valid":true,"reason":""}`}}},
+		LLM:       fakeAnalysisLLM{complete: `{"prompt":"She was ___.","answer":"furious"}`},
+		ChatModel: "m",
 	}
 	words := newFakeWordReviewStore(wordreview.Word{ID: "w1", UserID: "alex", Word: "furious", Meaning: "화가 난", Example: "She was furious.", Status: wordreview.StatusPending})
 
@@ -193,12 +217,52 @@ func TestRunWordVerifyIsNoopForAlreadyDecidedWord(t *testing.T) {
 		Analysis: []pipeline.Candidate{{Model: "m", LLM: countingLLM{&calls, `{"valid":true,"reason":""}`}}},
 	}
 	words := newFakeWordReviewStore(wordreview.Word{ID: "w1", UserID: "alex", Word: "furious", Status: wordreview.StatusVerified})
+	words.words["w1"] = wordreview.Word{
+		ID: "w1", UserID: "alex", Word: "furious", Status: wordreview.StatusVerified,
+		ReviewQuestion: wordreview.Question{Version: wordreview.CurrentQuestionVersion, Prompt: "She was ___.", Answer: "furious"},
+	}
 
 	if err := RunWordVerifyInline(context.Background(), pipe, words, "alex", "w1"); err != nil {
 		t.Fatalf("RunWordVerifyInline() error = %v", err)
 	}
 	if calls != 0 {
 		t.Fatalf("expected no LLM call for an already-verified word, got %d calls", calls)
+	}
+}
+
+func TestRunWordVerifyBackfillsVersionedQuestionWithSentenceForm(t *testing.T) {
+	pipe := &pipeline.Pipeline{
+		LLM:       fakeAnalysisLLM{complete: `{"prompt":"They ___ the files yesterday.","answer":"organized"}`},
+		ChatModel: "m",
+	}
+	words := newFakeWordReviewStore(wordreview.Word{
+		ID: "w-old", UserID: "alex", Word: "organize", Meaning: "정리하다",
+		Example: "They organized the files.", Status: wordreview.StatusVerified,
+	})
+
+	if err := RunWordVerifyInline(context.Background(), pipe, words, "alex", "w-old"); err != nil {
+		t.Fatalf("RunWordVerifyInline() error = %v", err)
+	}
+	got := words.question("w-old")
+	if got.Version != wordreview.CurrentQuestionVersion || got.Answer != "organized" || got.Prompt != "They ___ the files yesterday." {
+		t.Fatalf("question = %+v, want current version with the sentence-required past form", got)
+	}
+}
+
+func TestWordVerifyJobHandlerIgnoresLegacyQuestionGenerationPayload(t *testing.T) {
+	calls := 0
+	pipe := &pipeline.Pipeline{LLM: countingLLM{&calls, `{"prompt":"She was ___.","answer":"furious"}`}, ChatModel: "m"}
+	words := newFakeWordReviewStore(wordreview.Word{ID: "w1", UserID: "alex", Word: "furious", Status: wordreview.StatusVerified})
+	handler := WordVerifyJobHandler(pipe, words)
+	payload, err := json.Marshal(wordVerifyJobPayload{UserID: "alex", WordID: "w1"}) // legacy: no QuestionVersion
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := handler(context.Background(), asyncjob.Job{Kind: asyncjob.KindWordVerify, Payload: payload}); err != nil {
+		t.Fatalf("handler() error = %v", err)
+	}
+	if calls != 0 || words.question("w1").Version != 0 {
+		t.Fatalf("legacy payload generated a question: calls=%d question=%+v", calls, words.question("w1"))
 	}
 }
 
@@ -227,7 +291,9 @@ func TestEnqueueWordVerifyJobRunsInBackgroundAndPersists(t *testing.T) {
 	rdb := requireReplyRedis(t)
 	queue := asyncjob.NewQueue(rdb)
 	pipe := &pipeline.Pipeline{
-		Analysis: []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{complete: `{"valid":true,"reason":""}`}}},
+		Analysis:  []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{complete: `{"valid":true,"reason":""}`}}},
+		LLM:       fakeAnalysisLLM{complete: `{"prompt":"She was ___.","answer":"furious"}`},
+		ChatModel: "m",
 	}
 	words := newFakeWordReviewStore(wordreview.Word{ID: "w-enqueue", UserID: "alex", Word: "furious", Status: wordreview.StatusPending})
 
