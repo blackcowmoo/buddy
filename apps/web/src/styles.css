@@ -857,6 +857,9 @@ a.icon-btn.ghost {
   gap: 16px;
   background: radial-gradient(circle at 50% -12%, var(--accent-soft), transparent 32%);
 }
+/* A one-pixel end marker for App.tsx's IntersectionObserver. It participates
+   in normal transcript flow without adding visible space. */
+.latest-message-anchor { flex: 0 0 1px; block-size: 1px; }
 .connection-notice {
   margin: 0;
   padding: 9px 12px;

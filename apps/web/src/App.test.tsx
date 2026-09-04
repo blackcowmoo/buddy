@@ -1278,6 +1278,51 @@ describe("room list", () => {
     expect(screen.queryByRole("button", { name: "최신 메시지로 이동" })).not.toBeInTheDocument();
   });
 
+  it("dismisses the latest-message toast when the transcript end becomes visible", async () => {
+    const callbacks: IntersectionObserverCallback[] = [];
+    class MockIntersectionObserver {
+      readonly root = null;
+      readonly rootMargin = "";
+      readonly thresholds: number[] = [];
+
+      constructor(callback: IntersectionObserverCallback) {
+        callbacks.push(callback);
+      }
+
+      disconnect() {}
+      observe() {}
+      takeRecords(): IntersectionObserverEntry[] { return []; }
+      unobserve() {}
+    }
+    vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
+
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "long room", createdAt: 1, updatedAt: 2 },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
+      session: { id: "s1", title: "long room", createdAt: 1, updatedAt: 2 },
+      turns: [{ turn: 1, role: "user", text: "an older visible turn", refined: false }],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("long room"));
+    await screen.findByText("an older visible turn");
+
+    const convo = document.querySelector(".convo") as HTMLElement;
+    Object.defineProperty(convo, "scrollHeight", { configurable: true, value: 1600 });
+    Object.defineProperty(convo, "clientHeight", { configurable: true, value: 400 });
+    convo.scrollTop = 500;
+    fireEvent.scroll(convo);
+    expect(screen.getByRole("button", { name: "최신 메시지로 이동" })).toBeInTheDocument();
+
+    const onIntersect = callbacks.at(-1);
+    if (!onIntersect) throw new Error("expected a transcript-end observer");
+    act(() => onIntersect([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver));
+
+    expect(screen.queryByRole("button", { name: "최신 메시지로 이동" })).not.toBeInTheDocument();
+  });
+
   it("scrolling near the top of a room with more history loads and prepends an older page", async () => {
     vi.mocked(fetchSessions).mockResolvedValue([
       { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2 },

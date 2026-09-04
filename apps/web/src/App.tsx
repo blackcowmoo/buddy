@@ -320,6 +320,12 @@ export function App() {
   // down. Kept as a ref, not state: it's written on every scroll event and
   // must never itself trigger a render.
   const stickToBottomRef = useRef(true);
+  // A physical marker immediately after the newest transcript content. The
+  // scroll-distance calculation is the fast path, but iOS Safari can briefly
+  // report stale scroll dimensions while its browser chrome changes. Watching
+  // this marker makes the visible transcript end authoritative for dismissing
+  // the "latest message" toast.
+  const latestMessageAnchorRef = useRef<HTMLDivElement | null>(null);
   // Set just before loadOlderTurns prepends older turns to msgs, consumed
   // once by the scroll-position effect below to hold the visual scroll
   // position steady across the height added above (rather than the natural
@@ -1041,6 +1047,28 @@ export function App() {
     }
   }, [loadingMoreHistory, loadOlderTurns]);
 
+  // On mobile Safari, dynamic browser controls can leave scrollHeight,
+  // scrollTop, and clientHeight temporarily out of sync even after the final
+  // row is visibly on screen. A bottom marker is measured against the actual
+  // scroll viewport, so it reliably clears a stale jump toast. The scroll
+  // handler above remains the fallback for browsers without this API.
+  useEffect(() => {
+    const root = convoRef.current;
+    const target = latestMessageAnchorRef.current;
+    if (!root || !target || typeof IntersectionObserver === "undefined") return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry?.isIntersecting) return;
+        stickToBottomRef.current = true;
+        setShowScrollToLatest(false);
+      },
+      { root, rootMargin: `0px 0px ${SCROLL_EDGE_THRESHOLD}px 0px` },
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [view]);
+
   const scrollToLatest = useCallback(() => {
     const el = convoRef.current;
     if (!el) return;
@@ -1648,6 +1676,7 @@ export function App() {
             </div>
           </div>
         )}
+        <div ref={latestMessageAnchorRef} className="latest-message-anchor" aria-hidden="true" />
       </main>
 
       {showScrollToLatest && !chatError && (
