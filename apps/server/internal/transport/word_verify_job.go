@@ -23,12 +23,14 @@ const (
 	WordVerifyWorkerConcurrency = 8
 )
 
-// wordVerifyJobPayload mirrors studyQuizJobPayload: just the IDs, not the
-// word/meaning/example themselves, so a reap-retry always verifies whatever
-// is actually persisted rather than a payload that could be stale.
+// wordVerifyJobPayload mirrors studyQuizJobPayload: IDs plus the question
+// contract version, but not word/meaning/example themselves, so a reap-retry
+// always verifies the persisted entry. The version prevents a legacy queued
+// job from producing a question after a newer deployment takes over.
 type wordVerifyJobPayload struct {
-	UserID string
-	WordID string
+	UserID          string
+	WordID          string
+	QuestionVersion int
 }
 
 // wordVerifyKey formats the userID:wordID dedupe/log key for this package's
@@ -47,27 +49,53 @@ func wordVerifyKey(userID, wordID string) string {
 // longer exists (e.g. the learner deleted it while verification was still
 // pending) is treated as already done — nothing left to verify, not an
 // error worth retrying.
-func runWordVerify(ctx context.Context, pipe *pipeline.Pipeline, words wordreview.Store, userID, wordID string) error {
+func runWordVerify(ctx context.Context, pipe *pipeline.Pipeline, words wordreview.Store, userID, wordID string, questionVersion int) error {
 	target, err := words.Get(ctx, userID, wordID)
 	if err != nil {
 		return fmt.Errorf("word verify: get: %w", err)
 	}
-	if target.ID == "" || target.Status != wordreview.StatusPending {
+	if target.ID == "" || target.Status == wordreview.StatusRejected {
 		return nil
 	}
 
-	valid, reason, err := pipe.VerifyWord(ctx, target.Word, target.Meaning, target.Example)
-	if err != nil {
-		return fmt.Errorf("word verify: %w", err)
-	}
-	if valid {
-		if _, err := words.MarkVerified(ctx, userID, wordID, time.Now()); err != nil {
+	if target.Status == wordreview.StatusPending {
+		valid, reason, err := pipe.VerifyWord(ctx, target.Word, target.Meaning, target.Example)
+		if err != nil {
+			return fmt.Errorf("word verify: %w", err)
+		}
+		if !valid {
+			if _, err := words.MarkRejected(ctx, userID, wordID, reason); err != nil {
+				return fmt.Errorf("word verify: mark rejected: %w", err)
+			}
+			return nil
+		}
+		target, err = words.MarkVerified(ctx, userID, wordID, time.Now())
+		if err != nil {
 			return fmt.Errorf("word verify: mark verified: %w", err)
 		}
+		if target.ID == "" { // deleted while the model was checking it
+			return nil
+		}
+	}
+
+	// A legacy queued payload has QuestionVersion 0. It may still finish the
+	// pending word's fact check above, but it must not generate or persist an
+	// unversioned question. Opening the review list enqueues the current
+	// version separately. Likewise, a worker cannot manufacture a future
+	// contract it does not know about.
+	if questionVersion != wordreview.CurrentQuestionVersion || wordreview.QuestionReady(target) {
 		return nil
 	}
-	if _, err := words.MarkRejected(ctx, userID, wordID, reason); err != nil {
-		return fmt.Errorf("word verify: mark rejected: %w", err)
+	questionStore, ok := words.(wordreview.QuestionStore)
+	if !ok {
+		return nil
+	}
+	question, err := pipe.GenerateWordReviewQuestion(ctx, target.Word, target.Meaning, target.Example)
+	if err != nil {
+		return fmt.Errorf("word review question: generate: %w", err)
+	}
+	if _, _, err := questionStore.SaveQuestion(ctx, userID, wordID, question); err != nil {
+		return fmt.Errorf("word review question: save: %w", err)
 	}
 	return nil
 }
@@ -77,7 +105,7 @@ func runWordVerify(ctx context.Context, pipe *pipeline.Pipeline, words wordrevie
 // StudySummaryJobHandler's doc comment for the shared durability rationale.
 func WordVerifyJobHandler(pipe *pipeline.Pipeline, words wordreview.Store) asyncjob.Handler {
 	return asyncjob.DecodePayloadHandler(asyncjob.KindWordVerify, func(ctx context.Context, payload wordVerifyJobPayload) error {
-		return runWordVerify(ctx, pipe, words, payload.UserID, payload.WordID)
+		return runWordVerify(ctx, pipe, words, payload.UserID, payload.WordID, payload.QuestionVersion)
 	})
 }
 
@@ -86,14 +114,14 @@ func WordVerifyJobHandler(pipe *pipeline.Pipeline, words wordreview.Store) async
 // this on a detached context.Background() goroutine of its own so a slow
 // local LLM never blocks the "학습하기" response.
 func RunWordVerifyInline(ctx context.Context, pipe *pipeline.Pipeline, words wordreview.Store, userID, wordID string) error {
-	return runWordVerify(ctx, pipe, words, userID, wordID)
+	return runWordVerify(ctx, pipe, words, userID, wordID, wordreview.CurrentQuestionVersion)
 }
 
 // EnqueueWordVerifyJob durably queues verification for a just-saved pending
 // word — mirrors EnqueueStudyQuizJob.
 func EnqueueWordVerifyJob(ctx context.Context, queue *asyncjob.Queue, pipe *pipeline.Pipeline, words wordreview.Store, userID, wordID string) error {
-	payload := wordVerifyJobPayload{UserID: userID, WordID: wordID}
-	key := wordVerifyKey(userID, wordID)
+	payload := wordVerifyJobPayload{UserID: userID, WordID: wordID, QuestionVersion: wordreview.CurrentQuestionVersion}
+	key := fmt.Sprintf("%s:q%d", wordVerifyKey(userID, wordID), wordreview.CurrentQuestionVersion)
 	return queue.EnqueueAndRunInBackground(ctx, asyncjob.KindWordVerify, key,
 		key, payload, WordVerifyClaimTTL, WordVerifyJobHandler(pipe, words))
 }

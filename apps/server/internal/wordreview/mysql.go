@@ -57,6 +57,9 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 		verify_reason    TEXT         NOT NULL,
 		research_status  VARCHAR(16)  NOT NULL DEFAULT '',
 		research_results JSON         NULL,
+		review_question_version INT   NOT NULL DEFAULT 0,
+		review_prompt    TEXT         NOT NULL DEFAULT '',
+		review_answer    VARCHAR(255) NOT NULL DEFAULT '',
 		created_at       BIGINT       NOT NULL,
 		PRIMARY KEY (id),
 		UNIQUE KEY idx_user_word_meaning (user_id, word(191), meaning(191)),
@@ -84,6 +87,24 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 		{Version: 3, Name: "word_reviews.research_results", Up: func(ctx context.Context, db *sql.DB) error {
 			return mysqlerr.ApplyAdditive(func() error {
 				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN research_results JSON NULL`)
+				return err
+			}, mysqlerr.DupFieldName)
+		}},
+		{Version: 4, Name: "word_reviews.review_question_version", Up: func(ctx context.Context, db *sql.DB) error {
+			return mysqlerr.ApplyAdditive(func() error {
+				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN review_question_version INT NOT NULL DEFAULT 0`)
+				return err
+			}, mysqlerr.DupFieldName)
+		}},
+		{Version: 5, Name: "word_reviews.review_prompt", Up: func(ctx context.Context, db *sql.DB) error {
+			return mysqlerr.ApplyAdditive(func() error {
+				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN review_prompt TEXT NOT NULL DEFAULT ''`)
+				return err
+			}, mysqlerr.DupFieldName)
+		}},
+		{Version: 6, Name: "word_reviews.review_answer", Up: func(ctx context.Context, db *sql.DB) error {
+			return mysqlerr.ApplyAdditive(func() error {
+				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN review_answer VARCHAR(255) NOT NULL DEFAULT ''`)
 				return err
 			}, mysqlerr.DupFieldName)
 		}},
@@ -157,7 +178,8 @@ func scanWord(row scanner, userID string) (Word, error) {
 	if err := row.Scan(
 		&w.ID, &w.Word, &w.OriginalWord, &w.Meaning, &w.Example,
 		&w.Stage, &w.ReviewCount, &w.CorrectStreak,
-		&nextReviewAt, &lastReviewedAt, &w.Status, &w.VerifyReason, &w.ResearchStatus, &researchResults, &createdAt,
+		&nextReviewAt, &lastReviewedAt, &w.Status, &w.VerifyReason, &w.ResearchStatus, &researchResults,
+		&w.ReviewQuestion.Version, &w.ReviewQuestion.Prompt, &w.ReviewQuestion.Answer, &createdAt,
 	); err != nil {
 		return Word{}, err
 	}
@@ -173,7 +195,7 @@ func scanWord(row scanner, userID string) (Word, error) {
 	return w, nil
 }
 
-const wordColumns = `id, word, original_word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, research_status, research_results, created_at`
+const wordColumns = `id, word, original_word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, research_status, research_results, review_question_version, review_prompt, review_answer, created_at`
 
 func (s *MySQLStore) Save(ctx context.Context, userID, word, meaning, example string) (Word, error) {
 	return s.SaveOriginal(ctx, userID, word, meaning, example, word)
@@ -189,8 +211,8 @@ func (s *MySQLStore) SaveOriginal(ctx context.Context, userID, word, meaning, ex
 	// MarkVerified resets it — a pending word is excluded from Due/DueCount
 	// regardless (see their WHERE clauses).
 	_, err := s.rw.ExecContext(ctx, `
-		INSERT IGNORE INTO `+table+` (id, user_id, word, original_word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, research_status, research_results, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?, 0, ?, '', '', NULL, ?)
+		INSERT IGNORE INTO `+table+` (id, user_id, word, original_word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, research_status, research_results, review_question_version, review_prompt, review_answer, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?, 0, ?, '', '', NULL, 0, '', '', ?)
 	`, uuid.New().String(), userID, word, originalWord, meaning, example, now.Add(intervalForStage(0)).Unix(), StatusPending, now.Unix())
 	if err != nil {
 		return Word{}, fmt.Errorf("wordreview: save: insert: %w", err)
@@ -233,12 +255,39 @@ func (s *MySQLStore) List(ctx context.Context, userID string) ([]Word, error) {
 func (s *MySQLStore) DueCount(ctx context.Context, userID string, now time.Time) (int, error) {
 	var n int
 	err := s.ro.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM `+table+` WHERE user_id = ? AND status = ? AND research_status = ? AND next_review_at <= ?
-	`, userID, StatusVerified, ResearchConfirmed, now.Unix()).Scan(&n)
+		SELECT COUNT(*) FROM `+table+` WHERE user_id = ? AND status = ? AND research_status = ?
+			AND review_question_version >= ? AND review_prompt <> '' AND review_answer <> '' AND next_review_at <= ?
+	`, userID, StatusVerified, ResearchConfirmed, CurrentQuestionVersion, now.Unix()).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("wordreview: due count: %w", err)
 	}
 	return n, nil
+}
+
+// SaveQuestion persists a generated recall question only when it is newer
+// than the stored one (or repairs an incomplete row at the same version).
+// This comparison is performed by MySQL in the UPDATE itself, so workers from
+// overlapping deployments cannot race a stale result over a newer question.
+func (s *MySQLStore) SaveQuestion(ctx context.Context, userID, id string, question Question) (Word, bool, error) {
+	res, err := s.rw.ExecContext(ctx, `
+		UPDATE `+table+` SET review_question_version = ?, review_prompt = ?, review_answer = ?
+		WHERE id = ? AND user_id = ? AND (
+			review_question_version < ? OR
+			(review_question_version = ? AND (review_prompt = '' OR review_answer = ''))
+		)
+	`, question.Version, question.Prompt, question.Answer, id, userID, question.Version, question.Version)
+	if err != nil {
+		return Word{}, false, fmt.Errorf("wordreview: save question: %w", err)
+	}
+	saved, _ := res.RowsAffected()
+	w, err := scanWord(s.rw.QueryRowContext(ctx, `SELECT `+wordColumns+` FROM `+table+` WHERE id = ? AND user_id = ?`, id, userID), userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Word{}, false, nil
+	}
+	if err != nil {
+		return Word{}, false, fmt.Errorf("wordreview: save question: lookup: %w", err)
+	}
+	return w, saved > 0, nil
 }
 
 // MarkVerified reads/writes via rw (not ro) so a word saved moments ago is
@@ -289,19 +338,47 @@ func (s *MySQLStore) Review(ctx context.Context, userID, id string, correct, rep
 	if err != nil {
 		return Word{}, fmt.Errorf("wordreview: review: lookup: %w", err)
 	}
+	return s.applyReview(ctx, w, 0, false, correct, repeat, now)
+}
 
+func (s *MySQLStore) ReviewVersioned(ctx context.Context, userID, id string, questionVersion int, correct, repeat bool, now time.Time) (Word, error) {
+	w, err := scanWord(s.rw.QueryRowContext(ctx, `SELECT `+wordColumns+` FROM `+table+` WHERE id = ? AND user_id = ?`, id, userID), userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Word{}, nil
+	}
+	if err != nil {
+		return Word{}, fmt.Errorf("wordreview: versioned review: lookup: %w", err)
+	}
+	if w.Status != StatusVerified || w.ResearchStatus != ResearchConfirmed || !QuestionReady(w) || w.ReviewQuestion.Version != questionVersion {
+		return Word{}, ErrQuestionVersion
+	}
+	return s.applyReview(ctx, w, questionVersion, true, correct, repeat, now)
+}
+
+func (s *MySQLStore) applyReview(ctx context.Context, w Word, questionVersion int, enforceVersion, correct, repeat bool, now time.Time) (Word, error) {
 	newStage, nextReviewAt := nextSchedule(w.Stage, correct, repeat, now)
 	streak := 0
 	if correct {
 		streak = w.CorrectStreak + 1
 	}
-	if _, err := s.rw.ExecContext(ctx, `
-		UPDATE `+table+` SET
+	query := `
+		UPDATE ` + table + ` SET
 			stage = ?, review_count = review_count + 1, correct_streak = ?,
 			next_review_at = ?, last_reviewed_at = ?
-		WHERE id = ? AND user_id = ?
-	`, newStage, streak, nextReviewAt.Unix(), now.Unix(), id, userID); err != nil {
+		WHERE id = ? AND user_id = ?`
+	args := []any{newStage, streak, nextReviewAt.Unix(), now.Unix(), w.ID, w.UserID}
+	if enforceVersion {
+		query += ` AND status = ? AND research_status = ? AND review_question_version = ?`
+		args = append(args, StatusVerified, ResearchConfirmed, questionVersion)
+	}
+	res, err := s.rw.ExecContext(ctx, query, args...)
+	if err != nil {
 		return Word{}, fmt.Errorf("wordreview: review: update: %w", err)
+	}
+	if enforceVersion {
+		if affected, _ := res.RowsAffected(); affected == 0 {
+			return Word{}, ErrQuestionVersion
+		}
 	}
 
 	w.Stage = newStage

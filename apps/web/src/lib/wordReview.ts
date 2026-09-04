@@ -7,6 +7,13 @@ import type { WordSuggestion } from "./protocol";
 // wordreview.stageIntervals' doc server-side for why there's no ceiling).
 export type WordReviewStatus = "pending" | "verified" | "rejected";
 
+export interface WordReviewQuestion {
+  version: number;
+  prompt: string;
+  /** The complete grammatical form that replaces the prompt's one blank. */
+  answer: string;
+}
+
 export interface WordReviewItem {
   id: string;
   word: string;
@@ -27,6 +34,7 @@ export interface WordReviewItem {
   verifyReason?: string;
   researchStatus?: "pending" | "done" | "confirmed";
   researchResults?: WordSuggestion[];
+  reviewQuestion?: WordReviewQuestion;
 }
 
 // Adds one word-search suggestion the learner explicitly chose to study (the
@@ -102,9 +110,11 @@ export async function fetchWords(): Promise<{ words: WordReviewItem[]; dueCount:
 // it's next due. repeat marks a correct-but-forced-guess answer (the "억지로
 // 맞췄어요" button in WordReview.tsx) — the word gets rescheduled at the same
 // interval it just came from instead of advancing; meaningless when correct
-// is false. Returns null on any failure.
-export async function reviewWord(id: string, correct: boolean, repeat = false): Promise<WordReviewItem | null> {
-  return postJSON<WordReviewItem | null>(`api/words/${encodeURIComponent(id)}/review`, { correct, repeat }, null);
+// is false. questionVersion binds the answer to the exact persisted problem
+// the learner saw, so a stale/cached problem is rejected during a rolling
+// deployment. Returns null on any failure.
+export async function reviewWord(id: string, correct: boolean, repeat = false, questionVersion = 0): Promise<WordReviewItem | null> {
+  return postJSON<WordReviewItem | null>(`api/words/${encodeURIComponent(id)}/review`, { correct, repeat, questionVersion }, null);
 }
 
 // Removes one tracked word from the caller's study list. Returns whether the

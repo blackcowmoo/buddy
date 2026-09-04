@@ -3,9 +3,12 @@ package httpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -131,6 +134,7 @@ type wordItem struct {
 	VerifyReason    string                          `json:"verifyReason,omitempty"`
 	ResearchStatus  string                          `json:"researchStatus,omitempty"`
 	ResearchResults []wordreview.ResearchSuggestion `json:"researchResults,omitempty"`
+	ReviewQuestion  *wordreview.Question            `json:"reviewQuestion,omitempty"`
 }
 
 func toWordItem(w wordreview.Word) wordItem {
@@ -138,7 +142,7 @@ func toWordItem(w wordreview.Word) wordItem {
 	if !w.LastReviewedAt.IsZero() {
 		lastReviewedAt = w.LastReviewedAt.Unix()
 	}
-	return wordItem{
+	item := wordItem{
 		ID:              w.ID,
 		Word:            wordreview.NormalizeWord(w.Word),
 		Meaning:         w.Meaning,
@@ -153,6 +157,14 @@ func toWordItem(w wordreview.Word) wordItem {
 		ResearchStatus:  w.ResearchStatus,
 		ResearchResults: w.ResearchResults,
 	}
+	// Never expose a legacy or partially written question. This is the read
+	// side of the rollout guard: while old and new replicas overlap, only a
+	// complete current-or-newer contract may reach the quiz UI.
+	if wordreview.QuestionReady(w) {
+		question := w.ReviewQuestion
+		item.ReviewQuestion = &question
+	}
+	return item
 }
 
 // wordSaveHandler adds one word/phrase/idiom the learner explicitly chose to
@@ -212,7 +224,12 @@ func wordSaveHandler(ident identity.Identifier, words wordreview.Store, pipe *pi
 // word-review page's list view and the menu badge's due count, so the
 // frontend doesn't need two round trips (see fetchWords in
 // apps/web/src/lib/wordReview.ts).
-func wordsListHandler(ident identity.Identifier, words wordreview.Store) http.HandlerFunc {
+func wordsListHandler(ident identity.Identifier, words wordreview.Store, pipe *pipeline.Pipeline, wordVerifyQueue *asyncjob.Queue) http.HandlerFunc {
+	// Redis provides cross-replica deduplication when configured. In the
+	// zero-setup no-Redis mode, keep one detached generator per word in this
+	// server process so the frontend's refresh polling cannot start another
+	// expensive LLM call every two seconds while the first is still running.
+	var inlineBackfills sync.Map
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)
 		if !ok {
@@ -228,6 +245,42 @@ func wordsListHandler(ident identity.Identifier, words wordreview.Store) http.Ha
 		if err != nil {
 			serverError(w, "words: due count "+userID, err)
 			return
+		}
+		// Existing rows predate persisted review questions and therefore carry
+		// version 0. Keep them out of DueCount/toWordItem, then lazily enqueue a
+		// durable regeneration the next time their owner opens this page. The
+		// versioned dedupe key in EnqueueWordVerifyJob coalesces refreshes and
+		// remains distinct from a legacy in-flight verification job.
+		if _, ok := words.(wordreview.QuestionStore); ok {
+			for _, tracked := range list {
+				if tracked.Status != wordreview.StatusVerified || wordreview.QuestionReady(tracked) {
+					continue
+				}
+				wordID := tracked.ID
+				if wordVerifyQueue == nil {
+					key := fmt.Sprintf("%s/%s:q%d", userID, wordID, wordreview.CurrentQuestionVersion)
+					if _, running := inlineBackfills.LoadOrStore(key, struct{}{}); running {
+						continue
+					}
+					go func() {
+						defer inlineBackfills.Delete(key)
+						if err := transport.RunWordVerifyInline(context.Background(), pipe, words, userID, wordID); err != nil {
+							log.Printf("words: review-question backfill %s/%s: %v", userID, wordID, err)
+						}
+					}()
+					continue
+				}
+				asyncjob.EnqueueOrRunInline(wordVerifyQueue, r.Context(),
+					"words: enqueue review-question backfill "+userID+"/"+wordID,
+					func(ctx context.Context) error {
+						return transport.EnqueueWordVerifyJob(ctx, wordVerifyQueue, pipe, words, userID, wordID)
+					},
+					"words: review-question backfill "+userID+"/"+wordID,
+					func(ctx context.Context) error {
+						return transport.RunWordVerifyInline(ctx, pipe, words, userID, wordID)
+					},
+				)
+			}
 		}
 		out := make([]wordItem, len(list))
 		for i, word := range list {
@@ -252,13 +305,24 @@ func wordReviewHandler(ident identity.Identifier, words wordreview.Store) http.H
 			return
 		}
 		var body struct {
-			Correct bool `json:"correct"`
-			Repeat  bool `json:"repeat"`
+			Correct         bool `json:"correct"`
+			Repeat          bool `json:"repeat"`
+			QuestionVersion int  `json:"questionVersion"`
 		}
 		if !decodeJSON(w, r, &body) {
 			return
 		}
-		updated, err := words.Review(r.Context(), userID, r.PathValue("id"), body.Correct, body.Repeat, time.Now())
+		var updated wordreview.Word
+		var err error
+		if versioned, ok := words.(wordreview.VersionedReviewer); ok {
+			updated, err = versioned.ReviewVersioned(r.Context(), userID, r.PathValue("id"), body.QuestionVersion, body.Correct, body.Repeat, time.Now())
+		} else {
+			updated, err = words.Review(r.Context(), userID, r.PathValue("id"), body.Correct, body.Repeat, time.Now())
+		}
+		if errors.Is(err, wordreview.ErrQuestionVersion) {
+			http.Error(w, "review question is stale", http.StatusConflict)
+			return
+		}
 		if err != nil {
 			serverError(w, "words: review "+userID, err)
 			return

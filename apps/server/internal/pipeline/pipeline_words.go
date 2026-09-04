@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"unicode"
 
 	"buddy/server/internal/llm"
 	"buddy/server/internal/protocol"
+	"buddy/server/internal/wordreview"
 )
 
 // SuggestWords asks the chat model for candidate English words/phrases
@@ -56,6 +58,77 @@ Rules:
 - "meaning" MUST be written in %[1]s.
 - "example" MUST be a natural English sentence that uses "word".
 - If the description is too vague to suggest anything meaningful, return an empty "suggestions" array rather than guessing wildly.`, native)
+}
+
+// GenerateWordReviewQuestion turns one verified dictionary entry into the
+// exact recall question shown by WordReview. The answer is intentionally the
+// surface form required by the sentence, not necessarily the stored base
+// Word: learners should supply "organized" when the sentence requires past
+// tense, rather than type "organize" into a partially hidden "___d".
+//
+// Questions are versioned in application code rather than trusted to the
+// model. The caller persists this value with the prompt and answer so legacy
+// questions can be regenerated and stale workers can be rejected atomically.
+func (p *Pipeline) GenerateWordReviewQuestion(ctx context.Context, word, meaning, example string) (wordreview.Question, error) {
+	if p.LLM == nil {
+		return wordreview.Question{}, fmt.Errorf("word review question: no chat model configured")
+	}
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: wordReviewQuestionSystemPrompt(p.FeedbackLang)},
+		{Role: llm.RoleUser, Content: fmt.Sprintf("dictionary word: %s\nmeaning: %s\nexisting example: %s", word, meaning, example)},
+	}
+	raw, err := p.LLM.Complete(ctx, p.ChatModel, msgs, true)
+	if err != nil {
+		return wordreview.Question{}, err
+	}
+	parsed, err := parseJSON[struct {
+		Prompt string `json:"prompt"`
+		Answer string `json:"answer"`
+	}](raw, "word review question")
+	if err != nil {
+		return wordreview.Question{}, err
+	}
+	prompt := strings.TrimSpace(parsed.Prompt)
+	answer := strings.TrimSpace(parsed.Answer)
+	if strings.Count(prompt, "___") != 1 {
+		return wordreview.Question{}, fmt.Errorf("word review question: prompt must contain exactly one blank")
+	}
+	blankAt := strings.Index(prompt, "___")
+	before, after := []rune(prompt[:blankAt]), []rune(prompt[blankAt+len("___"):])
+	if (len(before) > 0 && isWordFormRune(before[len(before)-1])) || (len(after) > 0 && isWordFormRune(after[0])) {
+		return wordreview.Question{}, fmt.Errorf("word review question: blank must replace the complete grammatical form")
+	}
+	if answer == "" {
+		return wordreview.Question{}, fmt.Errorf("word review question: answer is empty")
+	}
+	if len([]rune(answer)) > 255 {
+		return wordreview.Question{}, fmt.Errorf("word review question: answer exceeds 255 characters")
+	}
+	return wordreview.Question{Version: wordreview.CurrentQuestionVersion, Prompt: prompt, Answer: answer}, nil
+}
+
+func isWordFormRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '\'' || r == '’' || r == '-'
+}
+
+func wordReviewQuestionSystemPrompt(lang string) string {
+	native := languageName(lang)
+	return fmt.Sprintf(`You create one fill-in-the-blank recall question for a %[1]s-speaking
+English learner from a verified vocabulary entry.
+Return STRICT JSON only, no prose, in exactly this shape:
+{"prompt":"<one natural English sentence with exactly one ___ blank>","answer":"<the exact text that replaces the blank>"}
+Rules:
+- Test the supplied dictionary word/phrase in the supplied meaning.
+- The sentence must make the required grammatical form clear from context.
+- "answer" MUST use the complete grammatical form required by the sentence,
+  including tense, aspect, subject agreement, number, or pronoun changes. It
+  does NOT have to equal the dictionary form. For example, use "organized"
+  rather than "organize" when the sentence is in the past.
+- Replace the entire answer with "___". Never leave an inflectional suffix
+  visible outside the blank (wrong: "___d" for "organized").
+- The completed sentence must be natural and unambiguous. You may rewrite the
+  existing example when it does not satisfy these rules.
+- Keep both fields in English.`, native)
 }
 
 // DefineWord is the common word-search entry point. It first uses the fast

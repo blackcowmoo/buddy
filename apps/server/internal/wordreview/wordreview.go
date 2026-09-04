@@ -26,9 +26,12 @@ package wordreview
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 )
+
+var ErrQuestionVersion = errors.New("wordreview: stale question version")
 
 // NormalizeWord makes vocabulary labels consistent without changing example
 // sentences. English words and phrases are lowercase by convention; the
@@ -135,6 +138,35 @@ const (
 	StatusRejected = "rejected"
 )
 
+// CurrentQuestionVersion identifies the word-review question contract used
+// by the current server and frontend. Version 0 is reserved for legacy rows
+// that only have Word/Meaning/Example and therefore cannot prove which full
+// grammatical form belongs in the blank. Bump this whenever the generation
+// prompt or persisted question shape changes in a way that requires old
+// questions to be regenerated.
+const CurrentQuestionVersion = 1
+
+// Question is the persisted recall question for one vocabulary entry. Answer
+// is deliberately separate from Word: Word is the dictionary form shown in
+// the study list ("organize"), while Answer is the exact surface form Prompt
+// requires ("organized"). Keeping Version on every question lets readers
+// ignore stale content during a rolling deployment and lets a newer worker
+// prevent an older generation from overwriting it.
+type Question struct {
+	Version int    `json:"version"`
+	Prompt  string `json:"prompt"` // one natural English sentence containing exactly one "___"
+	Answer  string `json:"answer"` // the complete grammatical form that replaces "___"
+}
+
+// QuestionReady reports whether w has a complete question produced under the
+// current-or-newer contract. Accepting a future version keeps an older replica
+// from hiding a compatible question already written by a newer replica.
+func QuestionReady(w Word) bool {
+	return w.ReviewQuestion.Version >= CurrentQuestionVersion &&
+		strings.Count(w.ReviewQuestion.Prompt, "___") == 1 &&
+		strings.TrimSpace(w.ReviewQuestion.Answer) != ""
+}
+
 // Word is one word/phrase/idiom the learner chose to study, plus its review
 // schedule.
 type Word struct {
@@ -161,6 +193,7 @@ type Word struct {
 	VerifyReason    string
 	ResearchStatus  string
 	ResearchResults []ResearchSuggestion
+	ReviewQuestion  Question
 }
 
 type ResearchSuggestion struct {
@@ -213,8 +246,9 @@ type Store interface {
 	// one response rather than requiring a second call.
 	List(ctx context.Context, userID string) ([]Word, error)
 	// DueCount is how many of userID's StatusVerified words have
-	// nextReviewAt in the past — cheap enough to call on every app load for
-	// the menu badge. Pending/rejected words are never due.
+	// nextReviewAt in the past and a current versioned review question — cheap
+	// enough to call on every app load for the menu badge. Pending/rejected or
+	// legacy-question words are never due.
 	DueCount(ctx context.Context, userID string, now time.Time) (int, error)
 	// MarkVerified transitions a StatusPending word to StatusVerified once
 	// pipeline.Pipeline.VerifyWord's model-consensus check passes it,
@@ -243,6 +277,22 @@ type Store interface {
 
 type OriginalSaver interface {
 	SaveOriginal(ctx context.Context, userID, word, meaning, example, originalWord string) (Word, error)
+}
+
+// QuestionStore is optional so lightweight Store implementations used by
+// callers and tests do not all need to persist generated questions. The MySQL
+// implementation uses a version-conditional UPDATE: a late old deployment's
+// result is ignored once a newer question exists.
+type QuestionStore interface {
+	SaveQuestion(ctx context.Context, userID, id string, question Question) (word Word, saved bool, err error)
+}
+
+// VersionedReviewer records an answer only when it belongs to the exact
+// persisted question version the learner saw. The HTTP layer uses this when
+// available so a cached old frontend cannot submit an obsolete question to a
+// newer server during a rolling deployment.
+type VersionedReviewer interface {
+	ReviewVersioned(ctx context.Context, userID, id string, questionVersion int, correct, repeat bool, now time.Time) (Word, error)
 }
 
 // AnswerCache stores the result of an expensive synonym check. A true result

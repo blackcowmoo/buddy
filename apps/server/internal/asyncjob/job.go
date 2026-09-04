@@ -82,7 +82,8 @@ const (
 	// slow or failed summary never delays or blocks the quiz.
 	KindStudyQuiz Kind = "study-quiz"
 	// KindWordVerify fact-checks one word/phrase a learner just chose to
-	// study (payload: {UserID, WordID} — see transport.EnqueueWordVerifyJob),
+	// study (payload: {UserID, WordID, QuestionVersion} — see
+	// transport.EnqueueWordVerifyJob),
 	// enqueued right after httpserver.wordSaveHandler saves it as
 	// wordreview.StatusPending. Queued rather than run inline in that
 	// request for the same reason as KindStudySummary: pipeline.VerifyWord
@@ -134,8 +135,8 @@ const (
 	// KindWordDefine generates and caches the meaning of a word tapped in an
 	// article. The result is stored separately from the queue so a learner can
 	// leave the page and retrieve it when they return.
-	KindWordDefine Kind = "word-define"
-	KindWordResearch Kind = "word-research"
+	KindWordDefine    Kind = "word-define"
+	KindWordResearch  Kind = "word-research"
 	KindWritingPrompt Kind = "writing-prompt"
 )
 

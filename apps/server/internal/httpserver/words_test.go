@@ -274,7 +274,7 @@ func (f *fakeWordStore) DueCount(ctx context.Context, userID string, now time.Ti
 	}
 	n := 0
 	for _, w := range f.byUser[userID] {
-		if w.Status == wordreview.StatusVerified && w.ResearchStatus == wordreview.ResearchConfirmed && !w.NextReviewAt.After(now) {
+		if w.Status == wordreview.StatusVerified && w.ResearchStatus == wordreview.ResearchConfirmed && wordreview.QuestionReady(w) && !w.NextReviewAt.After(now) {
 			n++
 		}
 	}
@@ -546,12 +546,12 @@ func TestWordsListReturnsOwnWordsAndDueCount(t *testing.T) {
 	now := time.Now()
 	store := &fakeWordStore{byUser: map[string][]wordreview.Word{
 		"alex": {
-			{ID: "w1", UserID: "alex", Word: "ecstatic", Status: wordreview.StatusVerified, ResearchStatus: wordreview.ResearchConfirmed, NextReviewAt: now.Add(-time.Hour)}, // due
-			{ID: "w2", UserID: "alex", Word: "elated", Status: wordreview.StatusVerified, NextReviewAt: now.Add(48 * time.Hour)},                                             // not due yet
+			{ID: "w1", UserID: "alex", Word: "ecstatic", Status: wordreview.StatusVerified, ResearchStatus: wordreview.ResearchConfirmed, NextReviewAt: now.Add(-time.Hour), ReviewQuestion: wordreview.Question{Version: wordreview.CurrentQuestionVersion, Prompt: "She was ___.", Answer: "ecstatic"}}, // due
+			{ID: "w2", UserID: "alex", Word: "elated", Status: wordreview.StatusVerified, NextReviewAt: now.Add(48 * time.Hour)},                                                                                                                                                                          // not due yet
 		},
 		"sam": {{ID: "w4", UserID: "sam", Word: "other", Status: wordreview.StatusVerified, NextReviewAt: now.Add(-time.Hour)}},
 	}}
-	h := wordsListHandler(fakeIdentifier{id: "alex", ok: true}, store)
+	h := wordsListHandler(fakeIdentifier{id: "alex", ok: true}, store, &pipeline.Pipeline{}, nil)
 
 	req := httptest.NewRequest("GET", "/api/words", nil)
 	rec := httptest.NewRecorder()
@@ -587,7 +587,7 @@ func TestWordsListDueCountExcludesPendingAndRejected(t *testing.T) {
 			{ID: "w2", UserID: "alex", Word: "xyzzy", Status: wordreview.StatusRejected, NextReviewAt: now.Add(-time.Hour), VerifyReason: "not a real word"},
 		},
 	}}
-	h := wordsListHandler(fakeIdentifier{id: "alex", ok: true}, store)
+	h := wordsListHandler(fakeIdentifier{id: "alex", ok: true}, store, &pipeline.Pipeline{}, nil)
 
 	req := httptest.NewRequest("GET", "/api/words", nil)
 	rec := httptest.NewRecorder()
@@ -605,10 +605,68 @@ func TestWordsListDueCountExcludesPendingAndRejected(t *testing.T) {
 }
 
 func TestWordsListUnauthorizedWhenIdentifyFails(t *testing.T) {
-	h := wordsListHandler(fakeIdentifier{ok: false}, &fakeWordStore{})
+	h := wordsListHandler(fakeIdentifier{ok: false}, &fakeWordStore{}, &pipeline.Pipeline{}, nil)
 
 	req := httptest.NewRequest("GET", "/api/words", nil)
 	assertUnauthorized(t, h, req)
+}
+
+type questionBackfillStore struct{ *fakeWordStore }
+
+func (s *questionBackfillStore) SaveQuestion(ctx context.Context, userID, id string, question wordreview.Question) (wordreview.Word, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, word := range s.byUser[userID] {
+		if word.ID != id {
+			continue
+		}
+		if word.ReviewQuestion.Version > question.Version ||
+			(word.ReviewQuestion.Version == question.Version && word.ReviewQuestion.Prompt != "" && word.ReviewQuestion.Answer != "") {
+			return word, false, nil
+		}
+		word.ReviewQuestion = question
+		s.byUser[userID][i] = word
+		return word, true, nil
+	}
+	return wordreview.Word{}, false, nil
+}
+
+func TestWordsListHidesLegacyQuestionAndRegeneratesItInBackground(t *testing.T) {
+	now := time.Now()
+	base := &fakeWordStore{byUser: map[string][]wordreview.Word{
+		"alex": {{
+			ID: "w-old", UserID: "alex", Word: "organize", Meaning: "정리하다",
+			Example: "They organized the files.", Status: wordreview.StatusVerified,
+			ResearchStatus: wordreview.ResearchConfirmed, NextReviewAt: now.Add(-time.Hour),
+		}},
+	}}
+	words := &questionBackfillStore{fakeWordStore: base}
+	pipe := &pipeline.Pipeline{
+		LLM: &fakeWordSuggestLLM{complete: func([]llm.Message) (string, error) {
+			return `{"prompt":"They ___ the files yesterday.","answer":"organized"}`, nil
+		}},
+		ChatModel: "m",
+	}
+	h := wordsListHandler(fakeIdentifier{id: "alex", ok: true}, words, pipe, nil)
+	req := httptest.NewRequest("GET", "/api/words", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	requireStatus(t, rec, http.StatusOK)
+	if strings.Contains(rec.Body.String(), "reviewQuestion") {
+		t.Fatalf("legacy question leaked in first response: %s", rec.Body.String())
+	}
+	waitForCondition(t, 2*time.Second, func() bool {
+		base.mu.Lock()
+		defer base.mu.Unlock()
+		return wordreview.QuestionReady(base.byUser["alex"][0])
+	})
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/words", nil))
+	if !strings.Contains(rec.Body.String(), `"answer":"organized"`) || !strings.Contains(rec.Body.String(), `"version":1`) {
+		t.Fatalf("regenerated current question missing from response: %s", rec.Body.String())
+	}
 }
 
 func TestWordReviewUpdatesAndReturnsWord(t *testing.T) {
@@ -636,6 +694,41 @@ func TestWordReviewUpdatesAndReturnsWord(t *testing.T) {
 	}
 	if out.LastReviewedAt == 0 {
 		t.Fatal("lastReviewedAt = 0, want the review timestamp")
+	}
+}
+
+type versionedReviewStore struct{ *fakeWordStore }
+
+func (s *versionedReviewStore) ReviewVersioned(ctx context.Context, userID, id string, questionVersion int, correct, repeat bool, now time.Time) (wordreview.Word, error) {
+	word, err := s.Get(ctx, userID, id)
+	if err != nil || word.ID == "" {
+		return word, err
+	}
+	if !wordreview.QuestionReady(word) || word.ReviewQuestion.Version != questionVersion {
+		return wordreview.Word{}, wordreview.ErrQuestionVersion
+	}
+	return s.Review(ctx, userID, id, correct, repeat, now)
+}
+
+func TestWordReviewRejectsSubmissionFromStaleQuestionVersion(t *testing.T) {
+	base := &fakeWordStore{byUser: map[string][]wordreview.Word{
+		"alex": {{
+			ID: "w1", UserID: "alex", Word: "organize", Status: wordreview.StatusVerified,
+			ResearchStatus: wordreview.ResearchConfirmed,
+			ReviewQuestion: wordreview.Question{Version: wordreview.CurrentQuestionVersion, Prompt: "They ___ it yesterday.", Answer: "organized"},
+		}},
+	}}
+	h := wordReviewHandler(fakeIdentifier{id: "alex", ok: true}, &versionedReviewStore{fakeWordStore: base})
+	req := httptest.NewRequest("POST", "/api/words/w1/review", strings.NewReader(`{"correct":true,"questionVersion":0}`))
+	req.SetPathValue("id", "w1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	requireStatus(t, rec, http.StatusConflict)
+	base.mu.Lock()
+	defer base.mu.Unlock()
+	if base.byUser["alex"][0].ReviewCount != 0 {
+		t.Fatalf("ReviewCount = %d, want stale submission ignored", base.byUser["alex"][0].ReviewCount)
 	}
 }
 
