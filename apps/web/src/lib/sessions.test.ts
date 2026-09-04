@@ -23,14 +23,14 @@ describe("fetchSessions", () => {
     await expect(fetchSessions()).resolves.toEqual(sessions);
   });
 
-  it("returns [] on a non-ok response", async () => {
+  it("returns null on a non-ok response so the UI can distinguish failure from an empty list", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
-    await expect(fetchSessions()).resolves.toEqual([]);
+    await expect(fetchSessions()).resolves.toBeNull();
   });
 
-  it("returns [] when fetch rejects", async () => {
+  it("returns null when fetch rejects", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
-    await expect(fetchSessions()).resolves.toEqual([]);
+    await expect(fetchSessions()).resolves.toBeNull();
   });
 });
 

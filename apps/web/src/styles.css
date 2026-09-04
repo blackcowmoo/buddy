@@ -430,7 +430,13 @@ body {
    muted convention as .session-item .time and .recording-sub. */
 .article-meta { font-weight: 600; line-height: 1.4; }
 .article-date { font-size: 12px; color: var(--muted); margin-top: -4px; }
-.article-summary { line-height: 1.7; overflow: visible; }
+.article-summary {
+  overflow: visible;
+  font-size: clamp(17px, 4.7vw, 20px);
+  line-height: 1.78;
+  letter-spacing: -0.018em;
+  text-wrap: pretty;
+}
 .article-language-label {
   margin-top: 1rem;
   color: var(--muted, #777);
@@ -451,15 +457,43 @@ body {
    button, since nearly the whole paragraph is one. */
 .article-word {
   display: inline;
+  margin: 0;
   min-height: 0;
-  padding: 0 1px;
-  border-radius: 4px;
+  padding: 0 0.04em;
+  border: 0;
+  border-radius: 0.28em;
   font: inherit;
   font-weight: inherit;
+  letter-spacing: inherit;
+  line-height: inherit;
+  vertical-align: baseline;
   color: inherit;
   background: transparent;
+  box-shadow: none;
+  filter: none;
+  transform: none;
+  -webkit-appearance: none;
+  appearance: none;
+  transition: color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
 }
-.article-word:hover, .article-word:focus-visible { background: var(--panel-2); }
+.article-word:hover:not(:disabled),
+.article-word:focus-visible {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  box-shadow: none;
+  filter: none;
+  transform: none;
+}
+.article-word:focus-visible { box-shadow: 0 0 0 2px var(--accent-border); }
+.article-word:active:not(:disabled) {
+  filter: none;
+  transform: none;
+}
+.article-word.selected {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  box-shadow: inset 0 -1px 0 var(--accent-border);
+}
 .article-word-anchor {
   position: relative;
   display: inline-block;
@@ -635,6 +669,7 @@ body {
 .dot.open { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 14%, transparent); }
 .dot.connecting { background: var(--warn); }
 .dot.closed, .dot.error { background: var(--err); }
+.dot.ended { background: var(--muted); box-shadow: 0 0 0 3px var(--border); }
 
 button {
   font: inherit;
@@ -728,6 +763,27 @@ a.icon-btn.ghost {
 }
 .new-chat:not(.ghost) { box-shadow: 0 12px 28px var(--accent-shadow); }
 .quick-chat { background: var(--accent-soft); border-color: var(--accent-border); color: var(--text); }
+.list-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  box-shadow: var(--shadow-xs);
+}
+.list-notice.error { border-color: color-mix(in srgb, var(--err) 45%, var(--border)); }
+.list-notice button {
+  flex-shrink: 0;
+  min-height: 36px;
+  padding: 7px 11px;
+  font-size: 12px;
+}
+.list-loading { margin: 0; }
 .session-list ul { list-style: none; margin: 2px 0 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
 .session-row { display: flex; align-items: center; gap: 8px; }
 .session-item {
@@ -801,58 +857,130 @@ a.icon-btn.ghost {
   gap: 16px;
   background: radial-gradient(circle at 50% -12%, var(--accent-soft), transparent 32%);
 }
+/* A one-pixel end marker for App.tsx's IntersectionObserver. It participates
+   in normal transcript flow without adding visible space. */
+.latest-message-anchor { flex: 0 0 1px; block-size: 1px; }
+.connection-notice {
+  margin: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: center;
+}
+.connection-notice.error {
+  border-color: color-mix(in srgb, var(--err) 42%, var(--border));
+  color: var(--text);
+  background: color-mix(in srgb, var(--err) 9%, var(--panel));
+}
+
+/* When the transcript is intentionally left at an older turn, keep a
+   thumb-reachable route back to live content. These sit over the scroll
+   surface (not inside it), so loading older rows cannot move them away. */
+.scroll-to-latest {
+  position: absolute;
+  z-index: 24;
+  left: 50%;
+  bottom: calc(96px + var(--sab));
+  translate: -50% 0;
+  min-height: 38px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--accent-border);
+  box-shadow: var(--shadow-lg);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* Live failures need to be visible even when the transcript itself is long
+   and scrolled. The notice remains until dismissed or a successful retry. */
+.chat-error {
+  position: absolute;
+  z-index: 26;
+  left: var(--layout-inline-padding);
+  right: var(--layout-inline-padding);
+  bottom: calc(96px + var(--sab));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 10px 10px 13px;
+  border: 1px solid color-mix(in srgb, var(--err) 52%, var(--border));
+  border-radius: var(--radius);
+  background: var(--overlay);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+  box-shadow: var(--shadow-lg);
+  -webkit-backdrop-filter: blur(20px) saturate(1.15);
+  backdrop-filter: blur(20px) saturate(1.15);
+}
+.chat-error .icon-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  font-size: 13px;
+}
 .article-quiz-page { justify-content: flex-start; }
 
 .writing-page { justify-content: flex-start; }
-.writing-list-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  width: 100%;
-  text-align: left;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 14px 16px;
-  box-shadow: var(--shadow-xs);
-}
-.writing-list-row { padding: 0; }
-.writing-list-open {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 14px;
-  min-height: 52px;
-  text-align: left;
-  background: transparent;
-  color: var(--text);
-}
-.writing-delete { flex-shrink: 0; margin-right: 6px; }
-.writing-list-row:hover, .writing-list-row:focus-visible { border-color: var(--accent-border); box-shadow: var(--shadow-sm); }
-.writing-list-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.writing-list-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; color: var(--muted); font-size: 12px; }
-.writing-card { width: min(680px, calc(100% - 32px)); margin: 48px auto; padding: 28px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); }
+.writing-list-meta { display: inline-flex; align-items: center; gap: 8px; }
 .writing-detail-card {
-  margin-top: 0;
   /* Gives the word-search overlay a stable, centered reference frame on the
      writing page instead of the small search button. */
   position: relative;
+  gap: 16px;
 }
-.writing-card h2 { margin: 4px 0 22px; }
-.eyebrow { color: var(--muted); font-size: 12px; letter-spacing: .12em; }
-.writing-prompt { font-size: 22px; line-height: 1.6; padding: 20px; background: var(--accent-soft); border: 1px solid var(--accent-border); border-radius: var(--radius); }
-.writing-card form { display: flex; flex-direction: column; gap: 12px; }
-.writing-answer-tools { position: relative; display: flex; align-items: center; gap: 8px; min-height: 44px; }
-.writing-answer-tools .hint { font-size: 13px; }
-.writing-card textarea { width: 100%; box-sizing: border-box; resize: vertical; padding: 14px; border: 1px solid var(--border-2); border-radius: var(--radius-sm); background: var(--panel-2); color: var(--text); font: inherit; }
-.writing-feedback { margin-top: 26px; padding-top: 22px; border-top: 1px solid var(--border); }
-.writing-corrected { font-size: 18px; padding: 14px; background: var(--accent-soft); border-radius: var(--radius); }
-.writing-issue { margin: 12px 0; padding: 12px; border-left: 3px solid var(--accent); }
-.writing-issue p { margin: 5px 0 0; color: var(--muted); }
+.writing-detail-header { display: flex; flex-direction: column; gap: 2px; }
+.writing-detail-card h2 { margin: 0; font-size: 20px; letter-spacing: -0.025em; }
+.eyebrow { margin: 0; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .12em; }
+.writing-prompt {
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent-soft) 68%, var(--panel-2));
+  font-size: clamp(18px, 5vw, 21px);
+  font-weight: 620;
+  line-height: 1.65;
+  letter-spacing: -0.025em;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.writing-answer-form { display: flex; flex-direction: column; gap: 10px; }
+.writing-answer-label { color: var(--muted); font-size: 13px; font-weight: 700; }
+.writing-answer-tools { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 34px; }
+.writing-answer-tools .hint { margin: 0; font-size: 13px; }
+.writing-detail-card textarea {
+  width: 100%;
+  min-height: 124px;
+  resize: vertical;
+  padding: 14px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1.6;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.018), var(--shadow-xs);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.writing-detail-card textarea::placeholder { color: var(--muted); opacity: 0.72; }
+.writing-detail-card textarea:focus { border-color: var(--accent-border); }
+.writing-answer-form > button { width: 100%; min-height: 48px; margin-top: 2px; }
+.writing-feedback { display: flex; flex-direction: column; gap: 12px; margin-top: 4px; padding-top: 18px; border-top: 1px solid var(--border); }
+.writing-feedback h3 { margin: 0; font-size: 18px; letter-spacing: -0.02em; }
+.writing-corrected { margin: 0; padding: 14px; border: 1px solid var(--accent-border); border-radius: var(--radius); background: var(--accent-soft); font-size: 18px; line-height: 1.6; }
+.writing-issue { margin: 0; padding: 12px 14px; border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: var(--radius-sm); background: var(--panel-2); }
+.writing-issue p { margin: 5px 0 0; color: var(--muted); line-height: 1.55; }
 .hint { color: var(--muted); line-height: 1.65; font-size: 14px; }
 .session-list > .hint,
 .convo > .hint:not(.transcribing) {
@@ -1084,6 +1212,19 @@ a.icon-btn.ghost {
   align-items: flex-end;
 }
 .composer form { display: flex; gap: 8px; flex: 1; min-width: 0; align-items: flex-end; }
+.composer-field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.voice-draft-note {
+  padding-left: 4px;
+  color: var(--accent-strong);
+  font-size: 11px;
+  line-height: 1.35;
+}
 .composer textarea {
   flex: 1;
   min-width: 0;
@@ -1107,6 +1248,7 @@ a.icon-btn.ghost {
   appearance: none;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.018), var(--shadow-xs);
 }
+.composer-field textarea { width: 100%; flex: none; }
 .composer textarea::placeholder { color: var(--muted); opacity: 0.72; }
 .composer textarea:focus { border-color: var(--accent-border); }
 /* Scoped to the send-btn class (not a bare button[type="submit"] selector)

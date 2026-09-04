@@ -58,11 +58,15 @@ describe("Writing page list/detail flow", () => {
     const user = userEvent.setup();
     render(<Writing />);
 
-    expect(await screen.findByRole("button", { name: /어제 영화를 봤어요/ })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /어제 영화를 봤어요/ }));
+    const promptButton = await screen.findByRole("button", { name: /어제 영화를 봤어요/ });
+    expect(promptButton).toHaveClass("session-item");
+    expect(promptButton.closest(".session-row")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "작문 문제 삭제" })).toHaveClass("session-delete");
+    await user.click(promptButton);
 
-    expect(await screen.findByRole("heading", { name: "오늘의 한 문장" })).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("영어로 한 문장을 써보세요")).toBeInTheDocument();
+    const heading = await screen.findByRole("heading", { name: "오늘의 한 문장" });
+    expect(heading.closest("section")).toHaveClass("quiz-panel", "writing-detail-card");
+    expect(screen.getByLabelText("영어 답안")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "← 목록으로" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /새 문제 만들기/ })).not.toBeInTheDocument();
   });
@@ -98,6 +102,9 @@ describe("Writing page list/detail flow", () => {
 
     await user.click(await screen.findByRole("button", { name: /어제 영화를 봤어요/ }));
     await user.click(screen.getByRole("button", { name: "모르는 단어 찾기" }));
+    const searchForm = screen.getByRole("button", { name: "찾기" }).closest("form");
+    expect(searchForm).toBeInTheDocument();
+    expect(searchForm?.parentElement?.closest("form")).toBeNull();
     await user.type(screen.getByPlaceholderText("예: 화가 나서 참을 수 없는 느낌"), "보다의 과거형");
     await user.click(screen.getByRole("button", { name: "찾기" }));
 

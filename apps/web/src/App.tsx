@@ -11,7 +11,6 @@ import { requestAmbientAudioSession } from "./lib/audioSession";
 import { prPath } from "./lib/rootPath";
 import { useDismiss } from "./hooks/useDismiss";
 import { usePollScaffold } from "./hooks/usePollScaffold";
-import { confirmThenDelete } from "./lib/confirmDelete";
 import {
   currentRoomHistoryState,
   goBack,
@@ -73,6 +72,13 @@ const HISTORY_PAGE_SIZE = 30;
 // messages, respectively.
 const SCROLL_EDGE_THRESHOLD = 80;
 
+const CONNECTION_LABELS: Record<Status, string> = {
+  connecting: "대화에 연결하는 중",
+  open: "대화에 연결됨",
+  closed: "연결이 끊김 — 다시 연결하는 중",
+  error: "연결 오류 — 다시 연결하는 중",
+};
+
 export function App() {
   // The home screen lands on the room list by default; a refresh while a
   // room is open restores that room instead, from the URL hash (see the
@@ -80,6 +86,16 @@ export function App() {
   // reconnected without re-hydrating the transcript first (see enterChat).
   const [view, setView] = useState<View>("list");
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  // Loading and failure are deliberately separate from `sessions`: an API
+  // outage must not masquerade as "you have no conversations", and a quiet
+  // background refresh failure should leave already-visible rooms intact.
+  const [sessionsLoading, setSessionsLoading] = useState(true);
+  const [sessionsLoadError, setSessionsLoadError] = useState(false);
+  // Errors from an individual list action (open/delete), shown inline with
+  // the list instead of failing silently while the row appears unchanged.
+  const [listActionError, setListActionError] = useState<string | null>(null);
+  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
+  const [openingSessionId, setOpeningSessionId] = useState<string | null>(null);
   // The open room's id, once known — null for a brand-new room until the
   // server mints one (see the "ready" case in onEvent below). Only needed so
   // CompactionInfo has something to fetch against; the WS client and history
@@ -239,6 +255,10 @@ export function App() {
   // True while a spoken utterance has been sent to the server but no
   // pending_transcript (or error) has come back for it yet.
   const [transcribing, setTranscribing] = useState(false);
+  // User-facing failures in the live conversation path (microphone, STT,
+  // TTS). These used to be console-only, which made a failed tap look like
+  // the app had simply ignored it.
+  const [chatError, setChatError] = useState<string | null>(null);
   const [autoReadAloud, setAutoReadAloud] = useState(() => loadAutoReadAloud());
   // onEvent's assistant_done case reads this — see activeSessionIdRef's doc
   // comment for why a stable useCallback needs a ref alongside the state.
@@ -280,6 +300,9 @@ export function App() {
   // package doc: no push notifications, just this in-app nudge on open).
   const [wordDueCount, setWordDueCount] = useState(0);
   const [loadingMoreHistory, setLoadingMoreHistory] = useState(false);
+  // Once the learner scrolls away from the latest turn, keep an explicit
+  // way back instead of making them drag through a long transcript.
+  const [showScrollToLatest, setShowScrollToLatest] = useState(false);
 
   const clientRef = useRef<BuddyClient | null>(null);
   const recorderRef = useRef<PCMRecorder | null>(null);
@@ -297,6 +320,12 @@ export function App() {
   // down. Kept as a ref, not state: it's written on every scroll event and
   // must never itself trigger a render.
   const stickToBottomRef = useRef(true);
+  // A physical marker immediately after the newest transcript content. The
+  // scroll-distance calculation is the fast path, but iOS Safari can briefly
+  // report stale scroll dimensions while its browser chrome changes. Watching
+  // this marker makes the visible transcript end authoritative for dismissing
+  // the "latest message" toast.
+  const latestMessageAnchorRef = useRef<HTMLDivElement | null>(null);
   // Set just before loadOlderTurns prepends older turns to msgs, consumed
   // once by the scroll-position effect below to hold the visual scroll
   // position steady across the height added above (rather than the natural
@@ -316,6 +345,32 @@ export function App() {
   // what browser back/swipe-back would do, instead of pushing a redundant one.
   const hasPushedRoomEntryRef = useRef(false);
 
+  // Clears UI/media that only belongs to the room being left. In particular,
+  // an unconfirmed voice transcript must never be tagged as a voice message
+  // in the next room, and a microphone recording must not continue invisibly
+  // behind the room list.
+  const resetTransientChatState = useCallback(() => {
+    const recorder = recorderRef.current;
+    if (recorder?.isRecording) {
+      // stop() also releases the MediaStream tracks. Its recognized audio is
+      // intentionally discarded because the learner left the room.
+      void Promise.resolve(recorder.stop()).catch((err) => console.error("mic cleanup:", err));
+    }
+    setMic(false);
+    setTranscribing(false);
+    setVoiceDraft(false);
+    voiceDraftAutoTextRef.current = null;
+    setOpenGrammarIndex(null);
+    setChatError(null);
+    setShowScrollToLatest(false);
+
+    const audio = audioRef.current;
+    if (audio) {
+      audio.pause();
+      audio.removeAttribute("src");
+    }
+  }, []);
+
   // Points the shared <audio> element at url and plays it — generated and
   // cached server-side per (session, turn, role) (see lib/sessions.ts's
   // messageAudioURL), so this is just "src + play(), let the browser handle
@@ -330,9 +385,13 @@ export function App() {
     // Must run synchronously with play() — see requestAmbientAudioSession's
     // doc comment.
     requestAmbientAudioSession();
+    setChatError(null);
     el.playbackRate = rate;
     el.src = url;
-    el.play().catch((err) => console.error("tts:", err));
+    el.play().catch((err) => {
+      console.error("tts:", err);
+      setChatError("음성을 재생하지 못했어요. 잠시 후 다시 시도해주세요.");
+    });
   }, []);
 
   const onEvent = useCallback((e: ServerEvent) => {
@@ -375,6 +434,7 @@ export function App() {
         // draft themselves.
         const incoming = e.text ?? "";
         setTranscribing(false);
+        setChatError(null);
         // Captured synchronously, before the ref is updated below — setText's
         // updater runs later (deferred/batched), so it must not read the
         // ref's live value at that point, only what it was when this event
@@ -449,6 +509,11 @@ export function App() {
         setAwaitingReply(false);
         setTranscribing(false);
         console.error("server error:", e.text);
+        setChatError(
+          e.text?.startsWith("stt:")
+            ? "음성을 인식하지 못했어요. 다시 녹음하거나 직접 입력해주세요."
+            : "요청을 처리하지 못했어요. 잠시 후 다시 시도해주세요.",
+        );
         break;
     }
   }, [patchTurn]);
@@ -533,12 +598,22 @@ export function App() {
     setStyleSaveError(null);
   }, []);
 
-  const refreshSessions = useCallback(() => {
-    fetchSessions().then(setSessions);
+  const refreshSessions = useCallback(async () => {
+    setSessionsLoading(true);
+    setSessionsLoadError(false);
+    const next = await fetchSessions();
+    if (next === null) {
+      // Preserve any list already on screen during a failed background
+      // refresh; only the initial load has no rows to keep.
+      setSessionsLoadError(true);
+    } else {
+      setSessions(next);
+    }
+    setSessionsLoading(false);
   }, []);
 
   useEffect(() => {
-    refreshSessions();
+    void refreshSessions();
   }, [refreshSessions]);
 
   // Keeps the "정리 중" badge (see the room-list render below) honest while
@@ -553,7 +628,7 @@ export function App() {
   useEffect(() => {
     if (view !== "list") return;
     if (!sessions.some((s) => s.studySummaryStatus === "pending")) return;
-    const t = setTimeout(refreshSessions, 4000);
+    const t = setTimeout(() => void refreshSessions(), 4000);
     return () => clearTimeout(t);
   }, [view, sessions, refreshSessions]);
 
@@ -562,7 +637,16 @@ export function App() {
   // httpserver.sessionDeleteHandler), so this is the one action that clears
   // both the transcript and its audio.
   const handleDeleteSession = useCallback(async (id: string) => {
-    await confirmThenDelete("이 대화를 삭제할까요? 저장된 녹음도 함께 삭제됩니다.", deleteSession, id, setSessions);
+    if (!window.confirm("이 대화를 삭제할까요? 저장된 녹음도 함께 삭제됩니다.")) return;
+    setListActionError(null);
+    setDeletingSessionId(id);
+    const deleted = await deleteSession(id);
+    setDeletingSessionId(null);
+    if (deleted) {
+      setSessions((list) => list.filter((session) => session.id !== id));
+    } else {
+      setListActionError("대화를 삭제하지 못했어요. 연결을 확인한 뒤 다시 시도해주세요.");
+    }
   }, []);
 
   // Poll scaffolding for pollMissingFeedback/pollStudySummary/pollQuizStatus
@@ -745,9 +829,13 @@ export function App() {
   // it doesn't replay old chat bubbles.
   const enterChat = useCallback(
     async (sessionId?: string, opts?: { push?: boolean; quick?: boolean }) => {
+      resetTransientChatState();
       resetTurnState();
       resetEndedState();
       resetQuickState(!!opts?.quick);
+      setMsgs([]);
+      setListActionError(null);
+      setOpeningSessionId(sessionId ?? null);
       // A fresh room entry always starts stuck to the bottom (the most
       // recent turns, loaded below) with no older page pending — cleared
       // again if this turns out to be a brand-new room with nothing to page
@@ -784,6 +872,10 @@ export function App() {
           clientRef.current?.close(); // fetch failed (e.g. deleted elsewhere) — stay on the list
           replaceRoomState({ view: "list" });
           hasPushedRoomEntryRef.current = false;
+          setActiveSessionId(null);
+          setOpeningSessionId(null);
+          setListActionError("대화를 열지 못했어요. 연결을 확인한 뒤 다시 시도해주세요.");
+          setView("list");
           return;
         }
         hasMoreHistoryRef.current = detail.hasMore;
@@ -848,9 +940,18 @@ export function App() {
         setAwaitingReply(true);
       }
       setMenuOpen(false);
+      setOpeningSessionId(null);
       setView("chat");
     },
-    [resetTurnState, resetEndedState, resetQuickState, pollMissingFeedback, pollStudySummary, pollQuizStatus],
+    [
+      resetTransientChatState,
+      resetTurnState,
+      resetEndedState,
+      resetQuickState,
+      pollMissingFeedback,
+      pollStudySummary,
+      pollQuizStatus,
+    ],
   );
 
   // Fetches the page of turns older than whatever's currently loaded —
@@ -872,6 +973,7 @@ export function App() {
     setLoadingMoreHistory(false);
     if (!detail) {
       prependAdjustRef.current = null; // fetch failed — nothing to hold position for
+      setChatError("이전 대화를 불러오지 못했어요. 위로 스크롤하면 다시 시도할게요.");
       return;
     }
     hasMoreHistoryRef.current = detail.hasMore;
@@ -894,6 +996,7 @@ export function App() {
   const resetToListView = useCallback(() => {
     pollTokenRef.current = null;
     clientRef.current?.close();
+    resetTransientChatState();
     setMsgs([]);
     resetTurnState();
     resetEndedState();
@@ -901,11 +1004,13 @@ export function App() {
     setMenuOpen(false);
     setView("list");
     setActiveSessionId(null);
+    setOpeningSessionId(null);
     hasMoreHistoryRef.current = false;
     setLoadingMoreHistory(false);
+    stickToBottomRef.current = true;
     hasPushedRoomEntryRef.current = false;
-    refreshSessions();
-  }, [refreshSessions, resetTurnState, resetEndedState, resetQuickState]);
+    void refreshSessions();
+  }, [refreshSessions, resetTransientChatState, resetTurnState, resetEndedState, resetQuickState]);
 
   // Holds the .convo scroll position steady when new content is added:
   // pinned to the bottom for a fresh room entry or a live message arriving
@@ -921,7 +1026,10 @@ export function App() {
       prependAdjustRef.current = null;
       return;
     }
-    if (stickToBottomRef.current) el.scrollTop = el.scrollHeight;
+    if (stickToBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+      setShowScrollToLatest(false);
+    }
   }, [msgs]);
 
   // Tracks whether the learner is at/near the bottom (stickToBottomRef, so
@@ -931,11 +1039,43 @@ export function App() {
     const el = convoRef.current;
     if (!el) return;
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    stickToBottomRef.current = distanceFromBottom < SCROLL_EDGE_THRESHOLD;
+    const atLatest = distanceFromBottom < SCROLL_EDGE_THRESHOLD;
+    stickToBottomRef.current = atLatest;
+    setShowScrollToLatest(!atLatest);
     if (el.scrollTop < SCROLL_EDGE_THRESHOLD && hasMoreHistoryRef.current && !loadingMoreHistory) {
       void loadOlderTurns();
     }
   }, [loadingMoreHistory, loadOlderTurns]);
+
+  // On mobile Safari, dynamic browser controls can leave scrollHeight,
+  // scrollTop, and clientHeight temporarily out of sync even after the final
+  // row is visibly on screen. A bottom marker is measured against the actual
+  // scroll viewport, so it reliably clears a stale jump toast. The scroll
+  // handler above remains the fallback for browsers without this API.
+  useEffect(() => {
+    const root = convoRef.current;
+    const target = latestMessageAnchorRef.current;
+    if (!root || !target || typeof IntersectionObserver === "undefined") return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry?.isIntersecting) return;
+        stickToBottomRef.current = true;
+        setShowScrollToLatest(false);
+      },
+      { root, rootMargin: `0px 0px ${SCROLL_EDGE_THRESHOLD}px 0px` },
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [view]);
+
+  const scrollToLatest = useCallback(() => {
+    const el = convoRef.current;
+    if (!el) return;
+    stickToBottomRef.current = true;
+    el.scrollTop = el.scrollHeight;
+    setShowScrollToLatest(false);
+  }, []);
 
   const backToList = useCallback(() => {
     if (hasPushedRoomEntryRef.current) {
@@ -1109,27 +1249,38 @@ export function App() {
 
   const toggleMic = useCallback(async () => {
     const rec = recorderRef.current;
-    if (!rec) return;
+    if (!rec || transcribing) return;
     if (rec.isRecording) {
-      const pcm = await rec.stop();
-      setMic(false);
-      if (pcm.length > 0) {
-        clientRef.current?.sendAudio(pcm);
-        // No reply is coming until the learner reviews and sends the
-        // resulting draft (see the "pending_transcript" case in onEvent) —
-        // just show that STT is working on it.
-        setTranscribing(true);
+      try {
+        const pcm = await rec.stop();
+        setMic(false);
+        if (pcm.length > 0) {
+          clientRef.current?.sendAudio(pcm);
+          // No reply is coming until the learner reviews and sends the
+          // resulting draft (see the "pending_transcript" case in onEvent) —
+          // just show that STT is working on it.
+          setChatError(null);
+          setTranscribing(true);
+        } else {
+          setChatError("녹음된 음성이 없어요. 마이크를 누르고 문장을 말해보세요.");
+        }
+      } catch (err) {
+        setMic(false);
+        console.error("mic:", err);
+        setChatError("녹음을 처리하지 못했어요. 다시 시도하거나 직접 입력해주세요.");
       }
     } else {
       if (voiceDraft) discardVoiceDraft(); // starting over discards the unsent draft
       try {
         await rec.start();
+        setChatError(null);
         setMic(true);
       } catch (err) {
         console.error("mic:", err);
+        setChatError("마이크를 사용할 수 없어요. 브라우저 권한을 확인하거나 직접 입력해주세요.");
       }
     }
-  }, [voiceDraft, discardVoiceDraft]);
+  }, [voiceDraft, transcribing, discardVoiceDraft]);
 
   // All user turns with feedback worth reviewing, in transcript order — feeds
   // FeedbackSummary. Covers both live turns (correction populated via the WS
@@ -1156,6 +1307,7 @@ export function App() {
     const t = text.trim();
     if (!t) return;
     clientRef.current?.sendText(t, voiceDraft ? "voice" : undefined);
+    setChatError(null);
     setAwaitingReply(true);
     setText("");
     if (activeSessionId) clearDraft(activeSessionId);
@@ -1176,6 +1328,10 @@ export function App() {
   // usual chat-app convention now that this is a multiline textarea.
   const onComposerKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      // Enter confirms an in-progress IME composition on Korean/Japanese
+      // keyboards; treating that same keydown as "send" loses the final
+      // syllable and submits before the learner intended.
+      if (e.nativeEvent.isComposing || e.keyCode === 229) return;
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         submitText();
@@ -1272,22 +1428,60 @@ export function App() {
         />
 
         <main className="session-list">
-          <button className="new-chat" onClick={() => void enterChat()}>
+          <button
+            className="new-chat"
+            onClick={() => void enterChat()}
+            disabled={openingSessionId !== null}
+          >
             + 새 대화
           </button>
           <button
             className="new-chat ghost quick-chat"
             onClick={() => void enterChat(undefined, { quick: true })}
+            disabled={openingSessionId !== null}
           >
             ✏️ 인스턴트 대화
           </button>
-          {sessions.length === 0 ? (
+
+          {sessionsLoadError && (
+            <div className="list-notice error" role="alert">
+              <span>대화 목록을 불러오지 못했어요.</span>
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => void refreshSessions()}
+                disabled={sessionsLoading}
+              >
+                {sessionsLoading ? "불러오는 중…" : "다시 시도"}
+              </button>
+            </div>
+          )}
+          {listActionError && (
+            <div className="list-notice error" role="alert">
+              <span>{listActionError}</span>
+              <button type="button" className="ghost" onClick={() => setListActionError(null)}>
+                닫기
+              </button>
+            </div>
+          )}
+          {sessionsLoading && sessions.length === 0 && !sessionsLoadError && (
+            <p className="hint list-loading" role="status">
+              <span className="spinning" aria-hidden="true">⏳</span> 대화 목록을 불러오는 중이에요…
+            </p>
+          )}
+          {!sessionsLoading && !sessionsLoadError && sessions.length === 0 && (
             <p className="hint">아직 대화 기록이 없어요. 새 대화를 시작해보세요.</p>
-          ) : (
+          )}
+          {sessions.length > 0 && (
             <ul>
               {sessions.map((s) => (
                 <li key={s.id} className="session-row">
-                  <button className="session-item" onClick={() => void enterChat(s.id)}>
+                  <button
+                    className="session-item"
+                    onClick={() => void enterChat(s.id)}
+                    disabled={openingSessionId !== null || deletingSessionId !== null}
+                    aria-busy={openingSessionId === s.id}
+                  >
                     {s.ended && (
                       <span className="ended-badge" title="종료된 대화 (읽기 전용)">
                         🔒
@@ -1304,16 +1498,21 @@ export function App() {
                       </span>
                     )}
                     <span className="title">{s.title}</span>
-                    <span className="time">{formatRelativeTime(s.updatedAt)}</span>
+                    <span className="time">
+                      {openingSessionId === s.id ? "불러오는 중…" : formatRelativeTime(s.updatedAt)}
+                    </span>
                   </button>
                   <button
                     type="button"
                     className="ghost icon-btn session-delete"
                     onClick={() => void handleDeleteSession(s.id)}
-                    aria-label="대화 삭제"
-                    title="대화 삭제"
+                    disabled={deletingSessionId !== null || openingSessionId !== null}
+                    aria-label={deletingSessionId === s.id ? "대화 삭제 중" : "대화 삭제"}
+                    title={deletingSessionId === s.id ? "삭제 중" : "대화 삭제"}
                   >
-                    🗑
+                    <span className={deletingSessionId === s.id ? "spinning" : undefined}>
+                      {deletingSessionId === s.id ? "⏳" : "🗑"}
+                    </span>
                   </button>
                 </li>
               ))}
@@ -1332,7 +1531,12 @@ export function App() {
             <button className="ghost icon-btn" onClick={backToList} aria-label="목록으로" title="목록으로">
               ←
             </button>
-            <span className={`dot ${status}`} title={status} />
+            <span
+              className={`dot ${ended ? "ended" : status}`}
+              role="status"
+              aria-label={ended ? "종료된 대화 — 읽기 전용" : CONNECTION_LABELS[status]}
+              title={ended ? "종료된 대화 — 읽기 전용" : CONNECTION_LABELS[status]}
+            />
             <h1>Buddy</h1>
           </>
         }
@@ -1367,10 +1571,23 @@ export function App() {
       <audio
         ref={audioRef}
         style={{ display: "none" }}
-        onError={() => console.error("tts: playback failed")}
+        onError={() => {
+          console.error("tts: playback failed");
+          setChatError("음성을 재생하지 못했어요. 잠시 후 다시 시도해주세요.");
+        }}
       />
 
       <main className="convo" ref={convoRef} onScroll={handleConvoScroll}>
+        {!ended && status !== "open" && (
+          <p
+            className={`connection-notice ${status === "connecting" ? "" : "error"}`}
+            role="status"
+          >
+            {status === "connecting"
+              ? "대화에 연결하는 중이에요. 지금 작성해도 연결되면 자동으로 전송돼요."
+              : "연결이 끊겼어요. 자동으로 다시 연결하고 있으며, 작성한 메시지는 연결 후 전송돼요."}
+          </p>
+        )}
         {loadingMoreHistory && (
           <p className="hint" role="status" aria-label="이전 대화 불러오는 중">
             <span className="spinning">⏳</span>
@@ -1383,10 +1600,9 @@ export function App() {
         )}
         {msgs.length === 0 && (
           <p className="hint">
-            Tap the <strong>🎙</strong> button, speak a sentence, then tap it
-            again to review what it heard — edit if needed, then hit{" "}
-            <strong>Send</strong>. Or just type below. Tap a message's{" "}
-            <strong>🔊</strong> to hear it read aloud.
+            <strong>🎙</strong>을 누르고 영어로 말한 뒤 다시 누르세요. 인식된 문장을 확인·수정하고
+            전송하면 됩니다. 아래에 직접 입력할 수도 있고, 메시지의 <strong>🔊</strong>을 누르면
+            발음을 들을 수 있어요.
           </p>
         )}
         {msgs.map((m, i) => {
@@ -1460,7 +1676,34 @@ export function App() {
             </div>
           </div>
         )}
+        <div ref={latestMessageAnchorRef} className="latest-message-anchor" aria-hidden="true" />
       </main>
+
+      {showScrollToLatest && !chatError && (
+        <button
+          type="button"
+          className="scroll-to-latest"
+          onClick={scrollToLatest}
+          aria-label="최신 메시지로 이동"
+        >
+          ↓ 최신 메시지
+        </button>
+      )}
+
+      {chatError && (
+        <div className="chat-error" role="alert">
+          <span>{chatError}</span>
+          <button
+            type="button"
+            className="ghost icon-btn"
+            onClick={() => setChatError(null)}
+            aria-label="오류 메시지 닫기"
+            title="닫기"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {ended ? (
         <footer className="composer composer-ended">
@@ -1486,9 +1729,10 @@ export function App() {
           <button
             className={`mic ${mic ? "on" : ""}`}
             onClick={toggleMic}
-            aria-label={mic ? "Stop recording" : "Push to talk"}
+            aria-label={transcribing ? "음성 인식 중" : mic ? "녹음 중지" : "음성으로 말하기"}
             aria-pressed={mic}
-            title="Push to talk"
+            title={transcribing ? "음성 인식 중" : mic ? "녹음 중지" : "음성으로 말하기"}
+            disabled={transcribing}
           >
             {mic ? "◼" : "🎙"}
           </button>
@@ -1498,23 +1742,32 @@ export function App() {
             </p>
           )}
           <form onSubmit={onComposerSubmit}>
-            <textarea
-              ref={textareaRef}
-              className={voiceDraft ? "voice-draft" : undefined}
-              value={text}
-              onChange={(e) => {
-                const v = e.target.value;
-                setText(v);
-                if (activeSessionId) saveDraft(activeSessionId, v);
-                if (voiceDraft && v === "") discardVoiceDraft(); // cleared by hand — treat as discarded
-              }}
-              onKeyDown={onComposerKeyDown}
-              placeholder="…or type in English"
-              enterKeyHint="send"
-              autoComplete="off"
-              autoCorrect="on"
-              rows={1}
-            />
+            <div className="composer-field">
+              {voiceDraft && (
+                <span id="voice-draft-note" className="voice-draft-note" role="status">
+                  음성 인식 결과예요. 확인한 뒤 보내주세요.
+                </span>
+              )}
+              <textarea
+                ref={textareaRef}
+                className={voiceDraft ? "voice-draft" : undefined}
+                value={text}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setText(v);
+                  if (activeSessionId) saveDraft(activeSessionId, v);
+                  if (voiceDraft && v === "") discardVoiceDraft(); // cleared by hand — treat as discarded
+                }}
+                onKeyDown={onComposerKeyDown}
+                placeholder="…or type in English"
+                aria-label="영어 메시지"
+                aria-describedby={voiceDraft ? "voice-draft-note" : undefined}
+                enterKeyHint="send"
+                autoComplete="off"
+                autoCorrect="on"
+                rows={1}
+              />
+            </div>
             {voiceDraft && (
               <button
                 type="button"
@@ -1526,7 +1779,13 @@ export function App() {
                 ✕
               </button>
             )}
-            <button type="submit" className="send-btn" aria-label="Send" title="Send">
+            <button
+              type="submit"
+              className="send-btn"
+              aria-label="메시지 보내기"
+              title="메시지 보내기"
+              disabled={!text.trim()}
+            >
               ➤
             </button>
           </form>

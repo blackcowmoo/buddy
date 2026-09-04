@@ -151,7 +151,28 @@ describe("BuddyClient", () => {
     lastSocket.open();
     const pcm = new Int16Array([1, 2, 3]);
     client.sendAudio(pcm);
-    expect(lastSocket.sent).toEqual([pcm.buffer]);
+    expect(Array.from(new Int16Array(lastSocket.sent[0] as ArrayBuffer))).toEqual([1, 2, 3]);
+  });
+
+  it("queues audio recorded during a reconnect instead of silently dropping it", () => {
+    const client = connectedClient();
+    const pcm = new Int16Array([4, 5, 6]);
+
+    client.sendAudio(pcm);
+    expect(lastSocket.sent).toEqual([]);
+
+    lastSocket.open();
+    expect(Array.from(new Int16Array(lastSocket.sent[0] as ArrayBuffer))).toEqual([4, 5, 6]);
+  });
+
+  it("sends only the samples in an Int16Array view, not its whole backing buffer", () => {
+    const client = connectedClient();
+    lastSocket.open();
+    const backing = new Int16Array([99, 7, 8, 99]);
+
+    client.sendAudio(backing.subarray(1, 3));
+
+    expect(Array.from(new Int16Array(lastSocket.sent[0] as ArrayBuffer))).toEqual([7, 8]);
   });
 
   it("close() tears down the socket", () => {

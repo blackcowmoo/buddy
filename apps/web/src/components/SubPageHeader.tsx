@@ -1,5 +1,5 @@
 // Shared top bar for every sub-page reached from the room list (Recordings,
-// WordReview, WordMatch, InstantSessions, ArticleQuiz): a title plus a
+// WordReview, WordMatch, InstantSessions, ArticleQuiz, Writing): a title plus a
 // "back to chat" link. The link is relative ("." not "/") so it resolves
 // against the current page URL and still works under a ROOT_PATH prefix
 // like "/pr/14/words".
