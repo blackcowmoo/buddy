@@ -107,15 +107,15 @@ export function Writing() {
                     <span>{formatDateDivider(item.createdAt)}</span>
                   </div>
                 )}
-                <div className="writing-list-row">
-                  <button type="button" className="writing-list-open" onClick={() => void openPrompt(item)}>
-                    <span className="writing-list-text">{item.korean || "문제를 만드는 중…"}</span>
-                    <span className="writing-list-meta">
+                <div className="session-row">
+                  <button type="button" className="session-item" onClick={() => void openPrompt(item)}>
+                    <span className="title">{item.korean || "문제를 만드는 중…"}</span>
+                    <span className="time writing-list-meta">
                       {item.status !== "done" && <span className="study-summary-pending-badge"><span className="spinning">⏳</span> 생성 중</span>}
                       {formatMessageTime(item.createdAt)}
                     </span>
                   </button>
-                  <button type="button" className="ghost icon-btn writing-delete" onClick={() => void deletePrompt(item.id)} aria-label="작문 문제 삭제" title="작문 문제 삭제">🗑</button>
+                  <button type="button" className="ghost icon-btn session-delete" onClick={() => void deletePrompt(item.id)} aria-label="작문 문제 삭제" title="작문 문제 삭제">🗑</button>
                 </div>
               </Fragment>
             );
@@ -127,10 +127,12 @@ export function Writing() {
       )}
 
       {prompt && (
-        <div className="writing-card writing-detail-card">
+        <section className="quiz-panel writing-detail-card" aria-labelledby="writing-detail-title">
           <button type="button" className="ghost quiz-back-btn" onClick={backToList}>← 목록으로</button>
-          <p className="eyebrow">KOREAN → ENGLISH</p>
-          <h2>오늘의 한 문장</h2>
+          <div className="writing-detail-header">
+            <p className="eyebrow">KOREAN → ENGLISH</p>
+            <h2 id="writing-detail-title">오늘의 한 문장</h2>
+          </div>
           {loadingPrompt ? <p className="hint">문제를 불러오는 중이에요…</p> : error ? <>
             <p className="hint">문제를 불러오지 못했어요.</p>
             <button type="button" onClick={() => void openPrompt(prompt)}>다시 시도</button>
@@ -144,11 +146,12 @@ export function Writing() {
                   forms make Enter in that field submit the writing answer in
                   some browsers. */}
               <div className="writing-answer-tools">
-                <WordSearchControl placement="below" />
                 <span className="hint">모르는 단어가 있으면 검색해 보세요.</span>
+                <WordSearchControl placement="below" />
               </div>
               <form className="writing-answer-form" onSubmit={submit}>
-                <textarea value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="영어로 한 문장을 써보세요" rows={3} disabled={checking} />
+                <label className="writing-answer-label" htmlFor="writing-answer">영어 답안</label>
+                <textarea id="writing-answer" value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="영어로 한 문장을 써보세요" rows={4} disabled={checking} />
                 <button type="submit" disabled={checking || !answer.trim()}>{checking ? "검사 중…" : "답안 확인"}</button>
               </form>
             </>}
@@ -158,7 +161,7 @@ export function Writing() {
               {result.issues.map((issue, i) => <div className="writing-issue" key={i}><strong>{issue.suggestion}</strong><p>{issue.explanationTranslation || issue.explanation}</p></div>)}
             </section>}
           </>}
-        </div>
+        </section>
       )}
     </main>
   </div>;
