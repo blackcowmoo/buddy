@@ -58,7 +58,7 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 		research_status  VARCHAR(16)  NOT NULL DEFAULT '',
 		research_results JSON         NULL,
 		review_question_version INT   NOT NULL DEFAULT 0,
-		review_prompt    TEXT         NOT NULL DEFAULT '',
+		review_prompt    TEXT         NOT NULL,
 		review_answer    VARCHAR(255) NOT NULL DEFAULT '',
 		created_at       BIGINT       NOT NULL,
 		PRIMARY KEY (id),
@@ -98,7 +98,7 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 		}},
 		{Version: 5, Name: "word_reviews.review_prompt", Up: func(ctx context.Context, db *sql.DB) error {
 			return mysqlerr.ApplyAdditive(func() error {
-				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN review_prompt TEXT NOT NULL DEFAULT ''`)
+				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN review_prompt TEXT NOT NULL`)
 				return err
 			}, mysqlerr.DupFieldName)
 		}},

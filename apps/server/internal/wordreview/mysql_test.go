@@ -2,6 +2,7 @@ package wordreview
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"testing"
@@ -93,6 +94,25 @@ func requireStore(t *testing.T) *MySQLStore {
 		t.Skipf("mysql testcontainer unavailable (no/unreachable Docker?): %v", sharedStoreErr)
 	}
 	return sharedStore
+}
+
+// TEXT defaults are rejected by the older MySQL versions used by some
+// deployments. Keep review_prompt required, but let every write supply the
+// empty initial value explicitly instead of putting an unsupported default in
+// either the fresh-table schema or the additive migration.
+func TestReviewPromptColumnHasNoDefault(t *testing.T) {
+	st := requireStore(t)
+	var columnDefault sql.NullString
+	if err := st.ro.QueryRowContext(context.Background(), `
+		SELECT column_default
+		FROM information_schema.columns
+		WHERE table_schema = DATABASE() AND table_name = ? AND column_name = 'review_prompt'
+	`, table).Scan(&columnDefault); err != nil {
+		t.Fatalf("query review_prompt metadata: %v", err)
+	}
+	if columnDefault.Valid {
+		t.Fatalf("review_prompt default = %q, want no database default for MySQL compatibility", columnDefault.String)
+	}
 }
 
 func TestSaveThenListRoundTrips(t *testing.T) {
