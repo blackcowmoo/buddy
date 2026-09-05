@@ -358,7 +358,7 @@ const minWordVerifyJudges = 3
 // it, and does example use it correctly. Requires every judge to agree
 // valid=true — a single dissent rejects the word immediately (with that
 // judge's own reason) rather than being reconciled/outvoted the way
-// analyze()'s Judge-synthesis step would; this is a fact-check, not a task
+// analyze()'s Judge-led final analysis would; this is a fact-check, not a task
 // where "the best merged answer" makes sense. Deliberately not a dictionary
 // API lookup: this app assumes a local, possibly fully offline LLM (see
 // README's llama.cpp/vLLM/LM Studio setup), so verification stays inside the

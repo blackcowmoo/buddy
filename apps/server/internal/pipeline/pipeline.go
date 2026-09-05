@@ -79,13 +79,16 @@ type Pipeline struct {
 	ChatModel string
 
 	// Analysis: REFINE track's grammar-correction/compaction pass. Every
-	// candidate is asked concurrently (analyze()); a lone candidate is used
-	// directly, and two or more are synthesized by Judge. This is how
-	// multiple local models (e.g. several checkpoints behind llama.cpp) get
-	// combined into one higher-confidence result instead of picking just one.
+	// candidate is asked concurrently (analyze()), and their outputs become
+	// advisory evidence for Judge's own final analysis. Multiple local models
+	// (e.g. several checkpoints behind llama.cpp) can therefore contribute
+	// observations without constraining the strongest model to merely merging
+	// their answers.
 	Analysis []Candidate
-	// Judge synthesizes the Analysis ensemble's outputs into the single
-	// result analyze() returns. Unused (and may be nil) when len(Analysis)<=1.
+	// Judge independently performs the original task, using successful
+	// Analysis outputs as untrusted supporting material. It is called even
+	// when only one (or no) Analysis candidate succeeds; if nil or failing,
+	// analyze() falls back to the first successful Analysis candidate.
 	// Also does the REFINE track's STT-candidate reconciliation (refine()) —
 	// a second, more careful opinion than the FAST track's chat-model pass.
 	Judge      llm.Client

@@ -51,8 +51,9 @@ func (p *Pipeline) translationSemaphore() chan struct{} {
 }
 
 // translateAssistant asks the analysis ensemble for a plain native-language
-// translation of the assistant's full reply, synthesized down to one result
-// by analyze() — the same ensemble/Judge machinery correct() uses, just with
+// translation of the assistant's full reply, then lets Judge independently
+// produce the final translation with those outputs as advisory evidence —
+// the same ensemble/Judge machinery correct() uses, just with
 // a plain-text (not JSON) prompt since there's nothing else to parse out.
 //
 // Callers pass context.WithoutCancel(ctx) (see StartConversation/reply

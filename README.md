@@ -158,8 +158,8 @@ The pipeline calls three independent LLM purposes (see
 `internal/pipeline.Pipeline`): **Chat** (FAST track's streamed reply, one
 endpoint), **Analysis** (REFINE track's grammar-correction/compaction pass —
 every configured endpoint is called concurrently as an ensemble), and
-**Judge** (synthesizes the Analysis ensemble into the one result used —
-skipped automatically when Analysis has just one candidate).
+**Judge** (independently solves the original REFINE task and uses Analysis
+outputs as advisory evidence, even when only one candidate succeeds).
 
 ```bash
 # build llama.cpp, then run its OpenAI-compatible server (one per model):
@@ -183,8 +183,8 @@ BUDDY_LLM_JUDGE_URL=qwen3-6-35b-a3b@http://localhost:8085/v1
 Any OpenAI-compatible endpoint works for any of the three — vLLM, LM Studio,
 or `https://api.openai.com/v1` (with `BUDDY_LLM_API_KEY`). Zero-setup default:
 all three point at `local-model@http://localhost:8081/v1`, so a single
-`llama-server` still works (Analysis collapses to one candidate, so Judge is
-never called).
+`llama-server` still works (the Analysis and Judge calls are separate
+completions against that same endpoint).
 
 **Quality STT — whisper.cpp/parakeet.cpp servers, called concurrently:**
 
@@ -257,7 +257,7 @@ this table is a deployment-focused summary).
 | `MYSQL_RO_HOSTNAME` | Optional read replica; `Load` reads from it to offload the primary. Leave unset to read from the primary (strongly consistent). |
 | `BUDDY_LLM_CHAT_URL` | Your `model@url` OpenAI-compatible endpoint for the FAST track's reply (llama.cpp `llama-server`, vLLM, LM Studio, hosted API) — a bare `url` with no `model@` prefix is also accepted. Without it, chat silently degrades to an offline echo. |
 | `BUDDY_LLM_ANALYSIS_URLS` | Comma-separated `model@url` pairs for the REFINE track's grammar-correction/compaction ensemble — every one is called concurrently. One env var per endpoint (not a second `_MODELS` list kept in sync by index). |
-| `BUDDY_LLM_JUDGE_URL` | `model@url` endpoint that synthesizes the analysis ensemble's outputs into one result. Unused when `BUDDY_LLM_ANALYSIS_URLS` has a single entry. |
+| `BUDDY_LLM_JUDGE_URL` | `model@url` endpoint that independently performs the final REFINE task while using successful Analysis outputs as advisory evidence. Called even when only one (or no) Analysis candidate succeeds. |
 | `BUDDY_LLM_API_KEY` | Only if your LLM endpoints need a bearer token (e.g. a hosted API) — shared by all three above. |
 | `WHISPER_SERVER_URLS` | Comma-separated `model@url` pairs for whisper.cpp `server`-style (native `/inference`) endpoint(s); one ensemble member, called concurrently with every other configured STT engine on each utterance and reconciled by an LLM (round-robining internally if it has multiple entries of its own). Setting any `*_SERVER_URLS` var takes priority over `BUDDY_FAST_STT`/`BUDDY_SLOW_STT` below. See `internal/config.sttEngines` for adding another engine (e.g. `PARAKEET_SERVER_URLS`) — every engine set contributes a candidate, they don't compete for priority. |
 | `BUDDY_IDENTITY_MODE=oidc` | Switches from the anonymous local-dev cookie to verifying a Dex-issued JWT. |

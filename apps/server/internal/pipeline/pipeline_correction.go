@@ -11,7 +11,8 @@ import (
 )
 
 // correct asks the analysis ensemble for grammar/vocabulary/context feedback
-// as strict JSON, synthesized down to one result by analyze(). contextMsg
+// as strict JSON, then lets Judge independently produce the final result with
+// those outputs as advisory evidence. contextMsg
 // (from renderCorrectionContext) is the conversation the sentence was said
 // in, folded into the analysis input the same way compaction folds its
 // prior-summary context; it is empty on the first turn.
