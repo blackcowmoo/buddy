@@ -87,15 +87,17 @@ func TestCompactLeavesHistoryOnLLMError(t *testing.T) {
 
 // ---- correct() -----------------------------------------------------------------
 
-func TestAnalyzeSingleCandidateSkipsJudge(t *testing.T) {
+func TestAnalyzeSingleCandidateIsAdvisoryToJudge(t *testing.T) {
 	judgeCalls := 0
+	var judgeMsgs []llm.Message
 	p := &Pipeline{
 		Analysis: []Candidate{{Model: "solo", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 			return "solo answer", nil
 		}}}},
 		Judge: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 			judgeCalls++
-			return "should not be called", nil
+			judgeMsgs = msgs
+			return "judge's independent answer", nil
 		}},
 		JudgeModel: "judge",
 	}
@@ -103,15 +105,26 @@ func TestAnalyzeSingleCandidateSkipsJudge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("analyze() error = %v", err)
 	}
-	if got != "solo answer" {
-		t.Fatalf("analyze() = %q, want %q", got, "solo answer")
+	if got != "judge's independent answer" {
+		t.Fatalf("analyze() = %q, want Judge's answer", got)
 	}
-	if judgeCalls != 0 {
-		t.Fatalf("judge should not be called for a single candidate, got %d calls", judgeCalls)
+	if judgeCalls != 1 {
+		t.Fatalf("judge calls = %d, want 1 even for a single candidate", judgeCalls)
+	}
+	if len(judgeMsgs) != 2 {
+		t.Fatalf("judge messages = %+v, want system and user messages", judgeMsgs)
+	}
+	if !strings.Contains(judgeMsgs[0].Content, "Analyze the ORIGINAL INPUT yourself") ||
+		!strings.Contains(judgeMsgs[0].Content, "ORIGINAL TASK (authoritative):\nsys") {
+		t.Fatalf("judge system prompt should require an independent analysis under the original task, got %q", judgeMsgs[0].Content)
+	}
+	if !strings.Contains(judgeMsgs[1].Content, "Original input:\ninput") ||
+		!strings.Contains(judgeMsgs[1].Content, "--- advisory analysis (solo) ---\nsolo answer") {
+		t.Fatalf("judge user input should contain the original input and advisory result, got %q", judgeMsgs[1].Content)
 	}
 }
 
-func TestAnalyzeMultipleCandidatesSynthesizedByJudge(t *testing.T) {
+func TestAnalyzeMultipleCandidatesAreAdvisoryToJudge(t *testing.T) {
 	var judgeInput string
 	p := &Pipeline{
 		Analysis: []Candidate{
@@ -124,7 +137,7 @@ func TestAnalyzeMultipleCandidatesSynthesizedByJudge(t *testing.T) {
 		},
 		Judge: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 			judgeInput = msgs[len(msgs)-1].Content
-			return "synthesized answer", nil
+			return "judge answer", nil
 		}},
 		JudgeModel: "judge-model",
 	}
@@ -132,8 +145,8 @@ func TestAnalyzeMultipleCandidatesSynthesizedByJudge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("analyze() error = %v", err)
 	}
-	if got != "synthesized answer" {
-		t.Fatalf("analyze() = %q, want %q", got, "synthesized answer")
+	if got != "judge answer" {
+		t.Fatalf("analyze() = %q, want %q", got, "judge answer")
 	}
 	if !strings.Contains(judgeInput, "candidate A") || !strings.Contains(judgeInput, "candidate B") {
 		t.Fatalf("judge input should include both candidates' outputs, got %q", judgeInput)
@@ -164,8 +177,9 @@ func TestAnalyzeFallsBackToFirstCandidateOnJudgeError(t *testing.T) {
 	}
 }
 
-func TestAnalyzeSkipsFailedCandidateWithoutCallingJudge(t *testing.T) {
+func TestAnalyzeCallsJudgeWithSingleSurvivingCandidate(t *testing.T) {
 	judgeCalls := 0
+	var judgeInput string
 	p := &Pipeline{
 		Analysis: []Candidate{
 			{Model: "flaky", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
@@ -177,7 +191,8 @@ func TestAnalyzeSkipsFailedCandidateWithoutCallingJudge(t *testing.T) {
 		},
 		Judge: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 			judgeCalls++
-			return "unused", nil
+			judgeInput = msgs[len(msgs)-1].Content
+			return "judge answer", nil
 		}},
 		JudgeModel: "judge-model",
 	}
@@ -185,15 +200,18 @@ func TestAnalyzeSkipsFailedCandidateWithoutCallingJudge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("analyze() error = %v", err)
 	}
-	if got != "only surviving answer" {
-		t.Fatalf("analyze() = %q, want %q", got, "only surviving answer")
+	if got != "judge answer" {
+		t.Fatalf("analyze() = %q, want Judge's answer", got)
 	}
-	if judgeCalls != 0 {
-		t.Fatalf("judge should not be called when only one candidate survives, got %d calls", judgeCalls)
+	if judgeCalls != 1 {
+		t.Fatalf("judge calls = %d, want 1 when one candidate survives", judgeCalls)
+	}
+	if !strings.Contains(judgeInput, "only surviving answer") || strings.Contains(judgeInput, "flaky") {
+		t.Fatalf("judge should receive only successful advisory results, got %q", judgeInput)
 	}
 }
 
-func TestAnalyzeAllCandidatesFailReturnsError(t *testing.T) {
+func TestAnalyzeAllCandidatesFailWithoutJudgeReturnsError(t *testing.T) {
 	p := &Pipeline{
 		Analysis: []Candidate{
 			{Model: "a", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
@@ -209,10 +227,56 @@ func TestAnalyzeAllCandidatesFailReturnsError(t *testing.T) {
 	}
 }
 
-func TestAnalyzeNoCandidatesConfiguredReturnsError(t *testing.T) {
+func TestAnalyzeJudgeWorksWhenAllCandidatesFail(t *testing.T) {
+	var judgeInput string
+	p := &Pipeline{
+		Analysis: []Candidate{
+			{Model: "a", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+				return "", errors.New("down a")
+			}}},
+			{Model: "b", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+				return "", errors.New("down b")
+			}}},
+		},
+		Judge: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			judgeInput = msgs[len(msgs)-1].Content
+			return "independent answer", nil
+		}},
+		JudgeModel: "judge",
+	}
+
+	got, err := p.analyze(context.Background(), "sys", "input", false)
+	if err != nil {
+		t.Fatalf("analyze() error = %v", err)
+	}
+	if got != "independent answer" {
+		t.Fatalf("analyze() = %q, want Judge's independent answer", got)
+	}
+	if !strings.Contains(judgeInput, "(none available; perform the task independently)") {
+		t.Fatalf("judge input should explicitly handle unavailable advisory analyses, got %q", judgeInput)
+	}
+}
+
+func TestAnalyzeJudgeWorksWithoutAnalysisCandidates(t *testing.T) {
+	p := &Pipeline{
+		Judge: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			return "judge-only answer", nil
+		}},
+		JudgeModel: "judge",
+	}
+	got, err := p.analyze(context.Background(), "sys", "input", false)
+	if err != nil {
+		t.Fatalf("analyze() error = %v", err)
+	}
+	if got != "judge-only answer" {
+		t.Fatalf("analyze() = %q, want %q", got, "judge-only answer")
+	}
+}
+
+func TestAnalyzeNoModelsConfiguredReturnsError(t *testing.T) {
 	p := &Pipeline{}
 	if _, err := p.analyze(context.Background(), "sys", "input", false); err == nil {
-		t.Fatal("expected an error when no candidates are configured")
+		t.Fatal("expected an error when neither Analysis nor Judge is configured")
 	}
 }
 

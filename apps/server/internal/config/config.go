@@ -51,10 +51,10 @@ type Config struct {
 	//   - Analysis: REFINE track's grammar-correction/compaction pass. Every
 	//     configured endpoint is called concurrently as an ensemble, so this
 	//     one is comma-separated (*_URLS).
-	//   - Judge:    synthesizes the analysis ensemble's outputs into the one
-	//     result the pipeline uses. One endpoint (*_URL). Skipped when
-	//     Analysis has a single candidate (pipeline.Pipeline.analyze) — a
-	//     lone model has nothing to synthesize against.
+	//   - Judge:    independently performs the final REFINE analysis, using
+	//     the analysis ensemble's outputs as advisory evidence. One endpoint
+	//     (*_URL), called even when only one (or no) Analysis candidate
+	//     succeeds (pipeline.Pipeline.analyze).
 	LLMAPIKey string // optional bearer token, shared by all of the above
 
 	LLMChatURL   string

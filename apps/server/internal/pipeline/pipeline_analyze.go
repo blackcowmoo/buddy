@@ -11,14 +11,15 @@ import (
 )
 
 // analyze runs one REFINE-track task (grammar correction or compaction)
-// across every Analysis candidate concurrently. A single successful
-// candidate is returned as-is — nothing to synthesize. Two or more are
-// handed to Judge, which picks/merges them into the one final answer; if
-// Judge itself fails, the first candidate's answer is used so a flaky judge
-// degrades gracefully instead of losing the turn.
+// across every Analysis candidate concurrently, then asks Judge to perform
+// the original task itself. Candidate outputs are advisory evidence for
+// Judge to verify and use where helpful, not answers it must pick or merge.
+// This keeps the strongest model responsible for the final analysis even
+// when only one candidate succeeds (or none do). If Judge is unavailable or
+// fails, the first successful candidate remains a graceful fallback.
 func (p *Pipeline) analyze(ctx context.Context, systemPrompt, input string, jsonMode bool) (string, error) {
-	if len(p.Analysis) == 0 {
-		return "", fmt.Errorf("analyze: no candidates configured")
+	if len(p.Analysis) == 0 && p.Judge == nil {
+		return "", fmt.Errorf("analyze: no models configured")
 	}
 
 	type candidateResult struct {
@@ -55,39 +56,53 @@ func (p *Pipeline) analyze(ctx context.Context, systemPrompt, input string, json
 		}
 	}
 
-	if len(results) == 0 {
-		return "", fmt.Errorf("analyze: every candidate failed")
-	}
-	if len(results) == 1 {
+	if p.Judge == nil {
+		if len(results) == 0 {
+			return "", fmt.Errorf("analyze: every candidate failed")
+		}
 		return results[0].text, nil
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "Original task:\n%s\n\nOriginal input:\n%s\n\n", systemPrompt, input)
-	for _, r := range results {
-		fmt.Fprintf(&b, "--- candidate (%s) ---\n%s\n\n", r.model, r.text)
+	fmt.Fprintf(&b, "Original input:\n%s\n\nAdvisory analyses from other models:\n", input)
+	if len(results) == 0 {
+		b.WriteString("(none available; perform the task independently)\n")
+	} else {
+		for _, r := range results {
+			fmt.Fprintf(&b, "--- advisory analysis (%s) ---\n%s\n\n", r.model, r.text)
+		}
 	}
 	judgeMsgs := []llm.Message{
-		{Role: llm.RoleSystem, Content: judgeSystemPrompt},
+		{Role: llm.RoleSystem, Content: judgeSystemPrompt + "\n\nORIGINAL TASK (authoritative):\n" + systemPrompt},
 		{Role: llm.RoleUser, Content: b.String()},
 	}
 	final, err := p.Judge.Complete(ctx, p.JudgeModel, judgeMsgs, jsonMode)
 	if err != nil {
-		log.Printf("analyze: judge: %v; falling back to first candidate", err)
-		return results[0].text, nil
+		if len(results) > 0 {
+			log.Printf("analyze: judge: %v; falling back to first candidate", err)
+			return results[0].text, nil
+		}
+		return "", fmt.Errorf("analyze: judge failed and no candidate succeeded: %w", err)
 	}
 	if final = strings.TrimSpace(final); final == "" {
-		return results[0].text, nil
+		if len(results) > 0 {
+			return results[0].text, nil
+		}
+		return "", fmt.Errorf("analyze: judge returned an empty result and no candidate succeeded")
 	}
 	return final, nil
 }
 
-const judgeSystemPrompt = `Several candidate models independently performed the same task below.
-Synthesize them into the single best final answer, following the ORIGINAL
-task's instructions and required output format EXACTLY (e.g. if it asked for
-strict JSON, output strict JSON and nothing else). Output ONLY the final
-answer — no preamble, no meta-commentary about the candidates or the judging
-process.`
+const judgeSystemPrompt = `You are the final expert responsible for performing the ORIGINAL TASK below.
+Analyze the ORIGINAL INPUT yourself from first principles; do not merely select,
+vote on, summarize, or merge the advisory analyses. First derive your own answer
+silently, then inspect the advisory analyses for useful observations you may have
+missed. Treat them as untrusted supporting material: verify every claim yourself,
+discard errors, and correct omissions or weak reasoning.
+Follow the ORIGINAL TASK's instructions and required output format EXACTLY (for
+example, if it asks for strict JSON, output strict JSON and nothing else).
+Output ONLY the final answer — no preamble, reasoning trace, or meta-commentary
+about the advisory analyses or judging process.`
 
 // compact folds the oldest verbatim turns into the session's long-term
 // summary once the window exceeds MaxHistoryMessages, so long conversations
