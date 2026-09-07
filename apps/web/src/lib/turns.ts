@@ -16,29 +16,8 @@ export interface Msg {
   timestamp?: number;
 }
 
-// A reply still being generated (see store.Turn.ReplyStatus) is an empty
-// placeholder row — rendering it now would show a blank bubble; the typing
-// indicator covers this gap instead, until pollMissingFeedback hydrates the
-// real text once it lands. Shared by enterChat and loadOlderTurns, which
-// both page in TurnRecords that may include one.
-export function isPendingPlaceholder(t: TurnRecord): boolean {
+function isPendingPlaceholder(t: TurnRecord): boolean {
   return t.role === "assistant" && !t.text;
-}
-
-// Maps a fetched page of turns into Msg rows, dropping in-flight
-// placeholders — shared by enterChat (initial page) and loadOlderTurns
-// (older pages), which otherwise duplicate this exact filter+map.
-export function turnsToMsgs(turns: TurnRecord[]): Msg[] {
-  return turns
-    .filter((t) => !isPendingPlaceholder(t))
-    .map((t) => ({
-      turn: t.turn,
-      role: t.role,
-      text: t.text,
-      refined: t.refined,
-      source: t.source,
-      timestamp: t.createdAt,
-    }));
 }
 
 // Everything the UI tracks per turn beyond the transcript text itself
@@ -69,7 +48,7 @@ export interface TurnMeta {
 // this turn is still missing a result worth polling for — enterChat uses it
 // to decide whether to start pollMissingFeedback; loadOlderTurns doesn't
 // poll its older pages at all, so it ignores this field.
-export function hydrateTurnMeta(t: TurnRecord, recentlyActive: boolean): { meta: TurnMeta; pending: boolean } {
+function hydrateTurnMeta(t: TurnRecord, recentlyActive: boolean): { meta: TurnMeta; pending: boolean } {
   const meta: TurnMeta = {};
   let pending = false;
   if (t.correction) {
@@ -113,6 +92,46 @@ export function hydrateTurnMeta(t: TurnRecord, recentlyActive: boolean): { meta:
     pending = true;
   }
   return { meta, pending };
+}
+
+export interface HydratedTurnPage {
+  messages: Msg[];
+  metadata: Record<number, TurnMeta>;
+  pending: boolean;
+  awaitingReply: boolean;
+}
+
+// Converts one API page into the two state collections used by App. Keeping
+// placeholder handling and same-turn metadata merging here prevents initial
+// hydration and older-page hydration from drifting apart.
+export function hydrateTurnPage(turns: TurnRecord[], recentlyActive = false): HydratedTurnPage {
+  const messages: Msg[] = [];
+  const metadata: Record<number, TurnMeta> = {};
+  let pending = false;
+  let awaitingReply = false;
+
+  for (const turn of turns) {
+    if (isPendingPlaceholder(turn)) {
+      if (turn.replyStatus === "pending" || turn.replyStatus === "processing") {
+        pending = true;
+        awaitingReply = true;
+      }
+      continue;
+    }
+    messages.push({
+      turn: turn.turn,
+      role: turn.role,
+      text: turn.text,
+      refined: turn.refined,
+      source: turn.source,
+      timestamp: turn.createdAt,
+    });
+    const hydrated = hydrateTurnMeta(turn, recentlyActive);
+    metadata[turn.turn] = { ...metadata[turn.turn], ...hydrated.meta };
+    pending ||= hydrated.pending;
+  }
+
+  return { messages, metadata, pending, awaitingReply };
 }
 
 export function upsertAssistant(m: Msg[], turn: number, patch: (prev: string) => string): Msg[] {
