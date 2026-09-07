@@ -2526,8 +2526,7 @@ describe("auto-read-aloud toggle", () => {
 });
 
 describe("grammar feedback popover dismissal", () => {
-  it("closes when clicking outside the popover", async () => {
-    const user = userEvent.setup();
+  async function renderOpenGrammarPopover(user: ReturnType<typeof userEvent.setup>) {
     render(<App />);
     await enterNewChat(user);
     act(() => emit({ type: "final_transcript", turn: 1, text: "I are fine." }));
@@ -2540,25 +2539,30 @@ describe("grammar feedback popover dismissal", () => {
       }),
     );
     await openGrammarPopover(user);
+  }
+
+  it("closes when clicking outside the popover", async () => {
+    const user = userEvent.setup();
+    await renderOpenGrammarPopover(user);
     expect(screen.getByRole("menu")).toBeInTheDocument();
     await user.click(document.body);
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 
+  it("stays open when an outside press becomes a scroll gesture", async () => {
+    const user = userEvent.setup();
+    await renderOpenGrammarPopover(user);
+
+    fireEvent.pointerDown(document.body, { pointerId: 1, clientX: 12, clientY: 300 });
+    fireEvent.pointerMove(document.body, { pointerId: 1, clientX: 12, clientY: 240 });
+    fireEvent.pointerUp(document.body, { pointerId: 1, clientX: 12, clientY: 240 });
+
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+  });
+
   it("closes on Escape", async () => {
     const user = userEvent.setup();
-    render(<App />);
-    await enterNewChat(user);
-    act(() => emit({ type: "final_transcript", turn: 1, text: "I are fine." }));
-    act(() =>
-      emit({
-        type: "correction",
-        turn: 1,
-        final: true,
-        correction: { original: "I are fine.", corrected: "I am fine.", issues: [] },
-      }),
-    );
-    await openGrammarPopover(user);
+    await renderOpenGrammarPopover(user);
     expect(screen.getByRole("menu")).toBeInTheDocument();
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
