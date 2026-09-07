@@ -1078,7 +1078,18 @@ export function App() {
     const el = convoRef.current;
     if (!el) return;
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const atLatest = distanceFromBottom < SCROLL_EDGE_THRESHOLD;
+    const anchor = latestMessageAnchorRef.current;
+    const rootRect = el.getBoundingClientRect();
+    const anchorRect = anchor?.getBoundingClientRect();
+    // WebKit can keep the scroll metrics stale while Safari's dynamic browser
+    // chrome settles. In that case the end marker's rendered position is the
+    // reliable signal: once it reaches the scroll viewport (or its bottom
+    // threshold), the learner is already looking at the latest turn. Keep the
+    // metric path as a fallback for non-layout environments and browsers.
+    const markerAtLatest = !!anchorRect
+      && rootRect.height > 0
+      && anchorRect.top <= rootRect.bottom + SCROLL_EDGE_THRESHOLD;
+    const atLatest = markerAtLatest || distanceFromBottom < SCROLL_EDGE_THRESHOLD;
     stickToBottomRef.current = atLatest;
     setShowScrollToLatest(!atLatest);
     if (el.scrollTop < SCROLL_EDGE_THRESHOLD && hasMoreHistoryRef.current && !loadingMoreHistory) {
