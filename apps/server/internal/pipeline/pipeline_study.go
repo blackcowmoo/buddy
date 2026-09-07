@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"buddy/server/internal/llm"
 	"buddy/server/internal/protocol"
 )
 
@@ -28,10 +27,10 @@ type StudyIssue struct {
 // learned — sentence by sentence, each paired with a native-language
 // translation, the same teach-in-English-then-translate shape
 // correctionSystemPrompt uses for "explanation"/"explanationTranslation".
-// Meant to be called once, when the learner explicitly ends a conversation —
-// not on every reload — so unlike GenerateTitle (a decorative, cost-sensitive
-// single call) this affords the full Analysis ensemble+Judge, the same
-// learning-facing quality bar as correct()/compact() use. Callers should
+// Meant to be called once, when the learner explicitly ends a conversation.
+// Chat and Analysis drafts stay internal and only Judge's terminal result is
+// returned, the same quality and presentation policy GenerateTitle,
+// correct()/compact() use. Callers should
 // skip this call entirely when issues is empty (see
 // sessionStudySummaryHandler) rather than spend an LLM call being told
 // there's nothing to report.
@@ -97,8 +96,8 @@ func renderStudySummaryInput(issues []StudyIssue) string {
 // prose wrap-up, not just read it. Each question blanks out the word/phrase
 // one recurring pattern is about, in a fresh example sentence rather than
 // the learner's own original wording, so answering it requires applying the
-// rule instead of recalling a specific sentence. Same Analysis ensemble+Judge
-// quality bar as GenerateStudySummary — a wrong "correct" answer here would
+// rule instead of recalling a specific sentence. Same ordered-cascade quality
+// bar as GenerateStudySummary — a wrong "correct" answer here would
 // actively mislead a learner practicing on their own. Generated on demand,
 // only when a learner opens the quiz (see httpserver.sessionQuizHandler),
 // not automatically alongside the wrap-up — callers should skip this call
@@ -167,7 +166,7 @@ Rules:
 - Prefer variety: don't test the same single pattern more than twice.`, native)
 }
 
-// CheckQuizAnswer asks whether a learner's typed quiz answer should count as
+// CheckQuizAnswer asks Chat whether a learner's typed quiz answer should count as
 // correct when it didn't already match QuizQuestion.Answer or
 // AcceptableAnswers verbatim (see QuizPanel's client-side isQuizAnswerAccepted,
 // apps/web/src/App.tsx) — a learner may type a genuine synonym the model
@@ -176,19 +175,45 @@ Rules:
 // exact-match check already failed, so a false negative here just shows the
 // intended answer (mildly annoying, already the pre-existing behavior), while
 // a false positive would actively teach the learner something wrong — worse
-// than being marked wrong for a right answer. A single fast call (p.LLM/
-// p.ChatModel), same tier as SuggestWords/GenerateTitle: this only runs once
-// per wrong-looking answer, not per keystroke or for an already-accepted one,
-// so call volume stays low despite being a live per-answer check.
+// than being marked wrong for a right answer. This public method remains the
+// immutable, low-latency verdict. quizAnswerCheckHandler additionally passes
+// the exact raw Chat draft to RefineQuizAnswerFromDraft in the background and
+// caches that terminal result for the learner's next equivalent check.
 func (p *Pipeline) CheckQuizAnswer(ctx context.Context, prompt, canonicalAnswer string, acceptableAnswers []string, learnerAnswer string) (bool, error) {
-	msgs := []llm.Message{
-		{Role: llm.RoleSystem, Content: quizAnswerCheckSystemPrompt},
-		{Role: llm.RoleUser, Content: renderQuizAnswerCheckInput(prompt, canonicalAnswer, acceptableAnswers, learnerAnswer)},
+	correct, _, err := p.CheckQuizAnswerFast(ctx, prompt, canonicalAnswer, acceptableAnswers, learnerAnswer)
+	return correct, err
+}
+
+// CheckQuizAnswerFast returns both the parsed verdict and its raw Chat JSON.
+// The raw value is the lossless handoff to RefineQuizAnswerFromDraft; callers
+// must not recreate it from the bool or ask Chat a second time.
+func (p *Pipeline) CheckQuizAnswerFast(ctx context.Context, prompt, canonicalAnswer string, acceptableAnswers []string, learnerAnswer string) (correct bool, chatDraft string, err error) {
+	input := renderQuizAnswerCheckInput(prompt, canonicalAnswer, acceptableAnswers, learnerAnswer)
+	raw, err := p.chatDraft(ctx, quizAnswerCheckSystemPrompt, input, true)
+	if err != nil {
+		return false, "", err
 	}
-	raw, err := p.LLM.Complete(ctx, p.ChatModel, msgs, true)
+	correct, err = parseQuizAnswerVerdict(raw)
+	if err != nil {
+		return false, raw, err
+	}
+	return correct, raw, nil
+}
+
+// RefineQuizAnswerFromDraft completes Analysis -> Judge from the exact Chat
+// verdict already returned to the learner. The caller stores this result for
+// future equivalent checks; it never rewrites the verdict already shown in the
+// current quiz attempt.
+func (p *Pipeline) RefineQuizAnswerFromDraft(ctx context.Context, prompt, canonicalAnswer string, acceptableAnswers []string, learnerAnswer, chatDraft string) (bool, error) {
+	input := renderQuizAnswerCheckInput(prompt, canonicalAnswer, acceptableAnswers, learnerAnswer)
+	raw, err := p.analyzeFromDraft(ctx, quizAnswerCheckSystemPrompt, input, true, chatDraft)
 	if err != nil {
 		return false, err
 	}
+	return parseQuizAnswerVerdict(raw)
+}
+
+func parseQuizAnswerVerdict(raw string) (bool, error) {
 	parsed, err := parseJSON[struct {
 		Correct bool `json:"correct"`
 	}](raw, "quiz answer check")

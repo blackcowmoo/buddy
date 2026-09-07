@@ -186,8 +186,12 @@ func (s *MySQLStore) listSessions(ctx context.Context, userID string, instant bo
 		instantFlag = 1
 	}
 	rows, err := s.ro.QueryContext(ctx, `
-		SELECT id, title, created_at, updated_at, ended, study_summary, study_summary_status, quiz_status, quiz_completed FROM `+sessionsTable+`
-		WHERE user_id = ? AND instant = ? ORDER BY updated_at DESC
+		SELECT s.id, s.title, s.created_at, s.updated_at, s.ended, s.study_summary,
+			s.study_summary_status, s.quiz_status, s.quiz_completed,
+			(SELECT COUNT(*) FROM `+turnsTable+` t
+			 WHERE t.user_id = s.user_id AND t.session_id = s.id AND t.correction_unread = 1)
+		FROM `+sessionsTable+` s
+		WHERE s.user_id = ? AND s.instant = ? ORDER BY s.updated_at DESC
 	`, userID, instantFlag)
 	if err != nil {
 		return nil, fmt.Errorf("store: list sessions: %w", err)
@@ -199,7 +203,7 @@ func (s *MySQLStore) listSessions(ctx context.Context, userID string, instant bo
 		var m SessionMeta
 		var ended, quizCompleted int
 		var studySummaryJSON string
-		if err := rows.Scan(&m.ID, &m.Title, &m.CreatedAt, &m.UpdatedAt, &ended, &studySummaryJSON, &m.StudySummaryStatus, &m.QuizStatus, &quizCompleted); err != nil {
+		if err := rows.Scan(&m.ID, &m.Title, &m.CreatedAt, &m.UpdatedAt, &ended, &studySummaryJSON, &m.StudySummaryStatus, &m.QuizStatus, &quizCompleted, &m.UnreadCorrections); err != nil {
 			return nil, fmt.Errorf("store: list sessions: %w", err)
 		}
 		m.Ended = ended != 0
@@ -306,8 +310,12 @@ func (s *MySQLStore) sessionDetail(ctx context.Context, userID, sessionID string
 	concurrent.Run(
 		func() {
 			metaErr = s.ro.QueryRowContext(ctx, `
-				SELECT title, created_at, updated_at, ended, study_summary, study_summary_status, quiz, quiz_status, quiz_completed, instant FROM `+sessionsTable+` WHERE user_id = ? AND id = ?
-			`, userID, sessionID).Scan(&meta.Title, &meta.CreatedAt, &meta.UpdatedAt, &ended, &studySummaryJSON, &meta.StudySummaryStatus, &quizJSON, &meta.QuizStatus, &quizCompleted, &instant)
+				SELECT s.title, s.created_at, s.updated_at, s.ended, s.study_summary,
+					s.study_summary_status, s.quiz, s.quiz_status, s.quiz_completed, s.instant,
+					(SELECT COUNT(*) FROM `+turnsTable+` t
+					 WHERE t.user_id = s.user_id AND t.session_id = s.id AND t.correction_unread = 1)
+				FROM `+sessionsTable+` s WHERE s.user_id = ? AND s.id = ?
+			`, userID, sessionID).Scan(&meta.Title, &meta.CreatedAt, &meta.UpdatedAt, &ended, &studySummaryJSON, &meta.StudySummaryStatus, &quizJSON, &meta.QuizStatus, &quizCompleted, &instant, &meta.UnreadCorrections)
 		},
 		func() { turns, hasMore, turnsErr = fetchTurns() },
 	)

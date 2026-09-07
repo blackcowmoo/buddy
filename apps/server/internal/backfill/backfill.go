@@ -262,9 +262,9 @@ func correctSession(ctx context.Context, st store.Store, pipe *pipeline.Pipeline
 			log.Printf("backfill: correct %s/%s turn %d: %v", userID, sessionID, t.Turn, err)
 			return
 		}
-		if err := st.SaveCorrection(ctx, userID, sessionID, t.Turn, protocol.Correction{
-			Original: text, Corrected: corrected, Issues: issues,
-		}); err != nil {
+		if err := st.SaveCorrectionFinal(ctx, userID, sessionID, t.Turn, protocol.Correction{
+			Original: text, Corrected: corrected, Issues: issues, Translation: translation,
+		}, true); err != nil {
 			log.Printf("backfill: save correction %s/%s turn %d: %v", userID, sessionID, t.Turn, err)
 		}
 		if strings.TrimSpace(translation) != "" && strings.TrimSpace(t.Translation) == "" {

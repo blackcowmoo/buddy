@@ -15,6 +15,7 @@ export function GrammarControl({
   pending,
   correction,
   failed,
+  unread,
   open,
   onToggle,
   panelRef,
@@ -23,6 +24,7 @@ export function GrammarControl({
   pending: boolean;
   correction?: Correction;
   failed?: boolean;
+  unread?: boolean;
   open: boolean;
   onToggle: (index: number | null) => void;
   panelRef?: React.RefObject<HTMLDivElement | null>;
@@ -31,14 +33,16 @@ export function GrammarControl({
 
   const hasIssues = !!correction && correctionHasIssues(correction);
 
-  const glyph = pending ? "⏳" : failed ? "⚠" : hasIssues ? "✎" : "✓";
-  const label = pending
-    ? "문법 확인 중"
+  const previewReady = pending && !!correction;
+  const glyph = pending && !previewReady ? "⏳" : failed ? "⚠" : hasIssues ? "✎" : "✓";
+  const baseLabel = pending
+    ? previewReady ? "빠른 문법 피드백 열기 (정밀 검토 중)" : "문법 확인 중"
     : failed
       ? "문법 피드백 열기 (확인 실패, 자동으로 다시 시도해요)"
       : hasIssues
         ? "문법 피드백 열기"
         : "문법 피드백 열기 (문제 없음)";
+  const label = unread && !pending ? `${baseLabel} (새 정밀 결과)` : baseLabel;
 
   return (
     <div className="grammar-control" ref={panelRef}>
@@ -49,13 +53,16 @@ export function GrammarControl({
         aria-expanded={open}
         aria-busy={pending}
         aria-label={label}
-        disabled={pending}
+        disabled={pending && !previewReady}
         onClick={() => onToggle(open ? null : index)}
       >
-        <span className={pending ? "spinning" : undefined}>{glyph}</span>
+        <span className={pending && !previewReady ? "spinning" : undefined}>{glyph}</span>
+        {previewReady && <span className="grammar-refining-dot spinning" aria-hidden="true">•</span>}
+        {unread && !pending && <span className="grammar-unread-dot" aria-hidden="true" />}
       </button>
       {open && (correction || failed) && (
         <div className="study-panel grammar-panel" role="menu">
+          {previewReady && <div className="grammar-refining-note"><span className="spinning">⏳</span> 더 정확하게 검토하고 있어요.</div>}
           {failed ? (
             <div className="grammar-clean">문법 확인에 실패했어요. 자동으로 다시 시도할게요 🔁</div>
           ) : hasIssues ? (

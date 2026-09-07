@@ -5,6 +5,7 @@ import {
   fetchSessionCompaction,
   fetchSessionDetail,
   fetchSessions,
+  markCorrectionRead,
   markQuizCompleted,
   resetQuiz,
 } from "./sessions";
@@ -169,6 +170,24 @@ describe("markQuizCompleted", () => {
   it("returns false when fetch rejects", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
     await expect(markQuizCompleted("s1")).resolves.toBe(false);
+  });
+});
+
+describe("markCorrectionRead", () => {
+  it("posts the user-scoped room and turn acknowledgement route", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(markCorrectionRead("weird id/1", 7)).resolves.toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "api/sessions/weird%20id%2F1/corrections/7/read",
+      { method: "POST" },
+    );
+  });
+
+  it("keeps the reminder unread when the acknowledgement fails", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
+    await expect(markCorrectionRead("s1", 1)).resolves.toBe(false);
   });
 });
 

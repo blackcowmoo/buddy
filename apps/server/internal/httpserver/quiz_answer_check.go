@@ -1,7 +1,9 @@
 package httpserver
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -64,17 +66,27 @@ func quizAnswerCheckHandler(ident identity.Identifier, pipe *pipeline.Pipeline, 
 				return
 			}
 		}
-		correct, err := pipe.CheckQuizAnswer(r.Context(), prompt, answer, body.AcceptableAnswers, learnerAnswer)
+		correct, chatDraft, err := pipe.CheckQuizAnswerFast(r.Context(), prompt, answer, body.AcceptableAnswers, learnerAnswer)
 		if err != nil {
 			serverError(w, "check quiz answer", err)
 			return
 		}
-		if cache != nil {
-			if err := cache.SaveAnswer(r.Context(), prompt, answer, learnerAnswer, correct, time.Now()); err != nil {
-				serverError(w, "save quiz answer cache", err)
-				return
-			}
-		}
 		writeJSON(w, map[string]any{"correct": correct, "similar": correct})
+		if cache != nil {
+			// Preserve the verdict already shown in this attempt, but improve the
+			// durable cache for the next equivalent answer. Background context is
+			// intentional: the HTTP request must finish after Chat, and closing the
+			// page must not cancel Analysis/Judge halfway through.
+			go func(acceptableAnswers []string) {
+				refined, err := pipe.RefineQuizAnswerFromDraft(context.Background(), prompt, answer, acceptableAnswers, learnerAnswer, chatDraft)
+				if err != nil {
+					log.Printf("refine quiz answer: %v", err)
+					return
+				}
+				if err := cache.SaveAnswer(context.Background(), prompt, answer, learnerAnswer, refined, time.Now()); err != nil {
+					log.Printf("save refined quiz answer cache: %v", err)
+				}
+			}(append([]string(nil), body.AcceptableAnswers...))
+		}
 	}
 }

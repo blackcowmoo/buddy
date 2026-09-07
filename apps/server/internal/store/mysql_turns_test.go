@@ -294,6 +294,117 @@ func TestMySQLSaveCorrectionNoopWhenTurnMissing(t *testing.T) {
 	}
 }
 
+// The Chat preview is readable but non-terminal; only a changed Judge result
+// becomes unread, and opening it must clear the server-owned marker without a
+// late preview or idempotent job retry bringing it back.
+func TestMySQLCorrectionStagesAndUnreadAcknowledgementRoundTrip(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	const userID = "correction-stage-user"
+	const sessionID = "sess-correction-stages"
+	preview := protocol.Correction{Original: "I are fine.", Corrected: "I am fine.", Issues: []protocol.Issue{}, Translation: "나는 괜찮아."}
+	changedFinal := protocol.Correction{
+		Original:    "I are fine.",
+		Corrected:   "I am fine.",
+		Issues:      []protocol.Issue{},
+		Translation: "나는 잘 지내.",
+	}
+
+	if err := st.SaveTurn(ctx, userID, sessionID, 1, "user", preview.Original, false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(1) error = %v", err)
+	}
+	if err := st.ReserveCorrectionJob(ctx, userID, sessionID, 1); err != nil {
+		t.Fatalf("ReserveCorrectionJob(1) error = %v", err)
+	}
+	if err := st.SaveCorrectionPreview(ctx, userID, sessionID, 1, preview); err != nil {
+		t.Fatalf("SaveCorrectionPreview(1) error = %v", err)
+	}
+	meta, turns, err := st.SessionDetail(ctx, userID, sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail(preview) error = %v", err)
+	}
+	if meta.UnreadCorrections != 0 || len(turns) != 1 || turns[0].CorrectionStage != "chat" || turns[0].CorrectionUnread || turns[0].CorrectionStatus != JobStatusPending {
+		t.Fatalf("preview state = meta %+v turns %+v, want readable chat stage, pending and read", meta, turns)
+	}
+
+	if err := st.SaveCorrectionFinal(ctx, userID, sessionID, 1, preview, false); err != nil {
+		t.Fatalf("SaveCorrectionFinal(same final) error = %v", err)
+	}
+	meta, turns, err = st.SessionDetail(ctx, userID, sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail(same final) error = %v", err)
+	}
+	if meta.UnreadCorrections != 0 || turns[0].CorrectionStage != "judge" || turns[0].CorrectionUnread || turns[0].CorrectionStatus != JobStatusDone {
+		t.Fatalf("same final state = meta %+v turn %+v, want terminal judge stage without unread", meta, turns[0])
+	}
+	if err := st.SaveCorrectionPreview(ctx, userID, sessionID, 1, changedFinal); err != nil {
+		t.Fatalf("late SaveCorrectionPreview error = %v", err)
+	}
+	_, turns, err = st.SessionDetail(ctx, userID, sessionID)
+	if err != nil || !reflect.DeepEqual(*turns[0].Correction, preview) {
+		t.Fatalf("late preview overwrote Judge final: turns=%+v err=%v", turns, err)
+	}
+
+	if err := st.SaveTurn(ctx, userID, sessionID, 2, "user", preview.Original, false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(2) error = %v", err)
+	}
+	if err := st.ReserveCorrectionJob(ctx, userID, sessionID, 2); err != nil {
+		t.Fatalf("ReserveCorrectionJob(2) error = %v", err)
+	}
+	if err := st.SaveCorrectionPreview(ctx, userID, sessionID, 2, preview); err != nil {
+		t.Fatalf("SaveCorrectionPreview(2) error = %v", err)
+	}
+	if err := st.SaveCorrectionFinal(ctx, userID, sessionID, 2, changedFinal, true); err != nil {
+		t.Fatalf("SaveCorrectionFinal(changed final) error = %v", err)
+	}
+	meta, turns, err = st.SessionDetail(ctx, userID, sessionID)
+	if err != nil {
+		t.Fatalf("SessionDetail(changed final) error = %v", err)
+	}
+	if meta.UnreadCorrections != 1 || len(turns) != 2 || !turns[1].CorrectionUnread || turns[1].CorrectionStage != "judge" {
+		t.Fatalf("changed final state = meta %+v turns %+v, want exactly one unread Judge result", meta, turns)
+	}
+	sessions, err := st.ListSessions(ctx, userID)
+	if err != nil || len(sessions) != 1 || sessions[0].UnreadCorrections != 1 {
+		t.Fatalf("ListSessions unread count = %+v, err=%v; want 1", sessions, err)
+	}
+
+	if err := st.MarkCorrectionRead(ctx, "someone-else", sessionID, 2); err != nil {
+		t.Fatalf("MarkCorrectionRead(other user) error = %v", err)
+	}
+	if err := st.MarkCorrectionRead(ctx, userID, sessionID, 2); err != nil {
+		t.Fatalf("MarkCorrectionRead(owner) error = %v", err)
+	}
+	// A duplicate completion can arrive after acknowledgement when the queue
+	// retries. It must preserve the already-read state for the same Judge JSON.
+	if err := st.SaveCorrectionFinal(ctx, userID, sessionID, 2, changedFinal, true); err != nil {
+		t.Fatalf("SaveCorrectionFinal(idempotent retry) error = %v", err)
+	}
+	meta, turns, err = st.SessionDetail(ctx, userID, sessionID)
+	if err != nil || meta.UnreadCorrections != 0 || turns[1].CorrectionUnread {
+		t.Fatalf("acknowledged state returned after retry: meta=%+v turns=%+v err=%v", meta, turns, err)
+	}
+
+	// persistEvent intentionally detaches preview/final writes. Prove the DB
+	// result is still correct when their completion order is inverted.
+	if err := st.SaveTurn(ctx, userID, sessionID, 3, "user", preview.Original, false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(3) error = %v", err)
+	}
+	if err := st.ReserveCorrectionJob(ctx, userID, sessionID, 3); err != nil {
+		t.Fatalf("ReserveCorrectionJob(3) error = %v", err)
+	}
+	if err := st.SaveCorrectionFinal(ctx, userID, sessionID, 3, preview, false); err != nil {
+		t.Fatalf("SaveCorrectionFinal(before preview) error = %v", err)
+	}
+	if err := st.SaveCorrectionPreview(ctx, userID, sessionID, 3, changedFinal); err != nil {
+		t.Fatalf("SaveCorrectionPreview(late) error = %v", err)
+	}
+	meta, turns, err = st.SessionDetail(ctx, userID, sessionID)
+	if err != nil || len(turns) != 3 || turns[2].CorrectionStage != "judge" || turns[2].CorrectionUnread || !reflect.DeepEqual(*turns[2].Correction, preview) {
+		t.Fatalf("inverted persistence order = meta=%+v turns=%+v err=%v", meta, turns, err)
+	}
+}
+
 // TestMySQLSaveTranslationAttachesToCorrectRole guards the reason
 // SaveTranslation takes role in its WHERE clause instead of just
 // (session, turn): a user turn and its paired assistant turn share the same

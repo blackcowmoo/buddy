@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -382,6 +383,50 @@ func TestHandleUtteranceEmitsUpgradedPendingTranscriptWhenJudgeDisagrees(t *test
 	}
 }
 
+func TestHandleUtteranceReusesChatReconciliationThroughAnalysisAndJudge(t *testing.T) {
+	var calls []string
+	var analysisInput, judgeInput string
+	p := &Pipeline{
+		STT: []stt.Recognizer{
+			fakeSTT{text: "ice scream"},
+			fakeSTT{text: "ice cream"},
+		},
+		LLM: &fakeLLM{complete: func([]llm.Message) (string, error) {
+			calls = append(calls, "chat")
+			return "ice scream", nil
+		}},
+		ChatModel: "chat",
+		Analysis: []Candidate{{Model: "analysis", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			calls = append(calls, "analysis")
+			analysisInput = msgs[len(msgs)-1].Content
+			return "ice cream", nil
+		}}}},
+		Judge: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			calls = append(calls, "judge")
+			judgeInput = msgs[len(msgs)-1].Content
+			return "ice cream", nil
+		}},
+		JudgeModel: "judge",
+	}
+	var got []protocol.ServerEvent
+	p.HandleUtterance(context.Background(), "alex", "sess-1", session.New("sys"), []byte("pcm"), func(ev protocol.ServerEvent) {
+		got = append(got, ev)
+	})
+
+	if !reflect.DeepEqual(calls, []string{"chat", "analysis", "judge"}) {
+		t.Fatalf("stage order = %v, want chat -> analysis -> judge", calls)
+	}
+	if !strings.Contains(analysisInput, "Chat draft to refine:\nice scream") {
+		t.Fatalf("Analysis input = %q, want exact Chat reconciliation", analysisInput)
+	}
+	if !strings.Contains(judgeInput, "Chat draft:\nice scream") || !strings.Contains(judgeInput, "ice cream") {
+		t.Fatalf("Judge input = %q, want Chat and Analysis results", judgeInput)
+	}
+	if len(got) != 2 || got[0].Text != "ice scream" || got[1].Text != "ice cream" {
+		t.Fatalf("pending transcript events = %+v, want Chat preview then Judge upgrade", got)
+	}
+}
+
 func TestHandleUtteranceNoopSecondEmitWhenJudgeAgrees(t *testing.T) {
 	judge := &fakeLLM{complete: func(msgs []llm.Message) (string, error) { return "same text", nil }}
 	p := &Pipeline{
@@ -484,10 +529,10 @@ func TestHandleTextEndToEnd(t *testing.T) {
 	if len(byType[protocol.EvAssistantDone]) != 1 || byType[protocol.EvAssistantDone][0].Text != "Nice to meet you!" {
 		t.Fatalf("assistant_done wrong: %+v", byType[protocol.EvAssistantDone])
 	}
-	if len(byType[protocol.EvCorrection]) != 1 {
-		t.Fatalf("expected one correction event, got %+v", byType[protocol.EvCorrection])
+	if len(byType[protocol.EvCorrection]) != 2 {
+		t.Fatalf("expected Chat preview and Judge-final correction events, got %+v", byType[protocol.EvCorrection])
 	}
-	corr := byType[protocol.EvCorrection][0].Correction
+	corr := byType[protocol.EvCorrection][len(byType[protocol.EvCorrection])-1].Correction
 	if corr == nil || corr.Corrected != "Hello, my name is Alex." || len(corr.Issues) != 1 {
 		t.Fatalf("correction payload wrong: %+v", corr)
 	}
@@ -640,8 +685,8 @@ func TestHandleTextCommitsConfirmedVoiceDraftEndToEnd(t *testing.T) {
 	if len(byType[protocol.EvAssistantDone]) != 1 || byType[protocol.EvAssistantDone][0].Text != "Let's get you some food!" {
 		t.Fatalf("assistant_done wrong: %+v", byType[protocol.EvAssistantDone])
 	}
-	if len(byType[protocol.EvCorrection]) != 1 {
-		t.Fatalf("expected a correction event, got %+v", byType[protocol.EvCorrection])
+	if len(byType[protocol.EvCorrection]) != 2 {
+		t.Fatalf("expected Chat preview and Judge-final correction events, got %+v", byType[protocol.EvCorrection])
 	}
 
 	_, recent := sess.Export()
@@ -701,10 +746,11 @@ func TestHandleTextCorrectionContextExcludesCurrentTurn(t *testing.T) {
 	}
 	const marker = "\nSentence to correct:\nI are sad"
 	in := correctionCalls[0]
-	if !strings.HasSuffix(in, marker) {
-		t.Fatalf("correction input should end with the current sentence, got %q", in)
+	markerAt := strings.Index(in, marker)
+	if markerAt < 0 {
+		t.Fatalf("correction input should contain the delimited current sentence, got %q", in)
 	}
-	ctxPart := strings.TrimSuffix(in, marker)
+	ctxPart := in[:markerAt]
 	if !strings.Contains(ctxPart, "I am happy") || !strings.Contains(ctxPart, "Glad to hear it!") {
 		t.Fatalf("context should carry the prior turn, got %q", ctxPart)
 	}

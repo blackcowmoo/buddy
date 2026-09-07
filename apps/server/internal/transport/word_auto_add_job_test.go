@@ -3,6 +3,8 @@ package transport
 import (
 	"context"
 	"encoding/json"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,15 +19,30 @@ const fakeAutoAddSuggestionJSON = `{"suggestions":[{"word":"resilient","meaning"
 
 // TestRunWordAutoAddSavesSuggestionsAndCompletesJob guards the primary flow:
 // a JobStatusPending run saves every valid suggestion (each starting
-// StatusPending, same as a manually picked word) and lands JobStatusDone
-// with the count of what it actually added.
+// StatusPending, same as a manually picked word), lands JobStatusDone with
+// the count of what it actually added, and lets verification finish
+// asynchronously afterward.
 func TestRunWordAutoAddSavesSuggestionsAndCompletesJob(t *testing.T) {
 	st := newFakeStore()
 	if err := st.StartWordAutoAdd(context.Background(), "alex"); err != nil {
 		t.Fatalf("StartWordAutoAdd() error = %v", err)
 	}
 	words := newFakeWordReviewStore()
-	pipe := &pipeline.Pipeline{LLM: fakeLLM{completeFn: func(msgs []llm.Message) (string, error) { return fakeAutoAddSuggestionJSON, nil }}, ChatModel: "m"}
+	verificationRelease := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseVerification := func() { releaseOnce.Do(func() { close(verificationRelease) }) }
+	t.Cleanup(releaseVerification)
+	pipe := &pipeline.Pipeline{LLM: fakeLLM{completeFn: func(msgs []llm.Message) (string, error) {
+		switch {
+		case strings.Contains(msgs[0].Content, "strict fact-checker"):
+			<-verificationRelease
+			return `{"valid":true,"reason":""}`, nil
+		case strings.Contains(msgs[0].Content, "fill-in-the-blank recall question"):
+			return `{"prompt":"She stayed ___.","answer":"resilient"}`, nil
+		default:
+			return fakeAutoAddSuggestionJSON, nil
+		}
+	}}, ChatModel: "m"}
 
 	if err := RunWordAutoAddInline(context.Background(), pipe, words, st, nil, "alex"); err != nil {
 		t.Fatalf("RunWordAutoAddInline() error = %v", err)
@@ -51,6 +68,20 @@ func TestRunWordAutoAddSavesSuggestionsAndCompletesJob(t *testing.T) {
 			t.Errorf("word %q status = %q, want %q — verification runs separately", w.Word, w.Status, wordreview.StatusPending)
 		}
 	}
+
+	releaseVerification()
+	waitForCondition(t, 2*time.Second, func() bool {
+		saved, err := words.List(context.Background(), "alex")
+		if err != nil || len(saved) != 2 {
+			return false
+		}
+		for _, w := range saved {
+			if w.Status != wordreview.StatusVerified || !wordreview.QuestionReady(w) {
+				return false
+			}
+		}
+		return true
+	})
 }
 
 // TestRunWordAutoAddIsNoopWhenNotPending guards against a stale reap-retry

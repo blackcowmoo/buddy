@@ -39,23 +39,57 @@ corrections**.
 │  (WebGPU) ◀──────│◀─assistant_done│            │                                  │
 │                  │                │  ┌─────────▼───────────────────────┐          │
 │ correction cards │◀─correction────│  │ REFINE track (goroutine):       │          │
-│ refined subtitle │◀─refined_──────│  │ same candidates, Judge-model    │          │
-└──────────────────┘   transcript   │  │ reconciliation → LLM grammar/   │          │
-                                    │  │ context fix → upgrade session   │          │
+│ refined subtitle │◀─refined_──────│  │ same candidates, Analysis →     │          │
+└──────────────────┘   transcript   │  │ Judge → LLM grammar/context fix │          │
+                                    │  │ → upgrade shared session        │          │
                                     │  └──────────────────────────────────┘         │
                                     └───────────────────────────────────────────────┘
 ```
 
-- **FAST** gives the "real-time" feel: every STT engine is called concurrently,
-  a quick chat-model pass reconciles disagreements (e.g. mis-heard homophones)
-  using the conversation for context, and the reply streams from that transcript.
-- **REFINE** runs in the background: the exact same STT candidates go to Judge
-  (a stronger model, more care, same context) for a second opinion — no
-  re-transcription needed — then runs grammar/vocabulary correction. If Judge's
-  reconciliation differs from FAST's quick pick, it rewrites the last user turn
-  in the shared session so future replies use the more accurate wording. This is
-  the "middle LLM cleans the context" idea, now also applied to what was heard,
-  not just what was said.
+- **FAST** gives the "real-time" feel: every STT engine is called concurrently
+  and a quick chat-model pass reconciles disagreements (e.g. misheard
+  homophones) using the conversation for context. The result is an editable
+  voice draft; no reply or correction starts until the learner confirms it.
+- **REFINE** continues from that exact fast result: the same STT candidates and
+  Chat draft go through Analysis and Judge for a second opinion, with no
+  re-transcription. A different terminal result may update only an untouched,
+  still-unconfirmed voice draft. Learner edits and confirmed chat messages are
+  never rewritten. Once confirmed, the reply stays Chat-only while its learning
+  feedback follows the presentation policy below.
+
+## Ordered LLM cascade
+
+Learning-facing generation follows one data-flow invariant:
+
+```text
+original task + input
+        │
+        ▼
+Chat draft ──▶ Analysis refinements (concurrent) ──▶ Judge final
+     └──────────────────────▶──────────────────────────┘
+```
+
+Analysis receives the exact Chat draft rather than restarting the task. Judge
+receives the original task/input, that Chat draft, and every successful
+Analysis result as reference material, then produces the final answer itself.
+This keeps earlier work useful without turning Judge into a simple vote or
+merge step.
+
+The presentation policy depends on whether changing a visible result would
+break the interaction:
+
+| Output | What the learner sees |
+|---|---|
+| Conversation reply and live word suggestion/definition | Chat result only; an already-read real-time result is never rewritten. |
+| Editable voice transcript | The fast STT/Chat draft appears in the composer; Analysis/Judge may upgrade it only while it remains untouched and unconfirmed. |
+| Per-message correction | Chat preview immediately, still marked as refining; a changed Judge result replaces it and becomes unread feedback on that room/turn. Opening the panel acknowledges it on the server. |
+| Ambiguous quiz-answer validation | Chat verdict immediately; Analysis/Judge continue from that exact verdict and cache the final decision for the next equivalent check, without reversing a grade already shown. |
+| Assistant translation, article study, study summary/quiz, writing prompt, word verification/review generation, room title, profile and compaction | Chat and Analysis stay internal; only the completed Judge result is published or persisted as the finished artifact. |
+
+Queued correction jobs persist the Chat draft in their payload, so a retry on
+another replica continues the same chain. Final corrections and their unread
+state are stored in MySQL; the room list therefore stays consistent across
+reloads and devices rather than relying on browser-only state.
 
 ## Persistent per-user memory
 
@@ -154,12 +188,11 @@ replies (Chrome recommended for WebGPU).
 
 **LLM (chat + analysis) — llama.cpp:**
 
-The pipeline calls three independent LLM purposes (see
-`internal/pipeline.Pipeline`): **Chat** (FAST track's streamed reply, one
-endpoint), **Analysis** (REFINE track's grammar-correction/compaction pass —
-every configured endpoint is called concurrently as an ensemble), and
-**Judge** (independently solves the original REFINE task and uses Analysis
-outputs as advisory evidence, even when only one candidate succeeds).
+The pipeline calls three ordered LLM roles (see
+`internal/pipeline.Pipeline`): **Chat** produces low-latency replies and first
+drafts, every configured **Analysis** endpoint concurrently refines that exact
+draft, and **Judge** independently solves the original task after receiving
+the original input and all prior-stage outputs.
 
 ```bash
 # build llama.cpp, then run its OpenAI-compatible server (one per model):
@@ -255,9 +288,9 @@ this table is a deployment-focused summary).
 | `MYSQL_RW_HOSTNAME` | MySQL primary (read-write) host. Required — the server fails to start if it can't connect. The table it creates is `buddy_profiles` (prefixed so it can share a database with other services). |
 | `MYSQL_USERNAME`, `MYSQL_PASSWORD`, `MYSQL_DATABASE` | Credentials and database for the store. `MYSQL_PORT` defaults to `3306`. |
 | `MYSQL_RO_HOSTNAME` | Optional read replica; `Load` reads from it to offload the primary. Leave unset to read from the primary (strongly consistent). |
-| `BUDDY_LLM_CHAT_URL` | Your `model@url` OpenAI-compatible endpoint for the FAST track's reply (llama.cpp `llama-server`, vLLM, LM Studio, hosted API) — a bare `url` with no `model@` prefix is also accepted. Without it, chat silently degrades to an offline echo. |
-| `BUDDY_LLM_ANALYSIS_URLS` | Comma-separated `model@url` pairs for the REFINE track's grammar-correction/compaction ensemble — every one is called concurrently. One env var per endpoint (not a second `_MODELS` list kept in sync by index). |
-| `BUDDY_LLM_JUDGE_URL` | `model@url` endpoint that independently performs the final REFINE task while using successful Analysis outputs as advisory evidence. Called even when only one (or no) Analysis candidate succeeds. |
+| `BUDDY_LLM_CHAT_URL` | Your `model@url` low-latency endpoint for immutable real-time replies and the first draft of learning work (llama.cpp `llama-server`, vLLM, LM Studio, hosted API). A bare `url` is also accepted. Without it, chat silently degrades to an offline echo. |
+| `BUDDY_LLM_ANALYSIS_URLS` | Comma-separated `model@url` pairs; every endpoint concurrently refines the exact Chat draft. One env var per endpoint (not a second `_MODELS` list kept in sync by index). |
+| `BUDDY_LLM_JUDGE_URL` | `model@url` endpoint that produces the terminal result from the original task/input, Chat draft, and successful Analysis outputs. Called even when only one (or no) Analysis candidate succeeds. |
 | `BUDDY_LLM_API_KEY` | Only if your LLM endpoints need a bearer token (e.g. a hosted API) — shared by all three above. |
 | `WHISPER_SERVER_URLS` | Comma-separated `model@url` pairs for whisper.cpp `server`-style (native `/inference`) endpoint(s); one ensemble member, called concurrently with every other configured STT engine on each utterance and reconciled by an LLM (round-robining internally if it has multiple entries of its own). Setting any `*_SERVER_URLS` var takes priority over `BUDDY_FAST_STT`/`BUDDY_SLOW_STT` below. See `internal/config.sttEngines` for adding another engine (e.g. `PARAKEET_SERVER_URLS`) — every engine set contributes a candidate, they don't compete for priority. |
 | `BUDDY_IDENTITY_MODE=oidc` | Switches from the anonymous local-dev cookie to verifying a Dex-issued JWT. |

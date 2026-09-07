@@ -16,6 +16,19 @@ import (
 
 // ---- correction ---------------------------------------------------------
 
+func TestCorrectionChangedFromChatDraft(t *testing.T) {
+	preview := `{"corrected":"I like pizza.","translation":"저는 피자를 좋아해요.","issues":[]}`
+	if correctionChangedFromChatDraft(preview, " I like pizza. ", nil, "저는 피자를 좋아해요.") {
+		t.Fatal("equivalent Chat and Judge results were marked changed")
+	}
+	if !correctionChangedFromChatDraft(preview, "I like pizza.", nil, "나는 피자를 좋아해.") {
+		t.Fatal("translation-only Judge revision was not marked changed")
+	}
+	if !correctionChangedFromChatDraft("not json", "I like pizza.", nil, "") {
+		t.Fatal("a final result without a usable Chat draft must be marked changed")
+	}
+}
+
 func TestNewCorrectHookReturnsNilWithoutQueue(t *testing.T) {
 	pipe := &pipeline.Pipeline{}
 	if hook := NewCorrectHook(pipe, newFakeStore(), nil, nil, nil, nil, nil); hook != nil {
@@ -41,7 +54,7 @@ func TestCorrectHookFastPathPersistsAndCallsOnResult(t *testing.T) {
 	var gotCorrected, gotTranslation string
 	var gotIssues []protocol.Issue
 	var called bool
-	hook(context.Background(), "alex", "sess-correct", 1, "he go school", "",
+	hook(context.Background(), "alex", "sess-correct", 1, "he go school", "", "",
 		func(corrected string, issues []protocol.Issue, translation string) {
 			called = true
 			gotCorrected, gotIssues, gotTranslation = corrected, issues, translation
@@ -103,7 +116,7 @@ func TestCorrectHookFastPathCapturesVocabularyWord(t *testing.T) {
 	words := newFakeWordReviewStore()
 	hook := NewCorrectHook(pipe, st, words, nil, nil, nil, queue)
 
-	hook(context.Background(), "alex", "sess-correct-capture", 1, "I was very angry", "",
+	hook(context.Background(), "alex", "sess-correct-capture", 1, "I was very angry", "", "",
 		func(corrected string, issues []protocol.Issue, translation string) {},
 		func() { t.Fatalf("onFailure called unexpectedly") },
 	)
@@ -137,7 +150,7 @@ func TestCorrectHookFastPathCallsOnFailureAndMarksJobFailed(t *testing.T) {
 	hook := NewCorrectHook(pipe, st, nil, nil, nil, nil, queue)
 
 	var onResultCalled, onFailureCalled bool
-	hook(context.Background(), "alex", "sess-correct-fail", 1, "he go school", "",
+	hook(context.Background(), "alex", "sess-correct-fail", 1, "he go school", "", "",
 		func(corrected string, issues []protocol.Issue, translation string) { onResultCalled = true },
 		func() { onFailureCalled = true },
 	)
@@ -273,7 +286,7 @@ func TestTranslateHookFastPathPersistsAndCallsOnResult(t *testing.T) {
 
 	var got string
 	var called bool
-	hook(context.Background(), "alex", "sess-translate", 1, "Nice to meet you!", func(translation string) {
+	hook(context.Background(), "alex", "sess-translate", 1, "Nice to meet you!", "", func(translation string) {
 		called = true
 		got = translation
 	})

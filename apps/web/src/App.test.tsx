@@ -58,6 +58,7 @@ vi.mock("./lib/sessions", async (importOriginal) => {
     markInstant: vi.fn(),
     fetchSessionDetail: vi.fn(),
     fetchSessionCompaction: vi.fn(),
+    markCorrectionRead: vi.fn(),
     deleteSession: vi.fn(),
     endSession: vi.fn(),
     restudySession: vi.fn(),
@@ -115,6 +116,7 @@ import {
   fetchSessionDetail,
   fetchSessions,
   markInstant,
+  markCorrectionRead,
   markQuizCompleted,
   resetQuiz,
   restudySession,
@@ -136,6 +138,7 @@ beforeEach(() => {
   vi.mocked(fetchSessions).mockResolvedValue([]);
   vi.mocked(fetchInstantSessions).mockResolvedValue([]);
   vi.mocked(markInstant).mockResolvedValue(true);
+  vi.mocked(markCorrectionRead).mockResolvedValue(true);
   vi.mocked(fetchSessionDetail).mockResolvedValue(null);
   vi.mocked(fetchSessionCompaction).mockResolvedValue(null);
   vi.mocked(restudySession).mockResolvedValue(true);
@@ -314,6 +317,18 @@ describe("room list", () => {
     ]);
     render(<App />);
     expect(await screen.findByText("hello there")).toBeInTheDocument();
+  });
+
+  it("shows unread refined feedback only on the room that contains it", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "needs review", createdAt: 1, updatedAt: 2, unreadCorrections: 2 },
+      { id: "s2", title: "already read", createdAt: 1, updatedAt: 2 },
+    ]);
+    render(<App />);
+
+    expect(await screen.findByText("새 피드백 2")).toBeInTheDocument();
+    expect(screen.getByText("needs review").closest("li")?.textContent).toContain("새 피드백 2");
+    expect(screen.getByText("already read").closest("li")?.textContent).not.toContain("새 피드백");
   });
 
   // Guards the "still in progress" indicator this feature adds: a room
@@ -1542,6 +1557,7 @@ describe("quick mode (인스턴트 대화)", () => {
       emit({
         type: "correction",
         turn: 1,
+        final: true,
         correction: { original: "I are happy today.", corrected: "I am happy today.", issues: [] },
       }),
     );
@@ -1578,6 +1594,7 @@ describe("quick mode (인스턴트 대화)", () => {
       emit({
         type: "correction",
         turn: 1,
+        final: true,
         correction: { original: "I are happy today.", corrected: "I am happy today.", issues: [] },
       }),
     );
@@ -1934,6 +1951,7 @@ describe("correction cards", () => {
       emit({
         type: "correction",
         turn: 1,
+        final: true,
         correction: {
           original: "I are fine.",
           corrected: "I am fine.",
@@ -2018,11 +2036,109 @@ describe("grammar feedback button", () => {
       emit({
         type: "correction",
         turn: 1,
+        final: true,
         correction: { original: "I am fine.", corrected: "I am fine.", issues: [] },
       }),
     );
-    await user.click(await screen.findByRole("button", { name: "문법 피드백 열기 (문제 없음)" }));
+    await user.click(await screen.findByRole("button", { name: /문법 피드백 열기 \(문제 없음\)/ }));
     expect(await screen.findByText("문법 문제가 없어요 👍")).toBeInTheDocument();
+  });
+
+  it("keeps the Chat preview readable while Analysis and Judge are still refining it", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    act(() => emit({ type: "final_transcript", turn: 1, text: "I are fine." }));
+    act(() => emit({
+      type: "correction",
+      turn: 1,
+      correction: { original: "I are fine.", corrected: "I am fine.", issues: [] },
+    }));
+
+    const previewButton = await screen.findByRole("button", {
+      name: "빠른 문법 피드백 열기 (정밀 검토 중)",
+    });
+    expect(previewButton).not.toBeDisabled();
+    await user.click(previewButton);
+    expect(await screen.findByText("더 정확하게 검토하고 있어요.")).toBeInTheDocument();
+    expect(screen.getByText("I am fine.")).toBeInTheDocument();
+  });
+
+  it("marks only a changed Judge result as new feedback", async () => {
+    render(<App />);
+    await enterNewChat(userEvent.setup());
+    act(() => emit({ type: "final_transcript", turn: 1, text: "I are fine." }));
+    const preview = {
+      original: "I are fine.", corrected: "I are fine.", issues: [], translation: "나는 괜찮아.",
+    };
+    act(() => emit({ type: "correction", turn: 1, correction: preview }));
+    act(() => emit({ type: "correction", turn: 1, final: true, correction: preview }));
+    expect(await screen.findByRole("button", { name: "문법 피드백 열기 (문제 없음)" })).toBeInTheDocument();
+
+    act(() => emit({
+      type: "correction",
+      turn: 1,
+      final: true,
+      correction: {
+        original: "I are fine.",
+        corrected: "I are fine.",
+        issues: [],
+        translation: "나는 잘 지내.",
+      },
+    }));
+    expect(await screen.findByRole("button", {
+      name: "문법 피드백 열기 (문제 없음) (새 정밀 결과)",
+    })).toBeInTheDocument();
+  });
+
+  it("trusts the server's unchanged decision when a terminal result arrives without its preview", async () => {
+    render(<App />);
+    await enterNewChat(userEvent.setup());
+    act(() => emit({ type: "final_transcript", turn: 1, text: "I am fine." }));
+    act(() => emit({
+      type: "correction",
+      turn: 1,
+      final: true,
+      changed: false,
+      correction: { original: "I am fine.", corrected: "I am fine.", issues: [] },
+    }));
+
+    expect(await screen.findByRole("button", {
+      name: "문법 피드백 열기 (문제 없음)",
+    })).toBeInTheDocument();
+    expect(screen.queryByLabelText("새 정밀 결과")).not.toBeInTheDocument();
+  });
+
+  it("acknowledges persisted unread feedback only after its panel is opened", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, unreadCorrections: 1 },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
+      session: { id: "s1", title: "hello there", createdAt: 1, updatedAt: 2, unreadCorrections: 1 },
+      turns: [{
+        turn: 1,
+        role: "user",
+        text: "I are fine.",
+        refined: false,
+        translation: "나는 괜찮아.",
+        correctionStage: "judge",
+        correctionUnread: true,
+        correction: { original: "I are fine.", corrected: "I am fine.", issues: [] },
+      }],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText("hello there"));
+
+    expect(markCorrectionRead).not.toHaveBeenCalled();
+    await user.click(await screen.findByRole("button", {
+      name: "문법 피드백 열기 (새 정밀 결과)",
+    }));
+    expect(markCorrectionRead).toHaveBeenCalledWith("s1", 1);
+    expect(await screen.findByRole("button", {
+      name: "문법 피드백 열기",
+    })).toBeInTheDocument();
   });
 
   // A session with no recent activity (updatedAt long in the past) is
@@ -2081,7 +2197,7 @@ describe("grammar feedback button", () => {
     render(<App />);
     await enterNewChat(user);
     act(() => emit({ type: "final_transcript", turn: 1, text: "I are fine." }));
-    act(() => emit({ type: "correction", turn: 1, failed: true }));
+    act(() => emit({ type: "correction", turn: 1, failed: true, final: true }));
 
     const btn = await screen.findByRole("button", {
       name: "문법 피드백 열기 (확인 실패, 자동으로 다시 시도해요)",
@@ -2147,6 +2263,7 @@ describe("feedback summary", () => {
       emit({
         type: "correction",
         turn: 1,
+        final: true,
         correction: {
           original: "I are fine.",
           corrected: "I am fine.",
@@ -2167,6 +2284,7 @@ describe("feedback summary", () => {
       emit({
         type: "correction",
         turn: 2,
+        final: true,
         correction: { original: "I am fine.", corrected: "I am fine.", issues: [] },
       }),
     );
@@ -2175,6 +2293,7 @@ describe("feedback summary", () => {
       emit({
         type: "correction",
         turn: 3,
+        final: true,
         correction: {
           original: "She go home.",
           corrected: "She goes home.",
@@ -2416,6 +2535,7 @@ describe("grammar feedback popover dismissal", () => {
       emit({
         type: "correction",
         turn: 1,
+        final: true,
         correction: { original: "I are fine.", corrected: "I am fine.", issues: [] },
       }),
     );
@@ -2434,6 +2554,7 @@ describe("grammar feedback popover dismissal", () => {
       emit({
         type: "correction",
         turn: 1,
+        final: true,
         correction: { original: "I are fine.", corrected: "I am fine.", issues: [] },
       }),
     );

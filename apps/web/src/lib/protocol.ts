@@ -24,6 +24,9 @@ export interface Correction {
   original: string;
   corrected: string;
   issues: Issue[];
+  // Duplicates the turn-level display translation so a translation-only
+  // Judge revision still participates in preview/final unread comparison.
+  translation?: string;
 }
 
 // One sentence of the end-of-conversation study wrap-up (see
@@ -84,6 +87,12 @@ export interface ServerEvent {
   // Resolved session (chat room) ID. Only set on "ready".
   session?: string;
   correction?: Correction;
+  // On correction events: false/absent is the quick Chat preview; true is
+  // the terminal Judge result after Analysis has refined that same draft.
+  final?: boolean;
+  // True when that terminal result differs from the Chat preview. The server
+  // computes this before either asynchronous persistence write can race.
+  changed?: boolean;
   // Only on "correction": true when the analysis pass itself errored (LLM
   // call failed, or its output didn't parse) — as opposed to `correction`
   // present with an empty `issues` array, which means the pass ran fine and

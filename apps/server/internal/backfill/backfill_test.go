@@ -154,6 +154,18 @@ func (f *fakeStore) SaveCorrection(ctx context.Context, userID, sessionID string
 	return nil
 }
 
+func (f *fakeStore) SaveCorrectionFinal(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction, unread bool) error {
+	return f.SaveCorrection(ctx, userID, sessionID, turn, c)
+}
+
+func (f *fakeStore) SaveCorrectionPreview(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction) error {
+	return f.SaveCorrection(ctx, userID, sessionID, turn, c)
+}
+
+func (f *fakeStore) MarkCorrectionRead(ctx context.Context, userID, sessionID string, turn int) error {
+	return nil
+}
+
 func (f *fakeStore) ReserveCorrectionJob(ctx context.Context, userID, sessionID string, turn int) error {
 	return errors.New("not used by these tests")
 }

@@ -2,7 +2,7 @@
 //
 //	FAST   : STT ensemble, quick-synthesized -> streamed LLM reply (low
 //	         latency, what the user hears)
-//	REFINE : the SAME STT candidates, Judge-synthesized with more care ->
+//	REFINE : the SAME STT candidates, Analysis/Judge-synthesized with more care ->
 //	         grammar/context correction (background, more accurate)
 //
 // Every configured STT engine is called concurrently on each utterance (see
@@ -10,10 +10,17 @@
 // homophone) are reconciled by an LLM using the conversation for context,
 // not by picking one engine as "the" answer. FAST does this quickly with the
 // chat model so the reply doesn't stall; REFINE reruns the same
-// reconciliation with Judge in the background — a stronger model, same
-// inputs — as a second, more careful opinion, without re-running STT. The
-// two tracks share the session so REFINE can upgrade the last user turn if
-// it lands on a better answer.
+// reconciliation through Analysis and Judge in the background — stronger
+// models, the same inputs and Chat result — without re-running STT. The
+// REFINE may upgrade only the still-unconfirmed voice draft if it lands on a
+// better answer; a learner edit or confirmed conversation turn is never
+// rewritten.
+//
+// Within model-generated learning work, refinement always follows one
+// ordered cascade: Chat draft -> concurrent Analysis refinements -> Judge
+// final. Each stage receives the actual preceding output. Conversation
+// replies are intentionally Chat-only because changing a message after the
+// learner has read it would break conversational continuity.
 package pipeline
 
 import (
@@ -59,9 +66,8 @@ func BuildSystemPrompt(style, learnerProfile string) string {
 	return prompt
 }
 
-// Candidate is one ensemble member consulted during REFINE-track analysis
-// (grammar correction, context compaction): a model and the endpoint that
-// serves it. See Pipeline.Analysis and analyze().
+// Candidate is one Analysis-stage ensemble member: a model and the endpoint
+// that serves it. See Pipeline.Analysis and analyze().
 type Candidate struct {
 	LLM   llm.Client
 	Model string
@@ -73,24 +79,24 @@ type Pipeline struct {
 	// the zero-setup mock default) just skips the reconciliation LLM call.
 	STT []stt.Recognizer
 
-	// LLM/ChatModel: FAST track's streamed reply — one model, low latency.
-	// Also does the FAST track's quick STT-candidate reconciliation.
+	// LLM/ChatModel: the low-latency first stage. It owns streamed conversation
+	// replies (which are immutable once shown), quick STT reconciliation, and
+	// the initial draft for every learning-facing cascade.
 	LLM       llm.Client
 	ChatModel string
 
-	// Analysis: REFINE track's grammar-correction/compaction pass. Every
-	// candidate is asked concurrently (analyze()), and their outputs become
-	// advisory evidence for Judge's own final analysis. Multiple local models
+	// Analysis: the middle stage for learning-facing work. Every candidate is
+	// asked concurrently to refine the exact Chat draft (analyze()), and their
+	// outputs become advisory evidence for Judge's final analysis. Multiple local models
 	// (e.g. several checkpoints behind llama.cpp) can therefore contribute
 	// observations without constraining the strongest model to merely merging
 	// their answers.
 	Analysis []Candidate
-	// Judge independently performs the original task, using successful
-	// Analysis outputs as untrusted supporting material. It is called even
+	// Judge independently performs the original task, using the Chat draft and
+	// successful Analysis outputs as untrusted supporting material. It is called even
 	// when only one (or no) Analysis candidate succeeds; if nil or failing,
 	// analyze() falls back to the first successful Analysis candidate.
-	// Also does the REFINE track's STT-candidate reconciliation (refine()) —
-	// a second, more careful opinion than the FAST track's chat-model pass.
+	// It is also the terminal stage of STT-candidate refinement.
 	Judge      llm.Client
 	JudgeModel string
 
@@ -167,15 +173,15 @@ type ReplyHook func(ctx context.Context, userID, sessionID string, turn int, msg
 // CorrectHook is Pipeline.CorrectHook's type. Exactly one of onResult/
 // onFailure fires, however (and on whichever replica) the job settles:
 // onResult delivers the parsed analysis result, onFailure signals that the
-// analysis pass itself errored (LLM call failed, or its output didn't
+// refinement cascade itself errored (LLM call failed, or its output didn't
 // parse) — see correct()'s doc comment for why the live connection needs to
 // hear about a failure too, not just a durably-persisted job status.
-type CorrectHook func(ctx context.Context, userID, sessionID string, turn int, text, contextMsg string, onResult func(corrected string, issues []protocol.Issue, translation string), onFailure func())
+type CorrectHook func(ctx context.Context, userID, sessionID string, turn int, text, contextMsg, chatDraft string, onResult func(corrected string, issues []protocol.Issue, translation string), onFailure func())
 
 // TranslateHook is Pipeline.TranslateHook's type. onResult delivers the
 // finished translation exactly once, however (and on whichever replica) it
 // was produced.
-type TranslateHook func(ctx context.Context, userID, sessionID string, turn int, text string, onResult func(translation string))
+type TranslateHook func(ctx context.Context, userID, sessionID string, turn int, text, chatDraft string, onResult func(translation string))
 
 // TitleHook is Pipeline.TitleHook's type — see that field's doc comment.
 type TitleHook func(ctx context.Context, userID, sessionID string, turn int, transcript []llm.Message)
@@ -222,12 +228,13 @@ func (p *Pipeline) HandleUtterance(ctx context.Context, userID, sessionID string
 	}
 	emit(protocol.ServerEvent{Type: protocol.EvPendingTranscript, Text: userText, Source: protocol.SourceVoice})
 
-	// --- REFINE track: a slower, more careful reconciliation pass that may
-	// upgrade the draft the learner is currently reviewing --------------
-	if p.Judge == nil {
+	// --- REFINE track: continue from the exact fast result through Analysis
+	// and Judge. No STT engine is called again. ---------------------------
+	if len(p.Analysis) == 0 && p.Judge == nil {
 		return
 	}
-	refined, err := p.synthesizeTranscript(ctx, p.Judge, p.JudgeModel, summary, recent, candidates)
+	refined, err := p.analyzeFromDraft(ctx, transcriptSynthesisSystemPrompt,
+		renderTranscriptSynthesisInput(summary, recent, candidates), false, userText)
 	if err != nil {
 		log.Printf("refine: %v", err)
 		return

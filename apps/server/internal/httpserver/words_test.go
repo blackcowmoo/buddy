@@ -235,7 +235,7 @@ func (f *fakeWordStore) Save(ctx context.Context, userID, word, meaning, example
 			return w, nil
 		}
 	}
-	saved := wordreview.Word{ID: "new-id", UserID: userID, Word: word, Meaning: meaning, Example: example, Status: wordreview.StatusPending}
+	saved := wordreview.Word{ID: "new-id-" + word, UserID: userID, Word: word, Meaning: meaning, Example: example, Status: wordreview.StatusPending}
 	if f.byUser == nil {
 		f.byUser = map[string][]wordreview.Word{}
 	}
@@ -796,6 +796,13 @@ func (f *fakeWordAutoSuggestLLM) ChatStream(ctx context.Context, model string, m
 }
 
 func (f *fakeWordAutoSuggestLLM) Complete(ctx context.Context, model string, msgs []llm.Message, jsonMode bool) (string, error) {
+	system := msgs[0].Content
+	if strings.Contains(system, "strict fact-checker") {
+		return `{"valid":true,"reason":""}`, nil
+	}
+	if strings.Contains(system, "fill-in-the-blank recall question") {
+		return `{"prompt":"She stayed ___ through the setback.","answer":"resilient"}`, nil
+	}
 	return f.complete(msgs)
 }
 
@@ -840,16 +847,19 @@ func TestWordAutoAddReservesPendingAndCompletesInBackground(t *testing.T) {
 		t.Fatalf("addedCount = %d, want 2", count)
 	}
 
-	wordStore.mu.Lock()
-	defer wordStore.mu.Unlock()
-	if len(wordStore.byUser["alex"]) != 2 {
-		t.Fatalf("byUser[alex] = %+v, want both suggestions saved", wordStore.byUser["alex"])
-	}
-	for _, w := range wordStore.byUser["alex"] {
-		if w.Status != wordreview.StatusPending {
-			t.Errorf("word %q status = %q, want %q — verification runs in the background", w.Word, w.Status, wordreview.StatusPending)
+	waitForCondition(t, 2*time.Second, func() bool {
+		wordStore.mu.Lock()
+		defer wordStore.mu.Unlock()
+		if len(wordStore.byUser["alex"]) != 2 {
+			return false
 		}
-	}
+		for _, w := range wordStore.byUser["alex"] {
+			if w.Status != wordreview.StatusVerified {
+				return false
+			}
+		}
+		return true
+	})
 }
 
 func TestWordAutoAddAlreadyPendingReturnsCurrentStatusWithoutStartingAnotherRun(t *testing.T) {

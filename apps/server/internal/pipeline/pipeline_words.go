@@ -3,7 +3,6 @@ package pipeline
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"unicode"
 
@@ -70,14 +69,7 @@ Rules:
 // model. The caller persists this value with the prompt and answer so legacy
 // questions can be regenerated and stale workers can be rejected atomically.
 func (p *Pipeline) GenerateWordReviewQuestion(ctx context.Context, word, meaning, example string) (wordreview.Question, error) {
-	if p.LLM == nil {
-		return wordreview.Question{}, fmt.Errorf("word review question: no chat model configured")
-	}
-	msgs := []llm.Message{
-		{Role: llm.RoleSystem, Content: wordReviewQuestionSystemPrompt(p.FeedbackLang)},
-		{Role: llm.RoleUser, Content: fmt.Sprintf("dictionary word: %s\nmeaning: %s\nexisting example: %s", word, meaning, example)},
-	}
-	raw, err := p.LLM.Complete(ctx, p.ChatModel, msgs, true)
+	raw, err := p.analyze(ctx, wordReviewQuestionSystemPrompt(p.FeedbackLang), fmt.Sprintf("dictionary word: %s\nmeaning: %s\nexisting example: %s", word, meaning, example), true)
 	if err != nil {
 		return wordreview.Question{}, err
 	}
@@ -176,11 +168,8 @@ func (p *Pipeline) DefineWordMeanings(ctx context.Context, word, passage string)
 
 func (p *Pipeline) defineWordMeanings(ctx context.Context, word, passage string) ([]protocol.WordSuggestion, error) {
 	native := languageName(p.FeedbackLang)
-	msgs := []llm.Message{
-		{Role: llm.RoleSystem, Content: fmt.Sprintf(`You are a dictionary assistant for a %s-speaking English learner. List 3-6 common meanings of the given English word or phrase in its base dictionary form. Return STRICT JSON only: {"suggestions":[{"word":"...","meaning":"...","example":"..."}]}. Keep word in English, meaning in %s, and give one natural English example for every meaning.`, native, native)},
-		{Role: llm.RoleUser, Content: fmt.Sprintf("word: %s\ncontext: %s", word, passage)},
-	}
-	raw, err := p.LLM.Complete(ctx, p.ChatModel, msgs, true)
+	systemPrompt := fmt.Sprintf(`You are a dictionary assistant for a %s-speaking English learner. List 3-6 common meanings of the given English word or phrase in its base dictionary form. Return STRICT JSON only: {"suggestions":[{"word":"...","meaning":"...","example":"..."}]}. Keep word in English, meaning in %s, and give one natural English example for every meaning.`, native, native)
+	raw, err := p.analyze(ctx, systemPrompt, fmt.Sprintf("word: %s\ncontext: %s", word, passage), true)
 	if err != nil {
 		return nil, err
 	}
@@ -271,8 +260,8 @@ Rules:
 // consistent from click to click.
 const autoAddSuggestionCount = 5
 
-// SuggestNewWords asks the chat model for new English word/phrase candidates
-// to add to a learner's study list on their own initiative — the "새 단어
+// SuggestNewWords generates new English word/phrase candidates through the
+// full ordered cascade, to add to a learner's study list on their own initiative — the "새 단어
 // 추가로 학습하기" button httpserver.wordAutoAddHandler backs, shown once
 // WordReview.tsx's due queue is empty. Unlike SuggestWords, there's no
 // learner-typed description to match: candidates are picked from
@@ -283,14 +272,10 @@ const autoAddSuggestionCount = 5
 // own already-tracked words, any status) is passed so the model doesn't
 // waste a pick re-suggesting something already on the list — real fact
 // checking and any residual duplicate still goes through VerifyWord/Store.Save
-// exactly like a manually picked word, this is just generation, same as
-// SuggestWords.
+// exactly like a manually picked word. The draft stays internal; only the
+// Judge result is returned.
 func (p *Pipeline) SuggestNewWords(ctx context.Context, learnerProfile string, existingWords []string) ([]protocol.WordSuggestion, error) {
-	msgs := []llm.Message{
-		{Role: llm.RoleSystem, Content: wordAutoSuggestSystemPrompt(p.FeedbackLang)},
-		{Role: llm.RoleUser, Content: renderAutoSuggestInput(learnerProfile, existingWords)},
-	}
-	raw, err := p.LLM.Complete(ctx, p.ChatModel, msgs, true)
+	raw, err := p.analyze(ctx, wordAutoSuggestSystemPrompt(p.FeedbackLang), renderAutoSuggestInput(learnerProfile, existingWords), true)
 	if err != nil {
 		return nil, err
 	}
@@ -344,89 +329,35 @@ func renderAutoSuggestInput(learnerProfile string, existingWords []string) strin
 	return b.String()
 }
 
-// minWordVerifyJudges is the minimum number of independent judgments
-// VerifyWord collects before deciding — even a deployment with only one
-// Analysis candidate configured (the common self-hosted single-local-model
-// case, see README) still gets this many independent calls, round-robining
-// through whatever candidates are configured, so "unanimous" always means
-// more than one opinion, not just whatever the one available model said.
-const minWordVerifyJudges = 3
-
 // VerifyWord fact-checks one word/phrase the learner chose to study (see
-// httpserver.wordSaveHandler, transport.WordVerifyJobHandler): is it a real,
-// naturally used English word/phrase/idiom, does meaning accurately describe
-// it, and does example use it correctly. Requires every judge to agree
-// valid=true — a single dissent rejects the word immediately (with that
-// judge's own reason) rather than being reconciled/outvoted the way
-// analyze()'s Judge-led final analysis would; this is a fact-check, not a task
-// where "the best merged answer" makes sense. Deliberately not a dictionary
-// API lookup: this app assumes a local, possibly fully offline LLM (see
-// README's llama.cpp/vLLM/LM Studio setup), so verification stays inside the
-// same LLM infrastructure everything else here already depends on rather
-// than adding a new external network dependency.
+// httpserver.wordSaveHandler, transport.WordVerifyJobHandler). It uses the
+// same Chat -> Analysis -> Judge cascade as every other learning decision:
+// Chat supplies the first verdict, Analysis models refine it, and Judge owns
+// the final boolean/reason after seeing the full chain as evidence.
 //
 // Runs entirely in the background (see transport.WordVerifyJobHandler) —
 // never on a request a learner is waiting on, since a local model can be
-// slow and this makes minWordVerifyJudges calls, not one.
-//
-// Returns an error (not valid=false) if fewer than 2 judge calls succeeded —
-// e.g. every configured endpoint is unreachable — so the caller leaves the
-// word Pending for asyncjob's reaper to retry, instead of wrongly rejecting
-// it over an infrastructure hiccup.
+// slow and this makes several ordered model calls, not one.
 func (p *Pipeline) VerifyWord(ctx context.Context, word, meaning, example string) (valid bool, reason string, err error) {
-	if len(p.Analysis) == 0 {
-		return false, "", fmt.Errorf("verify word: no candidates configured")
+	raw, err := p.analyze(ctx, wordVerifySystemPrompt(p.FeedbackLang), fmt.Sprintf("word: %s\nmeaning: %s\nexample: %s", word, meaning, example), true)
+	if err != nil {
+		return false, "", err
 	}
-	n := minWordVerifyJudges
-	if len(p.Analysis) > n {
-		n = len(p.Analysis)
+	parsed, err := parseJSON[struct {
+		Valid  *bool  `json:"valid"`
+		Reason string `json:"reason"`
+	}](raw, "verify word")
+	if err != nil {
+		return false, "", err
 	}
-
-	msgs := []llm.Message{
-		{Role: llm.RoleSystem, Content: wordVerifySystemPrompt(p.FeedbackLang)},
-		{Role: llm.RoleUser, Content: fmt.Sprintf("word: %s\nmeaning: %s\nexample: %s", word, meaning, example)},
+	if parsed.Valid == nil {
+		return false, "", fmt.Errorf("verify word: response is missing the valid verdict")
 	}
-
-	type verdict struct {
-		valid  bool
-		reason string
-		ok     bool
+	reason = strings.TrimSpace(parsed.Reason)
+	if !*parsed.Valid && reason == "" {
+		return false, "", fmt.Errorf("verify word: rejected response is missing a reason")
 	}
-	// Round-robins through p.Analysis (i % len(p.Analysis)) rather than
-	// indexing directly, since n can exceed len(p.Analysis) — see
-	// minWordVerifyJudges.
-	results := fanOutOrdered(n, func(i int) verdict {
-		c := p.Analysis[i%len(p.Analysis)]
-		text, err := c.LLM.Complete(ctx, c.Model, msgs, true)
-		if err != nil {
-			log.Printf("verify word: candidate %s: %v", c.Model, err)
-			return verdict{}
-		}
-		parsed, err := parseJSON[struct {
-			Valid  bool   `json:"valid"`
-			Reason string `json:"reason"`
-		}](text, "verify word: candidate "+c.Model)
-		if err != nil {
-			log.Printf("%v", err)
-			return verdict{}
-		}
-		return verdict{valid: parsed.Valid, reason: parsed.Reason, ok: true}
-	})
-
-	succeeded := 0
-	for _, r := range results {
-		if !r.ok {
-			continue
-		}
-		succeeded++
-		if !r.valid {
-			return false, r.reason, nil
-		}
-	}
-	if succeeded < 2 {
-		return false, "", fmt.Errorf("verify word: only %d/%d judge calls succeeded", succeeded, n)
-	}
-	return true, "", nil
+	return *parsed.Valid, reason, nil
 }
 
 // wordVerifySystemPrompt builds VerifyWord's fact-checking prompt, reusing

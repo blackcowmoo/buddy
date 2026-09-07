@@ -71,6 +71,18 @@ type ServerEvent struct {
 
 	// Only on EvCorrection.
 	Correction *Correction `json:"correction,omitempty"`
+	// Final distinguishes the quick Chat preview (false) from the terminal
+	// Judge result (true). The preview is immediately useful but remains
+	// visibly "refining" in the client; only a changed final result can become
+	// unread learning feedback.
+	Final bool `json:"final,omitempty"`
+	// Changed is set on a terminal correction when Judge changed any visible
+	// part of the Chat preview, including its translation. Computing this from
+	// the in-memory stage outputs keeps unread state independent of async write
+	// ordering.
+	// Do not omit false: the browser needs an explicit unchanged decision when
+	// a terminal event arrives without its preview (for example after a reconnect).
+	Changed bool `json:"changed"`
 	// Failed is true on an EvCorrection whose analysis pass itself errored
 	// (LLM call failed, or its output didn't parse) — as opposed to
 	// Correction present with an empty Issues slice, which means the pass
@@ -85,6 +97,10 @@ type Correction struct {
 	Original  string  `json:"original"`
 	Corrected string  `json:"corrected"`
 	Issues    []Issue `json:"issues"`
+	// Translation is also persisted separately on the turn for ordinary UI
+	// rendering. Keeping it in the staged correction snapshot makes a
+	// translation-only Judge revision count as unread refined feedback too.
+	Translation string `json:"translation,omitempty"`
 }
 
 // WritingPrompt is a short Korean-to-English sentence exercise personalized

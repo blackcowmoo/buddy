@@ -175,8 +175,8 @@ func toWordItem(w wordreview.Word) wordItem {
 // wordreview's package doc for why.
 //
 // The response comes back the instant the row is saved (status "pending")
-// — it never waits on pipe.VerifyWord, which makes several LLM calls (see
-// pipeline.minWordVerifyJudges) against a possibly slow local model. That
+// — it never waits on pipe.VerifyWord, which runs the multi-model cascade
+// against possibly slow local models. That
 // check is kicked off separately right after, the same "durable queue when
 // Redis is configured, detached inline goroutine otherwise"
 // asyncjob.EnqueueOrRunInline pattern transport.FinalizeSession uses for the

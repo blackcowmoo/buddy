@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 
@@ -60,6 +61,7 @@ type correctionJobPayload struct {
 	UserID, SessionID string
 	Turn              int
 	Text, ContextMsg  string
+	ChatDraft         string
 }
 
 // CorrectionJobHandler builds the asyncjob.Handler that runs one queued
@@ -96,15 +98,16 @@ func CorrectionJobHandler(pipe *pipeline.Pipeline, st store.Store, words wordrev
 		if err := json.Unmarshal(job.Payload, &payload); err != nil {
 			return fmt.Errorf("correction job: bad payload: %w", err)
 		}
-		corrected, issues, translation, err := pipe.AnalyzeCorrection(ctx, payload.Text, payload.ContextMsg)
+		corrected, issues, translation, err := pipe.AnalyzeCorrectionFromDraft(ctx, payload.Text, payload.ContextMsg, payload.ChatDraft)
 		if err != nil {
 			if failErr := st.FailJob(ctx, payload.UserID, payload.SessionID, payload.Turn, "correction", err.Error()); failErr != nil {
 				log.Printf("correction job: fail %s/%s#%d: %v", payload.UserID, payload.SessionID, payload.Turn, failErr)
 			}
 			return fmt.Errorf("correction job: analyze: %w", err)
 		}
-		result := protocol.Correction{Original: payload.Text, Corrected: corrected, Issues: issues}
-		if err := st.SaveCorrection(ctx, payload.UserID, payload.SessionID, payload.Turn, result); err != nil {
+		result := protocol.Correction{Original: payload.Text, Corrected: corrected, Issues: issues, Translation: translation}
+		unread := correctionChangedFromChatDraft(payload.ChatDraft, corrected, issues, translation)
+		if err := st.SaveCorrectionFinal(ctx, payload.UserID, payload.SessionID, payload.Turn, result, unread); err != nil {
 			return fmt.Errorf("correction job: save: %w", err)
 		}
 		captureCorrectionWords(ctx, pipe, words, wordVerifyQueue, payload.UserID, result)
@@ -119,6 +122,24 @@ func CorrectionJobHandler(pipe *pipeline.Pipeline, st store.Store, words wordrev
 		}
 		return nil
 	}
+}
+
+// correctionChangedFromChatDraft derives unread state from the durable Chat
+// handoff itself, rather than whatever correction happens to be in MySQL when
+// this async job completes. That makes the result independent of whether the
+// preview or final goroutine wins the persistence race.
+func correctionChangedFromChatDraft(raw, corrected string, issues []protocol.Issue, translation string) bool {
+	var preview struct {
+		Corrected   string           `json:"corrected"`
+		Translation string           `json:"translation"`
+		Issues      []protocol.Issue `json:"issues"`
+	}
+	if err := json.Unmarshal([]byte(raw), &preview); err != nil {
+		return true
+	}
+	return strings.TrimSpace(preview.Corrected) != strings.TrimSpace(corrected) ||
+		strings.TrimSpace(preview.Translation) != strings.TrimSpace(translation) ||
+		!slices.Equal(preview.Issues, issues)
 }
 
 // NewCorrectHook builds the pipeline.CorrectHook that makes grammar
@@ -141,11 +162,11 @@ func NewCorrectHook(pipe *pipeline.Pipeline, st store.Store, words wordreview.St
 	if queue == nil {
 		return nil
 	}
-	return func(ctx context.Context, userID, sessionID string, turn int, text, contextMsg string, onResult func(string, []protocol.Issue, string), onFailure func()) {
+	return func(ctx context.Context, userID, sessionID string, turn int, text, contextMsg, chatDraft string, onResult func(string, []protocol.Issue, string), onFailure func()) {
 		if err := st.ReserveCorrectionJob(context.Background(), userID, sessionID, turn); err != nil {
 			log.Printf("correct: reserve %s/%s#%d: %v", userID, sessionID, turn, err)
 		}
-		payload := correctionJobPayload{UserID: userID, SessionID: sessionID, Turn: turn, Text: text, ContextMsg: contextMsg}
+		payload := correctionJobPayload{UserID: userID, SessionID: sessionID, Turn: turn, Text: text, ContextMsg: contextMsg, ChatDraft: chatDraft}
 		logID := turnLogID(userID, sessionID, turn)
 		handler := CorrectionJobHandler(pipe, st, words, wordVerifyQueue, studySummaryQueue, studyQuizQueue, onResult)
 		// A dedup or lost-race return (ran=false, err=nil) deliberately
@@ -168,6 +189,7 @@ type liveTranslationJobPayload struct {
 	Turn              int
 	Role              string
 	Text              string
+	ChatDraft         string
 }
 
 func liveTranslationDedupeKey(userID, sessionID string, turn int, role string) string {
@@ -184,7 +206,7 @@ func TranslationJobHandler(pipe *pipeline.Pipeline, st store.Store, onResult fun
 		if err := json.Unmarshal(job.Payload, &payload); err != nil {
 			return fmt.Errorf("translation job: bad payload: %w", err)
 		}
-		translation, err := pipe.AnalyzeTranslation(ctx, payload.Text)
+		translation, err := pipe.AnalyzeTranslationFromDraft(ctx, payload.Text, payload.ChatDraft)
 		if err != nil {
 			return fmt.Errorf("translation job: analyze: %w", err)
 		}
@@ -205,8 +227,8 @@ func NewTranslateHook(pipe *pipeline.Pipeline, st store.Store, queue *asyncjob.Q
 	if queue == nil {
 		return nil
 	}
-	return func(ctx context.Context, userID, sessionID string, turn int, text string, onResult func(string)) {
-		payload := liveTranslationJobPayload{UserID: userID, SessionID: sessionID, Turn: turn, Role: "assistant", Text: text}
+	return func(ctx context.Context, userID, sessionID string, turn int, text, chatDraft string, onResult func(string)) {
+		payload := liveTranslationJobPayload{UserID: userID, SessionID: sessionID, Turn: turn, Role: "assistant", Text: text, ChatDraft: chatDraft}
 		logID := turnLogID(userID, sessionID, turn)
 		dedupeKey := liveTranslationDedupeKey(userID, sessionID, turn, "assistant")
 		queue.EnqueueAndTryRun(context.Background(), asyncjob.KindLiveTranslation, dedupeKey, logID, payload, LiveTranslationClaimTTL, TranslationJobHandler(pipe, st, onResult))

@@ -134,6 +134,8 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 			refined     TINYINT(1)   NOT NULL DEFAULT 0,
 			source      VARCHAR(8)   NOT NULL DEFAULT '',
 			correction  TEXT         NULL,
+			correction_stage VARCHAR(8) NOT NULL DEFAULT '',
+			correction_unread TINYINT(1) NOT NULL DEFAULT 0,
 			translation TEXT         NULL,
 			meta        TEXT         NULL,
 			created_at  BIGINT       NOT NULL,
@@ -300,6 +302,16 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 		WHERE study_summary_status = 'done' AND study_summary <> '' AND LEFT(study_summary, 1) <> '['
 	`, JobStatusPending)
 			return err
+		}},
+		// A correction can now be a quick Chat preview or the terminal Judge
+		// result. Existing corrections predate the distinction and are treated
+		// as final/read, preserving their old UX without creating a surprise
+		// backlog of notifications during rollout.
+		{15, "turns.correction_stage", func(context.Context, *sql.DB) error {
+			return addColumn(turnsTable, "correction_stage VARCHAR(8) NOT NULL DEFAULT ''", "correction_stage")
+		}},
+		{16, "turns.correction_unread", func(context.Context, *sql.DB) error {
+			return addColumn(turnsTable, "correction_unread TINYINT(1) NOT NULL DEFAULT 0", "correction_unread")
 		}},
 	}
 	if err := migration.ApplyLegacy(context.Background(), rw, "store", steps); err != nil {

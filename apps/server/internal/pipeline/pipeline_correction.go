@@ -4,28 +4,24 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 
 	"buddy/server/internal/llm"
 	"buddy/server/internal/protocol"
 )
 
-// correct asks the analysis ensemble for grammar/vocabulary/context feedback
-// as strict JSON, then lets Judge independently produce the final result with
-// those outputs as advisory evidence. contextMsg
+// correct runs grammar/vocabulary/context feedback through Chat -> Analysis
+// -> Judge. contextMsg
 // (from renderCorrectionContext) is the conversation the sentence was said
 // in, folded into the analysis input the same way compaction folds its
 // prior-summary context; it is empty on the first turn.
 //
-// This runs FAST then REFINE, the same shape refine() already uses for
-// transcription: AnalyzeCorrectionFast (one quick chat-model call) emits
-// first so the learner sees feedback without waiting on the analysis
-// ensemble; the ensemble pass below then emits again ONLY if its answer
-// actually differs from what the fast pass already showed (see
-// correctionsEqual) — the same only-patch-if-it-changed rule refine()
-// applies to EvRefined. If the fast pass itself failed, the ensemble's
-// result is emitted unconditionally, since there's nothing yet to compare it
-// against.
+// The Chat result is emitted first so the learner can inspect it without
+// waiting. That exact raw JSON is handed to Analysis and Judge, and a terminal
+// event always follows so the client can end its refining state. A changed
+// terminal result becomes unread feedback; an identical result merely
+// confirms the preview and creates no reminder.
 //
 // Callers pass context.WithoutCancel(ctx) (see HandleText/refine above), not
 // the caller's turn-scoped or connection ctx directly: a barge-in or
@@ -39,51 +35,61 @@ import (
 // error, that spinner used to hang forever (live) or quietly vanish once the
 // turn aged out of the frontend's "recently active" window (reloaded) —
 // indistinguishable from "already correct", which is exactly the confusion
-// this exists to remove. onFailure only fires when the FAST pass also
+// this exists to remove. onFailure only fires when the Chat pass also
 // failed: once the learner already has a real (fast) result, a slower
 // ensemble error is a missed upgrade, not a failure worth reporting.
 func (p *Pipeline) correct(ctx context.Context, userID, sessionID string, turn int, text, contextMsg string, emit Emit) {
-	emitResult := func(corrected string, issues []protocol.Issue, translation string) {
+	emitResult := func(corrected string, issues []protocol.Issue, translation string, final, changed, emitTranslation bool) {
 		// The translation fires independently so a learner still gets a
 		// meaning check even on an already-correct sentence.
 		emit(protocol.ServerEvent{
-			Type: protocol.EvCorrection,
-			Turn: turn,
+			Type:    protocol.EvCorrection,
+			Turn:    turn,
+			Final:   final,
+			Changed: changed,
 			Correction: &protocol.Correction{
-				Original:  text,
-				Corrected: corrected,
-				Issues:    issues,
+				Original:    text,
+				Corrected:   corrected,
+				Issues:      issues,
+				Translation: translation,
 			},
 		})
-		if strings.TrimSpace(translation) != "" {
+		if emitTranslation && strings.TrimSpace(translation) != "" {
 			emit(protocol.ServerEvent{Type: protocol.EvUserTranslation, Turn: turn, Text: translation})
 		}
 	}
 
-	fastCorrected, fastIssues, fastTranslation, fastErr := p.AnalyzeCorrectionFast(ctx, text, contextMsg)
+	chatDraft, fastCorrected, fastIssues, fastTranslation, fastErr := p.analyzeCorrectionFast(ctx, text, contextMsg)
 	fastOK := fastErr == nil
 	if fastOK {
-		emitResult(fastCorrected, fastIssues, fastTranslation)
+		emitResult(fastCorrected, fastIssues, fastTranslation, false, false, true)
 	} else {
 		log.Printf("correct: fast pass: %v", fastErr)
 	}
 
 	onResult := func(corrected string, issues []protocol.Issue, translation string) {
-		if fastOK && correctionsEqual(fastCorrected, fastIssues, fastTranslation, corrected, issues, translation) {
-			return // the ensemble agrees with what the learner already sees
-		}
-		emitResult(corrected, issues, translation)
+		// Emit the terminal event even when the content is unchanged: the UI
+		// keeps showing the Chat preview while this cascade is refining, and
+		// needs an explicit signal that Judge has finished so its progress
+		// state can settle. The client only marks it unread when the final
+		// content actually differs from the preview.
+		changed := !fastOK || !correctionResultsEqual(
+			fastCorrected, fastIssues, fastTranslation,
+			corrected, issues, translation,
+		)
+		emitResult(corrected, issues, translation, true, changed,
+			!fastOK || strings.TrimSpace(fastTranslation) != strings.TrimSpace(translation))
 	}
 	onFailure := func() {
 		if !fastOK {
-			emit(protocol.ServerEvent{Type: protocol.EvCorrection, Turn: turn, Failed: true})
+			emit(protocol.ServerEvent{Type: protocol.EvCorrection, Turn: turn, Failed: true, Final: true})
 		}
 	}
 	if p.CorrectHook != nil {
-		p.CorrectHook(ctx, userID, sessionID, turn, text, contextMsg, onResult, onFailure)
+		p.CorrectHook(ctx, userID, sessionID, turn, text, contextMsg, chatDraft, onResult, onFailure)
 		return
 	}
-	corrected, issues, translation, err := p.AnalyzeCorrection(ctx, text, contextMsg)
+	corrected, issues, translation, err := p.AnalyzeCorrectionFromDraft(ctx, text, contextMsg, chatDraft)
 	if err != nil {
 		log.Printf("correct: %v", err)
 		onFailure()
@@ -92,34 +98,37 @@ func (p *Pipeline) correct(ctx context.Context, userID, sessionID string, turn i
 	onResult(corrected, issues, translation)
 }
 
-// correctionsEqual reports whether two correction results are the same for
-// display purposes — used by correct() to decide whether the REFINE
-// ensemble pass actually improved on the FAST pass, so a learner is never
-// shown a second, identical card.
-func correctionsEqual(aCorrected string, aIssues []protocol.Issue, aTranslation string, bCorrected string, bIssues []protocol.Issue, bTranslation string) bool {
-	if strings.TrimSpace(aCorrected) != strings.TrimSpace(bCorrected) {
-		return false
-	}
-	if strings.TrimSpace(aTranslation) != strings.TrimSpace(bTranslation) {
-		return false
-	}
-	if len(aIssues) != len(bIssues) {
-		return false
-	}
-	for i := range aIssues {
-		if aIssues[i] != bIssues[i] {
-			return false
-		}
-	}
-	return true
+func correctionResultsEqual(
+	aCorrected string,
+	aIssues []protocol.Issue,
+	aTranslation string,
+	bCorrected string,
+	bIssues []protocol.Issue,
+	bTranslation string,
+) bool {
+	return strings.TrimSpace(aCorrected) == strings.TrimSpace(bCorrected) &&
+		strings.TrimSpace(aTranslation) == strings.TrimSpace(bTranslation) &&
+		slices.Equal(aIssues, bIssues)
 }
 
-// AnalyzeCorrection runs the grammar/vocabulary/context analysis ensemble
-// for one sentence and parses its strict-JSON result. Exported so
+// AnalyzeCorrection runs the full cascade for one sentence and parses its
+// strict-JSON result. Exported so
 // transport's queue-backed CorrectHook implementation reuses the exact same
 // call correct() uses directly by default.
 func (p *Pipeline) AnalyzeCorrection(ctx context.Context, text, contextMsg string) (corrected string, issues []protocol.Issue, translation string, err error) {
 	raw, err := p.analyze(ctx, correctionSystemPrompt(p.FeedbackLang), renderCorrectionInput(contextMsg, text), true)
+	if err != nil {
+		return "", nil, "", err
+	}
+	return parseCorrection(raw)
+}
+
+// AnalyzeCorrectionFromDraft continues the shared cascade from the exact
+// Chat result already shown by correct(). Queue-backed correction jobs carry
+// this raw JSON in their durable payload, so a retry on another replica still
+// refines the same preview instead of spending another Chat call.
+func (p *Pipeline) AnalyzeCorrectionFromDraft(ctx context.Context, text, contextMsg, chatDraft string) (corrected string, issues []protocol.Issue, translation string, err error) {
+	raw, err := p.analyzeFromDraft(ctx, correctionSystemPrompt(p.FeedbackLang), renderCorrectionInput(contextMsg, text), true, chatDraft)
 	if err != nil {
 		return "", nil, "", err
 	}
@@ -133,15 +142,20 @@ func (p *Pipeline) AnalyzeCorrection(ctx context.Context, text, contextMsg strin
 // correct()'s doc comment. Same prompt and JSON shape as AnalyzeCorrection;
 // only the model tier differs.
 func (p *Pipeline) AnalyzeCorrectionFast(ctx context.Context, text, contextMsg string) (corrected string, issues []protocol.Issue, translation string, err error) {
-	msgs := []llm.Message{
-		{Role: llm.RoleSystem, Content: correctionSystemPrompt(p.FeedbackLang)},
-		{Role: llm.RoleUser, Content: renderCorrectionInput(contextMsg, text)},
-	}
-	raw, err := p.LLM.Complete(ctx, p.ChatModel, msgs, true)
+	_, corrected, issues, translation, err = p.analyzeCorrectionFast(ctx, text, contextMsg)
+	return corrected, issues, translation, err
+}
+
+// analyzeCorrectionFast returns the raw Chat JSON as well as its parsed
+// fields. The raw form is the lossless handoff to Analysis/Judge and is also
+// safe to serialize into an async-job payload.
+func (p *Pipeline) analyzeCorrectionFast(ctx context.Context, text, contextMsg string) (raw, corrected string, issues []protocol.Issue, translation string, err error) {
+	raw, err = p.chatDraft(ctx, correctionSystemPrompt(p.FeedbackLang), renderCorrectionInput(contextMsg, text), true)
 	if err != nil {
-		return "", nil, "", err
+		return raw, "", nil, "", err
 	}
-	return parseCorrection(raw)
+	corrected, issues, translation, err = parseCorrection(raw)
+	return raw, corrected, issues, translation, err
 }
 
 // parseCorrection parses AnalyzeCorrection/AnalyzeCorrectionFast's shared
@@ -158,8 +172,8 @@ func parseCorrection(raw string) (corrected string, issues []protocol.Issue, tra
 	return parsed.Corrected, parsed.Issues, parsed.Translation, nil
 }
 
-// CorrectWithContext runs the grammar-correction analysis ensemble for one
-// turn using priorTurns — verbatim, in order — as context, the same
+// CorrectWithContext runs the grammar-correction cascade for one turn using
+// priorTurns — verbatim, in order — as context, the same
 // "conversation so far" shape correct() feeds via renderCorrectionContext, so
 // a backfilled correction reads the same as if it had been generated live.
 // Unlike correct() (which always has the session's long-term summary

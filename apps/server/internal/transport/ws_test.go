@@ -264,8 +264,14 @@ func (f *fakeStore) LastTurn(ctx context.Context, userID, sessionID string) (int
 	return last, nil
 }
 
-// SaveCorrection mirrors MySQLStore's text-write + job-done update.
+// SaveCorrection preserves the legacy helper's no-unread behavior.
 func (f *fakeStore) SaveCorrection(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction) error {
+	return f.SaveCorrectionFinal(ctx, userID, sessionID, turn, c, false)
+}
+
+// SaveCorrectionFinal mirrors MySQLStore's explicit Chat-vs-Judge unread
+// decision and idempotent job-done update.
+func (f *fakeStore) SaveCorrectionFinal(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction, unread bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	d := f.sessions[fakeStoreKey(userID, sessionID)]
@@ -278,7 +284,11 @@ func (f *fakeStore) SaveCorrection(ctx context.Context, userID, sessionID string
 		return nil // matches MySQLStore.SaveCorrection: no-op if the turn isn't saved yet
 	}
 	cc := c
+	if t.CorrectionStage != "judge" || t.Correction == nil || !reflect.DeepEqual(*t.Correction, c) {
+		t.CorrectionUnread = unread
+	}
 	t.Correction = &cc
+	t.CorrectionStage = "judge"
 	d.turns[tk] = t
 	if d.jobs != nil {
 		jk := fmt.Sprintf("%d|correction", turn)
@@ -286,6 +296,42 @@ func (f *fakeStore) SaveCorrection(ctx context.Context, userID, sessionID string
 			j.status = store.JobStatusDone
 			d.jobs[jk] = j
 		}
+	}
+	return nil
+}
+
+func (f *fakeStore) SaveCorrectionPreview(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.sessions[fakeStoreKey(userID, sessionID)]
+	if d == nil {
+		return nil
+	}
+	tk := fmt.Sprintf("%d|user", turn)
+	t, ok := d.turns[tk]
+	if !ok || t.CorrectionStage == "judge" {
+		return nil
+	}
+	cc := c
+	t.Correction = &cc
+	t.CorrectionStage = "chat"
+	t.CorrectionUnread = false
+	d.turns[tk] = t
+	return nil
+}
+
+func (f *fakeStore) MarkCorrectionRead(ctx context.Context, userID, sessionID string, turn int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.sessions[fakeStoreKey(userID, sessionID)]
+	if d == nil {
+		return nil
+	}
+	tk := fmt.Sprintf("%d|user", turn)
+	t, ok := d.turns[tk]
+	if ok && t.CorrectionStage == "judge" {
+		t.CorrectionUnread = false
+		d.turns[tk] = t
 	}
 	return nil
 }

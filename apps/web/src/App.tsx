@@ -25,6 +25,7 @@ import {
   endSession,
   fetchSessionDetail,
   fetchSessions,
+  markCorrectionRead,
   markInstant,
   messageAudioURL,
   resetQuiz,
@@ -487,16 +488,29 @@ export function App() {
         }
         break;
       case "correction":
-        // correct() always emits this once its analyze() pass finishes, even
-        // when the sentence needed no teaching or the pass itself errored
-        // (e.failed) — the definitive "done" signal both correctionPending
-        // and userTranslationPending clear on, since a clean sentence can
-        // still come back with no translation attached.
-        patchTurn(e.turn, {
-          ...(e.correction ? { correction: e.correction } : {}),
-          correctionPending: false,
-          correctionFailed: !!e.failed,
-          userTranslationPending: false,
+        // A correction first arrives as a readable Chat preview, then as a
+        // terminal Judge result. Keep the preview available while the later
+        // stages run, and mark the final result unread only when it actually
+        // changed (or when there was no usable preview at all).
+        setTurns((prev) => {
+          const prior = prev[e.turn] ?? {};
+          const changed = e.changed ?? (!!e.correction && (
+            !prior.correction || JSON.stringify(prior.correction) !== JSON.stringify(e.correction)
+          ));
+          return {
+            ...prev,
+            [e.turn]: {
+              ...prior,
+              ...(e.correction ? { correction: e.correction } : {}),
+              ...(e.correction?.translation ? { userTranslation: e.correction.translation } : {}),
+              correctionPending: !e.final && !e.failed,
+              correctionFailed: !!e.failed,
+              correctionUnread: e.final && !e.failed
+                ? (changed || !!prior.correctionUnread)
+                : prior.correctionUnread,
+              userTranslationPending: !e.correction?.translation && !e.final && !e.failed,
+            },
+          };
         });
         break;
       case "user_translation":
@@ -707,24 +721,28 @@ export function App() {
           setMsgs((m) => upsertAssistant(m, t.turn, () => t.text));
           setAwaitingReply(false);
         }
-        if (t.translation) {
+        const savedTranslation = t.translation || (t.role === "user" ? t.correction?.translation : undefined);
+        if (savedTranslation) {
           patches[t.turn] = {
             ...patches[t.turn],
             ...(t.role === "user"
-              ? { userTranslation: t.translation }
-              : { assistantTranslation: t.translation }),
+              ? { userTranslation: savedTranslation }
+              : { assistantTranslation: savedTranslation }),
           };
         } else if (t.text) {
           stillMissing = true;
         }
         if (t.role === "user" && t.text) {
           if (t.correction) {
+            const refining = t.correctionStage === "chat" || t.correctionStatus === "pending" || t.correctionStatus === "processing";
             patches[t.turn] = {
               ...patches[t.turn],
               correction: t.correction,
-              correctionPending: false,
+              correctionPending: refining,
               correctionFailed: false,
+              correctionUnread: !!t.correctionUnread,
             };
+            if (refining) stillMissing = true;
           } else if (t.correctionStatus === "failed") {
             // The job errored, but the reaper (see internal/asyncjob) still
             // retries it from scratch on its own — keep polling in case a
@@ -750,6 +768,27 @@ export function App() {
     };
     schedulePoll(tick, intervalMs);
   }, [patchTurns, schedulePoll]);
+
+  // Opening the feedback panel is the point where "unread" becomes read.
+  // Persist that acknowledgement on the server, then clear local state only
+  // after it succeeds so a network error cannot silently lose the reminder.
+  const markingCorrectionReadRef = useRef(new Set<string>());
+  useEffect(() => {
+    if (openGrammarIndex === null || !activeSessionId) return;
+    const msg = msgs[openGrammarIndex];
+    if (!msg || msg.role !== "user" || !turns[msg.turn]?.correctionUnread) return;
+    const key = `${activeSessionId}:${msg.turn}`;
+    if (markingCorrectionReadRef.current.has(key)) return;
+    markingCorrectionReadRef.current.add(key);
+    void markCorrectionRead(activeSessionId, msg.turn).then((ok) => {
+      markingCorrectionReadRef.current.delete(key);
+      if (!ok) return;
+      patchTurn(msg.turn, { correctionUnread: false });
+      setSessions((prev) => prev.map((s) => s.id === activeSessionId
+        ? { ...s, unreadCorrections: Math.max(0, (s.unreadCorrections ?? 0) - 1) }
+        : s));
+    });
+  }, [activeSessionId, msgs, openGrammarIndex, patchTurn, turns]);
 
   // Shared shape behind pollStudySummary/pollQuizStatus below: poll
   // fetchSessionDetail until a session-level background job's status field
@@ -1497,6 +1536,11 @@ export function App() {
                         ✅ 학습 완료
                       </span>
                     )}
+                    {!!s.unreadCorrections && (
+                      <span className="correction-unread-badge" title={`읽지 않은 정밀 피드백 ${s.unreadCorrections}개`}>
+                        새 피드백 {s.unreadCorrections}
+                      </span>
+                    )}
                     <span className="title">{s.title}</span>
                     <span className="time">
                       {openingSessionId === s.id ? "불러오는 중…" : formatRelativeTime(s.updatedAt)}
@@ -1655,6 +1699,7 @@ export function App() {
                         pending={!!meta?.correctionPending}
                         correction={meta?.correction}
                         failed={!!meta?.correctionFailed}
+                        unread={!!meta?.correctionUnread}
                         open={grammarOpen}
                         onToggle={setOpenGrammarIndex}
                         panelRef={grammarOpen ? studyRef : undefined}

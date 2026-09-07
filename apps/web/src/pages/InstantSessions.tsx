@@ -68,6 +68,11 @@ export function InstantSessions() {
                       ✅
                     </span>
                   )}
+                  {!!s.unreadCorrections && (
+                    <span className="correction-unread-badge" title={`읽지 않은 정밀 피드백 ${s.unreadCorrections}개`}>
+                      새 피드백 {s.unreadCorrections}
+                    </span>
+                  )}
                   <span className="title">{s.title}</span>
                   <span className="time">{formatMessageTime(s.createdAt)}</span>
                 </a>

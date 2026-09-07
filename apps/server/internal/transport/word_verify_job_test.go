@@ -3,6 +3,8 @@ package transport
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"buddy/server/internal/asyncjob"
+	"buddy/server/internal/llm"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/wordreview"
 )
@@ -153,13 +156,36 @@ func (s *fakeWordReviewStore) question(id string) wordreview.Question {
 
 func (s *fakeWordReviewStore) Close() error { return nil }
 
+// wordLearningLLM returns the right strict-JSON contract for both steps in a
+// word verification job. Each pipeline stage receives the authoritative task
+// in its system message, so the same double can model Chat, Analysis, and
+// Judge without relying on call timing.
+type wordLearningLLM struct {
+	valid  bool
+	reason string
+}
+
+func (f wordLearningLLM) ChatStream(context.Context, string, []llm.Message, func(string)) (string, error) {
+	return "", errFakeLLMUnavailable
+}
+
+func (f wordLearningLLM) Complete(_ context.Context, _ string, msgs []llm.Message, _ bool) (string, error) {
+	if strings.Contains(msgs[0].Content, "fill-in-the-blank recall question") {
+		return `{"prompt":"She was ___.","answer":"furious"}`, nil
+	}
+	return fmt.Sprintf(`{"valid":%t,"reason":%q}`, f.valid, f.reason), nil
+}
+
 // TestRunWordVerifyMarksVerifiedWhenAllJudgesAgree guards the primary flow:
 // a Pending word whose judges unanimously agree valid ends up Verified.
 func TestRunWordVerifyMarksVerifiedWhenAllJudgesAgree(t *testing.T) {
+	model := wordLearningLLM{valid: true}
 	pipe := &pipeline.Pipeline{
-		Analysis:  []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{complete: `{"valid":true,"reason":""}`}}},
-		LLM:       fakeAnalysisLLM{complete: `{"prompt":"She was ___.","answer":"furious"}`},
-		ChatModel: "m",
+		LLM:        model,
+		ChatModel:  "chat",
+		Analysis:   []pipeline.Candidate{{Model: "analysis", LLM: model}},
+		Judge:      model,
+		JudgeModel: "judge",
 	}
 	words := newFakeWordReviewStore(wordreview.Word{ID: "w1", UserID: "alex", Word: "furious", Meaning: "화가 난", Example: "She was furious.", Status: wordreview.StatusPending})
 
@@ -205,6 +231,21 @@ func TestRunWordVerifyPropagatesErrorAndLeavesWordPending(t *testing.T) {
 	}
 	if got := words.status("w1"); got != wordreview.StatusPending {
 		t.Fatalf("status = %q, want unchanged %q after an infra failure", got, wordreview.StatusPending)
+	}
+}
+
+func TestRunWordVerifyMalformedVerdictLeavesWordPending(t *testing.T) {
+	pipe := &pipeline.Pipeline{
+		LLM:       fakeAnalysisLLM{complete: `{"suggestions":[{"word":"furious"}]}`},
+		ChatModel: "m",
+	}
+	words := newFakeWordReviewStore(wordreview.Word{ID: "w1", UserID: "alex", Word: "furious", Meaning: "화가 난", Example: "She was furious.", Status: wordreview.StatusPending})
+
+	if err := RunWordVerifyInline(context.Background(), pipe, words, "alex", "w1"); err == nil {
+		t.Fatal("expected an error when the model omits the valid verdict")
+	}
+	if got := words.status("w1"); got != wordreview.StatusPending {
+		t.Fatalf("status = %q, want unchanged %q after malformed model output", got, wordreview.StatusPending)
 	}
 }
 
@@ -290,10 +331,13 @@ func TestWordVerifyJobHandlerBadPayload(t *testing.T) {
 func TestEnqueueWordVerifyJobRunsInBackgroundAndPersists(t *testing.T) {
 	rdb := requireReplyRedis(t)
 	queue := asyncjob.NewQueue(rdb)
+	model := wordLearningLLM{valid: true}
 	pipe := &pipeline.Pipeline{
-		Analysis:  []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{complete: `{"valid":true,"reason":""}`}}},
-		LLM:       fakeAnalysisLLM{complete: `{"prompt":"She was ___.","answer":"furious"}`},
-		ChatModel: "m",
+		LLM:        model,
+		ChatModel:  "chat",
+		Analysis:   []pipeline.Candidate{{Model: "analysis", LLM: model}},
+		Judge:      model,
+		JudgeModel: "judge",
 	}
 	words := newFakeWordReviewStore(wordreview.Word{ID: "w-enqueue", UserID: "alex", Word: "furious", Status: wordreview.StatusPending})
 
