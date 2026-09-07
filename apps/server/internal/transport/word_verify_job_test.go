@@ -234,6 +234,21 @@ func TestRunWordVerifyPropagatesErrorAndLeavesWordPending(t *testing.T) {
 	}
 }
 
+func TestRunWordVerifyMalformedVerdictLeavesWordPending(t *testing.T) {
+	pipe := &pipeline.Pipeline{
+		LLM:       fakeAnalysisLLM{complete: `{"suggestions":[{"word":"furious"}]}`},
+		ChatModel: "m",
+	}
+	words := newFakeWordReviewStore(wordreview.Word{ID: "w1", UserID: "alex", Word: "furious", Meaning: "화가 난", Example: "She was furious.", Status: wordreview.StatusPending})
+
+	if err := RunWordVerifyInline(context.Background(), pipe, words, "alex", "w1"); err == nil {
+		t.Fatal("expected an error when the model omits the valid verdict")
+	}
+	if got := words.status("w1"); got != wordreview.StatusPending {
+		t.Fatalf("status = %q, want unchanged %q after malformed model output", got, wordreview.StatusPending)
+	}
+}
+
 // TestRunWordVerifyIsNoopForAlreadyDecidedWord guards against a stale
 // reap-retry re-verifying (and potentially flip-flopping) a word that
 // already reached a terminal status via an earlier attempt.

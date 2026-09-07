@@ -344,13 +344,20 @@ func (p *Pipeline) VerifyWord(ctx context.Context, word, meaning, example string
 		return false, "", err
 	}
 	parsed, err := parseJSON[struct {
-		Valid  bool   `json:"valid"`
+		Valid  *bool  `json:"valid"`
 		Reason string `json:"reason"`
 	}](raw, "verify word")
 	if err != nil {
 		return false, "", err
 	}
-	return parsed.Valid, parsed.Reason, nil
+	if parsed.Valid == nil {
+		return false, "", fmt.Errorf("verify word: response is missing the valid verdict")
+	}
+	reason = strings.TrimSpace(parsed.Reason)
+	if !*parsed.Valid && reason == "" {
+		return false, "", fmt.Errorf("verify word: rejected response is missing a reason")
+	}
+	return *parsed.Valid, reason, nil
 }
 
 // wordVerifySystemPrompt builds VerifyWord's fact-checking prompt, reusing

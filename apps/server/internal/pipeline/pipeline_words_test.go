@@ -307,4 +307,19 @@ func TestVerifyWordErrorsWhenNoModelsConfigured(t *testing.T) {
 	}
 }
 
+func TestVerifyWordRejectsIncompleteVerdictSchema(t *testing.T) {
+	cases := []string{
+		`{"suggestions":[{"word":"furious"}]}`,
+		`{"valid":false}`,
+	}
+	for _, response := range cases {
+		p := &Pipeline{LLM: &fakeLLM{complete: func([]llm.Message) (string, error) {
+			return response, nil
+		}}, ChatModel: "m"}
+		if _, _, err := p.VerifyWord(context.Background(), "furious", "화가 난", "She was furious."); err == nil {
+			t.Fatalf("response %s: error = nil, want schema validation failure", response)
+		}
+	}
+}
+
 // ---- GenerateStudySummary() -----------------------------------------------
