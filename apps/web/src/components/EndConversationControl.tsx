@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { QuizQuestion, StudySummarySentence } from "../lib/protocol";
-import { markQuizCompleted } from "../lib/sessions";
+import { markQuizCompleted, type SessionJobStatus } from "../lib/sessions";
 import { useDismiss } from "../hooks/useDismiss";
 import { checkQuizAnswer, normalizeQuizAnswer, quizBlankInputClass } from "../lib/quizCheck";
 
@@ -60,9 +60,9 @@ export function EndConversationControl({
   sessionId: string | null;
   ended: boolean;
   studySummary: StudySummarySentence[];
-  studySummaryStatus: "pending" | "done" | "failed";
+  studySummaryStatus: SessionJobStatus;
   quiz: QuizQuestion[];
-  quizStatus: "pending" | "done" | "failed";
+  quizStatus: SessionJobStatus;
   quizCompleted: boolean;
   onEnd: () => void;
   onRestudy: () => void;

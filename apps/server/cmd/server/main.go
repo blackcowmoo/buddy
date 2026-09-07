@@ -155,11 +155,8 @@ func main() {
 	writingStore := buildWritingStore(context.Background(), st)
 	defer writingStore.Close()
 
-	var writingQueue *asyncjob.Queue
-	if rdb != nil {
-		writingQueue = startWorker(rdb, jobsCtx, asyncjob.KindWritingPrompt, transport.WritingWorkerConcurrency, transport.WritingClaimTTL,
-			transport.WritingJobHandler(pipe, writingStore, st.GetLearnerProfile))
-	}
+	writingQueue := startWorker(rdb, jobsCtx, asyncjob.KindWritingPrompt, transport.WritingWorkerConcurrency, transport.WritingClaimTTL,
+		transport.WritingJobHandler(pipe, writingStore, st.GetLearnerProfile))
 
 	// "오늘의 아티클" read-aloud + (on demand) chat message read-aloud TTS:
 	// optional, disabled unless both BUDDY_TTS_URL and S3Bucket are set (see
@@ -173,11 +170,8 @@ func main() {
 	// transport.captureCorrectionWords), same "optional durable queue,
 	// inline-goroutine fallback when Redis isn't configured" convention as
 	// studySummaryQueue/studyQuizQueue below.
-	var wordVerifyQueue *asyncjob.Queue
-	if rdb != nil {
-		wordVerifyQueue = startWorker(rdb, jobsCtx, asyncjob.KindWordVerify, transport.WordVerifyWorkerConcurrency, transport.WordVerifyClaimTTL,
-			transport.WordVerifyJobHandler(pipe, wordReviews))
-	}
+	wordVerifyQueue := startWorker(rdb, jobsCtx, asyncjob.KindWordVerify, transport.WordVerifyWorkerConcurrency, transport.WordVerifyClaimTTL,
+		transport.WordVerifyJobHandler(pipe, wordReviews))
 
 	// Article-study generation: summarizes + quizzes a freshly drawn "오늘의
 	// 아티클" story in the background (see httpserver.articleDrawHandler),
@@ -185,11 +179,8 @@ func main() {
 	// isn't configured" convention as wordVerifyQueue above — this is what
 	// lets the draw survive the learner navigating away before generation
 	// finishes.
-	var articleStudyQueue *asyncjob.Queue
-	if rdb != nil {
-		articleStudyQueue = startWorker(rdb, jobsCtx, asyncjob.KindArticleStudy, transport.ArticleStudyWorkerConcurrency, transport.ArticleStudyClaimTTL,
-			transport.ArticleStudyJobHandler(pipe, articles, articleAudio))
-	}
+	articleStudyQueue := startWorker(rdb, jobsCtx, asyncjob.KindArticleStudy, transport.ArticleStudyWorkerConcurrency, transport.ArticleStudyClaimTTL,
+		transport.ArticleStudyJobHandler(pipe, articles, articleAudio))
 	// DB-only orphan sweep for article-study generation: runs regardless of
 	// whether Redis/articleStudyQueue is configured, since it's the only
 	// thing that resumes a draw abandoned mid-generation (crash, OOM, or a
@@ -204,22 +195,13 @@ func main() {
 	// isn't configured" convention as wordVerifyQueue above — this is what
 	// lets "새 단어 추가로 학습하기" survive the learner navigating away before
 	// generation finishes.
-	var wordAutoAddQueue *asyncjob.Queue
-	if rdb != nil {
-		wordAutoAddQueue = startWorker(rdb, jobsCtx, asyncjob.KindWordAutoAdd, transport.WordAutoAddWorkerConcurrency, transport.WordAutoAddClaimTTL,
-			transport.WordAutoAddJobHandler(pipe, wordReviews, st, wordVerifyQueue))
-	}
+	wordAutoAddQueue := startWorker(rdb, jobsCtx, asyncjob.KindWordAutoAdd, transport.WordAutoAddWorkerConcurrency, transport.WordAutoAddClaimTTL,
+		transport.WordAutoAddJobHandler(pipe, wordReviews, st, wordVerifyQueue))
 
-	var wordDefineQueue *asyncjob.Queue
-	if rdb != nil {
-		wordDefineQueue = startWorker(rdb, jobsCtx, asyncjob.KindWordDefine, transport.WordDefineWorkerConcurrency, transport.WordDefineClaimTTL,
-			transport.WordDefineJobHandler(pipe, rdb))
-	}
-	var wordResearchQueue *asyncjob.Queue
-	if rdb != nil {
-		wordResearchQueue = startWorker(rdb, jobsCtx, asyncjob.KindWordResearch, transport.WordResearchWorkerConcurrency, transport.WordResearchClaimTTL,
-			transport.WordResearchJobHandler(pipe, wordReviews))
-	}
+	wordDefineQueue := startWorker(rdb, jobsCtx, asyncjob.KindWordDefine, transport.WordDefineWorkerConcurrency, transport.WordDefineClaimTTL,
+		transport.WordDefineJobHandler(pipe, rdb))
+	wordResearchQueue := startWorker(rdb, jobsCtx, asyncjob.KindWordResearch, transport.WordResearchWorkerConcurrency, transport.WordResearchClaimTTL,
+		transport.WordResearchJobHandler(pipe, wordReviews))
 
 	// End-of-conversation wrap-up: unlike the reply/correction/translation/
 	// title hooks below, this isn't wired onto pipe (nothing mid-conversation
@@ -231,20 +213,14 @@ func main() {
 	// stays nil, same "optional feature, zero setup by default" convention,
 	// when Redis isn't configured; both callers fall back to running it
 	// inline on their own detached goroutine in that case.
-	var studySummaryQueue *asyncjob.Queue
-	if rdb != nil {
-		studySummaryQueue = startWorker(rdb, jobsCtx, asyncjob.KindStudySummary, transport.StudySummaryWorkerConcurrency, transport.StudySummaryClaimTTL,
-			transport.StudySummaryJobHandler(pipe, st))
-	}
+	studySummaryQueue := startWorker(rdb, jobsCtx, asyncjob.KindStudySummary, transport.StudySummaryWorkerConcurrency, transport.StudySummaryClaimTTL,
+		transport.StudySummaryJobHandler(pipe, st))
 
 	// Practice-quiz pre-generation: runs independently of, but is enqueued
 	// alongside, the wrap-up above (see transport.FinalizeSession) — same
 	// "optional feature, zero setup by default" convention.
-	var studyQuizQueue *asyncjob.Queue
-	if rdb != nil {
-		studyQuizQueue = startWorker(rdb, jobsCtx, asyncjob.KindStudyQuiz, transport.StudyQuizWorkerConcurrency, transport.StudyQuizClaimTTL,
-			transport.StudyQuizJobHandler(pipe, st))
-	}
+	studyQuizQueue := startWorker(rdb, jobsCtx, asyncjob.KindStudyQuiz, transport.StudyQuizWorkerConcurrency, transport.StudyQuizClaimTTL,
+		transport.StudyQuizJobHandler(pipe, st))
 
 	if rdb != nil {
 		replyQueue := startWorker(rdb, jobsCtx, asyncjob.KindReply, transport.ReplyWorkerConcurrency, transport.ReplyClaimTTL,
@@ -267,11 +243,8 @@ func main() {
 	// Learner-profile rebuild: enqueued by httpserver.sessionDeleteHandler
 	// when a deleted session had actually folded a study summary into the
 	// profile — same "optional feature, zero setup by default" convention.
-	var profileRegenerateQueue *asyncjob.Queue
-	if rdb != nil {
-		profileRegenerateQueue = startWorker(rdb, jobsCtx, asyncjob.KindProfileRegenerate, transport.ProfileRegenerateWorkerConcurrency, transport.ProfileRegenerateClaimTTL,
-			transport.ProfileRegenerateJobHandler(pipe, st))
-	}
+	profileRegenerateQueue := startWorker(rdb, jobsCtx, asyncjob.KindProfileRegenerate, transport.ProfileRegenerateWorkerConcurrency, transport.ProfileRegenerateClaimTTL,
+		transport.ProfileRegenerateJobHandler(pipe, st))
 
 	// Temporary audio backup: only enabled once an endpoint is configured, so
 	// the server still boots with zero setup by default (see internal/audiostore).
@@ -348,12 +321,12 @@ func main() {
 	_ = srv.Shutdown(ctx)
 }
 
-// startWorker builds a new asyncjob.Queue for kind and starts its worker
-// goroutine on jobsCtx, returning the queue — the common tail shared by
-// every asyncjob kind wired up above. Each call site still assigns its own
-// hook (if any) onto pipe itself, since that varies per kind and doesn't
-// depend on the worker goroutine having started yet.
+// startWorker builds and starts an optional Redis-backed worker. Keeping the
+// nil check here lets the composition root declare every queue uniformly.
 func startWorker(rdb redis.UniversalClient, jobsCtx context.Context, kind asyncjob.Kind, concurrency int, claimTTL time.Duration, handler asyncjob.Handler) *asyncjob.Queue {
+	if rdb == nil {
+		return nil
+	}
 	queue := asyncjob.NewQueue(rdb)
 	go asyncjob.NewWorker(rdb, kind, concurrency, claimTTL, handler).Run(jobsCtx)
 	return queue
@@ -364,9 +337,9 @@ func startWorker(rdb redis.UniversalClient, jobsCtx context.Context, kind asyncj
 // and the translation backfill queue/lock (internal/backfill) — so both come
 // up, or both stay disabled, together based on the same REDIS_CLUSTER_HOST
 // config, instead of each opening its own connection. Returns a nil client
-// (every caller's own "optional feature, do nothing" branch handles that)
-// and a no-op closer when RedisClusterHost is unset; the returned io.Closer
-// is always safe to defer-close either way.
+// (optional features and startWorker handle that) and a no-op closer when
+// RedisClusterHost is unset; the returned io.Closer is always safe to
+// defer-close either way.
 func buildRedis(cfg config.Config) (redis.UniversalClient, io.Closer) {
 	if cfg.RedisClusterHost == "" {
 		return nil, io.NopCloser(nil)

@@ -1,6 +1,8 @@
 import { fetchJSON, requestOK } from "./fetchJSON";
 import type { Correction, InputSource, QuizQuestion, StudySummarySentence } from "./protocol";
 
+export type SessionJobStatus = "pending" | "done" | "failed";
+
 // Mirrors store.SessionMeta / store.Turn (apps/server/internal/store/store.go).
 export interface SessionSummary {
   id: string;
@@ -28,7 +30,7 @@ export interface SessionSummary {
   // studySummary was already generated synchronously, so there's nothing
   // left to poll for) — EndConversationControl treats both the same as
   // "done".
-  studySummaryStatus?: "pending" | "done" | "failed";
+  studySummaryStatus?: SessionJobStatus;
   // The pre-generated practice quiz (see store.SessionMeta.Quiz) — absent/
   // empty until quizStatus reaches "done". Generated alongside studySummary,
   // from the same flagged issues, right when the conversation ends, so
@@ -38,7 +40,7 @@ export interface SessionSummary {
   // Mirrors studySummaryStatus but for the quiz pre-generation job (see
   // store.SessionMeta.QuizStatus) — a separate status because the two jobs
   // run independently, in parallel, not one after the other.
-  quizStatus?: "pending" | "done" | "failed";
+  quizStatus?: SessionJobStatus;
   // Whether the learner has studied this session's quiz — either by
   // finishing every question (right or wrong; this isn't a "got it right"
   // flag), or (when quiz is empty) by acknowledging it via "내가 읽었음"

@@ -2,9 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { BuddyClient, type Status } from "./lib/ws";
 import type {
   Correction,
-  QuizQuestion,
   ServerEvent,
-  StudySummarySentence,
 } from "./lib/protocol";
 import { PCMRecorder } from "./audio/recorder";
 import { requestAmbientAudioSession } from "./lib/audioSession";
@@ -30,15 +28,15 @@ import {
   messageAudioURL,
   resetQuiz,
   restudySession,
+  type SessionJobStatus,
   type SessionDetail,
   type SessionSummary,
 } from "./lib/sessions";
+import { createConversationEndState, type ConversationEndState } from "./lib/conversationEnd";
 import { clearDraft, loadDraft, saveDraft } from "./lib/draftCache";
 import {
   correctionHasIssues,
-  hydrateTurnMeta,
-  isPendingPlaceholder,
-  turnsToMsgs,
+  hydrateTurnPage,
   upsertAssistant,
   type Msg,
   type TurnMeta,
@@ -122,46 +120,25 @@ export function App() {
   }, [activeSessionId]);
   const [status, setStatus] = useState<Status>("connecting");
   const [msgs, setMsgs] = useState<Msg[]>([]);
-  // True once the open room's fetched detail reports it as permanently
-  // ended (see endSession) — no WS connection is kept for it, and the
-  // composer is disabled; the room is otherwise browsable read-only.
-  // Reset in both enterChat (about to load a possibly-different room) and
-  // resetToListView (leaving the room entirely), same lifecycle as
-  // resetTurnState.
-  const [ended, setEnded] = useState(false);
+  // Ended-room status, summary, and quiz belong to one lifecycle: hydrate
+  // together when a room opens and reset together when it closes.
+  const [conversationEnd, setConversationEnd] = useState(createConversationEndState);
+  const {
+    ended,
+    studySummary: endedSummary,
+    studySummaryStatus: endedSummaryStatus,
+    quiz: endedQuiz,
+    quizStatus: endedQuizStatus,
+    quizCompleted: endedQuizCompleted,
+  } = conversationEnd;
+  const patchConversationEnd = useCallback((patch: Partial<ConversationEndState>) => {
+    setConversationEnd((prev) => ({ ...prev, ...patch }));
+  }, []);
   // Mirrors `ended` for onEvent (a useCallback whose identity/closure is
   // captured once at the WS client's construction — see the effect that
   // builds clientRef.current) to read synchronously without needing `ended`
   // in its dependency array, same reasoning as stickToBottomRef below.
   const endedRef = useRef(false);
-  // The persisted wrap-up EndConversationControl shows for an ended room —
-  // set alongside `ended` in enterChat from whatever SessionDetail already
-  // reports, and refreshed by pollStudySummary below while it's still being
-  // generated.
-  const [endedSummary, setEndedSummary] = useState<StudySummarySentence[]>([]);
-  // Mirrors store.SessionMeta.StudySummaryStatus for the open room — "done"
-  // is the resting state (nothing left to poll for, including a room ended
-  // before this became an async job, whose summary was already generated
-  // synchronously — see SessionSummary.studySummaryStatus's doc comment).
-  // Sampled fresh in enterChat, then kept current by pollStudySummary while
-  // "pending"/"failed" so the room shows its wrap-up as soon as the
-  // background job finishes, even if that's well after this room was
-  // opened.
-  const [endedSummaryStatus, setEndedSummaryStatus] = useState<"pending" | "done" | "failed">("done");
-  // Mirrors endedSummary/endedSummaryStatus, but for the pre-generated
-  // practice quiz (see store.SessionMeta.Quiz/QuizStatus) — generated
-  // alongside the wrap-up, from the same flagged issues, right when the
-  // conversation ends, so EndConversationControl's "퀴즈 풀기" button reads
-  // this instead of triggering an LLM call itself. Sampled fresh in
-  // enterChat, then kept current by pollQuizStatus while "pending"/"failed".
-  const [endedQuiz, setEndedQuiz] = useState<QuizQuestion[]>([]);
-  const [endedQuizStatus, setEndedQuizStatus] = useState<"pending" | "done" | "failed">("done");
-  // Mirrors store.SessionMeta.QuizCompleted for the open room — a one-way
-  // "studied this" checkmark (see markQuizCompleted), sampled fresh in
-  // enterChat. Never polled for like the two above: it only ever changes
-  // because this client itself called markQuizCompleted, so there's nothing
-  // else to wait on landing in the background.
-  const [endedQuizCompleted, setEndedQuizCompleted] = useState(false);
   // Grammar/translation state per turn — pending flags are set the moment a
   // result is expected (final_transcript/assistant_done for a live turn, or
   // on hydration for a history turn still missing one, see enterChat/
@@ -207,13 +184,8 @@ export function App() {
   // load a room's own state, or none for a fresh one) and resetToListView
   // (leaving the room entirely).
   const resetEndedState = useCallback(() => {
-    setEnded(false);
+    setConversationEnd(createConversationEndState());
     endedRef.current = false;
-    setEndedSummary([]);
-    setEndedSummaryStatus("done");
-    setEndedQuiz([]);
-    setEndedQuizStatus("done");
-    setEndedQuizCompleted(false);
     setAwaitingReply(false);
   }, []);
 
@@ -710,8 +682,8 @@ export function App() {
       sessionId: string,
       token: object,
       maxAttempts: number,
-      getField: (s: SessionDetail["session"]) => { status: "pending" | "done" | "failed"; value: T },
-      apply: (status: "pending" | "done" | "failed", value: T) => void,
+      getField: (s: SessionDetail["session"]) => { status: SessionJobStatus; value: T },
+      apply: (status: SessionJobStatus, value: T) => void,
     ) => {
       const intervalMs = 4000;
       let attempt = 0;
@@ -745,11 +717,10 @@ export function App() {
         30,
         (s) => ({ status: s.studySummaryStatus || "done", value: s.studySummary ?? [] }),
         (status, value) => {
-          setEndedSummaryStatus(status);
-          setEndedSummary(value);
+          patchConversationEnd({ studySummaryStatus: status, studySummary: value });
         },
       ),
-    [pollSessionField],
+    [patchConversationEnd, pollSessionField],
   );
 
   // Mirrors pollStudySummary exactly, but for the quiz pre-generation job
@@ -764,11 +735,10 @@ export function App() {
         30,
         (s) => ({ status: s.quizStatus || "done", value: s.quiz ?? [] }),
         (status, value) => {
-          setEndedQuizStatus(status);
-          setEndedQuiz(value);
+          patchConversationEnd({ quizStatus: status, quiz: value });
         },
       ),
-    [pollSessionField],
+    [patchConversationEnd, pollSessionField],
   );
 
   // Opens a room and enters chat view. sessionId omitted starts a brand-new
@@ -828,29 +798,22 @@ export function App() {
           return;
         }
         hasMoreHistoryRef.current = detail.hasMore;
-        setMsgs(turnsToMsgs(detail.turns));
         if (detail.session.ended) {
           // Read-only from here on: no live connection needed, so drop the
           // one fired eagerly above — the composer disables itself once
           // `ended` renders (see the footer below), and onEvent (guarded by
           // endedRef) ignores anything that arrives anyway.
-          setEnded(true);
           endedRef.current = true;
-          setEndedSummary(detail.session.studySummary ?? []);
-          const summaryStatus = detail.session.studySummaryStatus || "done";
-          setEndedSummaryStatus(summaryStatus);
-          setEndedQuiz(detail.session.quiz ?? []);
-          const quizStatus = detail.session.quizStatus || "done";
-          setEndedQuizStatus(quizStatus);
-          setEndedQuizCompleted(detail.session.quizCompleted ?? false);
+          const endState = createConversationEndState(detail.session);
+          setConversationEnd(endState);
           clientRef.current?.close();
           // The wrap-up is still generating (or the last attempt failed —
           // see pollStudySummary's doc comment) — keep checking until it
           // lands, since nothing pushes it to an already-open client.
-          if (summaryStatus !== "done") pollStudySummary(sessionId, token);
+          if (endState.studySummaryStatus !== "done") pollStudySummary(sessionId, token);
           // Same reasoning, for the quiz pre-generation job running
           // independently alongside it — see pollQuizStatus.
-          if (quizStatus !== "done") pollQuizStatus(sessionId, token);
+          if (endState.quizStatus !== "done") pollQuizStatus(sessionId, token);
         }
         // Whether this room saw activity recently enough that a user turn
         // with no correctionStatus at all is plausibly still in flight
@@ -859,27 +822,11 @@ export function App() {
         // have a correctionStatus (pending/failed) tells us its actual state
         // directly, no guessing required (see store.Turn.CorrectionStatus).
         const recentlyActive = Date.now() / 1000 - detail.session.updatedAt < 120;
-        const hydrated: Record<number, TurnMeta> = {};
-        let anyPending = false;
-        for (const t of detail.turns) {
-          if (isPendingPlaceholder(t)) {
-            // Reply still in flight — show the same typing indicator a
-            // brand-new room's opening line gets, and poll until
-            // pollMissingFeedback sees it complete.
-            if (t.replyStatus === "pending" || t.replyStatus === "processing") {
-              setAwaitingReply(true);
-              anyPending = true;
-            }
-            continue;
-          }
-          const { meta, pending } = hydrateTurnMeta(t, recentlyActive);
-          if (pending) anyPending = true;
-          // A user turn and its paired assistant reply share the same turn
-          // number, so merge rather than overwrite.
-          hydrated[t.turn] = { ...hydrated[t.turn], ...meta };
-        }
-        setTurns(hydrated);
-        if (anyPending) pollMissingFeedback(sessionId, token);
+        const hydrated = hydrateTurnPage(detail.turns, recentlyActive);
+        setMsgs(hydrated.messages);
+        setTurns(hydrated.metadata);
+        setAwaitingReply(hydrated.awaitingReply);
+        if (hydrated.pending) pollMissingFeedback(sessionId, token);
       } else {
         setMsgs([]);
         clientRef.current?.connect(undefined);
@@ -928,15 +875,9 @@ export function App() {
     hasMoreHistoryRef.current = detail.hasMore;
     if (detail.turns.length === 0) return;
 
-    setMsgs((m) => [...turnsToMsgs(detail.turns), ...m]);
-
-    const hydrated: Record<number, TurnMeta> = {};
-    for (const t of detail.turns) {
-      if (isPendingPlaceholder(t)) continue; // stale pending placeholder from way back — nothing to show
-      const { meta } = hydrateTurnMeta(t, false);
-      hydrated[t.turn] = { ...hydrated[t.turn], ...meta };
-    }
-    setTurns((prev) => ({ ...hydrated, ...prev }));
+    const hydrated = hydrateTurnPage(detail.turns);
+    setMsgs((m) => [...hydrated.messages, ...m]);
+    setTurns((prev) => ({ ...hydrated.metadata, ...prev }));
   }, [activeSessionId, msgs, loadingMoreHistory]);
 
   // Shared by backToList and the popstate handler below — actually leaving
@@ -1075,14 +1016,14 @@ export function App() {
   const restudyConversation = useCallback(async () => {
     if (!activeSessionId) return;
     const token = pollTokenRef.current;
-    setEndedSummaryStatus("pending");
+    patchConversationEnd({ studySummaryStatus: "pending" });
     const ok = await restudySession(activeSessionId);
     if (!ok) {
-      setEndedSummaryStatus("failed");
+      patchConversationEnd({ studySummaryStatus: "failed" });
       return;
     }
     if (token) pollStudySummary(activeSessionId, token);
-  }, [activeSessionId, pollStudySummary]);
+  }, [activeSessionId, patchConversationEnd, pollStudySummary]);
 
   // Regenerates an ended session's practice quiz from scratch on demand —
   // see httpserver.sessionQuizResetHandler, the "퀴즈 다시 만들기" button in
@@ -1096,16 +1037,14 @@ export function App() {
   const resetConversationQuiz = useCallback(async () => {
     if (!activeSessionId) return;
     const token = pollTokenRef.current;
-    setEndedQuiz([]);
-    setEndedQuizStatus("pending");
-    setEndedQuizCompleted(false);
+    patchConversationEnd({ quiz: [], quizStatus: "pending", quizCompleted: false });
     const ok = await resetQuiz(activeSessionId);
     if (!ok) {
-      setEndedQuizStatus("failed");
+      patchConversationEnd({ quizStatus: "failed" });
       return;
     }
     if (token) pollQuizStatus(activeSessionId, token);
-  }, [activeSessionId, pollQuizStatus]);
+  }, [activeSessionId, patchConversationEnd, pollQuizStatus]);
 
   // Reflects a just-completed quiz (see markQuizCompleted, called from
   // QuizPanel/EndConversationControl) in this room's own state immediately —
@@ -1114,8 +1053,8 @@ export function App() {
   // doesn't show a stale "퀴즈 풀기"/"내가 읽었음" button for the rest of this
   // visit.
   const handleQuizCompleted = useCallback(() => {
-    setEndedQuizCompleted(true);
-  }, []);
+    patchConversationEnd({ quizCompleted: true });
+  }, [patchConversationEnd]);
 
   // Wraps up an "인스턴트 대화" room on its own, the moment the one exchange it
   // was opened for has its grammar correction back — same freeze + background
@@ -1145,17 +1084,15 @@ export function App() {
         return;
       }
       clientRef.current?.close();
-      setEnded(true);
       endedRef.current = true;
-      setEndedSummaryStatus("pending");
-      setEndedQuizStatus("pending");
+      patchConversationEnd({ ended: true, studySummaryStatus: "pending", quizStatus: "pending" });
       if (token) {
         pollStudySummary(activeSessionId, token);
         pollQuizStatus(activeSessionId, token);
         pollMissingFeedback(activeSessionId, token);
       }
     });
-  }, [quickMode, quickWatchTurn, ended, activeSessionId, turns, pollStudySummary, pollQuizStatus, pollMissingFeedback]);
+  }, [quickMode, quickWatchTurn, ended, activeSessionId, turns, patchConversationEnd, pollStudySummary, pollQuizStatus, pollMissingFeedback]);
 
   // Restores an open room from the URL on a fresh load (e.g. a refresh), and
   // keeps the view in sync with browser back/forward (incl. swipe) — neither
