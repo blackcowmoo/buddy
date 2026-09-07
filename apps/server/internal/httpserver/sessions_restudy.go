@@ -2,7 +2,6 @@ package httpserver
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 
@@ -31,44 +30,25 @@ import (
 // same as done, so this check must too, or every one of those legacy
 // sessions 409s the instant a learner taps the button.
 func sessionRestudyHandler(ident identity.Identifier, st store.Store, pipe *pipeline.Pipeline, studySummaryQueue *asyncjob.Queue) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		userID, ok := requireUser(w, r, ident)
-		if !ok {
-			return
-		}
-		sessionID := r.PathValue("id")
-
-		meta, _, err := st.SessionDetail(r.Context(), userID, sessionID)
-		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				http.NotFound(w, r)
-				return
-			}
-			serverError(w, "session detail", err)
-			return
-		}
-		done := meta.StudySummaryStatus == store.JobStatusDone || meta.StudySummaryStatus == ""
-		if !meta.Ended || !done || len(meta.StudySummary) != 0 {
-			http.Error(w, "study summary is not in a re-checkable state", http.StatusConflict)
-			return
-		}
-
-		if err := st.RestartStudySummary(r.Context(), userID, sessionID); err != nil {
-			serverError(w, "restart study summary", err)
-			return
-		}
-
-		asyncjob.EnqueueOrRunInline(studySummaryQueue, r.Context(),
-			fmt.Sprintf("restudy session: enqueue study summary %s/%s", userID, sessionID),
-			func(ctx context.Context) error {
-				return transport.EnqueueStudySummaryJob(ctx, studySummaryQueue, pipe, st, userID, sessionID)
-			},
-			fmt.Sprintf("restudy session: study summary %s/%s", userID, sessionID),
-			func(ctx context.Context) error {
-				return transport.RunStudySummaryInline(ctx, pipe, st, userID, sessionID)
-			},
-		)
-
-		w.WriteHeader(http.StatusNoContent)
-	}
+	return sessionRestartHandler(ident, st, sessionRestartSpec{
+		eligible: func(meta store.SessionMeta) bool {
+			done := meta.StudySummaryStatus == store.JobStatusDone || meta.StudySummaryStatus == ""
+			return done && len(meta.StudySummary) == 0
+		},
+		conflict:       "study summary is not in a re-checkable state",
+		restartContext: "restart study summary",
+		restart:        st.RestartStudySummary,
+		dispatch: func(ctx context.Context, userID, sessionID string) {
+			asyncjob.EnqueueOrRunInline(studySummaryQueue, ctx,
+				fmt.Sprintf("restudy session: enqueue study summary %s/%s", userID, sessionID),
+				func(jobCtx context.Context) error {
+					return transport.EnqueueStudySummaryJob(jobCtx, studySummaryQueue, pipe, st, userID, sessionID)
+				},
+				fmt.Sprintf("restudy session: study summary %s/%s", userID, sessionID),
+				func(jobCtx context.Context) error {
+					return transport.RunStudySummaryInline(jobCtx, pipe, st, userID, sessionID)
+				},
+			)
+		},
+	})
 }

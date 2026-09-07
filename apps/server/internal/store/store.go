@@ -159,18 +159,19 @@ const (
 	JobStatusFailed  = "failed"
 )
 
-// Store persists everything keyed by an opaque user ID (see
-// internal/identity) and, within a user, an opaque session ID (one per chat
-// room). Every method takes both IDs together so one user's data is never
-// reachable through another user's request, even if a session ID leaks or is
-// guessed — see the composite primary keys in internal/store/mysql.go.
-type Store interface {
+// ProfileStore persists the compact LLM context for one chat room.
+// Implementations scope every operation by both user and session ID.
+type ProfileStore interface {
 	// Load returns the zero Profile (not an error) if the session has no
 	// record yet — e.g. a brand-new session ID, or one that belongs to a
 	// different user (never surfaced as such; see ErrNotFound).
 	Load(ctx context.Context, userID, sessionID string) (Profile, error)
 	Save(ctx context.Context, userID, sessionID string, p Profile) error
+}
 
+// SettingsStore owns user-wide conversation preferences. These values are
+// intentionally not scoped to a room and apply to future sessions.
+type SettingsStore interface {
 	// GetInterlocutorStyle returns userID's saved free-text preference for
 	// how the AI conversation partner should talk to them (e.g. "ask
 	// interview-style questions", "sound like a professional") — "" if never
@@ -182,7 +183,11 @@ type Store interface {
 	// replacing any previous value. An empty style clears it back to the
 	// default persona.
 	SaveInterlocutorStyle(ctx context.Context, userID, style string) error
+}
 
+// TurnStore owns the durable transcript and per-turn async job state. Turn
+// numbers are unique only within a (user, session) pair.
+type TurnStore interface {
 	// SaveTurn upserts one message into a session's transcript, creating the
 	// session's row (and its title, derived from turn 1's text) on first
 	// write. source is protocol.SourceVoice/SourceText for a user turn, or ""
@@ -273,7 +278,11 @@ type Store interface {
 	// regenerated and flapping on every reconnect). Also a no-op if the
 	// session row doesn't exist yet.
 	SaveGeneratedTitle(ctx context.Context, userID, sessionID, title string) error
+}
 
+// StudyStore owns the ended-session lifecycle and the generated summary/quiz
+// artifacts that continue running after the live connection closes.
+type StudyStore interface {
 	// EndSession permanently marks a session read-only: SessionMeta.Ended
 	// becomes true and StudySummaryStatus becomes JobStatusPending, both
 	// immediately — freezing the room never waits on the wrap-up LLM call
@@ -346,7 +355,11 @@ type Store interface {
 	// if sessionID doesn't exist or belongs to a different user, same as
 	// Save.
 	RestartStudyQuiz(ctx context.Context, userID, sessionID string) error
+}
 
+// LearnerStore owns user-wide derived learning state: the cross-session
+// profile and the durable status of automatic vocabulary generation.
+type LearnerStore interface {
 	// GetLearnerProfile returns userID's persistent, LLM-maintained
 	// cross-session profile (recurring mistakes, interests, proficiency
 	// trend) — "" if never set. Unlike Profile (per-session, folded from
@@ -386,7 +399,11 @@ type Store interface {
 	// learner has to press the button again to retry, same as
 	// newsarticle.Article's StatusFailed.
 	FailWordAutoAdd(ctx context.Context, userID string) error
+}
 
+// SessionStore lists, reads, classifies, and deletes chat rooms. Detailed
+// transcript writes remain in TurnStore; wrap-up state remains in StudyStore.
+type SessionStore interface {
 	// ListSessions returns userID's chat rooms, most recently active first.
 	// Only sessions with at least one saved turn appear (see SaveTurn).
 	// Instant/"오늘의 한 문장" rooms (see MarkInstant) are excluded — they have
@@ -429,6 +446,17 @@ type Store interface {
 	// error) if sessionID doesn't exist or belongs to a different user — same
 	// indistinguishable-from-missing contract as Load.
 	DeleteSession(ctx context.Context, userID, sessionID string) error
+}
 
+// Store is the composition-root contract implemented by MySQLStore. Consumers
+// should accept one of the narrower capabilities above whenever they do not
+// need the complete persistence surface.
+type Store interface {
+	ProfileStore
+	SettingsStore
+	TurnStore
+	StudyStore
+	LearnerStore
+	SessionStore
 	Close() error
 }

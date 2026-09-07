@@ -24,49 +24,65 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// New builds the single HTTP entry point. assets is the embedded frontend FS
-// (from webassets.FS()); pass nil to serve from disk (prod) or proxy (dev).
-// audio is optional (nil disables temporary S3 audio backup — see
-// internal/audiostore). recordings is nil when voice-recording archival is
-// disabled (see config.Config's S3Bucket) — the /api/recordings routes still
-// exist but answer 503. audio and recordings are two independent features
-// that happen to share the same S3_* config — see internal/recording.S3Config's
-// doc comment for why. translateQueue/correctionQueue are nil when Redis
-// isn't configured (see config.Config's RedisClusterHost) —
-// sessionDetailHandler simply stops queueing translation/correction
-// backfills, the same "optional feature, falls through to doing nothing"
-// convention as audio/recordings above. Durable title generation is wired
-// the same optional way, but directly onto pipe.TitleHook by the caller
-// (see cmd/server/main.go) rather than through a parameter here — same as
-// pipe.ReplyHook/CorrectHook/TranslateHook. studySummaryQueue/studyQuizQueue
-// are nil the same optional way — sessionEndHandler falls back to running
-// the wrap-up/quiz inline, each on its own detached goroutine, instead of
-// durably queuing them (see transport.EnqueueStudySummaryJob/
-// EnqueueStudyQuizJob). words is never nil — unlike recordings, the
-// word-review study list (internal/wordreview) has no optional external
-// dependency, so cmd/server/main.go always constructs it. wordVerifyQueue is
-// nil the same optional way as studySummaryQueue/studyQuizQueue —
-// wordSaveHandler falls back to running the model-consensus check inline on
-// its own detached goroutine instead of durably queuing it (see
-// transport.EnqueueWordVerifyJob). profileRegenerateQueue is nil the same
-// optional way — sessionDeleteHandler falls back to rebuilding the learner
-// profile inline, on its own detached goroutine, instead of durably queuing
-// it (see transport.EnqueueProfileRegenerateJob). articles is never nil —
-// same as words, "오늘의 아티클" (internal/newsarticle) has no optional external
-// dependency beyond the pipeline/newsfeed it already needs, so
-// cmd/server/main.go always constructs it. articleStudyQueue is nil the same
-// optional way as wordVerifyQueue — articleDrawHandler falls back to running
-// pipeline.GenerateArticleStudy inline, on its own detached goroutine,
-// instead of durably queuing it (see transport.EnqueueArticleStudyJob).
-// wordAutoAddQueue is nil the same optional way as wordVerifyQueue —
-// wordAutoAddHandler falls back to running pipeline.SuggestNewWords inline,
-// on its own detached goroutine, instead of durably queuing it (see
-// transport.EnqueueWordAutoAddJob). articleAudio is nil unless BUDDY_TTS_URL
-// is set — same optional-feature convention as recordings/audio above (see
-// config.Config's TTSURL doc comment) — articleDrawHandler simply skips
-// read-aloud pre-generation and articleAudioHandler answers 503, instead of
-// each needing its own separate on/off signal.
-func New(cfg config.Config, pipe *pipeline.Pipeline, assets fs.FS, ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, words wordreview.Store, articles newsarticle.Store, writingStore writing.Store, wordVerifyQueue *asyncjob.Queue, translateQueue *backfill.Queue, correctionQueue *backfill.CorrectionQueue, studySummaryQueue *asyncjob.Queue, studyQuizQueue *asyncjob.Queue, profileRegenerateQueue *asyncjob.Queue, articleStudyQueue *asyncjob.Queue, writingQueue *asyncjob.Queue, wordAutoAddQueue *asyncjob.Queue, articleAudio *transport.ArticleAudio, rdb redis.UniversalClient, wordDefineQueue *asyncjob.Queue, wordResearchQueue *asyncjob.Queue) *http.Server {
+// JobQueues names each independently configured worker queue. Nil means Redis
+// is disabled; handlers use their documented detached inline fallback.
+type JobQueues struct {
+	WordVerify        *asyncjob.Queue
+	Translate         *backfill.Queue
+	Correction        *backfill.CorrectionQueue
+	StudySummary      *asyncjob.Queue
+	StudyQuiz         *asyncjob.Queue
+	ProfileRegenerate *asyncjob.Queue
+	ArticleStudy      *asyncjob.Queue
+	Writing           *asyncjob.Queue
+	WordAutoAdd       *asyncjob.Queue
+	WordDefine        *asyncjob.Queue
+	WordResearch      *asyncjob.Queue
+}
+
+// Dependencies is the complete HTTP adapter boundary. Required MySQL-backed
+// services are named alongside optional S3/Redis features so composition-root
+// wiring cannot silently swap same-typed positional arguments.
+type Dependencies struct {
+	Pipeline     *pipeline.Pipeline
+	Assets       fs.FS
+	Identity     identity.Identifier
+	Store        store.Store
+	AudioBackup  transport.AudioSaver
+	Recordings   recording.Store
+	Words        wordreview.Store
+	Articles     newsarticle.Store
+	Writing      writing.Store
+	ArticleAudio *transport.ArticleAudio
+	Redis        redis.UniversalClient
+	Queues       JobQueues
+}
+
+// New builds the WebSocket, JSON API, and frontend entry point.
+func New(cfg config.Config, deps Dependencies) *http.Server {
+	pipe := deps.Pipeline
+	assets := deps.Assets
+	ident := deps.Identity
+	st := deps.Store
+	audio := deps.AudioBackup
+	recordings := deps.Recordings
+	words := deps.Words
+	articles := deps.Articles
+	writingStore := deps.Writing
+	articleAudio := deps.ArticleAudio
+	rdb := deps.Redis
+	wordVerifyQueue := deps.Queues.WordVerify
+	translateQueue := deps.Queues.Translate
+	correctionQueue := deps.Queues.Correction
+	studySummaryQueue := deps.Queues.StudySummary
+	studyQuizQueue := deps.Queues.StudyQuiz
+	profileRegenerateQueue := deps.Queues.ProfileRegenerate
+	articleStudyQueue := deps.Queues.ArticleStudy
+	writingQueue := deps.Queues.Writing
+	wordAutoAddQueue := deps.Queues.WordAutoAdd
+	wordDefineQueue := deps.Queues.WordDefine
+	wordResearchQueue := deps.Queues.WordResearch
+
 	mux := http.NewServeMux()
 
 	// Realtime + API first (exact patterns win over the "/" catch-all).

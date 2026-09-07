@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { BuddyClient, type Status } from "./lib/ws";
 import type {
   Correction,
@@ -11,6 +11,7 @@ import { requestAmbientAudioSession } from "./lib/audioSession";
 import { prPath } from "./lib/rootPath";
 import { useDismiss } from "./hooks/useDismiss";
 import { usePollScaffold } from "./hooks/usePollScaffold";
+import { useUserPreferences } from "./hooks/useUserPreferences";
 import {
   currentRoomHistoryState,
   goBack,
@@ -19,7 +20,6 @@ import {
   pushRoomState,
   replaceRoomState,
 } from "./lib/roomHistory";
-import { fetchMe } from "./lib/me";
 import {
   deleteSession,
   endSession,
@@ -33,18 +33,7 @@ import {
   type SessionDetail,
   type SessionSummary,
 } from "./lib/sessions";
-import { fetchSettings, saveSettings, MAX_INTERLOCUTOR_STYLE_LEN } from "./lib/settings";
-import { applyTheme, getStoredTheme, onSystemThemeChange, setStoredTheme, type Theme } from "./lib/theme";
-import { formatDateDivider, formatMessageTime, formatRelativeTime, shouldShowDateDivider } from "./lib/time";
 import { clearDraft, loadDraft, saveDraft } from "./lib/draftCache";
-import { fetchWords } from "./lib/wordReview";
-import {
-  NATIVE_RATE,
-  loadAutoReadAloud,
-  loadPlaybackRate,
-  saveAutoReadAloud,
-  savePlaybackRate,
-} from "./lib/ttsSettings";
 import {
   correctionHasIssues,
   hydrateTurnMeta,
@@ -54,13 +43,13 @@ import {
   type Msg,
   type TurnMeta,
 } from "./lib/turns";
-import { GrammarControl } from "./components/GrammarControl";
-import { StudyControl } from "./components/StudyControl";
 import { TopBar } from "./components/TopBar";
-import { WordSearchControl } from "./components/WordSearchControl";
 import { CompactionInfo } from "./components/CompactionInfo";
 import { EndConversationControl } from "./components/EndConversationControl";
 import { FeedbackSummary } from "./components/FeedbackSummary";
+import { SessionList } from "./components/SessionList";
+import { ConversationTranscript } from "./components/ConversationTranscript";
+import { MessageComposer } from "./components/MessageComposer";
 
 type View = "list" | "chat";
 
@@ -81,6 +70,27 @@ const CONNECTION_LABELS: Record<Status, string> = {
 };
 
 export function App() {
+  const {
+    email,
+    theme,
+    selectTheme,
+    autoReadAloud,
+    setAutoReadAloud,
+    autoReadAloudRef,
+    playbackRate,
+    setPlaybackRate,
+    playbackRateRef,
+    styleInput,
+    styleSaving,
+    styleSaved,
+    styleLoadError,
+    styleSaveError,
+    learnerProfile,
+    wordDueCount,
+    submitStyle,
+    handleStyleInputChange,
+  } = useUserPreferences();
+
   // The home screen lands on the room list by default; a refresh while a
   // room is open restores that room instead, from the URL hash (see the
   // mount effect below) — but a WS connection is still never silently
@@ -260,14 +270,6 @@ export function App() {
   // TTS). These used to be console-only, which made a failed tap look like
   // the app had simply ignored it.
   const [chatError, setChatError] = useState<string | null>(null);
-  const [autoReadAloud, setAutoReadAloud] = useState(() => loadAutoReadAloud());
-  // onEvent's assistant_done case reads this — see activeSessionIdRef's doc
-  // comment for why a stable useCallback needs a ref alongside the state.
-  const autoReadAloudRef = useRef(false);
-  useEffect(() => {
-    autoReadAloudRef.current = autoReadAloud;
-    saveAutoReadAloud(autoReadAloud);
-  }, [autoReadAloud]);
   const [menuOpen, setMenuOpen] = useState(false);
   // Which message row's grammar-feedback popover is open, or null — only one
   // open at a time. Read-aloud no longer has a popover of its own (see
@@ -275,31 +277,6 @@ export function App() {
   const [openGrammarIndex, setOpenGrammarIndex] = useState<number | null>(null);
   const [prInput, setPrInput] = useState("");
   const [prError, setPrError] = useState(false);
-  const [email, setEmail] = useState<string | null>(null);
-  const [theme, setTheme] = useState<Theme>(() => getStoredTheme());
-  const [playbackRate, setPlaybackRate] = useState<number>(() => loadPlaybackRate());
-  // onEvent's assistant_done case reads this — see activeSessionIdRef's doc
-  // comment for why a stable useCallback needs a ref alongside the state.
-  const playbackRateRef = useRef(NATIVE_RATE);
-  useEffect(() => {
-    playbackRateRef.current = playbackRate;
-    savePlaybackRate(playbackRate);
-  }, [playbackRate]);
-  const [styleInput, setStyleInput] = useState("");
-  const [styleSaving, setStyleSaving] = useState(false);
-  const [styleSaved, setStyleSaved] = useState(false);
-  const [styleLoadError, setStyleLoadError] = useState(false);
-  const [styleSaveError, setStyleSaveError] = useState<string | null>(null);
-  // The learner's persistent cross-session profile (see settings.ts) —
-  // loaded alongside styleInput by the same fetchSettings call below, shown
-  // read-only in MenuPanel so a learner can check what past ended
-  // conversations have folded into it.
-  const [learnerProfile, setLearnerProfile] = useState("");
-  // How many saved words are due for spaced-repetition review right now —
-  // fetched once on app load (below) and shown as a badge on the "단어 복습"
-  // menu item, the only "reminder" this feature gives (see wordreview's
-  // package doc: no push notifications, just this in-app nudge on open).
-  const [wordDueCount, setWordDueCount] = useState(0);
   const [loadingMoreHistory, setLoadingMoreHistory] = useState(false);
   // Once the learner scrolls away from the latest turn, keep an explicit
   // way back instead of making them drag through a long transcript.
@@ -544,73 +521,6 @@ export function App() {
       clientRef.current = null;
     };
   }, [onEvent]);
-
-  useEffect(() => {
-    // The CookieIdentifier's id is a random per-browser token, not a real
-    // identity, so only oidc mode's id (the verified email claim) is worth
-    // showing in the menu.
-    fetchMe().then((identity) => {
-      setEmail(identity?.identityMode === "oidc" ? identity.id : null);
-    });
-  }, []);
-
-  useEffect(() => {
-    fetchSettings().then((s) => {
-      if (s) {
-        setStyleInput(s.interlocutorStyle);
-        setLearnerProfile(s.learnerProfile);
-      } else {
-        setStyleLoadError(true);
-      }
-    });
-  }, []);
-
-  useEffect(() => {
-    fetchWords().then((result) => {
-      if (result) setWordDueCount(result.dueCount);
-    });
-  }, []);
-
-  // Saves the learner's conversation-style preference (e.g. "면접관처럼 질문해줘").
-  // It's layered onto the AI's system prompt for sessions created from now
-  // on (see pipeline.BuildSystemPrompt) — an already-open chat keeps talking
-  // in whatever style it started with. Refuses to run while the initial load
-  // failed: the field would otherwise show a false-empty value (see
-  // fetchSettings), and submitting it would overwrite a real saved style
-  // with that empty string.
-  const submitStyle = useCallback(
-    async (e: React.FormEvent) => {
-      e.preventDefault();
-      if (styleLoadError) return;
-      setStyleSaved(false);
-      setStyleSaveError(null);
-      const trimmed = styleInput.trim();
-      // Matches the server's utf8.RuneCountInString check (server.go) — checked
-      // client-side too so a too-long paste gets an immediate, specific message
-      // instead of a 400 that saveSettings collapses into a bare `false`.
-      const len = Array.from(trimmed).length;
-      if (len > MAX_INTERLOCUTOR_STYLE_LEN) {
-        setStyleSaveError(`${MAX_INTERLOCUTOR_STYLE_LEN}자를 초과했습니다 (현재 ${len}자).`);
-        return;
-      }
-      setStyleSaving(true);
-      const ok = await saveSettings(trimmed);
-      setStyleSaving(false);
-      if (ok) {
-        setStyleInput(trimmed);
-        setStyleSaved(true);
-      } else {
-        setStyleSaveError("저장하지 못했습니다. 다시 시도해주세요.");
-      }
-    },
-    [styleInput, styleLoadError],
-  );
-
-  const handleStyleInputChange = useCallback((v: string) => {
-    setStyleInput(v);
-    setStyleSaved(false);
-    setStyleSaveError(null);
-  }, []);
 
   const refreshSessions = useCallback(async () => {
     setSessionsLoading(true);
@@ -1270,19 +1180,6 @@ export function App() {
     });
   }, [enterChat, resetToListView]);
 
-  useEffect(() => {
-    applyTheme(theme);
-    if (theme !== "system") return;
-    // Live-follow OS/browser theme changes while "system" is selected,
-    // instead of only resolving once at mount.
-    return onSystemThemeChange(() => applyTheme("system"));
-  }, [theme]);
-
-  const selectTheme = useCallback((t: Theme) => {
-    setStoredTheme(t);
-    setTheme(t);
-  }, []);
-
   // A dropped connection can never deliver the reply the learner is waiting
   // on, so don't leave the typing indicator spinning forever.
   useEffect(() => {
@@ -1390,6 +1287,15 @@ export function App() {
     [submitText],
   );
 
+  const handleComposerTextChange = useCallback(
+    (value: string) => {
+      setText(value);
+      if (activeSessionId) saveDraft(activeSessionId, value);
+      if (voiceDraft && value === "") discardVoiceDraft();
+    },
+    [activeSessionId, voiceDraft, discardVoiceDraft],
+  );
+
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Grow the textarea to fit its content (up to the CSS max-height, which
@@ -1477,103 +1383,18 @@ export function App() {
           {...topBarProps}
         />
 
-        <main className="session-list">
-          <button
-            className="new-chat"
-            onClick={() => void enterChat()}
-            disabled={openingSessionId !== null}
-          >
-            + 새 대화
-          </button>
-          <button
-            className="new-chat ghost quick-chat"
-            onClick={() => void enterChat(undefined, { quick: true })}
-            disabled={openingSessionId !== null}
-          >
-            ✏️ 인스턴트 대화
-          </button>
-
-          {sessionsLoadError && (
-            <div className="list-notice error" role="alert">
-              <span>대화 목록을 불러오지 못했어요.</span>
-              <button
-                type="button"
-                className="ghost"
-                onClick={() => void refreshSessions()}
-                disabled={sessionsLoading}
-              >
-                {sessionsLoading ? "불러오는 중…" : "다시 시도"}
-              </button>
-            </div>
-          )}
-          {listActionError && (
-            <div className="list-notice error" role="alert">
-              <span>{listActionError}</span>
-              <button type="button" className="ghost" onClick={() => setListActionError(null)}>
-                닫기
-              </button>
-            </div>
-          )}
-          {sessionsLoading && sessions.length === 0 && !sessionsLoadError && (
-            <p className="hint list-loading" role="status">
-              <span className="spinning" aria-hidden="true">⏳</span> 대화 목록을 불러오는 중이에요…
-            </p>
-          )}
-          {!sessionsLoading && !sessionsLoadError && sessions.length === 0 && (
-            <p className="hint">아직 대화 기록이 없어요. 새 대화를 시작해보세요.</p>
-          )}
-          {sessions.length > 0 && (
-            <ul>
-              {sessions.map((s) => (
-                <li key={s.id} className="session-row">
-                  <button
-                    className="session-item"
-                    onClick={() => void enterChat(s.id)}
-                    disabled={openingSessionId !== null || deletingSessionId !== null}
-                    aria-busy={openingSessionId === s.id}
-                  >
-                    {s.ended && (
-                      <span className="ended-badge" title="종료된 대화 (읽기 전용)">
-                        🔒
-                      </span>
-                    )}
-                    {s.ended && s.studySummaryStatus === "pending" && (
-                      <span className="study-summary-pending-badge" title="학습 피드백을 정리하는 중">
-                        <span className="spinning">⏳</span> 정리 중
-                      </span>
-                    )}
-                    {s.ended && s.quizCompleted && (
-                      <span className="quiz-completed-badge" title="퀴즈까지 모두 완료했어요">
-                        ✅ 학습 완료
-                      </span>
-                    )}
-                    {!!s.unreadCorrections && (
-                      <span className="correction-unread-badge" title={`읽지 않은 정밀 피드백 ${s.unreadCorrections}개`}>
-                        새 피드백 {s.unreadCorrections}
-                      </span>
-                    )}
-                    <span className="title">{s.title}</span>
-                    <span className="time">
-                      {openingSessionId === s.id ? "불러오는 중…" : formatRelativeTime(s.updatedAt)}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    className="ghost icon-btn session-delete"
-                    onClick={() => void handleDeleteSession(s.id)}
-                    disabled={deletingSessionId !== null || openingSessionId !== null}
-                    aria-label={deletingSessionId === s.id ? "대화 삭제 중" : "대화 삭제"}
-                    title={deletingSessionId === s.id ? "삭제 중" : "대화 삭제"}
-                  >
-                    <span className={deletingSessionId === s.id ? "spinning" : undefined}>
-                      {deletingSessionId === s.id ? "⏳" : "🗑"}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </main>
+        <SessionList
+          sessions={sessions}
+          loading={sessionsLoading}
+          loadError={sessionsLoadError}
+          actionError={listActionError}
+          openingId={openingSessionId}
+          deletingId={deletingSessionId}
+          onOpen={(id, quick) => void enterChat(id, quick ? { quick: true } : undefined)}
+          onDelete={(id) => void handleDeleteSession(id)}
+          onRetry={() => void refreshSessions()}
+          onDismissError={() => setListActionError(null)}
+        />
       </div>
     );
   }
@@ -1632,108 +1453,22 @@ export function App() {
         }}
       />
 
-      <main className="convo" ref={convoRef} onScroll={handleConvoScroll}>
-        {!ended && status !== "open" && (
-          <p
-            className={`connection-notice ${status === "connecting" ? "" : "error"}`}
-            role="status"
-          >
-            {status === "connecting"
-              ? "대화에 연결하는 중이에요. 지금 작성해도 연결되면 자동으로 전송돼요."
-              : "연결이 끊겼어요. 자동으로 다시 연결하고 있으며, 작성한 메시지는 연결 후 전송돼요."}
-          </p>
-        )}
-        {loadingMoreHistory && (
-          <p className="hint" role="status" aria-label="이전 대화 불러오는 중">
-            <span className="spinning">⏳</span>
-          </p>
-        )}
-        {quickMode && !ended && (
-          <p className="hint quick-mode-hint" role="status">
-            ✏️ 인스턴트 대화: 문장을 하나 보내면 답변과 피드백을 받고 바로 마무리돼요.
-          </p>
-        )}
-        {msgs.length === 0 && (
-          <p className="hint">
-            <strong>🎙</strong>을 누르고 영어로 말한 뒤 다시 누르세요. 인식된 문장을 확인·수정하고
-            전송하면 됩니다. 아래에 직접 입력할 수도 있고, 메시지의 <strong>🔊</strong>을 누르면
-            발음을 들을 수 있어요.
-          </p>
-        )}
-        {msgs.map((m, i) => {
-          const meta = turns[m.turn];
-          const translation = m.role === "user" ? meta?.userTranslation : meta?.assistantTranslation;
-          const translationPending =
-            m.role === "user" ? meta?.userTranslationPending : meta?.assistantTranslationPending;
-          const prev = msgs[i - 1];
-          const showDivider = shouldShowDateDivider(prev?.timestamp, m.timestamp);
-          const grammarOpen = openGrammarIndex === i;
-          return (
-            // Keyed on (turn, role) rather than array index i: loadOlderTurns
-            // prepends to msgs, and an index key would make React reconcile
-            // every already-rendered row below the insertion point instead of
-            // just mounting the new ones.
-            <Fragment key={`${m.turn}-${m.role}`}>
-              {showDivider && (
-                <div className="date-divider">
-                  <span>{formatDateDivider(m.timestamp as number)}</span>
-                </div>
-              )}
-              <div className={`row ${m.role}`}>
-                <div className="bubble">{m.text || <span className="cursor">▋</span>}</div>
-                {m.timestamp != null && (
-                  <span className="msg-time">{formatMessageTime(m.timestamp)}</span>
-                )}
-                {translation ? (
-                  <div className="translation">{translation}</div>
-                ) : (
-                  translationPending && (
-                    <div className="translation translation-pending" role="status" aria-label="번역 중">
-                      <span className="spinning">⏳</span>
-                    </div>
-                  )
-                )}
-                {m.text && (
-                  <div className="msg-tools">
-                    {m.role === "user" && m.source && (
-                      <span
-                        className="source-icon"
-                        title={m.source === "voice" ? "음성으로 입력함" : "채팅으로 입력함"}
-                      >
-                        {m.source === "voice" ? "🎙" : "⌨️"}
-                      </span>
-                    )}
-                    {m.role === "user" && m.refined && <span className="tag">refined</span>}
-                    {m.role === "user" && (
-                      <GrammarControl
-                        index={i}
-                        pending={!!meta?.correctionPending}
-                        correction={meta?.correction}
-                        failed={!!meta?.correctionFailed}
-                        unread={!!meta?.correctionUnread}
-                        open={grammarOpen}
-                        onToggle={setOpenGrammarIndex}
-                        panelRef={grammarOpen ? studyRef : undefined}
-                      />
-                    )}
-                    <StudyControl turn={m.turn} role={m.role} onPlay={playMessage} />
-                  </div>
-                )}
-              </div>
-            </Fragment>
-          );
-        })}
-        {awaitingReply && (
-          <div className="row assistant">
-            <div className="bubble typing" role="status" aria-label="답변 생성 중">
-              <span className="dot" />
-              <span className="dot" />
-              <span className="dot" />
-            </div>
-          </div>
-        )}
-        <div ref={latestMessageAnchorRef} className="latest-message-anchor" aria-hidden="true" />
-      </main>
+      <ConversationTranscript
+        ended={ended}
+        status={status}
+        loadingMore={loadingMoreHistory}
+        quickMode={quickMode}
+        messages={msgs}
+        turns={turns}
+        openGrammarIndex={openGrammarIndex}
+        onToggleGrammar={setOpenGrammarIndex}
+        grammarPanelRef={studyRef}
+        onPlay={playMessage}
+        awaitingReply={awaitingReply}
+        scrollRef={convoRef}
+        latestMessageRef={latestMessageAnchorRef}
+        onScroll={handleConvoScroll}
+      />
 
       {showScrollToLatest && !chatError && (
         <button
@@ -1761,92 +1496,21 @@ export function App() {
         </div>
       )}
 
-      {ended ? (
-        <footer className="composer composer-ended">
-          <p className="hint ended" role="status">
-            {quickMode
-              ? "인스턴트 대화를 완료했어요! 위 🎓 버튼에서 학습 피드백을 확인해보세요."
-              : "이 대화는 종료되어 더 이상 메시지를 보낼 수 없어요."}
-          </p>
-        </footer>
-      ) : quickMode && quickSent ? (
-        // Locks the composer the instant the learner's one sentence is sent
-        // — the auto-end effect above is still waiting on that turn's
-        // correction/translations, so nothing here should let a second
-        // message sneak in before the room wraps itself up.
-        <footer className="composer composer-ended">
-          <p className="hint ended" role="status">
-            <span className="spinning">⏳</span> 답변을 기다리는 중이에요…
-          </p>
-        </footer>
-      ) : (
-        <footer className="composer">
-          <WordSearchControl />
-          <button
-            className={`mic ${mic ? "on" : ""}`}
-            onClick={toggleMic}
-            aria-label={transcribing ? "음성 인식 중" : mic ? "녹음 중지" : "음성으로 말하기"}
-            aria-pressed={mic}
-            title={transcribing ? "음성 인식 중" : mic ? "녹음 중지" : "음성으로 말하기"}
-            disabled={transcribing}
-          >
-            {mic ? "◼" : "🎙"}
-          </button>
-          {transcribing && (
-            <p className="hint transcribing" role="status" aria-label="음성 인식 중">
-              <span className="spinning">⏳</span>
-            </p>
-          )}
-          <form onSubmit={onComposerSubmit}>
-            <div className="composer-field">
-              {voiceDraft && (
-                <span id="voice-draft-note" className="voice-draft-note" role="status">
-                  음성 인식 결과예요. 확인한 뒤 보내주세요.
-                </span>
-              )}
-              <textarea
-                ref={textareaRef}
-                className={voiceDraft ? "voice-draft" : undefined}
-                value={text}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setText(v);
-                  if (activeSessionId) saveDraft(activeSessionId, v);
-                  if (voiceDraft && v === "") discardVoiceDraft(); // cleared by hand — treat as discarded
-                }}
-                onKeyDown={onComposerKeyDown}
-                placeholder="…or type in English"
-                aria-label="영어 메시지"
-                aria-describedby={voiceDraft ? "voice-draft-note" : undefined}
-                enterKeyHint="send"
-                autoComplete="off"
-                autoCorrect="on"
-                rows={1}
-              />
-            </div>
-            {voiceDraft && (
-              <button
-                type="button"
-                className="ghost icon-btn"
-                onClick={discardVoiceDraft}
-                aria-label="음성 초안 취소"
-                title="음성 초안 취소"
-              >
-                ✕
-              </button>
-            )}
-            <button
-              type="submit"
-              className="send-btn"
-              aria-label="메시지 보내기"
-              title="메시지 보내기"
-              disabled={!text.trim()}
-            >
-              ➤
-            </button>
-          </form>
-        </footer>
-      )}
+      <MessageComposer
+        ended={ended}
+        quickMode={quickMode}
+        quickSent={quickSent}
+        mic={mic}
+        transcribing={transcribing}
+        text={text}
+        voiceDraft={voiceDraft}
+        textareaRef={textareaRef}
+        onToggleMic={() => void toggleMic()}
+        onSubmit={onComposerSubmit}
+        onKeyDown={onComposerKeyDown}
+        onTextChange={handleComposerTextChange}
+        onDiscardVoiceDraft={discardVoiceDraft}
+      />
     </div>
   );
 }

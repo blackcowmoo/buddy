@@ -188,23 +188,23 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 		return nil
 	}
 	steps := []migration.Step{
-		{1, "turns.translation", func(context.Context, *sql.DB) error {
+		{Version: 1, Name: "turns.translation", Up: func(context.Context, *sql.DB) error {
 			return addColumn(turnsTable, "translation TEXT NULL", "translation")
 		}},
-		{2, "turns.source", func(context.Context, *sql.DB) error {
+		{Version: 2, Name: "turns.source", Up: func(context.Context, *sql.DB) error {
 			return addColumn(turnsTable, "source VARCHAR(8) NOT NULL DEFAULT ''", "source")
 		}},
 		// Predates the auto-title feature. Tracks whether a session's title has
 		// already been LLM-generated (see SaveGeneratedTitle) so a reconnect can
 		// never re-trigger and flap it.
-		{3, "sessions.title_generated", func(context.Context, *sql.DB) error {
+		{Version: 3, Name: "sessions.title_generated", Up: func(context.Context, *sql.DB) error {
 			return addColumn(sessionsTable, "title_generated TINYINT(1) NOT NULL DEFAULT 0", "title_generated")
 		}},
 		// Predates the permanent end-conversation feature. ended+study_summary
 		// together let a learner's confirmed "end this conversation" wrap-up
 		// survive a reload instead of being regenerated (or lost) — see
 		// EndSession.
-		{4, "sessions.ended", func(context.Context, *sql.DB) error {
+		{Version: 4, Name: "sessions.ended", Up: func(context.Context, *sql.DB) error {
 			return addColumn(sessionsTable, "ended TINYINT(1) NOT NULL DEFAULT 0", "ended")
 		}},
 		// No DEFAULT clause: MySQL rejects a literal default on a TEXT column
@@ -213,7 +213,7 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 		// '' on its own; every INSERT that can create a new row from here on
 		// just has to list this column explicitly (see ensureSessionRow /
 		// SaveGeneratedTitle below).
-		{5, "sessions.study_summary", func(context.Context, *sql.DB) error {
+		{Version: 5, Name: "sessions.study_summary", Up: func(context.Context, *sql.DB) error {
 			return addColumn(sessionsTable, "study_summary TEXT NOT NULL", "study_summary")
 		}},
 		// Predates the cross-session learner-profile feature. Unlike
@@ -222,7 +222,7 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 		// alongside it so a brand-new conversation still carries forward what
 		// earlier, unrelated conversations revealed about this learner. Same
 		// no-DEFAULT reasoning as study_summary above.
-		{6, "settings.learner_profile", func(context.Context, *sql.DB) error {
+		{Version: 6, Name: "settings.learner_profile", Up: func(context.Context, *sql.DB) error {
 			return addColumn(settingsTable, "learner_profile TEXT NOT NULL", "learner_profile")
 		}},
 		// Predates asyncjob.KindWordAutoAdd: lets httpserver.wordAutoAddHandler
@@ -232,10 +232,10 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 		// review page to poll — see store.MySQLStore.StartWordAutoAdd/
 		// CompleteWordAutoAdd/FailWordAutoAdd. VARCHAR (not TEXT) so it can carry
 		// a DEFAULT, same reasoning as quiz_status above.
-		{7, "settings.word_auto_add_status", func(context.Context, *sql.DB) error {
+		{Version: 7, Name: "settings.word_auto_add_status", Up: func(context.Context, *sql.DB) error {
 			return addColumn(settingsTable, "word_auto_add_status VARCHAR(16) NOT NULL DEFAULT ''", "word_auto_add_status")
 		}},
-		{8, "settings.word_auto_add_count", func(context.Context, *sql.DB) error {
+		{Version: 8, Name: "settings.word_auto_add_count", Up: func(context.Context, *sql.DB) error {
 			return addColumn(settingsTable, "word_auto_add_count INT NOT NULL DEFAULT 0", "word_auto_add_count")
 		}},
 		// Predates asyncjob.KindStudySummary: lets EndSession freeze a room and
@@ -247,7 +247,7 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 		// the wrap-up was generated synchronously, before this column existed)
 		// backfill to '' automatically, which SessionMeta.StudySummaryStatus's
 		// doc comment treats the same as JobStatusDone.
-		{9, "sessions.study_summary_status", func(context.Context, *sql.DB) error {
+		{Version: 9, Name: "sessions.study_summary_status", Up: func(context.Context, *sql.DB) error {
 			return addColumn(sessionsTable, "study_summary_status VARCHAR(16) NOT NULL DEFAULT ''", "study_summary_status")
 		}},
 		// Predates asyncjob.KindStudyQuiz: pre-generates the practice quiz
@@ -255,17 +255,17 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 		// of on demand when the learner opens it — so tapping "퀴즈 풀기" shows an
 		// already-finished quiz instantly. Same no-DEFAULT reasoning as
 		// study_summary above.
-		{10, "sessions.quiz", func(context.Context, *sql.DB) error { return addColumn(sessionsTable, "quiz TEXT NOT NULL", "quiz") }},
+		{Version: 10, Name: "sessions.quiz", Up: func(context.Context, *sql.DB) error { return addColumn(sessionsTable, "quiz TEXT NOT NULL", "quiz") }},
 		// Tracks asyncjob.KindStudyQuiz's own progress independently of
 		// study_summary_status — the two jobs run in parallel from the same
 		// EndSession call, not one after the other, so they need separate status
 		// columns. Same DEFAULT reasoning as study_summary_status above.
-		{11, "sessions.quiz_status", func(context.Context, *sql.DB) error {
+		{Version: 11, Name: "sessions.quiz_status", Up: func(context.Context, *sql.DB) error {
 			return addColumn(sessionsTable, "quiz_status VARCHAR(16) NOT NULL DEFAULT ''", "quiz_status")
 		}},
 		// A one-way "studied this" checkmark for the room list — see
 		// SessionMeta.QuizCompleted's doc comment.
-		{12, "sessions.quiz_completed", func(context.Context, *sql.DB) error {
+		{Version: 12, Name: "sessions.quiz_completed", Up: func(context.Context, *sql.DB) error {
 			return addColumn(sessionsTable, "quiz_completed TINYINT(1) NOT NULL DEFAULT 0", "quiz_completed")
 		}},
 		// Marks a room opened from "오늘의 한 문장"/instant mode (see MarkInstant) —
@@ -275,7 +275,7 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 		// ListSessions excludes these (WHERE instant = 0) so they never clutter
 		// the main room list; ListInstantSessions is the one place that reads
 		// them back, for their own dedicated list page.
-		{13, "sessions.instant", func(context.Context, *sql.DB) error {
+		{Version: 13, Name: "sessions.instant", Up: func(context.Context, *sql.DB) error {
 			return addColumn(sessionsTable, "instant TINYINT(1) NOT NULL DEFAULT 0", "instant")
 		}},
 		// One-time reset for rows written before GenerateStudySummary switched to
@@ -296,7 +296,7 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 		// the new JSON-array shape (from a session ended after this migration
 		// first ran) always starts with '[' and is left untouched. The migration
 		// marker makes this compatibility rewrite run only once.
-		{14, "reset_legacy_study_summaries", func(ctx context.Context, db *sql.DB) error {
+		{Version: 14, Name: "reset_legacy_study_summaries", Up: func(ctx context.Context, db *sql.DB) error {
 			_, err := db.ExecContext(ctx, `
 		UPDATE `+sessionsTable+` SET study_summary = '', study_summary_status = ?
 		WHERE study_summary_status = 'done' AND study_summary <> '' AND LEFT(study_summary, 1) <> '['
@@ -307,10 +307,10 @@ func NewMySQL(cfg MySQLConfig) (*MySQLStore, error) {
 		// result. Existing corrections predate the distinction and are treated
 		// as final/read, preserving their old UX without creating a surprise
 		// backlog of notifications during rollout.
-		{15, "turns.correction_stage", func(context.Context, *sql.DB) error {
+		{Version: 15, Name: "turns.correction_stage", Up: func(context.Context, *sql.DB) error {
 			return addColumn(turnsTable, "correction_stage VARCHAR(8) NOT NULL DEFAULT ''", "correction_stage")
 		}},
-		{16, "turns.correction_unread", func(context.Context, *sql.DB) error {
+		{Version: 16, Name: "turns.correction_unread", Up: func(context.Context, *sql.DB) error {
 			return addColumn(turnsTable, "correction_unread TINYINT(1) NOT NULL DEFAULT 0", "correction_unread")
 		}},
 	}
