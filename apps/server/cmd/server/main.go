@@ -303,7 +303,32 @@ func main() {
 		defer recordings.Close()
 	}
 
-	srv := httpserver.New(cfg, pipe, webassets.FS(), ident, st, audio, recordings, wordReviews, articles, writingStore, wordVerifyQueue, translateQueue, correctionBackfillQueue, studySummaryQueue, studyQuizQueue, profileRegenerateQueue, articleStudyQueue, writingQueue, wordAutoAddQueue, articleAudio, rdb, wordDefineQueue, wordResearchQueue)
+	srv := httpserver.New(cfg, httpserver.Dependencies{
+		Pipeline:     pipe,
+		Assets:       webassets.FS(),
+		Identity:     ident,
+		Store:        st,
+		AudioBackup:  audio,
+		Recordings:   recordings,
+		Words:        wordReviews,
+		Articles:     articles,
+		Writing:      writingStore,
+		ArticleAudio: articleAudio,
+		Redis:        rdb,
+		Queues: httpserver.JobQueues{
+			WordVerify:        wordVerifyQueue,
+			Translate:         translateQueue,
+			Correction:        correctionBackfillQueue,
+			StudySummary:      studySummaryQueue,
+			StudyQuiz:         studyQuizQueue,
+			ProfileRegenerate: profileRegenerateQueue,
+			ArticleStudy:      articleStudyQueue,
+			Writing:           writingQueue,
+			WordAutoAdd:       wordAutoAddQueue,
+			WordDefine:        wordDefineQueue,
+			WordResearch:      wordResearchQueue,
+		},
+	})
 
 	go func() {
 		log.Printf("buddy up on %s  env=%s  stt=%v  feedback=%s",

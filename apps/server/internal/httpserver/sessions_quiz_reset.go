@@ -2,7 +2,6 @@ package httpserver
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 
@@ -25,44 +24,25 @@ import (
 // existed) rather than JobStatusPending, so this can't race a
 // still-in-flight generation into two competing writers.
 func sessionQuizResetHandler(ident identity.Identifier, st store.Store, pipe *pipeline.Pipeline, studyQuizQueue *asyncjob.Queue) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		userID, ok := requireUser(w, r, ident)
-		if !ok {
-			return
-		}
-		sessionID := r.PathValue("id")
-
-		meta, _, err := st.SessionDetail(r.Context(), userID, sessionID)
-		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				http.NotFound(w, r)
-				return
-			}
-			serverError(w, "session detail", err)
-			return
-		}
-		resettable := meta.QuizStatus == store.JobStatusDone || meta.QuizStatus == store.JobStatusFailed || meta.QuizStatus == ""
-		if !meta.Ended || !resettable {
-			http.Error(w, "quiz is not in a resettable state", http.StatusConflict)
-			return
-		}
-
-		if err := st.RestartStudyQuiz(r.Context(), userID, sessionID); err != nil {
-			serverError(w, "restart study quiz", err)
-			return
-		}
-
-		asyncjob.EnqueueOrRunInline(studyQuizQueue, r.Context(),
-			fmt.Sprintf("reset quiz: enqueue study quiz %s/%s", userID, sessionID),
-			func(ctx context.Context) error {
-				return transport.EnqueueStudyQuizJob(ctx, studyQuizQueue, pipe, st, userID, sessionID)
-			},
-			fmt.Sprintf("reset quiz: study quiz %s/%s", userID, sessionID),
-			func(ctx context.Context) error {
-				return transport.RunStudyQuizInline(ctx, pipe, st, userID, sessionID)
-			},
-		)
-
-		w.WriteHeader(http.StatusNoContent)
-	}
+	return sessionRestartHandler(ident, st, sessionRestartSpec{
+		eligible: func(meta store.SessionMeta) bool {
+			return meta.QuizStatus == store.JobStatusDone ||
+				meta.QuizStatus == store.JobStatusFailed || meta.QuizStatus == ""
+		},
+		conflict:       "quiz is not in a resettable state",
+		restartContext: "restart study quiz",
+		restart:        st.RestartStudyQuiz,
+		dispatch: func(ctx context.Context, userID, sessionID string) {
+			asyncjob.EnqueueOrRunInline(studyQuizQueue, ctx,
+				fmt.Sprintf("reset quiz: enqueue study quiz %s/%s", userID, sessionID),
+				func(jobCtx context.Context) error {
+					return transport.EnqueueStudyQuizJob(jobCtx, studyQuizQueue, pipe, st, userID, sessionID)
+				},
+				fmt.Sprintf("reset quiz: study quiz %s/%s", userID, sessionID),
+				func(jobCtx context.Context) error {
+					return transport.RunStudyQuizInline(jobCtx, pipe, st, userID, sessionID)
+				},
+			)
+		},
+	})
 }
