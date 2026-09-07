@@ -53,7 +53,7 @@ func TestGenerateArticleStudySendsSourceAndParsesResult(t *testing.T) {
 	}
 }
 
-func TestGenerateArticleStudyUsesAnalysisEnsembleNotChatModel(t *testing.T) {
+func TestGenerateArticleStudyStartsWithChatThenUsesAnalysis(t *testing.T) {
 	chatCalls := 0
 	p := &Pipeline{
 		LLM:       &fakeLLM{complete: func(msgs []llm.Message) (string, error) { chatCalls++; return "should not be used", nil }},
@@ -65,8 +65,8 @@ func TestGenerateArticleStudyUsesAnalysisEnsembleNotChatModel(t *testing.T) {
 	if _, err := p.GenerateArticleStudy(context.Background(), "BBC", "t", "d"); err != nil {
 		t.Fatalf("GenerateArticleStudy() error = %v", err)
 	}
-	if chatCalls != 0 {
-		t.Fatalf("GenerateArticleStudy should use the Analysis ensemble, not the chat model directly; got %d chat calls", chatCalls)
+	if chatCalls != 1 {
+		t.Fatalf("GenerateArticleStudy should start with exactly one Chat draft; got %d calls", chatCalls)
 	}
 }
 

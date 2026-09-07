@@ -50,11 +50,13 @@ func (p *Pipeline) translationSemaphore() chan struct{} {
 	return p.translationSem
 }
 
-// translateAssistant asks the analysis ensemble for a plain native-language
-// translation of the assistant's full reply, then lets Judge independently
-// produce the final translation with those outputs as advisory evidence —
-// the same ensemble/Judge machinery correct() uses, just with
-// a plain-text (not JSON) prompt since there's nothing else to parse out.
+// translateAssistant runs the assistant's plain native-language translation
+// through Chat -> Analysis -> Judge, with a plain-text (not JSON) prompt since
+// there's nothing else to parse out. Unlike correction, it does not expose the
+// Chat draft: a translation is secondary enrichment rather than something the
+// learner is waiting on to continue, and showing it early would either mutate
+// already-read message content or require a second unread-notification surface.
+// Only the terminal result is emitted once.
 //
 // Callers pass context.WithoutCancel(ctx) (see StartConversation/reply
 // above), not the turn-scoped or connection ctx directly: this only starts
@@ -67,23 +69,14 @@ func (p *Pipeline) translationSemaphore() chan struct{} {
 // that legitimately wants early cancellation — like internal/backfill's
 // long-lived worker ctx via TranslateWithContext below — still gets it.
 func (p *Pipeline) translateAssistant(ctx context.Context, userID, sessionID string, turn int, text string, emit Emit) {
-	// FAST pass: one quick chat-model call so the learner sees a translation
-	// immediately; REFINE (below) re-checks it with the analysis ensemble and
-	// silently patches the result only if it disagrees — same shape as
-	// correct()'s two-stage flow.
-	fastTranslation, fastErr := p.AnalyzeTranslationFast(ctx, text)
-	fastOK := fastErr == nil
-	if fastOK {
-		emit(protocol.ServerEvent{Type: protocol.EvAssistantTranslation, Turn: turn, Text: fastTranslation})
-	} else {
-		log.Printf("translateAssistant: fast pass: %v", fastErr)
+	// Keep the exact Chat output as the durable handoff, but do not emit it.
+	chatDraft, chatErr := p.chatDraft(ctx, translationSystemPrompt(p.FeedbackLang), text, false)
+	if chatErr != nil {
+		log.Printf("translateAssistant: chat draft: %v", chatErr)
 	}
 
 	onResult := func(translation string) {
-		if fastOK && strings.TrimSpace(fastTranslation) == strings.TrimSpace(translation) {
-			return // the ensemble agrees with what the learner already sees
-		}
-		// analyze() never succeeds with a blank result (a candidate's own
+		// analyzeFromDraft() never succeeds with a blank result (a candidate's own
 		// empty output is filtered out before it can win), so this event
 		// always carries real text — the client's pending/spinner state
 		// (see App.tsx) treats this event's arrival as the "translation
@@ -91,10 +84,10 @@ func (p *Pipeline) translateAssistant(ctx context.Context, userID, sessionID str
 		emit(protocol.ServerEvent{Type: protocol.EvAssistantTranslation, Turn: turn, Text: translation})
 	}
 	if p.TranslateHook != nil {
-		p.TranslateHook(ctx, userID, sessionID, turn, text, onResult)
+		p.TranslateHook(ctx, userID, sessionID, turn, text, chatDraft, onResult)
 		return
 	}
-	translation, err := p.AnalyzeTranslation(ctx, text)
+	translation, err := p.AnalyzeTranslationFromDraft(ctx, text, chatDraft)
 	if err != nil {
 		log.Printf("translateAssistant: %v", err)
 		return
@@ -119,6 +112,21 @@ func (p *Pipeline) AnalyzeTranslation(ctx context.Context, text string) (string,
 	return strings.TrimSpace(raw), nil
 }
 
+// AnalyzeTranslationFromDraft continues the cascade from the hidden Chat
+// translation draft. It acquires the same low-priority serialized translation
+// slot as AnalyzeTranslation, but does not call Chat again.
+func (p *Pipeline) AnalyzeTranslationFromDraft(ctx context.Context, text, chatDraft string) (string, error) {
+	if err := p.acquireTranslationSlot(ctx); err != nil {
+		return "", err
+	}
+	defer p.releaseTranslationSlot()
+	raw, err := p.analyzeFromDraft(ctx, translationSystemPrompt(p.FeedbackLang), text, false, chatDraft)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(raw), nil
+}
+
 // AnalyzeTranslationFast is AnalyzeTranslation's FAST-track counterpart: one
 // call to the chat model (p.LLM/p.ChatModel) instead of the analysis
 // ensemble, mirroring AnalyzeCorrectionFast — see translateAssistant()'s
@@ -128,11 +136,7 @@ func (p *Pipeline) AnalyzeTranslation(ctx context.Context, text string) (string,
 // matter. A blank (whitespace-only) result is treated as an error, matching
 // analyze()'s own "no blank winners" contract.
 func (p *Pipeline) AnalyzeTranslationFast(ctx context.Context, text string) (string, error) {
-	msgs := []llm.Message{
-		{Role: llm.RoleSystem, Content: translationSystemPrompt(p.FeedbackLang)},
-		{Role: llm.RoleUser, Content: text},
-	}
-	raw, err := p.LLM.Complete(ctx, p.ChatModel, msgs, false)
+	raw, err := p.chatDraft(ctx, translationSystemPrompt(p.FeedbackLang), text, false)
 	if err != nil {
 		return "", err
 	}

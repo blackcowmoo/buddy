@@ -316,9 +316,21 @@ body {
    popover's right:0 off the bubble's true right edge, skewing it left with
    an oversized right margin. */
 .grammar-control { display: inline-flex; }
-.grammar-btn { width: 28px; height: 28px; min-height: 28px; font-size: 13px; }
+.grammar-btn { position: relative; width: 28px; height: 28px; min-height: 28px; font-size: 13px; }
 .study-btn { width: 22px; height: 22px; min-height: 22px; font-size: 11px; }
 .grammar-btn:disabled { opacity: 0.7; }
+.grammar-refining-dot,
+.grammar-unread-dot {
+  position: absolute;
+  inset-block-start: 2px;
+  inset-inline-end: 2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.grammar-refining-dot { color: transparent; opacity: .72; }
+.grammar-unread-dot { box-shadow: 0 0 0 2px var(--panel); }
 .study-panel {
   position: absolute;
   top: calc(100% + 6px);
@@ -338,6 +350,14 @@ body {
   overflow-y: auto;
 }
 .grammar-clean { font-size: 13px; color: var(--muted); padding: 2px 4px; }
+.grammar-refining-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
 
 /* Session-wide feedback list, opened from the chat header — see App.tsx
    FeedbackSummary. Wider and scrollable, unlike the per-row study panels.
@@ -839,6 +859,16 @@ a.icon-btn.ghost {
   flex-shrink: 0;
   font-size: 12px;
   color: var(--ok);
+}
+.session-item .correction-unread-badge {
+  flex-shrink: 0;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: white;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1.2;
 }
 .session-delete { width: 36px; height: 36px; min-height: 36px; font-size: 14px; flex-shrink: 0; background: transparent; box-shadow: none; }
 

@@ -13,9 +13,9 @@ import (
 )
 
 // StudyQuizClaimTTL/StudyQuizWorkerConcurrency mirror StudySummaryClaimTTL/
-// StudySummaryWorkerConcurrency's reasoning: one Complete() call against the
-// Analysis ensemble (see pipeline.Pipeline.GenerateStudyQuiz), so the same
-// margin above llm.OpenAI's own request timeout applies. Concurrency stays
+// StudySummaryWorkerConcurrency's reasoning: one ordered model cascade (see
+// pipeline.Pipeline.GenerateStudyQuiz), so the same margin above llm.OpenAI's
+// per-request timeout applies. Concurrency stays
 // modest since a learner only ever ends one room at a time.
 const (
 	StudyQuizClaimTTL          = 25 * time.Hour

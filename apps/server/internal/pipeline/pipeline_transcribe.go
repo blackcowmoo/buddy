@@ -16,8 +16,9 @@ import (
 // single sentence the learner most likely said, using the pre-turn
 // conversation for context (see synthesizeTranscript) — if that call fails,
 // the first engine's candidate is used so a flaky reconciliation never loses
-// the turn. The raw candidates are returned too, so refine() can hand them to
-// Judge for a second pass without re-running STT.
+// the turn. The raw candidates are returned too, so HandleUtterance can pass
+// them and the exact Chat result through Analysis and Judge without re-running
+// STT.
 //
 // Every engine failing outright is an error (STT is down); every engine
 // succeeding but hearing silence is not — it returns ("", candidates, nil),

@@ -50,6 +50,37 @@ func TestGenerateTitleTrimsQuotesAndWhitespace(t *testing.T) {
 	}
 }
 
+func TestGenerateTitlePublishesOnlyJudgeResult(t *testing.T) {
+	p := &Pipeline{
+		LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			return "Chat Hiking", nil
+		}},
+		ChatModel: "chat",
+		Analysis: []Candidate{{Model: "analysis", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			if !strings.Contains(msgs[len(msgs)-1].Content, "Chat Hiking") {
+				t.Fatalf("Analysis did not receive the Chat title: %+v", msgs)
+			}
+			return "Analysis Hiking", nil
+		}}}},
+		Judge: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			input := msgs[len(msgs)-1].Content
+			if !strings.Contains(input, "Chat Hiking") || !strings.Contains(input, "Analysis Hiking") {
+				t.Fatalf("Judge did not receive every prior title stage: %+v", msgs)
+			}
+			return "Judge Hiking", nil
+		}},
+		JudgeModel: "judge",
+	}
+
+	got, err := p.GenerateTitle(context.Background(), titleTranscript("I went hiking.", "Nice!"))
+	if err != nil {
+		t.Fatalf("GenerateTitle() error = %v", err)
+	}
+	if got != "Judge Hiking" {
+		t.Fatalf("GenerateTitle() = %q, want terminal Judge title", got)
+	}
+}
+
 func TestGenerateTitlePropagatesLLMError(t *testing.T) {
 	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 		return "", errors.New("down")

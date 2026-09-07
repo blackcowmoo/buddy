@@ -91,34 +91,30 @@ func TestTranslateAssistantTrimsWhitespace(t *testing.T) {
 	}
 }
 
-// TestTranslateAssistantEmitsFastThenRefinedWhenDifferent guards the
-// two-stage flow: the FAST pass (p.LLM/p.ChatModel) emits first, and the
-// slower REFINE ensemble patches it in with a second event once it lands on
-// a different translation.
-func TestTranslateAssistantEmitsFastThenRefinedWhenDifferent(t *testing.T) {
+// A message translation may differ between stages, but its hidden drafts must
+// never flash on screen and then mutate. Only the terminal result is emitted.
+func TestTranslateAssistantPublishesOnlyTerminalResult(t *testing.T) {
+	var analysisInput string
 	p := &Pipeline{
 		LLM:       &fakeLLM{complete: func(msgs []llm.Message) (string, error) { return "빠른 번역", nil }},
 		ChatModel: "chat",
-		Analysis:  []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) { return "정제된 번역", nil }}}},
+		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			analysisInput = msgs[len(msgs)-1].Content
+			return "정제된 번역", nil
+		}}}},
 	}
 	var got []protocol.ServerEvent
 	p.translateAssistant(context.Background(), "alex", "sess-1", 3, "Hello, how are you today?", func(ev protocol.ServerEvent) { got = append(got, ev) })
 
-	if len(got) != 2 || got[0].Type != protocol.EvAssistantTranslation || got[1].Type != protocol.EvAssistantTranslation {
-		t.Fatalf("expected two assistant_translation events (fast, then refined), got %+v", got)
+	if len(got) != 1 || got[0].Type != protocol.EvAssistantTranslation || got[0].Text != "정제된 번역" {
+		t.Fatalf("expected only the terminal assistant_translation event, got %+v", got)
 	}
-	if got[0].Text != "빠른 번역" {
-		t.Fatalf("fast event should carry the fast pass's own translation, got %+v", got[0])
-	}
-	if got[1].Text != "정제된 번역" {
-		t.Fatalf("refined event should carry the ensemble's translation, got %+v", got[1])
+	if !strings.Contains(analysisInput, "Chat draft to refine:\n빠른 번역") {
+		t.Fatalf("Analysis did not receive the hidden Chat translation: %q", analysisInput)
 	}
 }
 
-// TestTranslateAssistantSkipsSecondEmitWhenSame is
-// TestTranslateAssistantEmitsFastThenRefinedWhenDifferent's counterpart: no
-// second event when the ensemble agrees with the fast pass.
-func TestTranslateAssistantSkipsSecondEmitWhenSame(t *testing.T) {
+func TestTranslateAssistantPublishesOnceWhenStagesAgree(t *testing.T) {
 	fixture := func(msgs []llm.Message) (string, error) { return "같은 번역", nil }
 	p := &Pipeline{
 		LLM:       &fakeLLM{complete: fixture},
@@ -129,11 +125,11 @@ func TestTranslateAssistantSkipsSecondEmitWhenSame(t *testing.T) {
 	p.translateAssistant(context.Background(), "alex", "sess-1", 3, "Hello, how are you today?", func(ev protocol.ServerEvent) { got = append(got, ev) })
 
 	if len(got) != 1 {
-		t.Fatalf("expected exactly one assistant_translation event when fast and refined agree, got %+v", got)
+		t.Fatalf("expected exactly one terminal assistant_translation event, got %+v", got)
 	}
 }
 
-// TestTranslateAssistantFastFailureFallsBackToRefineOnly: a fast-pass error
+// TestTranslateAssistantFastFailureFallsBackToRefineOnly: a Chat-stage error
 // must not stop the ensemble's own result from reaching the learner, and
 // must not itself produce any event (translateAssistant has never reported
 // translation failures — see TestTranslateAssistantIgnoresLLMError).
@@ -169,7 +165,7 @@ func TestTranslateWithContextSendsBareTextWhenNoPriorTurns(t *testing.T) {
 		t.Fatalf("TranslateWithContext() = %q, want trimmed translation", got)
 	}
 	if gotInput != "hello" {
-		t.Fatalf("input with no prior turns should be the bare text, got %q", gotInput)
+		t.Fatalf("refinement input should preserve the bare text as original input, got %q", gotInput)
 	}
 }
 
@@ -235,8 +231,8 @@ func TestTranslationCallsAreSerializedAcrossLiveAndBackfill(t *testing.T) {
 		mu.Unlock()
 		return "translated", nil
 	}}
-	// translateAssistant's FAST pass (p.LLM/p.ChatModel) is a separate,
-	// immediate call unrelated to the ensemble slot this test measures —
+	// translateAssistant's hidden Chat pass (p.LLM/p.ChatModel) is a separate
+	// call unrelated to the ensemble slot this test measures —
 	// give it its own fast fake so it doesn't perturb maxInFlight.
 	p := &Pipeline{
 		LLM:       &fakeLLM{complete: func(msgs []llm.Message) (string, error) { return "fast", nil }},

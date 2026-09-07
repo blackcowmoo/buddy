@@ -87,7 +87,7 @@ const (
 	// enqueued right after httpserver.wordSaveHandler saves it as
 	// wordreview.StatusPending. Queued rather than run inline in that
 	// request for the same reason as KindStudySummary: pipeline.VerifyWord
-	// makes several LLM calls (see minWordVerifyJudges) against a
+	// runs the Chat -> Analysis -> Judge cascade against a
 	// potentially slow local model, so it must never block the "학습하기"
 	// response — the learner sees the word immediately, and it flips to
 	// verified/rejected once this job finishes, independent of whether

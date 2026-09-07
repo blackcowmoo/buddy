@@ -46,6 +46,9 @@ export interface SessionSummary {
   // set. Drives the room list's "studied this" badge, and — once true —
   // EndConversationControl hides "퀴즈 풀기" in favor of "퀴즈 다시 만들기".
   quizCompleted?: boolean;
+  // Final Judge corrections in this room that differ from the Chat preview
+  // and have not yet been opened. Displayed only on the relevant room row.
+  unreadCorrections?: number;
 }
 
 export interface TurnRecord {
@@ -72,6 +75,8 @@ export interface TurnRecord {
   // analysis errored" apart from "it ran and found nothing" (correction
   // present, empty issues) — both look the same in `correction` alone.
   correctionStatus?: "pending" | "processing" | "done" | "failed";
+  correctionStage?: "chat" | "judge";
+  correctionUnread?: boolean;
 }
 
 export interface SessionDetail {
@@ -163,6 +168,13 @@ export async function fetchSessionCompaction(id: string): Promise<SessionCompact
 // itself succeeded.
 export async function markQuizCompleted(id: string): Promise<boolean> {
   return requestOK(`api/sessions/${encodeURIComponent(id)}/quiz/complete`, { method: "POST" });
+}
+
+// Acknowledges a final correction after its feedback panel is actually
+// opened. The server owns the read state so it stays consistent across
+// reloads/devices instead of disappearing from local React state alone.
+export async function markCorrectionRead(id: string, turn: number): Promise<boolean> {
+  return requestOK(`api/sessions/${encodeURIComponent(id)}/corrections/${turn}/read`, { method: "POST" });
 }
 
 // Forces an ended session's pre-generated quiz to regenerate from scratch

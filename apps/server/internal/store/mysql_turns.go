@@ -58,22 +58,33 @@ func (s *MySQLStore) LastTurn(ctx context.Context, userID, sessionID string) (in
 	return last, nil
 }
 
-// SaveCorrection writes the correction text and marks its job "done" in one
-// transaction — same atomicity reasoning as CompleteAssistantTurn, so a
+// SaveCorrection writes the terminal Judge correction and marks its job
+// "done" in one transaction — same atomicity reasoning as
+// CompleteAssistantTurn, so a
 // poller never sees a "done" correction-job status before the correction it
 // belongs to is readable. The job update is a plain UPDATE (not an upsert),
 // so it's a harmless no-op when no job was ever reserved for this turn (e.g.
 // a caller that predates ReserveCorrectionJob, or a test double).
 func (s *MySQLStore) SaveCorrection(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction) error {
+	return s.SaveCorrectionFinal(ctx, userID, sessionID, turn, c, false)
+}
+
+func (s *MySQLStore) SaveCorrectionFinal(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction, unread bool) error {
 	corrJSON, err := json.Marshal(c)
 	if err != nil {
 		return fmt.Errorf("store: encode correction: %w", err)
 	}
 	return s.withTx(ctx, "save correction", func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE `+turnsTable+` SET correction = ?
+			UPDATE `+turnsTable+` SET
+				correction_unread = CASE
+					WHEN correction_stage = 'judge' AND BINARY correction = BINARY ? THEN correction_unread
+					WHEN ? THEN 1
+					ELSE 0
+				END,
+				correction = ?, correction_stage = 'judge'
 			WHERE user_id = ? AND session_id = ? AND turn = ? AND role = 'user'
-		`, string(corrJSON), userID, sessionID, turn); err != nil {
+		`, string(corrJSON), unread, string(corrJSON), userID, sessionID, turn); err != nil {
 			return fmt.Errorf("store: save correction: text: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -84,6 +95,37 @@ func (s *MySQLStore) SaveCorrection(ctx context.Context, userID, sessionID strin
 		}
 		return nil
 	})
+}
+
+// SaveCorrectionPreview persists the first Chat-stage result without
+// completing the durable correction job. The stage predicate prevents a
+// delayed preview goroutine from overwriting a Judge result that completed
+// first; this matters in the no-Redis path where both event writes are
+// intentionally detached from the WebSocket request.
+func (s *MySQLStore) SaveCorrectionPreview(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction) error {
+	corrJSON, err := json.Marshal(c)
+	if err != nil {
+		return fmt.Errorf("store: encode correction preview: %w", err)
+	}
+	if _, err := s.rw.ExecContext(ctx, `
+		UPDATE `+turnsTable+` SET correction = ?, correction_stage = 'chat', correction_unread = 0
+		WHERE user_id = ? AND session_id = ? AND turn = ? AND role = 'user'
+			AND correction_stage <> 'judge'
+	`, string(corrJSON), userID, sessionID, turn); err != nil {
+		return fmt.Errorf("store: save correction preview: %w", err)
+	}
+	return nil
+}
+
+func (s *MySQLStore) MarkCorrectionRead(ctx context.Context, userID, sessionID string, turn int) error {
+	if _, err := s.rw.ExecContext(ctx, `
+		UPDATE `+turnsTable+` SET correction_unread = 0
+		WHERE user_id = ? AND session_id = ? AND turn = ? AND role = 'user'
+			AND correction_stage = 'judge'
+	`, userID, sessionID, turn); err != nil {
+		return fmt.Errorf("store: mark correction read: %w", err)
+	}
+	return nil
 }
 
 // ReserveCorrectionJob writes a "pending" correction-job row for (userID,
@@ -124,7 +166,7 @@ func (s *MySQLStore) SaveTranslation(ctx context.Context, userID, sessionID stri
 // turnColumns is the column list sessionTurns and sessionTurnsPage both
 // select, aliased to a `t` for the buddy_turns row and `rj`/`cj` for the
 // reply/correction job-status LEFT JOINs turnJobJoins adds.
-const turnColumns = `t.turn, t.role, t.text, t.refined, t.source, t.correction, t.translation, t.meta, t.created_at, rj.status, cj.status`
+const turnColumns = `t.turn, t.role, t.text, t.refined, t.source, t.correction, t.translation, t.meta, t.created_at, rj.status, cj.status, t.correction_stage, t.correction_unread`
 
 // turnJobJoins is the pair of job-status LEFT JOINs shared by sessionTurns
 // and sessionTurnsPage — one for kind='reply' (assistant turns), one for
@@ -232,9 +274,9 @@ func (s *MySQLStore) sessionTurnsPage(ctx context.Context, userID, sessionID str
 // SELECT column list.
 func scanTurn(rows *sql.Rows) (Turn, error) {
 	var t Turn
-	var refined int
+	var refined, correctionUnread int
 	var correctionJSON, translation, metaJSON, replyStatus, correctionStatus sql.NullString
-	if err := rows.Scan(&t.Turn, &t.Role, &t.Text, &refined, &t.Source, &correctionJSON, &translation, &metaJSON, &t.CreatedAt, &replyStatus, &correctionStatus); err != nil {
+	if err := rows.Scan(&t.Turn, &t.Role, &t.Text, &refined, &t.Source, &correctionJSON, &translation, &metaJSON, &t.CreatedAt, &replyStatus, &correctionStatus, &t.CorrectionStage, &correctionUnread); err != nil {
 		return Turn{}, err
 	}
 	t.Refined = refined != 0
@@ -250,5 +292,6 @@ func scanTurn(rows *sql.Rows) (Turn, error) {
 	}
 	t.ReplyStatus = replyStatus.String
 	t.CorrectionStatus = correctionStatus.String
+	t.CorrectionUnread = correctionUnread != 0
 	return t, nil
 }

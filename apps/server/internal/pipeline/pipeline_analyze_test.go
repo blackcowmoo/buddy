@@ -87,6 +87,44 @@ func TestCompactLeavesHistoryOnLLMError(t *testing.T) {
 
 // ---- correct() -----------------------------------------------------------------
 
+func TestAnalyzePassesEachStageForwardInOrder(t *testing.T) {
+	var calls []string
+	var analysisInput, judgeInput string
+	p := &Pipeline{
+		LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			calls = append(calls, "chat")
+			return "chat draft", nil
+		}},
+		ChatModel: "chat",
+		Analysis: []Candidate{{Model: "analysis", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			calls = append(calls, "analysis")
+			analysisInput = msgs[len(msgs)-1].Content
+			return "analysis refinement", nil
+		}}}},
+		Judge: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			calls = append(calls, "judge")
+			judgeInput = msgs[len(msgs)-1].Content
+			return "judge final", nil
+		}},
+		JudgeModel: "judge",
+	}
+
+	got, err := p.analyze(context.Background(), "task", "input", false)
+	if err != nil || got != "judge final" {
+		t.Fatalf("analyze() = (%q, %v), want Judge final", got, err)
+	}
+	if !reflect.DeepEqual(calls, []string{"chat", "analysis", "judge"}) {
+		t.Fatalf("stage order = %v, want chat -> analysis -> judge", calls)
+	}
+	if !strings.Contains(analysisInput, "Chat draft to refine:\nchat draft") {
+		t.Fatalf("Analysis input = %q, want Chat draft", analysisInput)
+	}
+	if !strings.Contains(judgeInput, "Chat draft:\nchat draft") ||
+		!strings.Contains(judgeInput, "advisory refinement (analysis) ---\nanalysis refinement") {
+		t.Fatalf("Judge input = %q, want Chat and Analysis outputs", judgeInput)
+	}
+}
+
 func TestAnalyzeSingleCandidateIsAdvisoryToJudge(t *testing.T) {
 	judgeCalls := 0
 	var judgeMsgs []llm.Message
@@ -119,7 +157,7 @@ func TestAnalyzeSingleCandidateIsAdvisoryToJudge(t *testing.T) {
 		t.Fatalf("judge system prompt should require an independent analysis under the original task, got %q", judgeMsgs[0].Content)
 	}
 	if !strings.Contains(judgeMsgs[1].Content, "Original input:\ninput") ||
-		!strings.Contains(judgeMsgs[1].Content, "--- advisory analysis (solo) ---\nsolo answer") {
+		!strings.Contains(judgeMsgs[1].Content, "--- advisory refinement (solo) ---\nsolo answer") {
 		t.Fatalf("judge user input should contain the original input and advisory result, got %q", judgeMsgs[1].Content)
 	}
 }
@@ -252,7 +290,7 @@ func TestAnalyzeJudgeWorksWhenAllCandidatesFail(t *testing.T) {
 	if got != "independent answer" {
 		t.Fatalf("analyze() = %q, want Judge's independent answer", got)
 	}
-	if !strings.Contains(judgeInput, "(none available; perform the task independently)") {
+	if !strings.Contains(judgeInput, "(none available; verify and finalize the Chat draft yourself)") {
 		t.Fatalf("judge input should explicitly handle unavailable advisory analyses, got %q", judgeInput)
 	}
 }

@@ -133,9 +133,14 @@ type fakeSessionStore struct {
 	// learnerProfiles above via the existing SaveLearnerProfile fake.
 	// withStudySummaryCalls counts calls, so a test can assert a rebuild was
 	// (or, more often, deliberately wasn't) even attempted.
-	withStudySummary      []store.SessionMeta
-	withStudySummaryErr   error
-	withStudySummaryCalls int
+	withStudySummary        []store.SessionMeta
+	withStudySummaryErr     error
+	withStudySummaryCalls   int
+	markCorrectionReadCalls []struct {
+		userID, sessionID string
+		turn              int
+	}
+	markCorrectionReadErr error
 }
 
 func (f *fakeSessionStore) Load(ctx context.Context, userID, sessionID string) (store.Profile, error) {
@@ -155,6 +160,24 @@ func (f *fakeSessionStore) SaveTurn(ctx context.Context, userID, sessionID strin
 
 func (f *fakeSessionStore) SaveCorrection(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction) error {
 	return errors.New("not used by these tests")
+}
+
+func (f *fakeSessionStore) SaveCorrectionFinal(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction, unread bool) error {
+	return errors.New("not used by these tests")
+}
+
+func (f *fakeSessionStore) SaveCorrectionPreview(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction) error {
+	return errors.New("not used by these tests")
+}
+
+func (f *fakeSessionStore) MarkCorrectionRead(ctx context.Context, userID, sessionID string, turn int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.markCorrectionReadCalls = append(f.markCorrectionReadCalls, struct {
+		userID, sessionID string
+		turn              int
+	}{userID, sessionID, turn})
+	return f.markCorrectionReadErr
 }
 
 func (f *fakeSessionStore) ReserveCorrectionJob(ctx context.Context, userID, sessionID string, turn int) error {

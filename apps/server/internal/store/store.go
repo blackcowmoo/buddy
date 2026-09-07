@@ -89,6 +89,11 @@ type SessionMeta struct {
 	// (see maybeFinalizeInstantSession) instead of waiting for the learner
 	// to press the manual 종료 button.
 	Instant bool `json:"instant,omitempty"`
+	// UnreadCorrections counts final Judge feedback that differs from the
+	// quick Chat preview and has not yet been opened by the learner. Kept on
+	// each room row (rather than as a global notification) so the badge always
+	// points at the exact conversation containing the updated feedback.
+	UnreadCorrections int `json:"unreadCorrections,omitempty"`
 }
 
 // Turn is one persisted message in a session's full transcript — the source
@@ -137,6 +142,11 @@ type Turn struct {
 	// apps/web/src/App.tsx). Empty for an assistant turn, and for a user
 	// turn saved before this feature existed.
 	CorrectionStatus string `json:"correctionStatus,omitempty"`
+	// CorrectionStage is "chat" while Correction is the quick preview and
+	// "judge" after the terminal cascade result has landed. CorrectionUnread
+	// is server-authoritative and is cleared only by MarkCorrectionRead.
+	CorrectionStage  string `json:"correctionStage,omitempty"`
+	CorrectionUnread bool   `json:"correctionUnread,omitempty"`
 }
 
 // Job status values for the (user_id, session_id, turn, kind) rows tracked
@@ -187,6 +197,18 @@ type Store interface {
 	// reserved (e.g. a caller that predates ReserveCorrectionJob or a test
 	// double).
 	SaveCorrection(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction) error
+	// SaveCorrectionFinal is the stage-aware form used by live/queued
+	// pipelines. unread comes from comparing the actual Chat and Judge outputs,
+	// not from racing a preview write against this terminal write.
+	SaveCorrectionFinal(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction, unread bool) error
+	// SaveCorrectionPreview persists the immediately-visible Chat result
+	// without marking the correction job done. A late preview never overwrites
+	// an already-saved Judge result.
+	SaveCorrectionPreview(ctx context.Context, userID, sessionID string, turn int, c protocol.Correction) error
+	// MarkCorrectionRead clears the unread marker for one final correction.
+	// Scoped by both user and session so another learner's turn can never be
+	// acknowledged by a guessed ID.
+	MarkCorrectionRead(ctx context.Context, userID, sessionID string, turn int) error
 	// ReserveCorrectionJob writes a "pending" correction-job row for
 	// (userID, sessionID, turn), before that turn's correction job is even
 	// enqueued — mirrors ReserveAssistantTurn, minus the placeholder-text

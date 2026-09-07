@@ -41,12 +41,10 @@ func TestGenerateStudySummarySendsIssueDetails(t *testing.T) {
 	}
 }
 
-// TestGenerateStudySummaryUsesAnalysisEnsembleNotChatModel guards a
-// deliberate choice: unlike GenerateTitle (decorative, one fast chat-model
-// call), the study wrap-up is learning-facing output fetched once per
-// conversation, so it should go through the full Analysis ensemble+Judge
-// like correct()/compact() do, never p.LLM/p.ChatModel directly.
-func TestGenerateStudySummaryUsesAnalysisEnsembleNotChatModel(t *testing.T) {
+// TestGenerateStudySummaryStartsWithChatThenUsesAnalysis guards the common
+// cascade: the internal Chat draft must be produced exactly once before the
+// Analysis refinement, even though only the terminal result is published.
+func TestGenerateStudySummaryStartsWithChatThenUsesAnalysis(t *testing.T) {
 	chatCalls := 0
 	p := &Pipeline{
 		LLM:       &fakeLLM{complete: func(msgs []llm.Message) (string, error) { chatCalls++; return "should not be used", nil }},
@@ -58,8 +56,8 @@ func TestGenerateStudySummaryUsesAnalysisEnsembleNotChatModel(t *testing.T) {
 	if _, err := p.GenerateStudySummary(context.Background(), []StudyIssue{{Text: "x", Issue: protocol.Issue{Type: "grammar"}}}); err != nil {
 		t.Fatalf("GenerateStudySummary() error = %v", err)
 	}
-	if chatCalls != 0 {
-		t.Fatalf("GenerateStudySummary should use the Analysis ensemble, not the chat model directly; got %d chat calls", chatCalls)
+	if chatCalls != 1 {
+		t.Fatalf("GenerateStudySummary should start with exactly one Chat draft; got %d calls", chatCalls)
 	}
 }
 
@@ -115,12 +113,9 @@ func TestGenerateStudyQuizSendsIssueDetails(t *testing.T) {
 	}
 }
 
-// TestGenerateStudyQuizUsesAnalysisEnsembleNotChatModel mirrors
-// TestGenerateStudySummaryUsesAnalysisEnsembleNotChatModel's reasoning: a
-// wrong "correct" answer would actively mislead a learner practicing on
-// their own, so this affords the same ensemble+Judge quality bar, never
-// p.LLM/p.ChatModel directly.
-func TestGenerateStudyQuizUsesAnalysisEnsembleNotChatModel(t *testing.T) {
+// TestGenerateStudyQuizStartsWithChatThenUsesAnalysis mirrors the summary
+// test: the hidden Chat draft must start the chain before Analysis refines it.
+func TestGenerateStudyQuizStartsWithChatThenUsesAnalysis(t *testing.T) {
 	chatCalls := 0
 	p := &Pipeline{
 		LLM:       &fakeLLM{complete: func(msgs []llm.Message) (string, error) { chatCalls++; return "should not be used", nil }},
@@ -132,8 +127,8 @@ func TestGenerateStudyQuizUsesAnalysisEnsembleNotChatModel(t *testing.T) {
 	if _, err := p.GenerateStudyQuiz(context.Background(), []StudyIssue{{Text: "x", Issue: protocol.Issue{Type: "grammar"}}}); err != nil {
 		t.Fatalf("GenerateStudyQuiz() error = %v", err)
 	}
-	if chatCalls != 0 {
-		t.Fatalf("GenerateStudyQuiz should use the Analysis ensemble, not the chat model directly; got %d chat calls", chatCalls)
+	if chatCalls != 1 {
+		t.Fatalf("GenerateStudyQuiz should start with exactly one Chat draft; got %d calls", chatCalls)
 	}
 }
 
@@ -196,6 +191,34 @@ func TestCheckQuizAnswerUsesChatModelNotAnalysisEnsemble(t *testing.T) {
 	}
 	if analysisCalls != 0 {
 		t.Fatalf("CheckQuizAnswer should use the chat model, not the Analysis ensemble; got %d analysis calls", analysisCalls)
+	}
+}
+
+func TestRefineQuizAnswerPassesChatVerdictThroughAnalysisAndJudge(t *testing.T) {
+	var analysisInput, judgeInput string
+	p := &Pipeline{
+		Analysis: []Candidate{{Model: "analysis", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			analysisInput = msgs[len(msgs)-1].Content
+			return `{"correct": false}`, nil
+		}}}},
+		Judge: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			judgeInput = msgs[len(msgs)-1].Content
+			return `{"correct": false}`, nil
+		}},
+		JudgeModel: "judge",
+	}
+	got, err := p.RefineQuizAnswerFromDraft(context.Background(), "He ___ home.", "went", nil, "goed", `{"correct": true}`)
+	if err != nil {
+		t.Fatalf("RefineQuizAnswerFromDraft() error = %v", err)
+	}
+	if got {
+		t.Fatal("RefineQuizAnswerFromDraft() = true, want Judge's false verdict")
+	}
+	if !strings.Contains(analysisInput, "Chat draft to refine:\n{\"correct\": true}") {
+		t.Fatalf("Analysis input = %q, want exact Chat verdict", analysisInput)
+	}
+	if !strings.Contains(judgeInput, "Chat draft:\n{\"correct\": true}") || !strings.Contains(judgeInput, `{"correct": false}`) {
+		t.Fatalf("Judge input = %q, want Chat and Analysis verdicts", judgeInput)
 	}
 }
 

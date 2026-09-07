@@ -53,6 +53,7 @@ export interface TurnMeta {
   // this instead of leaving the pending spinner stuck or silently showing
   // nothing (the old, indistinguishable-from-"already correct" behavior).
   correctionFailed?: boolean;
+  correctionUnread?: boolean;
   userTranslation?: string;
   userTranslationPending?: boolean;
   assistantTranslation?: string;
@@ -73,6 +74,13 @@ export function hydrateTurnMeta(t: TurnRecord, recentlyActive: boolean): { meta:
   let pending = false;
   if (t.correction) {
     meta.correction = t.correction;
+    meta.correctionUnread = !!t.correctionUnread;
+    if (t.correctionStage === "chat" || t.correctionStatus === "pending" || t.correctionStatus === "processing") {
+      // A persisted Chat preview is already readable while its Analysis /
+      // Judge stages keep running in the background.
+      meta.correctionPending = true;
+      pending = true;
+    }
   } else if (t.correctionStatus === "failed") {
     // Durably recorded as failed — the reaper (internal/asyncjob) still
     // retries it from scratch on its own, so keep polling while showing the
@@ -91,9 +99,10 @@ export function hydrateTurnMeta(t: TurnRecord, recentlyActive: boolean): { meta:
     meta.correctionPending = true;
     pending = true;
   }
-  if (t.translation) {
-    if (t.role === "user") meta.userTranslation = t.translation;
-    else meta.assistantTranslation = t.translation;
+  const savedTranslation = t.translation || (t.role === "user" ? t.correction?.translation : undefined);
+  if (savedTranslation) {
+    if (t.role === "user") meta.userTranslation = savedTranslation;
+    else meta.assistantTranslation = savedTranslation;
   } else if (t.text) {
     // Missing translation on a hydrated turn: the server queues backfill
     // for it the moment this fetch lands (see

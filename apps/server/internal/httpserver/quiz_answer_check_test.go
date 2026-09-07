@@ -19,13 +19,17 @@ type fakeAnswerCache struct {
 	result bool
 	found  bool
 	saves  int
+	saveCh chan bool
 }
 
 func (f *fakeAnswerCache) LookupAnswer(context.Context, string, string, string, time.Time) (bool, bool, error) {
 	return f.result, f.found, nil
 }
-func (f *fakeAnswerCache) SaveAnswer(context.Context, string, string, string, bool, time.Time) error {
+func (f *fakeAnswerCache) SaveAnswer(_ context.Context, _, _, _ string, result bool, _ time.Time) error {
 	f.saves++
+	if f.saveCh != nil {
+		f.saveCh <- result
+	}
 	return nil
 }
 
@@ -111,6 +115,62 @@ func TestQuizAnswerCheckHandlerUsesCachedVerdictWithoutCallingLLM(t *testing.T) 
 	}
 	if !out.Correct || !out.Similar || cache.saves != 0 {
 		t.Fatalf("cached response = %+v, saves = %d", out, cache.saves)
+	}
+}
+
+func TestQuizAnswerCheckHandlerReturnsChatImmediatelyThenCachesRefinedVerdict(t *testing.T) {
+	analysisStarted := make(chan struct{})
+	releaseAnalysis := make(chan struct{})
+	cache := &fakeAnswerCache{saveCh: make(chan bool, 1)}
+	pipe := &pipeline.Pipeline{
+		LLM: &fakeQuizAnswerCheckLLM{complete: func([]llm.Message) (string, error) {
+			return `{"correct": true}`, nil
+		}},
+		ChatModel: "chat",
+		Analysis: []pipeline.Candidate{{Model: "analysis", LLM: &fakeQuizAnswerCheckLLM{complete: func([]llm.Message) (string, error) {
+			close(analysisStarted)
+			<-releaseAnalysis
+			return `{"correct": false}`, nil
+		}}}},
+		Judge: &fakeQuizAnswerCheckLLM{complete: func([]llm.Message) (string, error) {
+			return `{"correct": false}`, nil
+		}},
+		JudgeModel: "judge",
+	}
+	h := quizAnswerCheckHandler(fakeIdentifier{id: "alex", ok: true}, pipe, cache)
+	req := httptest.NewRequest(http.MethodPost, "/api/quiz/check-answer", strings.NewReader(
+		`{"prompt":"He ___ home.","answer":"went","learnerAnswer":"goed"}`,
+	))
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		h.ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("handler blocked on Analysis instead of returning the Chat verdict")
+	}
+	requireStatus(t, rec, http.StatusOK)
+	var response struct{ Correct bool }
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil || !response.Correct {
+		t.Fatalf("Chat response = %+v, err=%v; want immediate true", response, err)
+	}
+	select {
+	case <-analysisStarted:
+	case <-time.After(time.Second):
+		t.Fatal("background Analysis never started")
+	}
+	close(releaseAnalysis)
+	select {
+	case refined := <-cache.saveCh:
+		if refined {
+			t.Fatal("cached verdict = true, want Judge's refined false verdict")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("refined Judge verdict was not cached")
 	}
 }
 

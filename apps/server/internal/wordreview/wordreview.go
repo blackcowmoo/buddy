@@ -15,7 +15,7 @@
 // saved.
 //
 // A newly saved word starts StatusPending and enters review rotation only
-// once pipeline.Pipeline.VerifyWord's model-consensus check confirms it's a
+// once pipeline.Pipeline.VerifyWord's ordered model cascade confirms it's a
 // real word/phrase with an accurate meaning (see
 // transport.WordVerifyJobHandler) — MarkVerified/MarkRejected record that
 // outcome. A rejected word is never silently deleted: it stays visible (see
@@ -186,7 +186,7 @@ type Word struct {
 	// package doc. Only StatusVerified words are ever due for review (Due/
 	// DueCount filter on it); a fresh Save always starts StatusPending.
 	Status string
-	// VerifyReason is the model-consensus check's explanation for its
+	// VerifyReason is the final Judge check's explanation for its
 	// verdict — set on MarkRejected (surfaced to the learner so they know
 	// why), and left "" for a word that's still pending or was verified
 	// (nothing to explain about a pass).
@@ -251,7 +251,7 @@ type Store interface {
 	// legacy-question words are never due.
 	DueCount(ctx context.Context, userID string, now time.Time) (int, error)
 	// MarkVerified transitions a StatusPending word to StatusVerified once
-	// pipeline.Pipeline.VerifyWord's model-consensus check passes it,
+	// pipeline.Pipeline.VerifyWord's model cascade passes it,
 	// starting its review clock from now (not from when it was saved, since
 	// verification runs in the background and may take a moment) — see
 	// nextSchedule/intervalForStage. A no-op — zero Word, nil error — if id

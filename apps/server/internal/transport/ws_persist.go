@@ -48,13 +48,19 @@ func persistEvent(pipe *pipeline.Pipeline, st store.Store, words wordreview.Stor
 		if ev.Correction == nil {
 			return
 		}
-		// In a deployment with no durable correction queue configured,
-		// this is the only place a correction (and the words captured from
-		// it — see captureCorrectionWords) ever gets persisted; when a
-		// queue is configured this runs alongside CorrectionJobHandler's own
-		// save, which is fine — both are idempotent (see word_capture.go).
+		if !ev.Final {
+			// The Chat preview is useful immediately but must not complete the
+			// correction job. Analysis/Judge will overwrite it with a terminal
+			// result; SaveCorrectionPreview protects that result from a late
+			// preview write racing in afterward.
+			go saveCorrectionPreview(st, userID, sessionID, ev.Turn, *ev.Correction)
+			return
+		}
+		// In a deployment with no durable correction queue configured, this
+		// is the only place the final correction is persisted; with a queue it
+		// safely duplicates CorrectionJobHandler's idempotent final save.
 		go func(c protocol.Correction) {
-			saveCorrection(st, userID, sessionID, ev.Turn, c)
+			saveCorrectionFinal(st, userID, sessionID, ev.Turn, c, ev.Changed)
 			captureCorrectionWords(context.Background(), pipe, words, wordVerifyQueue, userID, c)
 		}(*ev.Correction)
 	case protocol.EvUserTranslation:
@@ -64,14 +70,20 @@ func persistEvent(pipe *pipeline.Pipeline, st store.Store, words wordreview.Stor
 	}
 }
 
+func saveCorrectionPreview(st store.Store, userID, sessionID string, turn int, c protocol.Correction) {
+	if err := st.SaveCorrectionPreview(context.Background(), userID, sessionID, turn, c); err != nil {
+		log.Printf("store: save correction preview %s/%s#%d: %v", userID, sessionID, turn, err)
+	}
+}
+
 func saveTurn(st store.Store, userID, sessionID string, turn int, role, text string, refined bool, source string) {
 	if err := st.SaveTurn(context.Background(), userID, sessionID, turn, role, text, refined, source); err != nil {
 		log.Printf("store: save turn %s/%s#%d: %v", userID, sessionID, turn, err)
 	}
 }
 
-func saveCorrection(st store.Store, userID, sessionID string, turn int, c protocol.Correction) {
-	if err := st.SaveCorrection(context.Background(), userID, sessionID, turn, c); err != nil {
+func saveCorrectionFinal(st store.Store, userID, sessionID string, turn int, c protocol.Correction, unread bool) {
+	if err := st.SaveCorrectionFinal(context.Background(), userID, sessionID, turn, c, unread); err != nil {
 		log.Printf("store: save correction %s/%s#%d: %v", userID, sessionID, turn, err)
 	}
 }

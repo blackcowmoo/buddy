@@ -42,19 +42,19 @@ type Config struct {
 
 	// LLM: any OpenAI-compatible chat-completions server (llama.cpp's
 	// llama-server, vLLM, LM Studio, or the OpenAI API itself). Three
-	// independent purposes, matching the two-track pipeline
+	// independent roles in the ordered Chat -> Analysis -> Judge pipeline
 	// (internal/pipeline.Pipeline), every one of them a "model@url" env var
 	// (parseModelURLPair/parseModelURLPairs) rather than a *_URL + *_MODEL
 	// pair kept in sync separately — same format whether the var holds one
 	// endpoint or several, so there's exactly one place to look:
-	//   - Chat:     FAST track's streamed reply. One endpoint (*_URL).
-	//   - Analysis: REFINE track's grammar-correction/compaction pass. Every
-	//     configured endpoint is called concurrently as an ensemble, so this
-	//     one is comma-separated (*_URLS).
-	//   - Judge:    independently performs the final REFINE analysis, using
-	//     the analysis ensemble's outputs as advisory evidence. One endpoint
-	//     (*_URL), called even when only one (or no) Analysis candidate
-	//     succeeds (pipeline.Pipeline.analyze).
+	//   - Chat:     low-latency conversation output and the first draft of any
+	//     learning task. One endpoint (*_URL).
+	//   - Analysis: every configured endpoint concurrently refines that exact
+	//     Chat draft. This role is comma-separated (*_URLS).
+	//   - Judge:    independently produces the terminal result after seeing the
+	//     original task/input, Chat draft, and all successful Analysis outputs.
+	//     One endpoint (*_URL), called even when only one (or no) Analysis
+	//     candidate succeeds (pipeline.Pipeline.analyze).
 	LLMAPIKey string // optional bearer token, shared by all of the above
 
 	LLMChatURL   string

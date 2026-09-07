@@ -22,8 +22,8 @@ func TestCorrectEmitsEventWhenChanged(t *testing.T) {
 	var got []protocol.ServerEvent
 	p.correct(context.Background(), "alex", "sess-1", 1, "I likes pizza", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
 
-	if len(got) != 2 || got[0].Type != protocol.EvCorrection || got[1].Type != protocol.EvUserTranslation {
-		t.Fatalf("expected a correction event followed by a translation event, got %+v", got)
+	if len(got) != 3 || got[0].Type != protocol.EvCorrection || got[1].Type != protocol.EvUserTranslation || got[2].Type != protocol.EvCorrection {
+		t.Fatalf("expected Chat preview, translation, then Judge final, got %+v", got)
 	}
 	if got[0].Correction.Corrected != "I like pizza." {
 		t.Fatalf("Correction.Corrected = %q", got[0].Correction.Corrected)
@@ -36,6 +36,12 @@ func TestCorrectEmitsEventWhenChanged(t *testing.T) {
 	}
 	if got[1].Text != "저는 피자를 좋아해요." || got[1].Turn != 1 {
 		t.Fatalf("translation event wrong: %+v", got[1])
+	}
+	if got[0].Final || !got[2].Final {
+		t.Fatalf("correction stages were not marked preview/final: %+v", got)
+	}
+	if got[2].Changed {
+		t.Fatalf("identical Chat/Judge results must not be marked changed: %+v", got[2])
 	}
 }
 
@@ -51,8 +57,8 @@ func TestCorrectEmitsEventWithNoIssuesWhenAlreadyCorrect(t *testing.T) {
 	var got []protocol.ServerEvent
 	p.correct(context.Background(), "alex", "sess-1", 1, "I like pizza.", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
 
-	if len(got) != 1 || got[0].Type != protocol.EvCorrection {
-		t.Fatalf("expected exactly one correction event (no translation in the fixture), got %+v", got)
+	if len(got) != 2 || got[0].Type != protocol.EvCorrection || got[1].Type != protocol.EvCorrection {
+		t.Fatalf("expected Chat preview and terminal Judge event, got %+v", got)
 	}
 	if got[0].Correction.Corrected != "I like pizza." || len(got[0].Correction.Issues) != 0 {
 		t.Fatalf("expected a no-issue correction event, got %+v", got[0].Correction)
@@ -74,14 +80,17 @@ func TestCorrectEmitsTranslationEvenWhenAlreadyCorrect(t *testing.T) {
 	var got []protocol.ServerEvent
 	p.correct(context.Background(), "alex", "sess-1", 1, "I like pizza.", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
 
-	if len(got) != 2 || got[0].Type != protocol.EvCorrection || got[1].Type != protocol.EvUserTranslation {
-		t.Fatalf("expected a no-issue correction event followed by a translation event, got %+v", got)
+	if len(got) != 3 || got[0].Type != protocol.EvCorrection || got[1].Type != protocol.EvUserTranslation || got[2].Type != protocol.EvCorrection {
+		t.Fatalf("expected preview, translation, and terminal Judge event, got %+v", got)
 	}
 	if len(got[0].Correction.Issues) != 0 {
 		t.Fatalf("expected no issues, got %+v", got[0].Correction)
 	}
 	if got[1].Text != "저는 피자를 좋아해요." {
 		t.Fatalf("translation text = %q", got[1].Text)
+	}
+	if !got[2].Final {
+		t.Fatalf("last correction should be terminal: %+v", got[2])
 	}
 }
 
@@ -155,13 +164,17 @@ func TestCorrectEmitsFastThenRefinedWhenDifferent(t *testing.T) {
 	if got[1].Correction.Corrected != "I like pizza." || len(got[1].Correction.Issues) != 1 {
 		t.Fatalf("refined event should carry the ensemble's better result, got %+v", got[1].Correction)
 	}
+	if got[0].Final || !got[1].Final {
+		t.Fatalf("expected preview then final stage markers, got %+v", got)
+	}
+	if !got[1].Changed {
+		t.Fatalf("different Judge result must be marked changed: %+v", got[1])
+	}
 }
 
-// TestCorrectSkipsSecondEmitWhenRefineAgreesWithFast is
-// TestCorrectEmitsFastThenRefinedWhenDifferent's counterpart: when the
-// ensemble lands on the exact same answer the fast pass already showed,
-// correct() must not emit a second, identical card.
-func TestCorrectSkipsSecondEmitWhenRefineAgreesWithFast(t *testing.T) {
+// Even when the content is identical, a terminal event is required so the
+// client can stop showing "refining" without treating it as unread.
+func TestCorrectEmitsTerminalSignalWhenRefineAgreesWithFast(t *testing.T) {
 	fixture := func(msgs []llm.Message) (string, error) {
 		return `{"corrected":"I like pizza.","issues":[]}`, nil
 	}
@@ -173,8 +186,11 @@ func TestCorrectSkipsSecondEmitWhenRefineAgreesWithFast(t *testing.T) {
 	var got []protocol.ServerEvent
 	p.correct(context.Background(), "alex", "sess-1", 1, "I like pizza.", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
 
-	if len(got) != 1 {
-		t.Fatalf("expected exactly one correction event when fast and refined agree, got %+v", got)
+	if len(got) != 2 || got[0].Final || !got[1].Final {
+		t.Fatalf("expected a preview followed by a terminal signal, got %+v", got)
+	}
+	if got[1].Changed {
+		t.Fatalf("agreeing Judge result must not be marked changed: %+v", got[1])
 	}
 }
 
@@ -198,6 +214,33 @@ func TestCorrectFastFailureFallsBackToRefineOnlyNoFailedEvent(t *testing.T) {
 	}
 	if got[0].Correction == nil || got[0].Correction.Corrected != "I like pizza." {
 		t.Fatalf("expected the ensemble's result, got %+v", got[0])
+	}
+	if !got[0].Final || !got[0].Changed {
+		t.Fatalf("a terminal result without a usable Chat preview must be unread: %+v", got[0])
+	}
+}
+
+func TestCorrectMarksTranslationOnlyJudgeChange(t *testing.T) {
+	chatCalls := 0
+	p := &Pipeline{
+		LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			chatCalls++
+			return `{"corrected":"I like pizza.","translation":"나는 피자를 좋아해.","issues":[]}`, nil
+		}},
+		ChatModel: "chat",
+		Analysis: []Candidate{{Model: "analysis", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			return `{"corrected":"I like pizza.","translation":"저는 피자를 좋아해요.","issues":[]}`, nil
+		}}}},
+	}
+	var got []protocol.ServerEvent
+	p.correct(context.Background(), "alex", "sess-1", 1, "I like pizza.", "", func(ev protocol.ServerEvent) { got = append(got, ev) })
+
+	if chatCalls != 1 || len(got) != 4 {
+		t.Fatalf("expected one Chat call and preview/translation/final/translation events, got calls=%d events=%+v", chatCalls, got)
+	}
+	final := got[2]
+	if !final.Final || !final.Changed || final.Correction == nil || final.Correction.Translation != "저는 피자를 좋아해요." {
+		t.Fatalf("translation-only Judge revision must be changed: %+v", final)
 	}
 }
 
@@ -235,8 +278,8 @@ func TestCorrectSendsBareSentenceWhenNoContext(t *testing.T) {
 		Analysis:  []Candidate{{Model: "m", LLM: &fakeLLM{complete: fixture}}},
 	}
 	p.correct(context.Background(), "alex", "sess-1", 1, "ok", "", func(protocol.ServerEvent) {})
-	if gotInput != "ok" {
-		t.Fatalf("with no context, analyze input should be the bare sentence, got %q", gotInput)
+	if !strings.Contains(gotInput, "Original input:\nok") {
+		t.Fatalf("refinement input should preserve the bare sentence as original input, got %q", gotInput)
 	}
 }
 
@@ -257,7 +300,7 @@ func TestCorrectFoldsContextInFrontOfSentence(t *testing.T) {
 	if !strings.Contains(gotInput, "How old are you?") {
 		t.Fatalf("analyze input missing the context block: %q", gotInput)
 	}
-	if !strings.HasSuffix(gotInput, "Sentence to correct:\nI am 20 years old.") {
+	if !strings.Contains(gotInput, "Sentence to correct:\nI am 20 years old.") {
 		t.Fatalf("the sentence under correction should be delimited at the end: %q", gotInput)
 	}
 }
@@ -314,7 +357,7 @@ func TestCorrectWithContextFoldsPriorTurnsIntoInput(t *testing.T) {
 	if !strings.Contains(gotInput, "How old are you?") {
 		t.Fatalf("input should fold in prior turns for context, got %q", gotInput)
 	}
-	if !strings.HasSuffix(gotInput, "Sentence to correct:\nI am 20 years old.") {
+	if !strings.Contains(gotInput, "Sentence to correct:\nI am 20 years old.") {
 		t.Fatalf("input should label the sentence under correction, got %q", gotInput)
 	}
 }

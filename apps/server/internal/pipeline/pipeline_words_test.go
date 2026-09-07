@@ -5,7 +5,6 @@ import (
 	"errors"
 	"reflect"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"buddy/server/internal/llm"
@@ -262,97 +261,49 @@ func TestGenerateWordReviewQuestionRejectsMalformedQuestion(t *testing.T) {
 
 // ---- VerifyWord() -----------------------------------------------------------
 
-func TestVerifyWordPassesWhenAllJudgesAgreeValid(t *testing.T) {
+func TestVerifyWordUsesOrderedCascadeAndReturnsJudgeVerdict(t *testing.T) {
+	var calls []string
+	var analysisInput, judgeInput string
 	p := &Pipeline{
 		FeedbackLang: "ko",
-		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
-			return `{"valid":true,"reason":""}`, nil
+		LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			calls = append(calls, "chat")
+			return `{"valid":true,"reason":"chat draft"}`, nil
+		}},
+		Analysis: []Candidate{{Model: "analysis", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			calls = append(calls, "analysis")
+			analysisInput = msgs[len(msgs)-1].Content
+			return `{"valid":true,"reason":"analysis refinement"}`, nil
 		}}}},
+		Judge: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			calls = append(calls, "judge")
+			judgeInput = msgs[len(msgs)-1].Content
+			return `{"valid":false,"reason":"example uses the phrase unnaturally"}`, nil
+		}},
 	}
 	valid, reason, err := p.VerifyWord(context.Background(), "furious", "화가 나서 참을 수 없는", "She was furious.")
 	if err != nil {
 		t.Fatalf("VerifyWord() error = %v", err)
 	}
-	if !valid {
-		t.Errorf("valid = false, want true when every judge agrees")
+	if valid || reason != "example uses the phrase unnaturally" {
+		t.Fatalf("VerifyWord() = (%v, %q), want Judge's final false verdict", valid, reason)
 	}
-	if reason != "" {
-		t.Errorf("reason = %q, want empty on a pass", reason)
+	if !reflect.DeepEqual(calls, []string{"chat", "analysis", "judge"}) {
+		t.Fatalf("stage order = %v, want chat -> analysis -> judge", calls)
 	}
-}
-
-// TestVerifyWordRoundRobinsToReachMinimumJudgesWithOneCandidate is the
-// direct regression test for the "even a single-local-model deployment
-// still gets several independent judgments" requirement — see
-// minWordVerifyJudges' doc.
-func TestVerifyWordRoundRobinsToReachMinimumJudgesWithOneCandidate(t *testing.T) {
-	var calls int32
-	p := &Pipeline{
-		Analysis: []Candidate{{Model: "only-model", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
-			atomic.AddInt32(&calls, 1)
-			return `{"valid":true,"reason":""}`, nil
-		}}}},
+	if !strings.Contains(analysisInput, `{"valid":true,"reason":"chat draft"}`) {
+		t.Fatalf("Analysis did not receive the Chat draft: %q", analysisInput)
 	}
-	if _, _, err := p.VerifyWord(context.Background(), "furious", "화가 나서 참을 수 없는", "She was furious."); err != nil {
-		t.Fatalf("VerifyWord() error = %v", err)
-	}
-	if got := atomic.LoadInt32(&calls); got != minWordVerifyJudges {
-		t.Errorf("judge calls = %d, want %d (round-robined through the one configured candidate)", got, minWordVerifyJudges)
+	if !strings.Contains(judgeInput, `{"valid":true,"reason":"chat draft"}`) ||
+		!strings.Contains(judgeInput, `{"valid":true,"reason":"analysis refinement"}`) {
+		t.Fatalf("Judge did not receive both earlier stages: %q", judgeInput)
 	}
 }
 
-// TestVerifyWordRejectsOnAnyDissent guards the "unanimous, not majority or
-// synthesized" requirement: a single judge saying invalid must reject the
-// word outright, using that judge's own reason, unlike analyze()'s
-// Judge-reconciliation step for other tasks.
-func TestVerifyWordRejectsOnAnyDissent(t *testing.T) {
-	var calls int32
-	p := &Pipeline{
-		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
-			n := atomic.AddInt32(&calls, 1)
-			if n == 2 {
-				return `{"valid":false,"reason":"not a real word"}`, nil
-			}
-			return `{"valid":true,"reason":""}`, nil
-		}}}},
-	}
-	valid, reason, err := p.VerifyWord(context.Background(), "xyzzy", "존재하지 않는 단어", "xyzzy the door.")
-	if err != nil {
-		t.Fatalf("VerifyWord() error = %v", err)
-	}
-	if valid {
-		t.Error("valid = true, want false when any judge dissents")
-	}
-	if reason != "not a real word" {
-		t.Errorf("reason = %q, want the dissenting judge's own reason", reason)
-	}
-}
-
-// TestVerifyWordErrorsWhenTooFewJudgesSucceed guards the "infrastructure
-// hiccup must not masquerade as a rejection" requirement: if fewer than 2
-// judge calls succeed (e.g. most configured endpoints are down), the word
-// must stay Pending for asyncjob's reaper to retry — not get marked
-// Rejected over a transient failure.
-func TestVerifyWordErrorsWhenTooFewJudgesSucceed(t *testing.T) {
-	var calls int32
-	p := &Pipeline{
-		Analysis: []Candidate{{Model: "m", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
-			n := atomic.AddInt32(&calls, 1)
-			if n == 1 {
-				return `{"valid":true,"reason":""}`, nil
-			}
-			return "", errors.New("model unreachable")
-		}}}},
-	}
-	if _, _, err := p.VerifyWord(context.Background(), "furious", "화가 나서 참을 수 없는", "She was furious."); err == nil {
-		t.Fatal("expected an error when fewer than 2 judge calls succeed")
-	}
-}
-
-func TestVerifyWordErrorsWhenNoCandidatesConfigured(t *testing.T) {
+func TestVerifyWordErrorsWhenNoModelsConfigured(t *testing.T) {
 	p := &Pipeline{}
 	if _, _, err := p.VerifyWord(context.Background(), "furious", "화가 나서 참을 수 없는", "She was furious."); err == nil {
-		t.Fatal("expected an error when no Analysis candidates are configured")
+		t.Fatal("expected an error when no cascade models are configured")
 	}
 }
 

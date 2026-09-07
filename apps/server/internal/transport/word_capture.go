@@ -40,12 +40,12 @@ const (
 // fixed expression — as the example.
 //
 // A captured word starts StatusPending and goes through the exact same
-// VerifyWord model-consensus check as a manually saved one (see
+// VerifyWord Chat -> Analysis -> Judge check as a manually saved one (see
 // wordSaveHandler) before it ever becomes due for review — this never
 // bypasses that quality bar just because it originated from a correction.
 // words.Save's (userID, word, meaning) dedup makes this safe to call
-// repeatedly for what's conceptually the same correction (the FAST and
-// ENSEMBLE analysis passes, or the queued and live persistence paths, can
+// repeatedly for what's conceptually the same correction (the Chat preview
+// and Judge final, or the queued and live persistence paths, can
 // each independently call this for the same turn) — a repeat just returns
 // the existing row instead of duplicating it.
 func captureCorrectionWords(ctx context.Context, pipe *pipeline.Pipeline, words wordreview.Store, wordVerifyQueue *asyncjob.Queue, userID string, c protocol.Correction) {

@@ -91,16 +91,12 @@ func (p *Pipeline) RunTitle(ctx context.Context, userID, sessionID string, turn 
 // raw truncated-first-message placeholder store.MySQLStore.SaveTurn sets on
 // turn 1, and again every TitleRegenerateEveryNTurns turns after that, so
 // the title keeps tracking the conversation's actual topic rather than
-// staying pinned to turn 1's. A single fast call (p.LLM/p.ChatModel), not
-// the Analysis ensemble+Judge like analyze() uses: a room label is
-// decorative, not something a learner's grammar feedback depends on, so it
-// isn't worth doubling the LLM cost of every title (re)generation.
+// staying pinned to turn 1's. Title generation is already detached from the
+// live response path, so it follows the full Chat -> Analysis -> Judge
+// cascade and only persists the terminal title; no learner ever sees an
+// intermediate label change underneath them.
 func (p *Pipeline) GenerateTitle(ctx context.Context, transcript []llm.Message) (string, error) {
-	msgs := []llm.Message{
-		{Role: llm.RoleSystem, Content: titleSystemPrompt},
-		{Role: llm.RoleUser, Content: renderTitleInput(transcript)},
-	}
-	title, err := p.LLM.Complete(ctx, p.ChatModel, msgs, false)
+	title, err := p.analyze(ctx, titleSystemPrompt, renderTitleInput(transcript), false)
 	if err != nil {
 		return "", err
 	}

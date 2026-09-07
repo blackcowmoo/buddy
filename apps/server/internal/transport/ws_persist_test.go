@@ -123,6 +123,36 @@ func TestPersistEventSavesTranslationsByRole(t *testing.T) {
 	}
 }
 
+func TestPersistEventFinalBeforePreviewKeepsExplicitUnreadDecision(t *testing.T) {
+	st := newFakeStore()
+	ctx := context.Background()
+	if err := st.SaveTurn(ctx, "alex", "sess-race", 1, "user", "I like pizza.", false, protocol.SourceText); err != nil {
+		t.Fatalf("SaveTurn(user) error = %v", err)
+	}
+	correction := protocol.Correction{Original: "I like pizza.", Corrected: "I like pizza."}
+
+	// Deliberately persist Judge before Chat. This is the opposite of the
+	// event order, but is legal because persistEvent detaches both writes.
+	persistEvent(nil, st, nil, nil, "alex", "sess-race", protocol.ServerEvent{
+		Type: protocol.EvCorrection, Turn: 1, Final: true, Changed: false, Correction: &correction,
+	})
+	pollUntil(t, func() bool {
+		_, turns, err := st.SessionDetail(ctx, "alex", "sess-race")
+		return err == nil && len(turns) == 1 && turns[0].CorrectionStage == "judge"
+	})
+	// Invoke the same persistence helper synchronously so the assertion cannot
+	// accidentally run before persistEvent's late-preview goroutine starts.
+	saveCorrectionPreview(st, "alex", "sess-race", 1, correction)
+
+	_, turns, err := st.SessionDetail(ctx, "alex", "sess-race")
+	if err != nil || len(turns) != 1 {
+		t.Fatalf("SessionDetail() turns=%+v err=%v", turns, err)
+	}
+	if turns[0].CorrectionStage != "judge" || turns[0].CorrectionUnread {
+		t.Fatalf("late Chat preview changed terminal state: %+v", turns[0])
+	}
+}
+
 // TestPersistEventCapturesVocabularyWordFromCorrection guards the live
 // (no-durable-queue) path's wiring of captureCorrectionWords: in a
 // deployment with no Redis-backed correction queue, persistEvent's
@@ -138,8 +168,9 @@ func TestPersistEventCapturesVocabularyWordFromCorrection(t *testing.T) {
 	words := newFakeWordReviewStore()
 
 	persistEvent(pipe, st, words, nil, "alex", "sess-1", protocol.ServerEvent{
-		Type: protocol.EvCorrection,
-		Turn: 1,
+		Type:  protocol.EvCorrection,
+		Turn:  1,
+		Final: true,
 		Correction: &protocol.Correction{
 			Original:  "I was very angry",
 			Corrected: "I was furious.",

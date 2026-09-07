@@ -26,10 +26,10 @@ const articleQuizMinSubQuestions = 2
 // enough material for a coherent study paragraph. Generated once per unique
 // article URL and cached (see newsarticle.Store.SaveArticle) — every later
 // learner who draws the same story reads this exact result, never re-paying
-// the LLM call. Same Analysis-ensemble+Judge quality bar as
+// the LLM call. Same ordered Chat -> Analysis -> Judge quality bar as
 // GenerateStudyQuiz: a wrong "correct" option here would actively mislead a
-// learner practicing on their own, so this affords the full ensemble rather
-// than a single quick call.
+// learner practicing on their own; all drafts stay hidden until the terminal
+// result is ready.
 func (p *Pipeline) GenerateArticleStudy(ctx context.Context, source, title, description string) (protocol.ArticleStudy, error) {
 	raw, err := p.analyze(ctx, articleStudySystemPrompt(p.FeedbackLang), renderArticleStudyInput(source, title, description), true)
 	if err != nil {

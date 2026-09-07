@@ -12,8 +12,8 @@ import (
 )
 
 // WordVerifyClaimTTL/WordVerifyWorkerConcurrency mirror StudyQuizClaimTTL/
-// StudyQuizWorkerConcurrency's reasoning, except this job makes
-// minWordVerifyJudges (pipeline.go) LLM calls instead of one — a local model
+// StudyQuizWorkerConcurrency's reasoning, except this job runs the ordered
+// multi-model verification cascade instead of one call — a local model
 // can be slow, so the claim TTL stays generous. Concurrency is a bit higher
 // than the study-quiz/summary jobs since "학습하기" can be tapped repeatedly
 // in quick succession while browsing search results, unlike ending a

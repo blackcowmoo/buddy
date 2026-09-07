@@ -59,6 +59,18 @@ describe("InstantSessions page", () => {
     expect(await screen.findByText("how's the weather today")).toBeInTheDocument();
   });
 
+  it("shows the unread refined-feedback count on the room that owns it", async () => {
+    vi.mocked(fetchInstantSessions).mockResolvedValue([
+      { id: "i1", title: "needs review", createdAt: 1700000000, updatedAt: 1700000000, unreadCorrections: 2 },
+      { id: "i2", title: "already read", createdAt: 1700000100, updatedAt: 1700000100 },
+    ]);
+    render(<InstantSessions />);
+
+    expect(await screen.findByText("새 피드백 2")).toBeInTheDocument();
+    expect(screen.getByText("needs review").closest("a")?.textContent).toContain("새 피드백 2");
+    expect(screen.getByText("already read").closest("a")?.textContent).not.toContain("새 피드백");
+  });
+
   // Guards the "studied this" badge these rooms get too (see
   // store.SessionMeta.QuizCompleted/markQuizCompleted) — an instant session
   // is a SessionSummary like any other, so it can carry quizCompleted the
