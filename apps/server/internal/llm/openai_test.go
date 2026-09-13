@@ -75,6 +75,13 @@ func withShortOverflowBackoff(t *testing.T) {
 	t.Cleanup(func() { overflowBackoff = orig })
 }
 
+func withShortRateLimitBackoff(t *testing.T) {
+	t.Helper()
+	orig := rateLimitBackoff
+	rateLimitBackoff = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+	t.Cleanup(func() { rateLimitBackoff = orig })
+}
+
 func TestChatStreamRetriesOverflow503ThenSucceeds(t *testing.T) {
 	withShortOverflowBackoff(t)
 	var calls int32
@@ -119,6 +126,31 @@ func TestChatStreamGivesUpAfterOverflowRetriesExhausted(t *testing.T) {
 	}
 	if want := int32(len(overflowBackoff)) + 1; atomic.LoadInt32(&calls) != want {
 		t.Fatalf("calls = %d, want %d (initial attempt + one per backoff slot)", calls, want)
+	}
+}
+
+func TestCompleteRetriesRateLimit429ThenSucceeds(t *testing.T) {
+	withShortRateLimitBackoff(t)
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) <= 2 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+	}))
+	defer srv.Close()
+
+	c := NewOpenAI(srv.URL, "")
+	got, err := c.Complete(context.Background(), "model", nil, false)
+	if err != nil {
+		t.Fatalf("Complete() error = %v, want it to succeed after retrying 429", err)
+	}
+	if got != "ok" {
+		t.Fatalf("Complete() = %q, want %q", got, "ok")
+	}
+	if got := atomic.LoadInt32(&calls); got != 3 {
+		t.Fatalf("calls = %d, want exactly 3 (2 rate-limit retries + 1 success)", got)
 	}
 }
 

@@ -58,10 +58,11 @@ var MaxAttempts = 5
 // Workers — in this process or another replica — can claim and run
 // DIFFERENT jobs of the same kind at once: BLMove atomically hands each
 // queued job to exactly one caller, with no global lock serializing
-// unrelated jobs behind each other. Kinds that do need serialization (e.g.
-// translation, to match Pipeline.translationSem's one-at-a-time cap) get
-// that by constructing their Worker with concurrency=1, not by
-// reintroducing a global lock.
+// unrelated jobs behind each other. Kinds that do need serialization at the
+// job level can construct their Worker with concurrency=1. LLM model-level
+// serialization is handled by the pipeline's per-model call queues, so a
+// translation worker pool can execute different requests concurrently
+// without reintroducing a global lock.
 type Worker struct {
 	rdb         redis.UniversalClient
 	kind        Kind

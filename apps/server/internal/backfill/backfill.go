@@ -87,13 +87,9 @@ func enqueueSession(ctx context.Context, q *asyncjob.Queue, kind asyncjob.Kind, 
 
 // Worker drains the translation queue, translating every turn missing a
 // translation in each queued session — one session, one turn at a time.
-// Runs with concurrency 1 (matching pipeline.Pipeline.translationSem's
-// process-wide one-call-at-a-time cap on the translation LLM), so this one
-// replica never runs two translation passes at once; other replicas each
-// run their own Worker the same way, so the cluster as a whole can
-// translate multiple sessions concurrently — unlike the single
-// cluster-wide-locked drainer this package used before adopting
-// internal/asyncjob.
+// Several sessions may be drained concurrently on one replica; the pipeline
+// serializes only calls targeting the same LLM, so a request waiting on llm2
+// does not prevent another request from using llm1.
 type Worker struct {
 	w *asyncjob.Worker
 }
@@ -101,6 +97,8 @@ type Worker struct {
 func NewWorker(rdb redis.UniversalClient, st store.Store, pipe *pipeline.Pipeline) *Worker {
 	return &Worker{w: newSessionWorker(rdb, asyncjob.KindTranslation, st, pipe, "", translateSession)}
 }
+
+const sessionWorkerConcurrency = 8
 
 // newSessionWorker is Worker/CorrectionWorker's shared constructor body:
 // both drain a session-keyed queue one job at a time, unmarshal the same
@@ -117,7 +115,7 @@ func newSessionWorker(rdb redis.UniversalClient, kind asyncjob.Kind, st store.St
 		work(ctx, st, pipe, payload.UserID, payload.SessionID)
 		return nil
 	}
-	return asyncjob.NewWorker(rdb, kind, 1, claimTTL, handler)
+	return asyncjob.NewWorker(rdb, kind, sessionWorkerConcurrency, claimTTL, handler)
 }
 
 // Run polls for work until ctx is canceled. Start it with `go worker.Run(ctx)`;
@@ -213,10 +211,9 @@ func (q *CorrectionQueue) Enqueue(ctx context.Context, userID, sessionID string)
 }
 
 // CorrectionWorker drains the correction-backfill queue, mirroring Worker's
-// reasoning for translation — one session, one turn at a time, concurrency 1
-// per replica (this work isn't latency-sensitive, and keeping it modest
-// avoids contending with the live analysis ensemble for the same LLM
-// backend).
+// reasoning for translation — one session, one turn at a time, with several
+// sessions allowed concurrently. Per-model queues prevent this background
+// work from issuing overlapping calls to the same LLM.
 type CorrectionWorker struct {
 	w *asyncjob.Worker
 }

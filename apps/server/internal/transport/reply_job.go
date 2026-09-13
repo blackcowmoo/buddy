@@ -30,8 +30,8 @@ const (
 	// ReplyWorkerConcurrency is how many reply jobs one replica's
 	// background Worker pool runs at once — picking up jobs whose original
 	// replica died, or that lost the fast-path inline-claim race. Generous:
-	// unlike translation, reply jobs are the user-facing hot path and
-	// should never queue behind each other within a replica.
+	// reply jobs for different model keys can run independently; calls for the
+	// same model are serialized by Pipeline's per-model queue.
 	ReplyWorkerConcurrency = 16
 
 	// replyPollAttempts bounds the fallback poll a connection falls back to

@@ -4,7 +4,6 @@ import (
 	"context"
 	"log"
 	"strings"
-	"sync/atomic"
 
 	"buddy/server/internal/llm"
 	"buddy/server/internal/protocol"
@@ -72,9 +71,7 @@ func (p *Pipeline) runReply(ctx context.Context, userID, sessionID string, sess 
 // dependency on session/emit — see runReply for the bookkeeping layered on
 // top when it's called in-process.
 func (p *Pipeline) GenerateReply(ctx context.Context, msgs []llm.Message, fallback string, onToken func(string)) (full string, err error) {
-	atomic.AddInt32(&p.chatActive, 1)
-	full, err = p.LLM.ChatStream(ctx, p.ChatModel, msgs, onToken)
-	atomic.AddInt32(&p.chatActive, -1)
+	full, err = p.chatStream(ctx, p.LLM, p.ChatModel, msgs, onToken)
 	// A caller whose ctx is already done (e.g. runReply's direct path, on a
 	// barge-in or disconnect) is about to drop this result entirely — don't
 	// bother substituting/emitting a fallback nobody will ever see. A

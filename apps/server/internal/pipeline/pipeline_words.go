@@ -26,7 +26,7 @@ func (p *Pipeline) SuggestWords(ctx context.Context, description string) ([]prot
 		{Role: llm.RoleSystem, Content: wordSuggestionSystemPrompt(p.FeedbackLang)},
 		{Role: llm.RoleUser, Content: description},
 	}
-	raw, err := p.LLM.Complete(ctx, p.ChatModel, msgs, true)
+	raw, err := p.complete(ctx, p.LLM, p.ChatModel, msgs, true)
 	if err != nil {
 		return nil, err
 	}
@@ -187,7 +187,7 @@ func (p *Pipeline) resolveWordForm(ctx context.Context, word, passage string) (s
 		{Role: llm.RoleSystem, Content: wordFormSystemPrompt()},
 		{Role: llm.RoleUser, Content: fmt.Sprintf("word: %s\ncontext: %s", word, passage)},
 	}
-	raw, err := p.LLM.Complete(ctx, p.ChatModel, msgs, true)
+	raw, err := p.complete(ctx, p.LLM, p.ChatModel, msgs, true)
 	if err != nil {
 		return "", err
 	}
@@ -209,7 +209,7 @@ func (p *Pipeline) defineWord(ctx context.Context, word, passage string) (protoc
 		{Role: llm.RoleSystem, Content: wordDefineSystemPrompt(p.FeedbackLang)},
 		{Role: llm.RoleUser, Content: fmt.Sprintf("word: %s\ncontext: %s", word, passage)},
 	}
-	raw, err := p.LLM.Complete(ctx, p.ChatModel, msgs, true)
+	raw, err := p.complete(ctx, p.LLM, p.ChatModel, msgs, true)
 	if err != nil {
 		return protocol.WordSuggestion{}, err
 	}

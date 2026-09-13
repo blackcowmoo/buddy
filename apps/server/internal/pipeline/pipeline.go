@@ -108,18 +108,13 @@ type Pipeline struct {
 	// compact() and session.PeekOldestForCompaction.
 	MaxHistoryMessages int
 
-	// chatActive counts in-flight chat replies (reply/StartConversation's
-	// ChatStream calls). Read by acquireTranslationSlot so a new translation
-	// call can wait for a gap in chat activity instead of contending with it.
-	chatActive int32 // atomic
-
-	// translationSem caps translateAssistant/TranslateWithContext to one
-	// call in flight at a time, process-wide (shared by live per-turn
-	// translation and internal/backfill's worker, since both hold the same
-	// *Pipeline). Lazily created so Pipeline stays usable as a zero-value
-	// struct literal (see cmd/server/main.go).
-	translationSemOnce sync.Once
-	translationSem     chan struct{}
+	// modelCallQueue serializes calls independently per LLM key. It is shared
+	// by every request using this Pipeline, so the same model waits behind its
+	// own in-flight call while a different model can proceed immediately.
+	// Lazily created so Pipeline remains usable as a zero-value struct literal
+	// in tests and in the composition root.
+	modelCallQueueOnce sync.Once
+	modelCalls         *llm.CallQueue
 
 	// ReplyHook, if set, replaces reply()/StartConversation()'s direct
 	// "call the chat model in this goroutine" behavior with a durable,
@@ -165,6 +160,11 @@ type Pipeline struct {
 	// transport.persistEvent), so the hook is trusted to persist the result
 	// itself (see transport.TitleJobHandler) rather than reporting it back.
 	TitleHook TitleHook
+}
+
+func (p *Pipeline) modelCallQueue() *llm.CallQueue {
+	p.modelCallQueueOnce.Do(func() { p.modelCalls = llm.NewCallQueue() })
+	return p.modelCalls
 }
 
 // ReplyHook is Pipeline.ReplyHook's type — see that field's doc comment.

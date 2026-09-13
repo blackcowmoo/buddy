@@ -39,7 +39,7 @@ func (p *Pipeline) chatDraft(ctx context.Context, systemPrompt, input string, js
 	if p.LLM == nil {
 		return "", fmt.Errorf("chat draft: no chat model configured")
 	}
-	text, err := p.LLM.Complete(ctx, p.ChatModel, []llm.Message{
+	text, err := p.complete(ctx, p.LLM, p.ChatModel, []llm.Message{
 		{Role: llm.RoleSystem, Content: systemPrompt},
 		{Role: llm.RoleUser, Content: input},
 	}, jsonMode)
@@ -78,7 +78,7 @@ func (p *Pipeline) analyzeFromDraft(ctx context.Context, systemPrompt, input str
 	// candidate", not "whichever happened to finish first".
 	slots := fanOutOrdered(len(p.Analysis), func(i int) candidateResult {
 		c := p.Analysis[i]
-		text, err := c.LLM.Complete(ctx, c.Model, refineMsgs, jsonMode)
+		text, err := p.complete(ctx, c.LLM, c.Model, refineMsgs, jsonMode)
 		if err != nil {
 			log.Printf("analyze: candidate %s: %v", c.Model, err)
 			return candidateResult{}
@@ -125,7 +125,7 @@ func (p *Pipeline) analyzeFromDraft(ctx context.Context, systemPrompt, input str
 		{Role: llm.RoleSystem, Content: judgeSystemPrompt + "\n\nORIGINAL TASK (authoritative):\n" + systemPrompt},
 		{Role: llm.RoleUser, Content: b.String()},
 	}
-	final, err := p.Judge.Complete(ctx, p.JudgeModel, judgeMsgs, jsonMode)
+	final, err := p.complete(ctx, p.Judge, p.JudgeModel, judgeMsgs, jsonMode)
 	if err != nil {
 		if len(results) > 0 {
 			log.Printf("analyze: judge: %v; falling back to first candidate", err)

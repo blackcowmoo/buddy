@@ -75,6 +75,12 @@ Analysis result as reference material, then produces the final answer itself.
 This keeps earlier work useful without turning Judge into a simple vote or
 merge step.
 
+LLM calls are queued per model and endpoint, not per pipeline request. If one
+request is waiting for `llm2` (including a rate-limit retry), another request
+can still call `llm1`; only later calls targeting that same `llm2` wait behind
+it. This keeps the model's concurrency limit intact without making an
+unrelated model wait.
+
 The presentation policy depends on whether changing a visible result would
 break the interaction:
 
