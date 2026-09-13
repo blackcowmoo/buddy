@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -47,6 +48,13 @@ func NewOpenAI(baseURL, apiKey string) *OpenAI {
 		APIKey:  apiKey,
 		http:    &http.Client{Timeout: requestTimeout},
 	}
+}
+
+// QueueKey identifies one model at this OpenAI-compatible endpoint. It is
+// intentionally independent of the API key so separately constructed clients
+// for the same endpoint share the same per-model queue in a Pipeline.
+func (o *OpenAI) QueueKey(model string) string {
+	return o.BaseURL + "\x00" + model
 }
 
 type chatReq struct {
@@ -97,6 +105,12 @@ const overflowResetReason = "reset reason: overflow"
 // holding the learner's turn open indefinitely.
 var overflowBackoff = []time.Duration{500 * time.Millisecond, 1 * time.Second, 2 * time.Second}
 
+// rateLimitBackoff is the fallback delay for HTTP 429 responses that do not
+// provide a Retry-After header. It is deliberately finite: a permanently
+// rejected request must eventually return to its caller, while the per-model
+// CallQueue keeps later calls in order behind this retrying call.
+var rateLimitBackoff = []time.Duration{500 * time.Millisecond, 1 * time.Second, 2 * time.Second}
+
 // do posts body to the chat-completions endpoint and returns the response
 // once its status has checked out OK — callers only need to decode the body
 // (streamed SSE or a single JSON payload) and close it when done.
@@ -119,16 +133,57 @@ func (o *OpenAI) do(ctx context.Context, body []byte) (*http.Response, error) {
 		}
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
-		if resp.StatusCode == http.StatusServiceUnavailable && bytes.Contains(respBody, []byte(overflowResetReason)) && attempt < len(overflowBackoff) {
-			select {
-			case <-time.After(overflowBackoff[attempt]):
-				continue
-			case <-ctx.Done():
-				return nil, ctx.Err()
+		if resp.StatusCode == http.StatusTooManyRequests && attempt < len(rateLimitBackoff) {
+			delay := rateLimitBackoff[attempt]
+			if retryAfter, ok := retryAfterDelay(resp); ok {
+				delay = retryAfter
 			}
+			if err := waitForRetry(ctx, delay); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if resp.StatusCode == http.StatusServiceUnavailable && bytes.Contains(respBody, []byte(overflowResetReason)) && attempt < len(overflowBackoff) {
+			if err := waitForRetry(ctx, overflowBackoff[attempt]); err != nil {
+				return nil, err
+			}
+			continue
 		}
 		return nil, fmt.Errorf("llm status %d: %s", resp.StatusCode, bytes.TrimSpace(respBody))
 	}
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func retryAfterDelay(resp *http.Response) (time.Duration, bool) {
+	value := strings.TrimSpace(resp.Header.Get("Retry-After"))
+	if value == "" {
+		return 0, false
+	}
+	if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
+		return time.Duration(seconds) * time.Second, true
+	}
+	when, err := http.ParseTime(value)
+	if err != nil {
+		return 0, false
+	}
+	delay := time.Until(when)
+	if delay < 0 {
+		delay = 0
+	}
+	return delay, true
 }
 
 func (o *OpenAI) ChatStream(ctx context.Context, model string, msgs []Message, onToken func(string)) (string, error) {

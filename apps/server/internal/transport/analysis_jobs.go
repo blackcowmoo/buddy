@@ -28,14 +28,11 @@ const (
 	CorrectionWorkerConcurrency = 8
 
 	// LiveTranslationClaimTTL bounds one turn's translation call — same
-	// margin-above-the-LLM-timeout reasoning as ReplyClaimTTL.
-	// LiveTranslationWorkerConcurrency stays at 1 to match
-	// pipeline.Pipeline.translationSem's process-wide one-call-at-a-time
-	// cap on the translation LLM (see pipeline.acquireTranslationSlot,
-	// which every AnalyzeTranslation call — direct or via this queue —
-	// still goes through).
+	// margin-above-the-LLM-timeout reasoning as ReplyClaimTTL. The worker pool
+	// may run unrelated translation jobs at once; Pipeline's per-LLM call
+	// queues serialize only calls that target the same model.
 	LiveTranslationClaimTTL          = 25 * time.Hour
-	LiveTranslationWorkerConcurrency = 1
+	LiveTranslationWorkerConcurrency = 16
 
 	// TitleClaimTTL/TitleWorkerConcurrency: title generation is a single
 	// Complete() call (see pipeline.Pipeline.GenerateTitle) — fast against a

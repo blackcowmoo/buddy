@@ -33,6 +33,17 @@ type CachedClient struct {
 	ttl time.Duration
 }
 
+// QueueKey preserves the wrapped client's endpoint-aware queue identity. A
+// Redis cache must not make two OpenAI endpoints serving the same model share
+// a queue merely because the cache wrapper hides the underlying concrete
+// client from Pipeline.
+func (c *CachedClient) QueueKey(model string) string {
+	if keyed, ok := c.Client.(QueueKeyer); ok {
+		return keyed.QueueKey(model)
+	}
+	return model
+}
+
 // NewCached wraps inner with a Redis-backed Complete cache. rdb == nil
 // disables caching (returns inner unchanged) — the same optional-Redis-
 // feature convention as identity.NewCachedOIDCIdentifier and every other

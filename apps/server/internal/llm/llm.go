@@ -26,3 +26,10 @@ type Client interface {
 	// background grammar/context correction pass).
 	Complete(ctx context.Context, model string, msgs []Message, jsonMode bool) (string, error)
 }
+
+// QueueKeyer lets a client distinguish two models served by different
+// endpoints even when their model names are identical. Clients that do not
+// implement it are queued by the model name supplied to Client methods.
+type QueueKeyer interface {
+	QueueKey(model string) string
+}

@@ -89,7 +89,7 @@ func (p *Pipeline) synthesizeTranscript(ctx context.Context, client llm.Client, 
 		{Role: llm.RoleSystem, Content: transcriptSynthesisSystemPrompt},
 		{Role: llm.RoleUser, Content: renderTranscriptSynthesisInput(summary, recent, candidates)},
 	}
-	return client.Complete(ctx, model, msgs, false)
+	return p.complete(ctx, client, model, msgs, false)
 }
 
 const transcriptSynthesisSystemPrompt = `You are a transcription-reconciliation assistant for a spoken English
