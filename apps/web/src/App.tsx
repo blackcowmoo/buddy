@@ -1294,6 +1294,7 @@ export function App() {
     onGoToInstant: goTo("instant"),
     onGoToWords: goTo("words"),
     onGoToMatch: goTo("match"),
+    onGoToNuance: goTo("nuance"),
     onGoToArticle: goTo("article"),
     onGoToWriting: goTo("writing"),
     wordDueCount,

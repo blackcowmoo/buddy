@@ -1100,6 +1100,44 @@ a.icon-btn.ghost {
    pure play with no score persisted anywhere (see the page's doc comment on
    why: reward-free, so the timer/move-count are just live feedback). */
 .word-match-page { gap: 10px; }
+
+.nuance-page { justify-content: flex-start; gap: 18px; }
+.nuance-intro { padding: 8px 0 12px; border-bottom: 1px solid var(--border-2); }
+.nuance-intro h2, .nuance-lesson-heading h2 { margin: 5px 0 10px; font-size: 23px; letter-spacing: -0.5px; }
+.nuance-intro p, .nuance-lesson-heading p { margin: 8px 0; line-height: 1.6; }
+.nuance-eyebrow { color: var(--accent-strong); font-size: 12px; font-weight: 650; }
+.nuance-progress, .nuance-translation { color: var(--muted); font-size: 12px; }
+.nuance-search { display: grid; gap: 8px; font-size: 13px; }
+.nuance-search input { width: 100%; min-width: 0; }
+.nuance-lessons, .nuance-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.nuance-lesson.ghost { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; text-align: left; white-space: normal; padding: 18px; background: var(--panel); border: 1px solid var(--border-2); border-radius: var(--radius); line-height: 1.6; }
+.nuance-lesson strong { font-size: 18px; color: var(--text); overflow-wrap: anywhere; }
+.nuance-lesson > span:not(.nuance-eyebrow):not(.nuance-progress) { font-size: 13px; color: var(--muted); }
+.nuance-lesson .nuance-progress { margin-top: auto; }
+.nuance-list-back { align-self: flex-start; }
+.nuance-tabs, .nuance-options, .nuance-review { display: flex; flex-wrap: wrap; gap: 10px; }
+.nuance-tabs button, .nuance-options button { flex: 1; }
+.nuance-tabs [aria-pressed="true"], .nuance-options [aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent-strong); }
+.nuance-word, .nuance-question { padding: 20px; border: 1px solid var(--border-2); border-radius: var(--radius); background: var(--panel); min-width: 0; }
+.nuance-word h3 { margin: 0 0 10px; font-size: 23px; overflow-wrap: anywhere; }
+.nuance-word p, .nuance-question p { line-height: 1.7; font-size: 14px; }
+.nuance-tone { color: var(--accent-strong); font-size: 12px; }
+.nuance-word .nuance-translation, .nuance-question .nuance-translation { font-size: 12px; }
+.nuance-word a { color: var(--muted); font-size: 12px; }
+.nuance-sentence { font-weight: 550; }
+.nuance-caveat { margin: 0; padding: 15px 18px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: var(--radius-sm); font-size: 13px; line-height: 1.7; }
+.nuance-question h3 { font-size: 14px; line-height: 1.7; margin: 0; font-weight: 500; }
+.nuance-options button:disabled { opacity: 1; }
+.nuance-feedback { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border-2); }
+.nuance-feedback strong { color: var(--accent-strong); font-size: 14px; }
+.nuance-feedback p:last-child { margin-bottom: 0; }
+.nuance-review { align-items: center; }
+.nuance-review p { width: 100%; margin: 0; font-size: 13px; color: var(--muted); }
+.nuance-storage-note { padding-bottom: 12px; }
+@media (max-width: 520px) {
+  .nuance-lessons, .nuance-comparison { grid-template-columns: 1fr; }
+  .nuance-word, .nuance-question { padding: 16px; }
+}
 .word-match-stats { display: flex; gap: 14px; font-size: 13px; color: var(--muted); }
 .word-match-grid {
   display: grid;
