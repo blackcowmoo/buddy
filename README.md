@@ -19,6 +19,20 @@ corrections**.
 **Toolchain:** Go **1.26.5**, Node **26.5.0** (`.nvmrc`), pnpm 9 (via corepack).
 `GOTOOLCHAIN=auto` will fetch go1.26.5 automatically if your local Go is older.
 
+## Word nuance practice
+
+Open **단어 뉘앙스** from the menu (`nuance`, also under a `ROOT_PATH`
+prefix). Six authored comparison sets pair overlapping Korean meanings with
+English usage distinctions, translated examples, dictionary links, and twelve
+context questions. Feedback explains both the preferred word and what the
+alternative would imply; it does not treat every alternative as ungrammatical.
+Learners can search the sets and retry mistakes or a whole set.
+
+Answers persist in this browser's local storage, with a visible warning if
+saving fails. They are not account data or synchronized across devices. This
+initial curriculum is static (`apps/web/src/lib/nuance.ts`); it does not call
+an LLM or generate new word comparisons from the search box.
+
 ## Two-track pipeline
 
 ```

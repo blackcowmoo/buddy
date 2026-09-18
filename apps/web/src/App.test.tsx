@@ -1835,6 +1835,14 @@ describe("hamburger menu", () => {
     expect(location.assign).toHaveBeenCalledWith("match");
   });
 
+  it("navigates to word nuance practice from the menu", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await openMenu(user);
+    await user.click(screen.getByRole("menuitem", { name: /단어 뉘앙스/ }));
+    expect(location.assign).toHaveBeenCalledWith("nuance");
+  });
+
   it("navigates to the relative instant-sessions page from the menu", async () => {
     const user = userEvent.setup();
     render(<App />);

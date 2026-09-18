@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { currentPage } from "./route";
 
 describe("currentPage", () => {
+  it.each(["/nuance", "/nuance/", "/pr/14/nuance", "/pr/14/nuance/"])("recognizes the nuance page at %s", (path) => {
+    expect(currentPage(path)).toBe("nuance");
+  });
+
   it("treats root as the chat page", () => {
     expect(currentPage("/")).toBe("chat");
   });

@@ -104,6 +104,7 @@ function MenuPanel({
   onGoToInstant,
   onGoToWords,
   onGoToMatch,
+  onGoToNuance,
   onGoToArticle,
   onGoToWriting,
   wordDueCount,
@@ -128,6 +129,7 @@ function MenuPanel({
   onGoToInstant: () => void;
   onGoToWords: () => void;
   onGoToMatch: () => void;
+  onGoToNuance: () => void;
   onGoToArticle: () => void;
   onGoToWriting: () => void;
   wordDueCount: number;
@@ -227,6 +229,9 @@ function MenuPanel({
       </button>
       <button className="ghost menu-item" onClick={onGoToMatch} role="menuitem">
         🎮 단어 매칭 게임
+      </button>
+      <button className="ghost menu-item" onClick={onGoToNuance} role="menuitem">
+        🪄 단어 뉘앙스
       </button>
       <button className="ghost menu-item" onClick={onGoToArticle} role="menuitem">
         📰 오늘의 아티클
