@@ -1126,7 +1126,6 @@ a.icon-btn.ghost {
 .nuance-feedback p:last-child { margin-bottom: 0; }
 .nuance-review { align-items: center; }
 .nuance-review p { width: 100%; margin: 0; font-size: 13px; color: var(--muted); }
-.nuance-storage-note { padding-bottom: 12px; }
 .nuance-list-description { color: var(--muted); font-size: 13px; line-height: 1.6; }
 .nuance-page .session-item { white-space: normal; }
 .nuance-page .quiz-panel { display: grid; gap: 12px; }

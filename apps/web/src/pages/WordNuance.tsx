@@ -155,9 +155,9 @@ export function WordNuance() {
       {loading && <LoadingHint />}
       {!selected ? <>
         <div className="nuance-intro">
-          <p className="nuance-eyebrow">같은 한국어, 다른 느낌</p>
+          <p className="nuance-eyebrow">같은 뜻, 미묘하게 다른 느낌</p>
           <h2>상황에 맞는 단어를 익혀요</h2>
-          <p>새 비교 묶음을 만들고, 문맥 속 선택을 반복하며 익혀 보세요.</p>
+          <p>서로 바꿔 써도 기본 뜻이 통하는 단어들을 비교해요. 상황과 의도에 따라 달라지는 말투와 느낌을 익혀 보세요.</p>
           <p className="nuance-progress">{lessons.length}개 묶음 · 복습할 문맥 {due}개</p>
         </div>
         <div className="nuance-review">
@@ -204,7 +204,6 @@ export function WordNuance() {
           </> : <section className="quiz-panel" aria-live="polite"><h3>지금 복습할 문맥을 모두 풀었어요</h3><p>맞힌 문제는 간격을 두고 다시 나와요.</p>{next !== null && <p className="hint">다음 복습: {formatAbsoluteDateTime(next)}</p>}{reviewLesson && reviewLesson.id !== selected.id && <button type="button" onClick={() => void open(reviewLesson.id, true, true)}>다음 묶음 복습하기</button>}<button type="button" className="ghost" onClick={back}>학습 목록 보기</button></section>}
         </>}
       </>}
-      <p className="hint nuance-storage-note">문제와 풀이 진행은 계정에 저장돼요. 틀린 문맥은 다시 풀고, 익숙해진 문맥은 복습 간격이 늘어나요.</p>
     </main>
   </div>;
 }
