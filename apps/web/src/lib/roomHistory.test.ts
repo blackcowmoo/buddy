@@ -31,6 +31,10 @@ describe("parseRoomHash", () => {
     expect(parseRoomHash("#chat/new")).toEqual({ view: "chat", id: null });
   });
 
+  it("recognizes the instant-conversation start link", () => {
+    expect(parseRoomHash("#instant/new")).toEqual({ view: "chat", id: null, quick: true });
+  });
+
   it("falls back to list for an empty or unrelated hash", () => {
     expect(parseRoomHash("")).toEqual({ view: "list" });
     expect(parseRoomHash("#recordings")).toEqual({ view: "list" });
@@ -49,6 +53,17 @@ describe("pushRoomState / replaceRoomState", () => {
   it("push for a pending new room uses the 'new' placeholder hash", () => {
     pushRoomState({ view: "chat", id: null });
     expect(window.location.hash).toBe("#chat/new");
+  });
+
+  it.each(["/", "/pr/14/"])("preserves instant mode for a pending room under %s", (root) => {
+    window.history.replaceState(null, "", root);
+    pushRoomState({ view: "chat", id: null, quick: true });
+    expect(window.location.pathname).toBe(root);
+    expect(window.location.hash).toBe("#instant/new");
+    expect(parseRoomHash(window.location.hash)).toEqual({ view: "chat", id: null, quick: true });
+
+    replaceRoomState({ view: "chat", id: "i1" });
+    expect(window.location.hash).toBe("#chat/i1");
   });
 
   it("replace swaps the current entry in place without growing the stack", () => {

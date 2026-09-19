@@ -100,7 +100,6 @@ export function ArticleQuiz() {
   const [result, setResult] = useState<ArticleAnswerResult | null>(null);
   const [tts, setTts] = useState<TtsState>("idle");
   const articlePageRef = useRef<HTMLElement | null>(null);
-  const pendingScrollCorrectionRef = useRef<{ height: number; top: number } | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   // Invalidates a pending play() rejection when the learner cancels before
   // the browser has finished starting playback.
@@ -205,9 +204,7 @@ export function ArticleQuiz() {
 
   const loadInstances = useCallback(() => {
     fetchArticleInstances().then((list) => {
-      // The API returns newest first, but this page grows downward: the
-      // newest attempt belongs at the bottom, next to the draw action.
-      setInstances(list.slice().sort((a, b) => a.createdAt - b.createdAt));
+      setInstances(list.slice().sort((a, b) => b.createdAt - a.createdAt));
       setVisibleInstanceCount(articleListPageSize);
       setState("ready");
     });
@@ -217,35 +214,19 @@ export function ArticleQuiz() {
     loadInstances();
   }, [loadInstances]);
 
-  // Keep the newest article and the action for drawing another one in view
-  // when entering the list. The list itself remains a normal top-to-bottom
-  // scroll container so the learner can scroll upward into older articles.
+  // List and detail share a scroll container. Start each view at its heading
+  // instead of carrying a long history's scroll position into the article.
   useLayoutEffect(() => {
-    if (view === null && state === "ready") {
-      const page = articlePageRef.current;
-      if (page) page.scrollTop = page.scrollHeight;
-    }
-  }, [instances.length, state, view]);
-
-  // Older attempts are prepended in batches while the learner scrolls upward.
-  // Compensate for the added content so the row they were looking at stays in
-  // the same place instead of jumping down by one whole batch.
-  useLayoutEffect(() => {
-    const correction = pendingScrollCorrectionRef.current;
     const page = articlePageRef.current;
-    if (!correction || !page) return;
-    page.scrollTop = correction.top + (page.scrollHeight - correction.height);
-    pendingScrollCorrectionRef.current = null;
-  }, [visibleInstanceCount]);
+    if (page) page.scrollTop = 0;
+  }, [view]);
 
   const loadOlderInstances = useCallback(() => {
     if (visibleInstanceCount >= instances.length) return;
-    const page = articlePageRef.current;
-    if (page) pendingScrollCorrectionRef.current = { height: page.scrollHeight, top: page.scrollTop };
     setVisibleInstanceCount((count) => Math.min(count + articleListPageSize, instances.length));
   }, [instances.length, visibleInstanceCount]);
 
-  const visibleInstances = instances.slice(Math.max(0, instances.length - visibleInstanceCount));
+  const visibleInstances = instances.slice(0, visibleInstanceCount);
 
   const handleDraw = useCallback(async () => {
     setDrawState("drawing");
@@ -480,6 +461,12 @@ export function ArticleQuiz() {
   const handleDelete = (id: string) =>
     confirmThenDelete("이 아티클 퀴즈를 삭제할까요?", deleteArticleInstance, id, setInstances);
 
+  const drawFeedback = drawState === "noMore" ? (
+    <p className="hint" role="status">지금은 새로 볼 아티클이 없어요. 나중에 다시 시도해보세요.</p>
+  ) : drawState === "error" ? (
+    <p className="hint" role="alert">아티클을 가져오지 못했어요. 연결 상태를 확인한 뒤 ‘새 아티클 뽑기’를 다시 눌러 주세요.</p>
+  ) : null;
+
   return (
     <div className="app">
       <SubPageHeader title="오늘의 아티클" />
@@ -488,29 +475,29 @@ export function ArticleQuiz() {
         ref={articlePageRef}
         className="convo article-quiz-page"
         onScroll={(event) => {
-          if (event.currentTarget.scrollTop <= articleListLoadThreshold) loadOlderInstances();
+          const page = event.currentTarget;
+          if (view === null && state === "ready" && page.scrollHeight - page.scrollTop - page.clientHeight <= articleListLoadThreshold) {
+            loadOlderInstances();
+          }
         }}
       >
-        {drawState === "noMore" && (
-          <p className="hint">지금은 새로 볼 아티클이 없어요. 나중에 다시 시도해보세요.</p>
-        )}
-        {drawState === "error" && (
-          <p className="hint" role="alert">아티클을 가져오지 못했어요. 연결 상태를 확인한 뒤 ‘새 아티클 뽑기’를 다시 눌러 주세요.</p>
-        )}
-
         {view === null && (
           <>
             <LearningIntro eyebrow="읽으며 넓어지는 영어" title="새로운 이야기를 읽어 봐요" description="아티클 속 단어를 눌러 뜻을 알아보고, 퀴즈로 읽은 내용을 되짚어 보세요." steps={["아티클 고르기", "읽고 단어 찾기", "퀴즈로 확인하기"]} />
+            <button type="button" className="quiz-start-btn" onClick={() => void handleDraw()} disabled={drawState === "drawing"}>
+              {drawState === "drawing" ? "가져오는 중…" : "새 아티클 뽑기"}
+            </button>
+            {drawFeedback}
+            <div className="section-heading history-heading">
+              <h2>나의 아티클 기록</h2>
+              {state === "ready" && <p>총 {instances.length}개 · 최근 기록부터</p>}
+            </div>
             {state === "loading" && <LoadingHint />}
             {state === "ready" && instances.length === 0 && (
               <EmptyState title="아직 읽은 아티클이 없어요." description="‘새 아티클 뽑기’를 눌러 읽을거리를 만나 보세요. 읽던 글은 이 목록에서 다시 열 수 있어요." />
             )}
-            {visibleInstances.length < instances.length && (
-              <p className="hint article-list-load-hint">위로 스크롤하면 이전 아티클을 더 불러와요.</p>
-            )}
             {visibleInstances.map((inst, i) => {
-              const instanceIndex = instances.length - visibleInstances.length + i;
-              const prev = instances[instanceIndex - 1];
+              const prev = visibleInstances[i - 1];
               const showDivider = shouldShowDateDivider(prev?.createdAt, inst.createdAt);
               return (
                 <Fragment key={inst.id}>
@@ -552,9 +539,11 @@ export function ArticleQuiz() {
               );
             })}
 
-            <button type="button" className="quiz-start-btn" onClick={() => void handleDraw()} disabled={drawState === "drawing"}>
-              {drawState === "drawing" ? "가져오는 중…" : "새 아티클 뽑기"}
-            </button>
+            {visibleInstances.length < instances.length && (
+              <button type="button" className="ghost" onClick={loadOlderInstances}>
+                이전 아티클 더 보기
+              </button>
+            )}
           </>
         )}
 
@@ -788,6 +777,7 @@ export function ArticleQuiz() {
             >
               {drawState === "drawing" ? "가져오는 중…" : "다른 아티클 뽑기"}
             </button>
+            {drawFeedback}
             <button type="button" className="ghost quiz-back-btn" onClick={backToList}>
               ← 목록으로
             </button>

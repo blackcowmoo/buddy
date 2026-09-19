@@ -7,8 +7,9 @@ import { LoadingHint } from "../components/LoadingHint";
 import { SubPageHeader } from "../components/SubPageHeader";
 
 // Every "인스턴트 대화" room (see App.tsx's markInstant) lives here instead of
-// the main room list — one exchange each, so this page exists to review a
-// room's title/time, reopen it (read-only, since it's always already ended
+// the main room list — one exchange each, so this page lets learners start
+// a fresh instant conversation or review a room's title/time and reopen it
+// (read-only, since it's always already ended
 // by the time it shows up here — see App.tsx's quickEndingRef) to see its
 // transcript and grammar feedback, and, if a reply came back wrong, delete
 // the transcript outright (the one way to keep a bad exchange out of future
@@ -40,13 +41,24 @@ export function InstantSessions() {
 
       <main className="convo instant-sessions-list">
         <LearningIntro eyebrow="짧게 연습하고, 차근차근 돌아보기" title="한 문장도 좋은 연습이에요" description="한 번씩 나눈 짧은 대화를 모았어요. 대화를 열어 답변과 피드백을 다시 살펴보세요." />
+        <div>
+          <button
+            type="button"
+            className="new-chat"
+            aria-describedby="instant-start-description"
+            onClick={() => window.location.assign(".#instant/new")}
+          >
+            인스턴트 대화 시작
+          </button>
+          <p id="instant-start-description" className="action-description">한 문장으로 가볍게 연습해요</p>
+        </div>
         {!loaded && <LoadingHint />}
         {loaded && (
           <p className="hint instant-sessions-hint">
             지금까지 총 {sessions.length}번 했어요. 잘못 응답한 대화는 삭제하면 학습 데이터에서 제외돼요.
           </p>
         )}
-        {loaded && sessions.length === 0 && <EmptyState title="아직 인스턴트 대화가 없어요." description="홈에서 ‘인스턴트 대화’를 눌러 문장 하나를 보내 보세요. 답변과 피드백을 받은 뒤 대화가 마무리돼요." href="." action="한 문장 연습하러 가기" />}
+        {loaded && sessions.length === 0 && <EmptyState title="아직 인스턴트 대화가 없어요." description="위의 ‘인스턴트 대화 시작’을 눌러 문장 하나를 보내 보세요. 답변과 피드백을 받은 뒤 대화가 마무리돼요." />}
         {sessions.map((s, i) => {
           const prev = sessions[i - 1];
           const showDivider = shouldShowDateDivider(prev?.createdAt, s.createdAt);

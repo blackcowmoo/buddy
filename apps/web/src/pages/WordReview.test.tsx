@@ -324,7 +324,11 @@ describe("WordReview page", () => {
       researchStatus: "confirmed",
     }));
     vi.mocked(fetchWords).mockResolvedValue({ words: manyWords, dueCount: 0 });
-    render(<WordReview />);
+    // The initial word-count effect resets pagination. Settle the fetch and
+    // that effect before scrolling so it cannot overwrite the page change.
+    await act(async () => {
+      render(<WordReview />);
+    });
 
     expect(await screen.findByText("복습중인 단어")).toBeInTheDocument();
     expect(screen.getByText("(21개)")).toBeInTheDocument();
@@ -338,10 +342,7 @@ describe("WordReview page", () => {
 
     const scrollList = document.querySelector(".word-list-scroll") as HTMLDivElement;
     expect(scrollList.scrollTop).toBe(2000);
-    await act(async () => {
-      scrollList.scrollTop = 4;
-      fireEvent.scroll(scrollList);
-    });
+    fireEvent.scroll(scrollList, { target: { scrollTop: 4 } });
     expect(await screen.findByText("review-word-0")).toBeInTheDocument();
     expect(scrollList.scrollTop).toBe(104);
   });

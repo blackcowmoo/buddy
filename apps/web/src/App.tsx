@@ -769,7 +769,7 @@ export function App() {
         // Gives this room its own history entry on top of the list's, so
         // browser back/swipe-back leaves the room instead of the whole app
         // (see backToList and the popstate handler in the mount effect).
-        pushRoomState({ view: "chat", id: sessionId ?? null });
+        pushRoomState({ view: "chat", id: sessionId ?? null, ...(opts?.quick ? { quick: true } : {}) });
         hasPushedRoomEntryRef.current = true;
       }
       setActiveSessionId(sessionId ?? null);
@@ -1100,17 +1100,17 @@ export function App() {
   // the browser has already changed the URL by the time popstate fires.
   useEffect(() => {
     const initial = parseRoomHash(window.location.hash);
-    if (initial.view === "chat" && initial.id) {
+    if (initial.view === "chat" && (initial.id || initial.quick)) {
       replaceRoomState(initial);
-      void enterChat(initial.id, { push: false });
+      void enterChat(initial.id ?? undefined, { push: false, quick: initial.quick });
     } else {
       replaceRoomState({ view: "list" });
     }
 
     return onRoomPopState((state) => {
-      if (state.view === "chat" && state.id) {
+      if (state.view === "chat" && (state.id || state.quick)) {
         hasPushedRoomEntryRef.current = true;
-        void enterChat(state.id, { push: false });
+        void enterChat(state.id ?? undefined, { push: false, quick: state.quick });
       } else {
         resetToListView();
       }
