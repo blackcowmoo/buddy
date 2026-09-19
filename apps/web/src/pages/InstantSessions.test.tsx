@@ -21,10 +21,12 @@ afterEach(() => {
 });
 
 describe("InstantSessions page", () => {
-  it("shows the shared sub-page menu instead of a back button", () => {
+  it("shows a welcoming introduction with the shared hamburger navigation", () => {
     vi.mocked(fetchInstantSessions).mockReturnValue(new Promise(() => {}));
     render(<InstantSessions />);
     expect(screen.getByRole("button", { name: "메뉴" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "한 문장도 좋은 연습이에요" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "홈으로" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "대화로 돌아가기" })).not.toBeInTheDocument();
   });
 
@@ -37,7 +39,8 @@ describe("InstantSessions page", () => {
   it("shows an empty-state hint when there are no instant sessions", async () => {
     vi.mocked(fetchInstantSessions).mockResolvedValue([]);
     render(<InstantSessions />);
-    expect(await screen.findByText("아직 인스턴트 대화가 없습니다.")).toBeInTheDocument();
+    expect(await screen.findByText("아직 인스턴트 대화가 없어요.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "한 문장 연습하러 가기" })).toHaveAttribute("href", ".");
   });
 
   // Guards the total-count purpose stated in the page itself — the whole
@@ -143,7 +146,7 @@ describe("InstantSessions page", () => {
 
     expect(confirmSpy).toHaveBeenCalled();
     expect(deleteSession).toHaveBeenCalledWith("i1");
-    expect(await screen.findByText("아직 인스턴트 대화가 없습니다.")).toBeInTheDocument();
+    expect(await screen.findByText("아직 인스턴트 대화가 없어요.")).toBeInTheDocument();
   });
 
   it("does not delete when the confirmation is declined", async () => {

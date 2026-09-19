@@ -63,12 +63,13 @@ export function ConversationTranscript({
           ✏️ 인스턴트 대화: 문장을 하나 보내면 답변과 피드백을 받고 바로 마무리돼요.
         </p>
       )}
-      {messages.length === 0 && (
-        <p className="hint">
-          <strong>🎙</strong>을 누르고 영어로 말한 뒤 다시 누르세요. 인식된 문장을 확인·수정하고
-          전송하면 됩니다. 아래에 직접 입력할 수도 있고, 메시지의 <strong>🔊</strong>을 누르면
-          발음을 들을 수 있어요.
-        </p>
+      {messages.length === 0 && !ended && (
+        <div className="empty-state conversation-welcome">
+          <p className="learning-eyebrow">한마디부터 천천히</p>
+          <h2>어떤 이야기를 나눠 볼까요?</h2>
+          <p>오늘 있었던 일이나 좋아하는 것을 영어로 이야기해 보세요. 짧은 문장도 좋아요.</p>
+          <p>아래에 직접 쓰거나 🎙 버튼으로 말해 보세요. 버튼을 다시 눌러 녹음을 마친 뒤, 인식된 문장을 확인하고 보내 주세요.</p>
+        </div>
       )}
       {messages.map((message, index) => {
         const meta = turns[message.turn];

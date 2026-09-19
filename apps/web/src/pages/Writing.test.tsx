@@ -59,6 +59,9 @@ describe("Writing page list/detail flow", () => {
     render(<Writing />);
 
     const promptButton = await screen.findByRole("button", { name: /어제 영화를 봤어요/ });
+    expect(screen.getByRole("heading", { name: "한 문장부터 써 볼까요?" })).toBeInTheDocument();
+    const createButton = screen.getByRole("button", { name: /새 문제 만들기/ });
+    expect(createButton.compareDocumentPosition(promptButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(promptButton).toHaveClass("session-item");
     expect(promptButton.closest(".session-row")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "작문 문제 삭제" })).toHaveClass("session-delete");
@@ -67,6 +70,7 @@ describe("Writing page list/detail flow", () => {
     const heading = await screen.findByRole("heading", { name: "오늘의 한 문장" });
     expect(heading.closest("section")).toHaveClass("quiz-panel", "writing-detail-card");
     expect(screen.getByLabelText("영어 답안")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "한 문장부터 써 볼까요?" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "← 목록으로" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /새 문제 만들기/ })).not.toBeInTheDocument();
   });

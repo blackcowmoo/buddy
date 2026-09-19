@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { EmptyState, LearningIntro } from "../components/LearningIntro";
 import { confirmThenDelete } from "../lib/confirmDelete";
 import {
   deleteWord,
@@ -473,8 +474,9 @@ export function WordReview() {
       <SubPageHeader title="단어 복습" />
 
       <main className="convo word-review-page">
+        {quizQueue === null && <LearningIntro eyebrow="다시 만날수록 익숙해지는 단어" title="배운 표현을 내 것으로 만들어요" description="복습할 때가 된 단어를 문장 속에서 떠올려 보세요. 아직 낯선 표현은 다시 연습할 수 있어요." steps={["단어 모으기", "문장으로 복습", "다시 익히기"]} />}
         {state === "loading" && <LoadingHint />}
-        {state === "error" && <p className="hint">단어 목록을 불러오지 못했습니다. 네트워크 문제일 수 있습니다.</p>}
+        {state === "error" && <p className="hint" role="alert">단어 목록을 불러오지 못했어요. 연결 상태를 확인한 뒤 다시 열어 주세요.</p>}
 
         {state === "ready" && quizQueue === null && (
           <>
@@ -486,9 +488,7 @@ export function WordReview() {
                   : "지금 복습할 단어가 없어요."}
             </p>
             {words.length === 0 && (
-              <p className="hint">
-                아직 학습 중인 단어가 없어요. 채팅에서 🔎로 단어를 찾아 "학습하기"를 눌러보세요.
-              </p>
+              <EmptyState title="아직 학습 중인 단어가 없어요." description="아래 ‘새 단어 추가로 학습하기’로 시작하거나, 대화에서 단어를 검색한 뒤 ‘학습하기’를 눌러 모아 보세요." />
             )}
 
             <WordListSection

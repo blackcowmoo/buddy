@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { EmptyState, LearningIntro } from "../components/LearningIntro";
 import { fetchWords, type WordReviewItem } from "../lib/wordReview";
 import { shuffled } from "../lib/shuffle";
 import { SubPageHeader } from "../components/SubPageHeader";
@@ -117,14 +118,12 @@ export function WordMatch() {
       <SubPageHeader title="단어 매칭 게임" />
 
       <main className="convo word-match-page">
+        <LearningIntro eyebrow="가볍게 즐기는 단어 복습" title="단어와 뜻의 짝을 찾아요" description="카드를 두 장씩 뒤집어 영어 단어와 우리말 뜻을 연결해 보세요. 서두르지 않아도 괜찮아요." />
         {state === "loading" && <LoadingHint />}
-        {state === "error" && <p className="hint">단어 목록을 불러오지 못했습니다. 네트워크 문제일 수 있습니다.</p>}
+        {state === "error" && <p className="hint" role="alert">단어 목록을 불러오지 못했어요. 연결 상태를 확인한 뒤 다시 열어 주세요.</p>}
 
         {state === "ready" && verifiedWords.length < minPairs && (
-          <p className="hint">
-            복습 중인 단어가 {minPairs}개 이상 있어야 게임을 시작할 수 있어요. 채팅에서 🔎로 단어를 찾아 "학습하기"를
-            눌러보세요.
-          </p>
+          <EmptyState title="짝을 맞출 단어를 먼저 모아 볼까요?" description={`복습 중인 단어가 ${minPairs}개 이상 있어야 게임을 시작할 수 있어요. 지금은 ${verifiedWords.length}개가 준비되어 있어요.`} href="words" action="단어 모으러 가기" />
         )}
 
         {state === "ready" && verifiedWords.length >= minPairs && (

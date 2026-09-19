@@ -1,7 +1,9 @@
 import { Fragment, useEffect, useState } from "react";
+import { EmptyState, LearningIntro } from "../components/LearningIntro";
 import { confirmThenDelete } from "../lib/confirmDelete";
 import { deleteSession, fetchInstantSessions, type SessionSummary } from "../lib/sessions";
 import { formatDateDivider, formatMessageTime, shouldShowDateDivider } from "../lib/time";
+import { LoadingHint } from "../components/LoadingHint";
 import { SubPageHeader } from "../components/SubPageHeader";
 
 // Every "인스턴트 대화" room (see App.tsx's markInstant) lives here instead of
@@ -37,13 +39,14 @@ export function InstantSessions() {
       <SubPageHeader title="인스턴트 대화" />
 
       <main className="convo instant-sessions-list">
-        {!loaded && <p className="hint">불러오는 중…</p>}
+        <LearningIntro eyebrow="짧게 연습하고, 차근차근 돌아보기" title="한 문장도 좋은 연습이에요" description="한 번씩 나눈 짧은 대화를 모았어요. 대화를 열어 답변과 피드백을 다시 살펴보세요." />
+        {!loaded && <LoadingHint />}
         {loaded && (
           <p className="hint instant-sessions-hint">
             지금까지 총 {sessions.length}번 했어요. 잘못 응답한 대화는 삭제하면 학습 데이터에서 제외돼요.
           </p>
         )}
-        {loaded && sessions.length === 0 && <p className="hint">아직 인스턴트 대화가 없습니다.</p>}
+        {loaded && sessions.length === 0 && <EmptyState title="아직 인스턴트 대화가 없어요." description="홈에서 ‘인스턴트 대화’를 눌러 문장 하나를 보내 보세요. 답변과 피드백을 받은 뒤 대화가 마무리돼요." href="." action="한 문장 연습하러 가기" />}
         {sessions.map((s, i) => {
           const prev = sessions[i - 1];
           const showDivider = shouldShowDateDivider(prev?.createdAt, s.createdAt);

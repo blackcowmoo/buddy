@@ -1,11 +1,11 @@
 import { useCallback, useRef, useState } from "react";
+import { MenuIcon } from "./MenuIcon";
+import { LearningMenuItems } from "./LearningMenuItems";
 import { useDismiss } from "../hooks/useDismiss";
 
-// Shared top bar for every sub-page reached from the room list (Recordings,
-// WordReview, WordMatch, InstantSessions, ArticleQuiz, Writing): a title plus
-// a compact menu back to the main page. The link is relative ("." not "/")
-// so it resolves against the current page URL and still works under a
-// ROOT_PATH prefix like "/pr/14/words".
+// The hamburger keeps the same learning destinations as the main screen and
+// adds a relative home link, so every page remains one menu away from the
+// complete app navigation under preview deployments such as "/pr/14/words".
 export function SubPageHeader({ title }: { title: string }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -27,13 +27,15 @@ export function SubPageHeader({ title }: { title: string }) {
           aria-expanded={menuOpen}
           title="메뉴"
         >
-          ☰
+          <MenuIcon />
         </button>
         {menuOpen && (
           <div className="menu-panel subpage-menu-panel" role="menu">
             <a className="ghost menu-item" href="." role="menuitem">
               <span aria-hidden="true">🏠</span> 메인으로
             </a>
+            <div className="menu-divider" />
+            <LearningMenuItems />
           </div>
         )}
       </div>

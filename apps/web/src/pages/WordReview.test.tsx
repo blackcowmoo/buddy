@@ -174,10 +174,12 @@ async function startQuiz(words: WordReviewItem[] = [dueWord]) {
 }
 
 describe("WordReview page", () => {
-  it("shows the shared sub-page menu instead of a back button", () => {
+  it("shows a welcoming introduction with the shared hamburger navigation", () => {
     vi.mocked(fetchWords).mockReturnValue(new Promise(() => {}));
     render(<WordReview />);
     expect(screen.getByRole("button", { name: "메뉴" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "배운 표현을 내 것으로 만들어요" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "홈으로" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "대화로 돌아가기" })).not.toBeInTheDocument();
   });
 
@@ -190,7 +192,7 @@ describe("WordReview page", () => {
   it("shows an error hint when the fetch fails", async () => {
     vi.mocked(fetchWords).mockResolvedValue(null);
     render(<WordReview />);
-    expect(await screen.findByText(/단어 목록을 불러오지 못했습니다/)).toBeInTheDocument();
+    expect(await screen.findByText(/단어 목록을 불러오지 못했어요/)).toBeInTheDocument();
   });
 
   it("shows an empty-state hint when there are no tracked words", async () => {

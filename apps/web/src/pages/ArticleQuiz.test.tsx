@@ -87,10 +87,12 @@ const articleSummaryMatcher = (text: string) => (_content: string, element: Elem
   element?.classList.contains("article-summary") === true && element.textContent === text;
 
 describe("ArticleQuiz page — list view", () => {
-  it("shows the shared sub-page menu instead of a back button", () => {
+  it("shows a welcoming introduction with the shared hamburger navigation", () => {
     vi.mocked(fetchArticleInstances).mockReturnValue(new Promise(() => {}));
     render(<ArticleQuiz />);
     expect(screen.getByRole("button", { name: "메뉴" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "새로운 이야기를 읽어 봐요" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "홈으로" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "대화로 돌아가기" })).not.toBeInTheDocument();
   });
 
@@ -231,7 +233,7 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
 
     await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
 
-    expect(await screen.findByText("아티클을 가져오지 못했습니다. 네트워크 문제일 수 있습니다.")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("아티클을 가져오지 못했어요. 연결 상태를 확인한 뒤 ‘새 아티클 뽑기’를 다시 눌러 주세요.");
   });
 
   it("reveals the quiz sub-questions only after tapping 문제풀기, alongside the English original", async () => {
@@ -343,7 +345,7 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     expect(await screen.findByText(/아티클을 요약하고 문제를 만드는 중이에요/)).toBeInTheDocument();
   });
 
-  it("reopens a finished past attempt into the reading view", async () => {
+  it("opens a past article with the keyboard and hides the list introduction", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([
       { id: "i1", source: "BBC", title: "Old story", summary: "s", answered: true, correct: true, createdAt: 1700000000, publishedAt: 0, status: "done" as const },
     ]);
@@ -351,11 +353,14 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     const user = userEvent.setup();
     render(<ArticleQuiz />);
 
-    await user.click(await screen.findByText("[BBC] Old story"));
+    const article = await screen.findByRole("button", { name: /\[BBC\] Old story/ });
+    article.focus();
+    await user.keyboard("{Enter}");
 
     expect(fetchArticleInstance).toHaveBeenCalledWith("i1");
     expect(await screen.findByText(articleSummaryMatcher(sampleDraw.summary))).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "문제풀기" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "새로운 이야기를 읽어 봐요" })).not.toBeInTheDocument();
   });
 
   it("points a plain <audio> element at the server-generated read-aloud URL and plays it when 읽어주기 is tapped", async () => {

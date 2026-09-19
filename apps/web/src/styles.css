@@ -221,7 +221,7 @@ body {
   box-shadow: var(--shadow-lg);
   z-index: 40;
 }
-.subpage-menu-panel { width: 168px; }
+.subpage-menu-panel { width: 260px; }
 .subpage-menu-panel a.menu-item {
   min-height: 44px;
   padding: 0 12px;
@@ -964,6 +964,109 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
   min-height: 32px;
   font-size: 13px;
 }
+/* Learning screens share the same quiet introduction as word nuance. Keep
+   them top-aligned and non-shrinking so long lists remain scrollable. */
+:is(.recordings-list, .instant-sessions-list, .word-review-page, .word-match-page) {
+  justify-content: flex-start;
+}
+:is(.session-list, .recordings-list, .instant-sessions-list, .word-review-page, .word-match-page, .writing-page, .article-quiz-page) > * {
+  flex-shrink: 0;
+}
+.learning-intro {
+  padding: 6px 0 18px;
+  border-bottom: 1px solid var(--border-2);
+}
+.learning-eyebrow {
+  margin: 0 0 8px;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 650;
+}
+.learning-intro h2, .conversation-welcome h2 {
+  margin: 0 0 10px;
+  font-size: 23px;
+  line-height: 1.4;
+  letter-spacing: -0.04em;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.learning-description {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.75;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.learning-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: learning-step;
+  color: var(--muted);
+  font-size: 12px;
+}
+.learning-steps li { display: flex; align-items: center; gap: 6px; counter-increment: learning-step; }
+.learning-steps li::before {
+  content: counter(learning-step);
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 11px;
+}
+.conversation-starts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.conversation-starts > div { min-width: 0; }
+.conversation-starts .new-chat { padding-inline: 8px; font-size: 14px; }
+.action-description { margin: 8px 0 0; font-size: 11px; color: var(--muted); text-align: center; }
+.section-heading h2 { margin: 0; font-size: 16px; font-weight: 650; }
+.section-heading p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+.learning-paths { margin-block: 10px; }
+.learning-path-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.learning-path {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  text-decoration: none;
+  transition: border-color 0.18s ease, background-color 0.18s ease;
+}
+.learning-path:hover { border-color: var(--accent-border); background: var(--panel-2); }
+.learning-path strong { display: block; font-size: 14px; font-weight: 650; }
+.learning-path-description { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.learning-path-icon { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 9px; background: var(--accent-soft); color: var(--accent-strong); font-size: 15px; font-weight: 600; }
+.learning-path-arrow { position: absolute; top: 14px; right: 14px; color: var(--muted); font-size: 13px; }
+.history-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.text-link { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; color: var(--accent-strong); font-size: 13px; text-underline-offset: 4px; }
+.empty-state {
+  padding: 20px;
+  border: 1px dashed var(--accent-border);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+}
+.empty-state p { margin: 0 0 8px; color: var(--muted); font-size: 13px; line-height: 1.75; }
+.empty-state p:last-child { margin-bottom: 0; }
+.empty-state .empty-state-title { color: var(--text); font-size: 15px; font-weight: 600; }
+.empty-state .learning-eyebrow { color: var(--accent-strong); font-size: 12px; }
+.loading-hint { display: flex; align-items: center; gap: 10px; }
+.loading-dot { width: 8px; height: 8px; flex-shrink: 0; border-radius: 50%; background: var(--accent); }
+@media (max-width: 360px) {
+  .conversation-starts { grid-template-columns: minmax(0, 1fr); }
+  .learning-path { padding: 12px; }
+}
+
 .article-quiz-page { justify-content: flex-start; }
 
 .writing-page { justify-content: flex-start; }
