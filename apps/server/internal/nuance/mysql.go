@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
 )
 
@@ -73,10 +75,65 @@ func (s *MySQLStore) Complete(ctx context.Context, id string, c Content) error {
 	if err := c.Validate(); err != nil {
 		return err
 	}
-	content, _ := json.Marshal(c)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var userID, status string
+	err = tx.QueryRowContext(ctx, `SELECT user_id,status FROM buddy_nuance_lessons WHERE id=? FOR UPDATE`, id).Scan(&userID, &status)
 	// First successful generation wins even if a recovered worker finishes late.
-	_, err := s.db.ExecContext(ctx, `UPDATE buddy_nuance_lessons SET content_json=?,status=?,revision=revision+1 WHERE id=? AND status<>?`, string(content), StatusDone, id, StatusDone)
-	return err
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && status == StatusDone) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	key := c.comparisonKey()
+	// Legacy lessons have no comparison key. Check all of them without rewriting
+	// existing duplicates or their practice history during the schema upgrade.
+	if err = checkLegacyComparisons(ctx, tx, userID, key); err != nil {
+		return err
+	}
+	// The unique key arbitrates simultaneous draws across replicas. Reserving it
+	// and publishing the content in one transaction prevents partial completions.
+	_, err = tx.ExecContext(ctx, `INSERT INTO buddy_nuance_comparisons (user_id,comparison_key,lesson_id) VALUES (?,?,?)`, userID, key[:], id)
+	var mysqlErr *mysql.MySQLError
+	if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
+		return ErrDuplicate
+	}
+	if err != nil {
+		return err
+	}
+	content, _ := json.Marshal(c)
+	if _, err = tx.ExecContext(ctx, `UPDATE buddy_nuance_lessons SET content_json=?,status=?,revision=revision+1 WHERE id=?`, string(content), StatusDone, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func checkLegacyComparisons(ctx context.Context, tx *sql.Tx, userID string, key [32]byte) error {
+	rows, err := tx.QueryContext(ctx, `SELECT l.content_json FROM buddy_nuance_lessons l
+		LEFT JOIN buddy_nuance_comparisons c ON c.lesson_id=l.id
+		WHERE l.user_id=? AND l.content_json IS NOT NULL AND c.lesson_id IS NULL`, userID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return err
+		}
+		var old Content
+		if err := json.Unmarshal(raw, &old); err != nil {
+			return err
+		}
+		if old.comparisonKey() == key {
+			return ErrDuplicate
+		}
+	}
+	return rows.Err()
 }
 func (s *MySQLStore) Act(ctx context.Context, userID, id string, a Action) (Lesson, error) {
 	tx, err := s.db.BeginTx(ctx, nil)

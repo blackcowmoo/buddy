@@ -3,8 +3,11 @@ package nuance
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -20,9 +23,10 @@ const (
 )
 
 var (
-	ErrNotFound = errors.New("nuance: not found")
-	ErrConflict = errors.New("nuance: progress changed; reload")
-	ErrInvalid  = errors.New("nuance: invalid action")
+	ErrNotFound  = errors.New("nuance: not found")
+	ErrConflict  = errors.New("nuance: progress changed; reload")
+	ErrInvalid   = errors.New("nuance: invalid action")
+	ErrDuplicate = errors.New("nuance: comparison already exists")
 )
 
 type Word struct {
@@ -46,6 +50,17 @@ type Content struct {
 	Caveat      string     `json:"caveat"`
 	Words       []Word     `json:"words"`
 	Questions   []Question `json:"questions"`
+}
+
+// A comparison is the complete word set, independent of order, case, or spacing.
+func (c Content) comparisonKey() [32]byte {
+	words := make([]string, len(c.Words))
+	for i, w := range c.Words {
+		words[i] = strings.ToLower(strings.Join(strings.Fields(w.Word), " "))
+	}
+	slices.Sort(words)
+	encoded, _ := json.Marshal(words)
+	return sha256.Sum256(encoded)
 }
 
 // Validate rejects incomplete model output before it can enter review rotation.

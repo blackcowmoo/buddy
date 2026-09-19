@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -16,10 +19,13 @@ import (
 
 type nuanceJobStore struct {
 	nuance.Store
-	mu        sync.Mutex
-	lesson    nuance.Lesson
-	completed chan nuance.Content
-	failed    chan struct{}
+	mu               sync.Mutex
+	lesson           nuance.Lesson
+	completed        chan nuance.Content
+	failed           chan struct{}
+	lessons          []nuance.Lesson
+	completionErrors []error
+	completionCalls  int
 }
 
 func (s *nuanceJobStore) Get(context.Context, string, string) (nuance.Lesson, error) {
@@ -31,7 +37,7 @@ func (s *nuanceJobStore) Get(context.Context, string, string) (nuance.Lesson, er
 	return s.lesson, nil
 }
 func (s *nuanceJobStore) List(context.Context, string) ([]nuance.Lesson, error) {
-	return []nuance.Lesson{}, nil
+	return s.lessons, nil
 }
 func (s *nuanceJobStore) SetStatus(_ context.Context, _ string, status string) error {
 	s.mu.Lock()
@@ -46,6 +52,10 @@ func (s *nuanceJobStore) SetStatus(_ context.Context, _ string, status string) e
 func (s *nuanceJobStore) Complete(_ context.Context, _ string, c nuance.Content) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.completionCalls++
+	if s.completionCalls <= len(s.completionErrors) && s.completionErrors[s.completionCalls-1] != nil {
+		return s.completionErrors[s.completionCalls-1]
+	}
 	s.lesson.Content = &c
 	s.lesson.Status = nuance.StatusDone
 	if s.completed != nil {
@@ -165,5 +175,90 @@ func TestNuanceRetryChangesCachedModelInputAfterInvalidGeneration(t *testing.T) 
 	}
 	if len(inputs) != 2 || inputs[0] == inputs[1] || st.lesson.Status != nuance.StatusDone {
 		t.Fatalf("retry reuses invalid cached generation: %v", inputs)
+	}
+}
+
+func TestNuanceDuplicateRegeneratesWithRejectedPairAndFreshRequest(t *testing.T) {
+	data, err := os.ReadFile("../nuance/testdata/lesson.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &nuanceJobStore{
+		lesson:           nuance.Lesson{ID: "lesson", Status: nuance.StatusPending},
+		completionErrors: []error{nuance.ErrDuplicate},
+	}
+	// The database may reject a pair outside the most recent 100 exclusions,
+	// or one concurrently saved after List returned.
+	for i := 0; i < 101; i++ {
+		st.lessons = append(st.lessons, nuance.Lesson{Content: &nuance.Content{
+			Words: []nuance.Word{{Word: fmt.Sprintf("word-%d", i)}, {Word: "other"}},
+		}})
+	}
+	var inputs []struct {
+		Previous  []string `json:"previous"`
+		RequestID string   `json:"requestId"`
+	}
+	model := nuanceLLM{
+		messages: func(msgs []llm.Message) {
+			var input struct {
+				Previous  []string `json:"previous"`
+				RequestID string   `json:"requestId"`
+			}
+			if err := json.Unmarshal([]byte(msgs[1].Content), &input); err != nil {
+				t.Fatal(err)
+			}
+			inputs = append(inputs, input)
+		},
+		complete: func(context.Context) (string, error) {
+			if len(inputs) == 1 {
+				return string(data), nil
+			}
+			return strings.ReplaceAll(string(data), "cheap", "affordable"), nil
+		},
+	}
+	pipe := &pipeline.Pipeline{Analysis: []pipeline.Candidate{{LLM: model}}}
+	job := asyncjob.Job{Payload: mustPayload(nuanceJobPayload{"user", "lesson"})}
+	if err := NuanceJobHandler(pipe, st, func(context.Context, string) (string, error) { return "", nil })(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	if len(inputs) != 2 || st.completionCalls != 2 || st.lesson.Status != nuance.StatusDone || st.lesson.Content.Words[0].Word != "affordable" {
+		t.Fatalf("duplicate was not replaced: inputs=%+v lesson=%+v", inputs, st.lesson)
+	}
+	if inputs[0].RequestID == inputs[1].RequestID || !slices.Contains(inputs[1].Previous, "cheap / inexpensive") {
+		t.Fatalf("retry did not exclude rejected pair with fresh input: %+v", inputs)
+	}
+	for _, input := range inputs {
+		if len(input.Previous) != 100 || slices.Contains(input.Previous, "word-0 / other") {
+			t.Fatalf("incorrect recent exclusions: %+v", input)
+		}
+	}
+}
+
+func TestNuanceDuplicateAttemptsAreBoundedAndOtherErrorsStop(t *testing.T) {
+	data, err := os.ReadFile("../nuance/testdata/lesson.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbErr := errors.New("database unavailable")
+	for _, tc := range []struct {
+		name   string
+		errors []error
+		want   error
+		calls  int
+	}{
+		{"duplicates exhausted", []error{nuance.ErrDuplicate, nuance.ErrDuplicate, nuance.ErrDuplicate}, nuance.ErrDuplicate, 3},
+		{"database failure", []error{dbErr}, dbErr, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &nuanceJobStore{lesson: nuance.Lesson{ID: "lesson", Status: nuance.StatusPending}, completionErrors: tc.errors}
+			calls := 0
+			model := nuanceLLM{complete: func(context.Context) (string, error) { calls++; return string(data), nil }}
+			pipe := &pipeline.Pipeline{Analysis: []pipeline.Candidate{{LLM: model}}}
+			job := asyncjob.Job{Payload: mustPayload(nuanceJobPayload{"user", "lesson"})}
+			err := NuanceJobHandler(pipe, st, func(context.Context, string) (string, error) { return "", nil })(context.Background(), job)
+			if !errors.Is(err, tc.want) || calls != tc.calls || st.lesson.Status != nuance.StatusFailed || st.lesson.Content != nil {
+				t.Fatalf("error=%v calls=%d lesson=%+v", err, calls, st.lesson)
+			}
+		})
 	}
 }

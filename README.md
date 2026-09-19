@@ -26,8 +26,14 @@ prefix). Like article practice, the page lists the learner's generated lessons
 and opens each one in a focused comparison/practice view. **새 문제 만들기**
 uses the analysis LLM and learner profile to generate 2–3 overlapping English
 words, Korean usage explanations, translated examples, and 4–6 context
-questions. Recent comparisons are passed as exclusions. There is no fixed
-curriculum, comparison search, or dictionary-link UI.
+questions. Recent comparisons are passed as exclusions. MySQL rejects a saved
+word combination already present in the same account, ignoring word order,
+case, and spacing, including lessons created before duplicate protection was
+added. A unique key prevents concurrent draws from saving the same combination.
+Each generation job tries up to three candidates, adding rejected combinations
+to the exclusions; exhausted jobs enter the normal failure/retry path. Deleting
+a lesson allows its combination again if no other saved lesson uses it.
+There is no fixed curriculum, comparison search, or dictionary-link UI.
 
 Generation persists `pending` / `processing` / `done` / `failed` in MySQL.
 With Redis, `asyncjob.KindNuance` keeps generating across navigation and worker
