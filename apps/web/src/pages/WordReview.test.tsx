@@ -174,10 +174,11 @@ async function startQuiz(words: WordReviewItem[] = [dueWord]) {
 }
 
 describe("WordReview page", () => {
-  it("links back to the chat page with a relative href", () => {
+  it("shows the shared sub-page menu instead of a back button", () => {
     vi.mocked(fetchWords).mockReturnValue(new Promise(() => {}));
     render(<WordReview />);
-    expect(screen.getByRole("link", { name: "대화로 돌아가기" })).toHaveAttribute("href", ".");
+    expect(screen.getByRole("button", { name: "메뉴" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "대화로 돌아가기" })).not.toBeInTheDocument();
   });
 
   it("shows a loading hint before the fetch resolves", () => {
@@ -759,7 +760,7 @@ describe("WordReview page", () => {
     // — nothing to hide, since recognizing the word is what's being tested.
     expect(await screen.findByText("ecstatic")).toBeInTheDocument();
     expect(screen.getByText("She was ecstatic.")).toBeInTheDocument();
-    expect(screen.getAllByRole("button")).toHaveLength(10); // back + 8 meanings + "잘 모르겠어요"
+    expect(document.querySelectorAll("button.quiz-choice-btn")).toHaveLength(8);
     expect(screen.getByRole("button", { name: "잘 모르겠어요" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "매우 행복한" }));

@@ -221,6 +221,23 @@ body {
   box-shadow: var(--shadow-lg);
   z-index: 40;
 }
+.subpage-menu-panel { width: 168px; }
+.subpage-menu-panel a.menu-item {
+  min-height: 44px;
+  padding: 0 12px;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-xs);
+  cursor: pointer;
+  font-weight: 680;
+  text-decoration: none;
+  touch-action: manipulation;
+}
+@media (hover: hover) {
+  .subpage-menu-panel a.menu-item:hover { background: var(--panel-3); border-color: var(--border-2); }
+}
 .menu-row { display: flex; }
 .menu-row .pill, .menu-row > button { width: 100%; justify-content: center; }
 .menu-item {
@@ -728,19 +745,6 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
 @media (hover: hover) {
   button:hover:not(:disabled) { filter: brightness(1.045); transform: translateY(-1px); }
   button.ghost:hover:not(:disabled) { background: var(--panel-3); border-color: var(--border-2); }
-}
-
-/* The back-to-chat link on the recordings page is an <a>, not a <button> —
-   the base button/.ghost rules above only target the button element, so
-   repeat the bits an anchor needs to look/act the same. */
-a.icon-btn.ghost {
-  background: var(--panel-2);
-  color: var(--text);
-  cursor: pointer;
-  text-decoration: none;
-  touch-action: manipulation;
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow-xs);
 }
 
 /* Inside a grouped toolbar pill (.menu, .msg-tools) the container itself
