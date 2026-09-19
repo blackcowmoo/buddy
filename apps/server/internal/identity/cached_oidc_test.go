@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"buddy/server/internal/testdocker"
+
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/coreos/go-oidc/v3/oidc/oidctest"
 	"github.com/redis/go-redis/v9"
@@ -34,7 +36,7 @@ func runIdentityTests(m *testing.M) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	container, err := tcredis.Run(ctx, "redis:7")
+	container, err := tcredis.Run(ctx, "redis:7", testdocker.WithProcessSession())
 	if err != nil {
 		// No/unreachable Docker (sandboxed CI, restricted dev box): record why
 		// so container tests skip themselves instead of failing the suite, but

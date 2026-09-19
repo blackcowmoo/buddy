@@ -130,6 +130,11 @@ func nextSchedule(stage int, correct, repeat bool, now time.Time) (newStage int,
 	return newStage, now.Add(intervalForStage(stage))
 }
 
+// NextSchedule shares the vocabulary review cadence with contextual nuance practice.
+func NextSchedule(stage int, correct, repeat bool, now time.Time) (int, time.Time) {
+	return nextSchedule(stage, correct, repeat, now)
+}
+
 // Status values for Word.Status — see the package doc for the
 // pending -> verified/rejected lifecycle.
 const (

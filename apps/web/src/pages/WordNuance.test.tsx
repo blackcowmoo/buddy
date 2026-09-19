@@ -1,154 +1,186 @@
 /** @vitest-environment jsdom */
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { WordNuance } from "./WordNuance";
-import { loadNuanceAnswers, nuanceLessons, saveNuanceAnswers } from "../lib/nuance";
+import * as api from "../lib/nuance";
+import { nuanceFixture } from "../lib/nuance.testData";
 
+vi.mock("../lib/nuance", async (original) => ({
+  ...await original<typeof api>(),
+  fetchNuanceLessons: vi.fn(), fetchNuanceLesson: vi.fn(), drawNuanceLesson: vi.fn(),
+  retryNuanceLesson: vi.fn(), practiceNuance: vi.fn(), deleteNuanceLesson: vi.fn(),
+}));
+let lesson: api.NuanceLesson;
 beforeEach(() => {
-  localStorage.clear();
-  vi.spyOn(Math, "random").mockReturnValue(0);
+  vi.resetAllMocks();
+  lesson = nuanceFixture();
+  window.history.replaceState(null, "", "/nuance");
+  vi.mocked(api.fetchNuanceLessons).mockImplementation(async () => [structuredClone(lesson)]);
+  vi.mocked(api.fetchNuanceLesson).mockImplementation(async () => structuredClone(lesson));
 });
-afterEach(() => {
-  cleanup();
-  vi.restoreAllMocks();
-  localStorage.clear();
-});
-
-function openLesson(id = "price") {
-  const lesson = nuanceLessons.find((item) => item.id === id)!;
-  fireEvent.click(screen.getByRole("button", { name: new RegExp(lesson.words[0].word) }));
-  return lesson;
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
+async function open() {
+  render(<WordNuance />);
+  fireEvent.click(await screen.findByRole("button", { name: "cheap / inexpensive 열기" }));
+  await screen.findByRole("button", { name: "상황 연습" });
 }
-
-function practice(id = "price") {
-  const lesson = openLesson(id);
+function respond(update: (l: api.NuanceLesson) => void) {
+  const next = structuredClone(lesson); next.revision++; update(next);
+  vi.mocked(api.practiceNuance).mockImplementationOnce(async () => { lesson = next; return structuredClone(next); });
+  return next;
+}
+async function start() {
+  respond((l) => { l.state.queue = ["q0", "q1"]; });
   fireEvent.click(screen.getByRole("button", { name: "상황 연습" }));
-  return lesson;
+  await screen.findByRole("region", { name: /상황 0/ });
 }
-
-function questionAt(index: number, lesson = nuanceLessons[0]) {
-  return within(screen.getByRole("region", { name: lesson.questions[index].context }));
+function answer(correct: boolean, questionId = "q0") {
+  const next = respond((l) => {
+    const q = l.content!.questions.find((q) => q.id === questionId)!;
+    const selected = correct ? q.answer : l.content!.words.find((w) => w.word !== q.answer)!.word;
+    l.state.feedback = { questionId, selected, correct };
+    l.state.progress[questionId] = { stage: correct ? 1 : 0, attempts: 1, correct: correct ? 1 : 0, lastReviewedAt: 1700000000, nextReviewAt: correct ? 4102444800 : 0 };
+  });
+  fireEvent.click(screen.getByRole("button", { name: next.state.feedback!.selected }));
 }
-
-describe("WordNuance", () => {
-  it("shows the curriculum, browser storage scope, and a relative back link", () => {
-    render(<WordNuance />);
-    expect(screen.getByRole("link", { name: "대화로 돌아가기" })).toHaveAttribute("href", ".");
-    expect(screen.getByText("6개 묶음 · 맞힌 문맥 0/12")).toBeInTheDocument();
-    expect(screen.getByText(/다른 기기와는 동기화되지 않아요/)).toBeInTheDocument();
-    for (const lesson of nuanceLessons) {
-      expect(screen.getByRole("button", { name: new RegExp(lesson.words[0].word) })).toBeInTheDocument();
-    }
+it("lists generated history, omits search and dictionary links, and opens the comparison", async () => {
+  await open();
+  expect(screen.queryByRole("searchbox")).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: /사전/ })).not.toBeInTheDocument();
+  expect(screen.getByText("cheap도 중립적으로 쓸 수 있어요.")).toBeInTheDocument();
+  expect(screen.getByText(/문제와 풀이 진행은 계정에 저장/)).toBeInTheDocument();
+  expect(new URLSearchParams(window.location.search).get("lesson")).toBe(lesson.id);
+  fireEvent.click(screen.getByRole("button", { name: "← 목록으로" }));
+  expect(await screen.findByRole("button", { name: "＋ 새 문제 만들기" })).toBeInTheDocument();
+});
+it("hides the translation and explanation until the server grades, then saves the forced-guess choice", async () => {
+  await open(); await start();
+  expect(screen.queryByText(lesson.content!.questions[0].translation)).not.toBeInTheDocument();
+  const before = within(screen.getByRole("group", { name: "표현 선택" })).getAllByRole("button").map((b) => b.textContent);
+  answer(true);
+  expect(await screen.findByText("의도에 맞는 표현이에요")).toBeInTheDocument();
+  expect(screen.getByText(lesson.content!.questions[0].translation)).toBeInTheDocument();
+  expect(within(screen.getByRole("group", { name: "표현 선택" })).getAllByRole("button").map((b) => b.textContent)).toEqual(before);
+  expect(api.practiceNuance).toHaveBeenLastCalledWith("lesson-1", { kind: "answer", revision: 2, questionId: "q0", selected: "cheap" });
+  respond((l) => { l.state.feedback = undefined; l.state.queue = ["q1"]; });
+  fireEvent.click(screen.getByRole("button", { name: "맞혔지만 다시 복습" }));
+  await screen.findByRole("region", { name: /상황 1/ });
+  expect(api.practiceNuance).toHaveBeenLastCalledWith("lesson-1", { kind: "next", revision: 3, repeat: true });
+});
+it("repeats a missed context after another question with changed option positions", async () => {
+  await open(); await start();
+  const before = within(screen.getByRole("group", { name: "표현 선택" })).getAllByRole("button").map((b) => b.textContent);
+  answer(false); await screen.findByText("이 문제는 잠시 뒤 다시 나와요.");
+  respond((l) => { l.state.feedback = undefined; l.state.queue = ["q1", "q0"]; });
+  fireEvent.click(screen.getByRole("button", { name: "다음 문맥" }));
+  await screen.findByRole("region", { name: /상황 1/ });
+  answer(true, "q1"); await screen.findByText("의도에 맞는 표현이에요");
+  respond((l) => { l.state.feedback = undefined; l.state.queue = ["q0"]; });
+  fireEvent.click(screen.getByRole("button", { name: "다음 문맥" }));
+  await screen.findByRole("region", { name: /상황 0/ });
+  expect(within(screen.getByRole("group", { name: "표현 선택" })).getAllByRole("button").map((b) => b.textContent)).toEqual([...before].reverse());
+  expect(screen.queryByText(lesson.content!.questions[0].translation)).not.toBeInTheDocument();
+});
+it("resumes the saved reveal after remount with no localStorage dependency", async () => {
+  await open(); await start(); answer(false);
+  await screen.findByText("이 문제는 잠시 뒤 다시 나와요.");
+  cleanup();
+  vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("disabled"); });
+  render(<WordNuance />);
+  expect(await screen.findByText("이 문제는 잠시 뒤 다시 나와요.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "cheap" })).toBeDisabled();
+});
+it("keeps a failed answer on screen and restores a committed answer after a lost response", async () => {
+  await open(); await start();
+  vi.mocked(api.practiceNuance).mockResolvedValueOnce(null);
+  fireEvent.click(screen.getByRole("button", { name: "cheap" }));
+  await screen.findByRole("alert");
+  expect(screen.queryByText("의도에 맞는 표현이에요")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "cheap" })).toBeEnabled();
+  const saved = structuredClone(lesson); saved.revision++;
+  saved.state.feedback = { questionId: "q0", selected: "cheap", correct: true };
+  saved.state.progress.q0 = { stage: 1, attempts: 1, correct: 1, lastReviewedAt: 1700000000, nextReviewAt: 4102444800 };
+  vi.mocked(api.practiceNuance).mockResolvedValueOnce(null);
+  vi.mocked(api.fetchNuanceLesson).mockResolvedValueOnce(saved);
+  fireEvent.click(screen.getByRole("button", { name: "cheap" }));
+  expect(await screen.findByText("의도에 맞는 표현이에요")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "cheap" })).toBeDisabled();
+});
+it("starts generation immediately and polls persisted status while back in the list", async () => {
+  vi.useFakeTimers();
+  const pending: api.NuanceLesson = { ...nuanceFixture(), content: undefined, status: "pending", revision: 0 };
+  vi.mocked(api.fetchNuanceLessons).mockResolvedValueOnce([]);
+  vi.mocked(api.drawNuanceLesson).mockResolvedValueOnce(pending);
+  await act(async () => { render(<WordNuance />); });
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "＋ 새 문제 만들기" })); });
+  expect(screen.getByText("새 비교 묶음을 만들고 있어요")).toBeInTheDocument();
+  vi.mocked(api.fetchNuanceLessons).mockResolvedValueOnce([pending]);
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "← 목록으로" })); });
+  expect(screen.getByRole("button", { name: "새 비교 묶음을 만드는 중… 열기" })).toBeInTheDocument();
+  vi.mocked(api.fetchNuanceLessons).mockResolvedValueOnce([lesson]);
+  await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+  expect(screen.getByRole("button", { name: "cheap / inexpensive 열기" })).toBeInTheDocument();
+});
+it("shows generation failure and allows retry of the same lesson", async () => {
+  lesson.status = "failed"; lesson.content = undefined;
+  render(<WordNuance />);
+  fireEvent.click(await screen.findByRole("button", { name: "문제 생성 실패 열기" }));
+  const retry = await screen.findByRole("button", { name: "생성 다시 시도" });
+  vi.mocked(api.retryNuanceLesson).mockResolvedValueOnce({ ...lesson, status: "pending" });
+  fireEvent.click(retry);
+  expect(await screen.findByText("새 비교 묶음을 만들고 있어요")).toBeInTheDocument();
+  expect(api.retryNuanceLesson).toHaveBeenCalledWith("lesson-1");
+});
+it("distinguishes load failure from empty history and surfaces deletion failures", async () => {
+  vi.mocked(api.fetchNuanceLessons).mockResolvedValueOnce(null);
+  render(<WordNuance />);
+  await screen.findByRole("alert");
+  expect(screen.queryByText(/아직 만든 문제가 없어요/)).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "목록 다시 불러오기" }));
+  const del = await screen.findByRole("button", { name: "cheap / inexpensive 삭제" });
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  vi.mocked(api.deleteNuanceLesson).mockResolvedValueOnce(false);
+  fireEvent.click(del);
+  expect(await screen.findByText("삭제하지 못했어요. 다시 시도해 주세요.")).toBeInTheDocument();
+  expect(del).toBeInTheDocument();
+  vi.mocked(api.deleteNuanceLesson).mockResolvedValueOnce(true);
+  fireEvent.click(del);
+  await waitFor(() => expect(screen.queryByRole("button", { name: "cheap / inexpensive 삭제" })).not.toBeInTheDocument());
+});
+it("starts due practice directly from the history and finishes with a persisted next-review date", async () => {
+  render(<WordNuance />);
+  const review = await screen.findByRole("button", { name: "복습 시작" });
+  respond((l) => { l.state.queue = ["q0"]; });
+  fireEvent.click(review);
+  await screen.findByRole("region", { name: /상황 0/ });
+  answer(true); await screen.findByText("의도에 맞는 표현이에요");
+  respond((l) => {
+    l.state.feedback = undefined; l.state.queue = [];
+    for (const q of l.content!.questions) l.state.progress[q.id] = { stage: 1, attempts: 1, correct: 1, lastReviewedAt: 1700000000, nextReviewAt: 4102444800 };
   });
-
-  it("filters by Korean meaning or English word without case or surrounding whitespace sensitivity", () => {
-    render(<WordNuance />);
-    const input = screen.getByRole("searchbox", { name: "비교 묶음 찾기" });
-    fireEvent.change(input, { target: { value: "값이 싼" } });
-    expect(screen.getByRole("button", { name: /cheap/ })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /curious/ })).not.toBeInTheDocument();
-    fireEvent.change(input, { target: { value: " CURIOUS " } });
-    expect(screen.getByRole("button", { name: /curious/ })).toBeInTheDocument();
-    fireEvent.change(input, { target: { value: "없는 단어" } });
-    expect(screen.getByRole("status")).toHaveTextContent("일치하는 비교 묶음이 없어요");
-  });
-
-  it("explains both words with translated examples, context caveats, and dictionary links", () => {
-    render(<WordNuance />);
-    const lesson = openLesson();
-    for (const word of lesson.words) {
-      expect(screen.getByText(word.example)).toBeInTheDocument();
-      expect(screen.getByText(word.translation)).toBeInTheDocument();
-      expect(screen.getByRole("link", { name: `${word.word} 사전 보기 ↗` })).toHaveAttribute("href", `https://dictionary.cambridge.org/dictionary/english/${word.word}`);
-    }
-    expect(screen.getByText(lesson.caveat)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "상황에 맞게 골라 보기" }));
-    expect(screen.getAllByRole("region")).toHaveLength(2);
-  });
-
-  it("withholds translations and explanations until answering, then locks the answer and explains alternatives", () => {
-    render(<WordNuance />);
-    const lesson = practice();
-    const q = lesson.questions[0];
-    expect(screen.queryByText(q.translation)).not.toBeInTheDocument();
-    expect(screen.queryByText(q.explanation)).not.toBeInTheDocument();
-    fireEvent.click(questionAt(0).getByRole("button", { name: "inexpensive" }));
-    expect(questionAt(0).getByRole("status")).toHaveTextContent("이 상황에서는 다른 표현이 더 잘 맞아요");
-    expect(questionAt(0).getByText(q.translation)).toBeInTheDocument();
-    expect(questionAt(0).getByText(q.explanation)).toBeInTheDocument();
-    expect(questionAt(0).getByRole("button", { name: "cheap" })).toBeDisabled();
-    expect(loadNuanceAnswers()[q.id]).toBe("inexpensive");
-    fireEvent.click(questionAt(1).getByRole("button", { name: "inexpensive" }));
-    expect(questionAt(1).getByRole("status")).toHaveTextContent("의도에 맞는 표현이에요");
-    expect(screen.getByText("6개 묶음 · 맞힌 문맥 1/12")).toBeInTheDocument();
-  });
-
-  it("retries only mistakes and preserves correct answers and other lessons", () => {
-    saveNuanceAnswers({ "curiosity-science": "curious" });
-    render(<WordNuance />);
-    practice();
-    fireEvent.click(questionAt(0).getByRole("button", { name: "inexpensive" }));
-    fireEvent.click(questionAt(1).getByRole("button", { name: "inexpensive" }));
-    fireEvent.click(screen.getByRole("button", { name: "틀린 문제 다시 풀기" }));
-    expect(questionAt(0).queryByRole("status")).not.toBeInTheDocument();
-    expect(questionAt(0).getByRole("button", { name: "cheap" })).toBeEnabled();
-    expect(questionAt(1).getByRole("button", { name: "inexpensive" })).toBeDisabled();
-    expect(loadNuanceAnswers()).toEqual({ "curiosity-science": "curious", "price-recommend": "inexpensive" });
-    fireEvent.click(questionAt(0).getByRole("button", { name: "cheap" }));
-    expect(screen.queryByRole("button", { name: "틀린 문제 다시 풀기" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "이 묶음 다시 풀기" }));
-    expect(questionAt(1).getByRole("button", { name: "inexpensive" })).toBeEnabled();
-    expect(loadNuanceAnswers()).toEqual({ "curiosity-science": "curious" });
-  });
-
-  it("restores progress after remount and keeps answers when switching views and lessons", () => {
-    const view = render(<WordNuance />);
-    practice();
-    fireEvent.click(questionAt(0).getByRole("button", { name: "cheap" }));
-    fireEvent.click(screen.getByRole("button", { name: "차이 살펴보기" }));
-    fireEvent.click(screen.getByRole("button", { name: "상황 연습" }));
-    expect(questionAt(0).getByRole("button", { name: "cheap" })).toHaveAttribute("aria-pressed", "true");
-    fireEvent.click(screen.getByRole("button", { name: "← 비교 목록" }));
-    openLesson("child");
-    expect(screen.getByRole("heading", { name: "childlike / childish" })).toBeInTheDocument();
-    view.unmount();
-    render(<WordNuance />);
-    expect(screen.getByText("6개 묶음 · 맞힌 문맥 1/12")).toBeInTheDocument();
-    practice();
-    expect(questionAt(0).getByRole("button", { name: "cheap" })).toHaveAttribute("aria-pressed", "true");
-  });
-
-  it("shuffles answer positions when retrying instead of always putting the correct answer first", () => {
-    render(<WordNuance />);
-    practice();
-    expect(questionAt(0).getAllByRole("button").map((b) => b.textContent)).toEqual(["inexpensive", "cheap"]);
-    fireEvent.click(questionAt(0).getByRole("button", { name: "inexpensive" }));
-    vi.mocked(Math.random).mockReturnValue(0.99);
-    fireEvent.click(screen.getByRole("button", { name: "틀린 문제 다시 풀기" }));
-    expect(questionAt(0).getAllByRole("button").map((b) => b.textContent)).toEqual(["cheap", "inexpensive"]);
-  });
-
-  it("continues practice but warns when storage is unavailable", () => {
-    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("quota"); });
-    render(<WordNuance />);
-    practice();
-    fireEvent.click(questionAt(0).getByRole("button", { name: "cheap" }));
-    expect(screen.getByRole("alert")).toHaveTextContent("학습 진행을 저장하지 못했어요");
-    expect(questionAt(0).getByRole("status")).toHaveTextContent("의도에 맞는 표현이에요");
-    vi.mocked(Storage.prototype.setItem).mockRestore();
-    fireEvent.click(questionAt(1).getByRole("button", { name: "inexpensive" }));
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(Object.keys(loadNuanceAnswers())).toHaveLength(2);
-  });
-
-  it.each(nuanceLessons)("can complete every question in $id", (lesson) => {
-    render(<WordNuance />);
-    practice(lesson.id);
-    lesson.questions.forEach((q, i) => {
-      fireEvent.click(questionAt(i, lesson).getByRole("button", { name: q.answer }));
-      expect(questionAt(i, lesson).getByRole("status")).toHaveTextContent(q.explanation);
-    });
-    expect(screen.getByText(`풀이 ${lesson.questions.length}/${lesson.questions.length} · 맞힌 문맥 ${lesson.questions.length}/${lesson.questions.length}`)).toBeInTheDocument();
-  });
+  fireEvent.click(screen.getByRole("button", { name: "다음 문맥" }));
+  expect(await screen.findByText("지금 복습할 문맥을 모두 풀었어요")).toBeInTheDocument();
+  expect(screen.getByText(/다음 복습:/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "학습 목록 보기" }));
+  await screen.findByRole("button", { name: "＋ 새 문제 만들기" });
+  expect(screen.queryByRole("button", { name: "복습 시작" })).not.toBeInTheDocument();
+});
+it("locks answer submission while saving so a double tap sends one attempt", async () => {
+  await open(); await start();
+  let resolve!: (value: api.NuanceLesson | null) => void;
+  vi.mocked(api.practiceNuance).mockReturnValueOnce(new Promise((done) => { resolve = done; }));
+  const choice = screen.getByRole("button", { name: "cheap" });
+  fireEvent.click(choice); fireEvent.click(choice);
+  expect(api.practiceNuance).toHaveBeenCalledTimes(2); // start, answer
+  expect(choice).toBeDisabled();
+  await act(async () => { resolve(null); });
+  expect(choice).toBeEnabled();
+});
+it("follows browser history back and forward to a saved lesson", async () => {
+  await open();
+  await act(async () => { window.history.replaceState(null, "", "/nuance"); window.dispatchEvent(new PopStateEvent("popstate")); });
+  expect(screen.getByRole("button", { name: "＋ 새 문제 만들기" })).toBeInTheDocument();
+  await act(async () => { window.history.replaceState(null, "", "/nuance?lesson=lesson-1"); window.dispatchEvent(new PopStateEvent("popstate")); });
+  expect(screen.getByRole("button", { name: "상황 연습" })).toBeInTheDocument();
 });

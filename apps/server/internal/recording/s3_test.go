@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"buddy/server/internal/testdocker"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
@@ -42,7 +44,7 @@ func runContainerTests(m *testing.M) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
-	mysqlC, err := tcmysql.Run(ctx, "mysql:8.0",
+	mysqlC, err := tcmysql.Run(ctx, "mysql:8.0", testdocker.WithProcessSession(),
 		tcmysql.WithDatabase("buddy"),
 		tcmysql.WithUsername("buddy"),
 		tcmysql.WithPassword("buddy"),
@@ -60,7 +62,7 @@ func runContainerTests(m *testing.M) int {
 	}
 	defer func() { _ = mysqlC.Terminate(context.Background()) }()
 
-	minioC, err := tcminio.Run(ctx, "minio/minio:RELEASE.2024-01-16T16-07-38Z")
+	minioC, err := tcminio.Run(ctx, "minio/minio:RELEASE.2024-01-16T16-07-38Z", testdocker.WithProcessSession())
 	if err != nil {
 		sharedStoreErr = err
 		return m.Run()

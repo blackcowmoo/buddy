@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"buddy/server/internal/testdocker"
+
 	"github.com/testcontainers/testcontainers-go"
 	tcmysql "github.com/testcontainers/testcontainers-go/modules/mysql"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -33,7 +35,7 @@ func runContainerTests(m *testing.M) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
-	container, err := tcmysql.Run(ctx, "mysql:8.0",
+	container, err := tcmysql.Run(ctx, "mysql:8.0", testdocker.WithProcessSession(),
 		tcmysql.WithDatabase("buddy"),
 		tcmysql.WithUsername("buddy"),
 		tcmysql.WithPassword("buddy"),

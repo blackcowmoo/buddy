@@ -16,7 +16,7 @@ environment-variable details.
 | Redis job leases, retries, and inline fast paths | `apps/server/internal/asyncjob` |
 | Translation/correction backfill | `apps/server/internal/backfill` |
 | Chat/session persistence contracts and MySQL | `apps/server/internal/store` |
-| Feature-owned persistence | `newsarticle`, `wordreview`, `writing`, `recording`, `ttsstore` |
+| Feature-owned persistence | `newsarticle`, `wordreview`, `nuance`, `writing`, `recording`, `ttsstore` |
 | Browser app/session orchestration | `apps/web/src/App.tsx` |
 | Browser view-only UI | `apps/web/src/components` and `apps/web/src/pages` |
 | Browser API clients and pure state helpers | `apps/web/src/lib` |

@@ -138,6 +138,7 @@ const (
 	KindWordDefine    Kind = "word-define"
 	KindWordResearch  Kind = "word-research"
 	KindWritingPrompt Kind = "writing-prompt"
+	KindNuance        Kind = "nuance"
 )
 
 // Job is the durable Redis envelope for one unit of background work.

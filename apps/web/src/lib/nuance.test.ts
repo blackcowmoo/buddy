@@ -1,54 +1,42 @@
 /** @vitest-environment jsdom */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadNuanceAnswers, nuanceLessons, saveNuanceAnswers } from "./nuance";
+import { afterEach, expect, it, vi } from "vitest";
+import { deleteNuanceLesson, drawNuanceLesson, dueQuestions, fetchNuanceLesson, fetchNuanceLessons, nextReview, nuanceOptions, practiceNuance, retryNuanceLesson } from "./nuance";
+import { nuanceFixture } from "./nuance.testData";
 
-beforeEach(() => localStorage.clear());
-afterEach(() => { vi.restoreAllMocks(); localStorage.clear(); });
-
-describe("nuance progress", () => {
-  it("starts empty and round-trips answers", () => {
-    expect(loadNuanceAnswers()).toEqual({});
-    expect(saveNuanceAnswers({ "price-quality": "cheap" })).toBe(true);
-    expect(loadNuanceAnswers()).toEqual({ "price-quality": "cheap" });
-  });
-
-  it.each(["{invalid", "null", "[]", "42"])("ignores malformed progress: %s", (raw) => {
-    localStorage.setItem("buddy.nuance.answers.v1", raw);
-    expect(loadNuanceAnswers()).toEqual({});
-  });
-
-  it("drops stale question IDs and invalid choices but preserves valid answers", () => {
-    localStorage.setItem("buddy.nuance.answers.v1", JSON.stringify({
-      obsolete: "cheap", "price-quality": "curious", "price-recommend": "inexpensive", "child-wonder": 42,
-    }));
-    expect(loadNuanceAnswers()).toEqual({ "price-recommend": "inexpensive" });
-  });
-
-  it("handles denied storage reads and writes", () => {
-    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("denied"); });
-    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("denied"); });
-    expect(loadNuanceAnswers()).toEqual({});
-    expect(saveNuanceAnswers({ "price-quality": "cheap" })).toBe(false);
-  });
+afterEach(() => vi.restoreAllMocks());
+it("uses account API endpoints and sends the progress revision, never a client verdict", async () => {
+  const lesson = nuanceFixture();
+  const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, json: async () => lesson } as Response);
+  expect(await drawNuanceLesson()).toEqual(lesson);
+  expect(fetch).toHaveBeenLastCalledWith("api/nuance/draw", expect.objectContaining({ method: "POST" }));
+  await fetchNuanceLesson("a/b");
+  expect(fetch).toHaveBeenLastCalledWith("api/nuance/a%2Fb");
+  const action = { kind: "answer" as const, revision: 3, questionId: "q0", selected: "cheap" };
+  await practiceNuance("a/b", action);
+  expect(fetch).toHaveBeenLastCalledWith("api/nuance/a%2Fb/practice", expect.objectContaining({ body: JSON.stringify(action) }));
+  await retryNuanceLesson("a/b");
+  expect(fetch).toHaveBeenLastCalledWith("api/nuance/a%2Fb/retry", expect.objectContaining({ method: "POST" }));
+  expect(await deleteNuanceLesson("a/b")).toBe(true);
+  expect(fetch).toHaveBeenLastCalledWith("api/nuance/a%2Fb", { method: "DELETE" });
 });
-
-it("keeps curriculum IDs unique and gives every word a translated example and an answerable context", () => {
-  expect(new Set(nuanceLessons.map((lesson) => lesson.id)).size).toBe(nuanceLessons.length);
-  const questions = nuanceLessons.flatMap((lesson) => lesson.questions);
-  expect(new Set(questions.map((q) => q.id)).size).toBe(questions.length);
-  for (const lesson of nuanceLessons) {
-    const words = lesson.words.map((w) => w.word);
-    expect(new Set(words).size).toBe(words.length);
-    for (const word of lesson.words) {
-      expect(word.example).toContain(word.word);
-      expect(word.translation).toMatch(/[가-힣]/);
-      expect(lesson.questions.some((q) => q.answer === word.word)).toBe(true);
-    }
-    for (const q of lesson.questions) {
-      expect(words).toContain(q.answer);
-      expect(q.sentence.split("____")).toHaveLength(2);
-      expect(q.translation).toMatch(/[가-힣]/);
-      for (const word of words) expect(q.explanation).toContain(word);
-    }
-  }
+it.each(["http", "network", "json"])("keeps %s failures distinct from an empty history", async (failure) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+    if (failure === "network") throw new Error("offline");
+    return { ok: failure !== "http", json: async () => { throw new Error("invalid"); } } as unknown as Response;
+  });
+  expect(await fetchNuanceLessons()).toBeNull();
+  expect(await fetchNuanceLesson("a")).toBeNull();
+  expect(await practiceNuance("a", { kind: "start", revision: 1 })).toBeNull();
+});
+it("counts due questions at the scheduled boundary and keeps option order stable until retry", () => {
+  const l = nuanceFixture();
+  expect(dueQuestions(l, 100)).toBe(4);
+  l.state.progress.q0 = { stage: 1, attempts: 1, correct: 1, lastReviewedAt: 100, nextReviewAt: 200 };
+  expect(dueQuestions(l, 199)).toBe(3);
+  expect(dueQuestions(l, 200)).toBe(4);
+  expect(nextReview(l)).toBe(0);
+  const options = nuanceOptions(l, "q0", 0);
+  expect(nuanceOptions(structuredClone(l), "q0", 0)).toEqual(options);
+  expect(nuanceOptions(l, "q0", 1)).toEqual([...options].reverse());
+  expect(l.content!.words.map((w) => w.word)).toEqual(["cheap", "inexpensive"]);
 });
