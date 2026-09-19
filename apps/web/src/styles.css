@@ -221,7 +221,7 @@ body {
   box-shadow: var(--shadow-lg);
   z-index: 40;
 }
-.subpage-menu-panel { width: 168px; }
+.subpage-menu-panel { width: 260px; }
 .subpage-menu-panel a.menu-item {
   min-height: 44px;
   padding: 0 12px;
@@ -1060,7 +1060,6 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
 .empty-state p:last-child { margin-bottom: 0; }
 .empty-state .empty-state-title { color: var(--text); font-size: 15px; font-weight: 600; }
 .empty-state .learning-eyebrow { color: var(--accent-strong); font-size: 12px; }
-.subpage-home { flex-shrink: 0; color: var(--muted); text-decoration: none; border: 1px solid var(--border-2); }
 .loading-hint { display: flex; align-items: center; gap: 10px; }
 .loading-dot { width: 8px; height: 8px; flex-shrink: 0; border-radius: 50%; background: var(--accent); }
 @media (max-width: 360px) {

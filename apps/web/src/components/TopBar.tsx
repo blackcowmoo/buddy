@@ -4,6 +4,7 @@ import type { Theme } from "../lib/theme";
 import { NATIVE_RATE, RATE_PRESETS } from "../lib/ttsSettings";
 import { MAX_INTERLOCUTOR_STYLE_LEN } from "../lib/settings";
 import { ThemeSwitch } from "./ThemeSwitch";
+import { LearningMenuItems, type LearningMenuKey } from "./LearningMenuItems";
 
 // Read-only view onto the learner's persistent cross-session profile (see
 // settings.ts/store.Store.GetLearnerProfile) — recurring mistakes,
@@ -218,28 +219,18 @@ function MenuPanel({
       <div className="menu-divider" />
       <LearnerProfileControl profile={learnerProfile} loadError={styleLoadError} />
       <div className="menu-divider" />
-      <button className="ghost menu-item" onClick={onGoToRecordings} role="menuitem">
-        🎧 녹음 목록
-      </button>
-      <button className="ghost menu-item" onClick={onGoToInstant} role="menuitem">
-        ⚡ 인스턴트 대화 목록
-      </button>
-      <button className="ghost menu-item" onClick={onGoToWords} role="menuitem">
-        📚 단어 복습
-        {wordDueCount > 0 && <span className="menu-badge">{wordDueCount}</span>}
-      </button>
-      <button className="ghost menu-item" onClick={onGoToMatch} role="menuitem">
-        🎮 단어 매칭 게임
-      </button>
-      <button className="ghost menu-item" onClick={onGoToNuance} role="menuitem">
-        🪄 단어 뉘앙스
-      </button>
-      <button className="ghost menu-item" onClick={onGoToArticle} role="menuitem">
-        📰 오늘의 아티클
-      </button>
-      <button className="ghost menu-item" onClick={onGoToWriting} role="menuitem">
-        ✍️ 오늘의 작문
-      </button>
+      <LearningMenuItems onSelect={(key: LearningMenuKey) => {
+        const actions: Record<LearningMenuKey, () => void> = {
+          recordings: onGoToRecordings,
+          instant: onGoToInstant,
+          words: onGoToWords,
+          match: onGoToMatch,
+          nuance: onGoToNuance,
+          article: onGoToArticle,
+          writing: onGoToWriting,
+        };
+        actions[key]();
+      }} wordDueCount={wordDueCount} />
       <div className="menu-divider" />
       <form className="path-form" onSubmit={onGoToPath}>
         <label htmlFor="pr-path">PR 미리보기로 이동</label>

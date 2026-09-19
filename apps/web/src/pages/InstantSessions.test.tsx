@@ -21,12 +21,12 @@ afterEach(() => {
 });
 
 describe("InstantSessions page", () => {
-  it("shows a welcoming introduction and direct home navigation", () => {
+  it("shows a welcoming introduction with the shared hamburger navigation", () => {
     vi.mocked(fetchInstantSessions).mockReturnValue(new Promise(() => {}));
     render(<InstantSessions />);
     expect(screen.getByRole("button", { name: "메뉴" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "한 문장도 좋은 연습이에요" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "홈으로" })).toHaveAttribute("href", ".");
+    expect(screen.queryByRole("link", { name: "홈으로" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "대화로 돌아가기" })).not.toBeInTheDocument();
   });
 

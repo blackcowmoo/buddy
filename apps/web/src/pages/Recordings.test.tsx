@@ -21,12 +21,12 @@ afterEach(() => {
 });
 
 describe("Recordings page", () => {
-  it("shows a welcoming introduction and direct home navigation", () => {
+  it("shows a welcoming introduction with the shared hamburger navigation", () => {
     vi.mocked(fetchRecordings).mockReturnValue(new Promise(() => {}));
     render(<Recordings />);
     expect(screen.getByRole("button", { name: "메뉴" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "말했던 영어를 다시 들어요" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "홈으로" })).toHaveAttribute("href", ".");
+    expect(screen.queryByRole("link", { name: "홈으로" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "대화로 돌아가기" })).not.toBeInTheDocument();
   });
 

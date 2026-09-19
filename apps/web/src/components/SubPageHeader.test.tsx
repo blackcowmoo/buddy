@@ -11,15 +11,14 @@ import { SubPageHeader } from "./SubPageHeader";
 afterEach(cleanup);
 
 describe("SubPageHeader", () => {
-  it("offers a direct home link without opening the menu, including preview deployments", () => {
+  it("keeps the page title clear until the navigation menu is opened", () => {
     render(<SubPageHeader title="단어 복습" />);
-    const home = screen.getByRole("link", { name: "홈으로" });
-    expect(home).toHaveAttribute("href", ".");
-    expect(new URL(home.getAttribute("href")!, "https://buddy.test/pr/14/words").pathname).toBe("/pr/14/");
+    expect(screen.getByRole("heading", { name: "단어 복습" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "홈으로" })).not.toBeInTheDocument();
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 
-  it("opens a hamburger menu containing only a relative link to the main page", async () => {
+  it("opens the complete navigation list and keeps the home link relative", async () => {
     const user = userEvent.setup();
     render(<SubPageHeader title="오늘의 아티클" />);
 
@@ -32,8 +31,19 @@ describe("SubPageHeader", () => {
     const menu = screen.getByRole("menu");
     expect(menuButton).toHaveAttribute("aria-expanded", "true");
     expect(menu).toBeInTheDocument();
-    expect(screen.getAllByRole("menuitem")).toHaveLength(1);
+    expect(screen.getAllByRole("menuitem")).toHaveLength(8);
     expect(screen.getByRole("menuitem", { name: "메인으로" })).toHaveAttribute("href", ".");
+    for (const [name, href] of [
+      ["녹음 목록", "recordings"],
+      ["인스턴트 대화 목록", "instant"],
+      ["단어 복습", "words"],
+      ["단어 매칭 게임", "match"],
+      ["단어 뉘앙스", "nuance"],
+      ["오늘의 아티클", "article"],
+      ["오늘의 작문", "writing"],
+    ]) {
+      expect(screen.getByRole("menuitem", { name: new RegExp(name) })).toHaveAttribute("href", href);
+    }
   });
 
   it("closes the menu with Escape", async () => {

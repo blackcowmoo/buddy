@@ -87,12 +87,12 @@ const articleSummaryMatcher = (text: string) => (_content: string, element: Elem
   element?.classList.contains("article-summary") === true && element.textContent === text;
 
 describe("ArticleQuiz page — list view", () => {
-  it("shows a welcoming introduction and direct home navigation", () => {
+  it("shows a welcoming introduction with the shared hamburger navigation", () => {
     vi.mocked(fetchArticleInstances).mockReturnValue(new Promise(() => {}));
     render(<ArticleQuiz />);
     expect(screen.getByRole("button", { name: "메뉴" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "새로운 이야기를 읽어 봐요" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "홈으로" })).toHaveAttribute("href", ".");
+    expect(screen.queryByRole("link", { name: "홈으로" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "대화로 돌아가기" })).not.toBeInTheDocument();
   });
 

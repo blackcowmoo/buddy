@@ -1,9 +1,11 @@
 import { useCallback, useRef, useState } from "react";
 import { MenuIcon } from "./MenuIcon";
+import { LearningMenuItems } from "./LearningMenuItems";
 import { useDismiss } from "../hooks/useDismiss";
 
-// Home links stay relative ("." not "/") so preview deployments such as
-// "/pr/14/words" return to their own home instead of the root deployment.
+// The hamburger keeps the same learning destinations as the main screen and
+// adds a relative home link, so every page remains one menu away from the
+// complete app navigation under preview deployments such as "/pr/14/words".
 export function SubPageHeader({ title }: { title: string }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -13,7 +15,6 @@ export function SubPageHeader({ title }: { title: string }) {
   return (
     <header className="topbar">
       <div className="brand">
-        <a className="ghost icon-btn subpage-home" href="." aria-label="홈으로" title="홈으로">←</a>
         <h1>{title}</h1>
       </div>
       <div className="menu" ref={menuRef}>
@@ -33,6 +34,8 @@ export function SubPageHeader({ title }: { title: string }) {
             <a className="ghost menu-item" href="." role="menuitem">
               <span aria-hidden="true">🏠</span> 메인으로
             </a>
+            <div className="menu-divider" />
+            <LearningMenuItems />
           </div>
         )}
       </div>
