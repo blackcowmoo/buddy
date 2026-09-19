@@ -21,10 +21,11 @@ afterEach(() => {
 });
 
 describe("Recordings page", () => {
-  it("links back to the chat page with a relative href", () => {
+  it("shows the shared sub-page menu instead of a back button", () => {
     vi.mocked(fetchRecordings).mockReturnValue(new Promise(() => {}));
     render(<Recordings />);
-    expect(screen.getByRole("link", { name: "대화로 돌아가기" })).toHaveAttribute("href", ".");
+    expect(screen.getByRole("button", { name: "메뉴" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "대화로 돌아가기" })).not.toBeInTheDocument();
   });
 
   it("shows a loading hint before the fetch resolves", () => {
