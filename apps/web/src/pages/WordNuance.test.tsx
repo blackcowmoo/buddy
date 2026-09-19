@@ -49,13 +49,13 @@ it("lists generated history, omits search and dictionary links, and opens the co
   expect(screen.queryByRole("searchbox")).not.toBeInTheDocument();
   expect(screen.queryByRole("link", { name: /사전/ })).not.toBeInTheDocument();
   expect(screen.getByText("cheap도 중립적으로 쓸 수 있어요.")).toBeInTheDocument();
-  expect(screen.getByText(/문제와 풀이 진행은 계정에 저장/)).toBeInTheDocument();
+  expect(screen.queryByText(/문제와 풀이 진행은 계정에 저장/)).not.toBeInTheDocument();
   expect(new URLSearchParams(window.location.search).get("lesson")).toBe(lesson.id);
   fireEvent.click(screen.getByRole("button", { name: "← 목록으로" }));
   expect(await screen.findByRole("button", { name: "＋ 새 문제 만들기" })).toBeInTheDocument();
   expect(screen.getByText("같은 뜻, 미묘하게 다른 느낌")).toBeInTheDocument();
   expect(screen.getByText(/서로 바꿔 써도 기본 뜻이 통하는 단어들을 비교해요/)).toBeInTheDocument();
-  expect(screen.getByText(/의도에 더 잘 맞는 표현을 놓친 문맥은 다시 풀고/)).toBeInTheDocument();
+  expect(screen.queryByText(/의도에 더 잘 맞는 표현을 놓친 문맥은 다시 풀고/)).not.toBeInTheDocument();
 });
 it("hides the translation and explanation until the server grades, then saves the forced-guess choice", async () => {
   await open(); await start();

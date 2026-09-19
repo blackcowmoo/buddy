@@ -204,7 +204,6 @@ export function WordNuance() {
           </> : <section className="quiz-panel" aria-live="polite"><h3>지금 복습할 문맥을 모두 풀었어요</h3><p>맞힌 문제는 간격을 두고 다시 나와요.</p>{next !== null && <p className="hint">다음 복습: {formatAbsoluteDateTime(next)}</p>}{reviewLesson && reviewLesson.id !== selected.id && <button type="button" onClick={() => void open(reviewLesson.id, true, true)}>다음 묶음 복습하기</button>}<button type="button" className="ghost" onClick={back}>학습 목록 보기</button></section>}
         </>}
       </>}
-      <p className="hint nuance-storage-note">문제와 풀이 진행은 계정에 저장돼요. 의도에 더 잘 맞는 표현을 놓친 문맥은 다시 풀고, 익숙해진 문맥은 복습 간격이 늘어나요.</p>
     </main>
   </div>;
 }
