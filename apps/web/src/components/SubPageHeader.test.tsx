@@ -11,6 +11,14 @@ import { SubPageHeader } from "./SubPageHeader";
 afterEach(cleanup);
 
 describe("SubPageHeader", () => {
+  it("offers a direct home link without opening the menu, including preview deployments", () => {
+    render(<SubPageHeader title="단어 복습" />);
+    const home = screen.getByRole("link", { name: "홈으로" });
+    expect(home).toHaveAttribute("href", ".");
+    expect(new URL(home.getAttribute("href")!, "https://buddy.test/pr/14/words").pathname).toBe("/pr/14/");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
   it("opens a hamburger menu containing only a relative link to the main page", async () => {
     const user = userEvent.setup();
     render(<SubPageHeader title="오늘의 아티클" />);

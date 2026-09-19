@@ -88,7 +88,7 @@ export function MessageComposer({
             value={text}
             onChange={(event) => onTextChange(event.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="…or type in English"
+            placeholder="영어로 편하게 이야기해 보세요"
             aria-label="영어 메시지"
             aria-describedby={voiceDraft ? "voice-draft-note" : undefined}
             enterKeyHint="send"

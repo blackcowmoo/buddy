@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { MenuIcon } from "./MenuIcon";
 import type { Theme } from "../lib/theme";
 import { NATIVE_RATE, RATE_PRESETS } from "../lib/ttsSettings";
 import { MAX_INTERLOCUTOR_STYLE_LEN } from "../lib/settings";
@@ -81,7 +82,7 @@ export function TopBar({
           aria-expanded={menuOpen}
           title="Menu"
         >
-          ☰
+          <MenuIcon />
         </button>
         {menuOpen && <MenuPanel {...menuPanelProps} />}
       </div>

@@ -21,10 +21,12 @@ afterEach(() => {
 });
 
 describe("Recordings page", () => {
-  it("shows the shared sub-page menu instead of a back button", () => {
+  it("shows a welcoming introduction and direct home navigation", () => {
     vi.mocked(fetchRecordings).mockReturnValue(new Promise(() => {}));
     render(<Recordings />);
     expect(screen.getByRole("button", { name: "메뉴" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "말했던 영어를 다시 들어요" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "홈으로" })).toHaveAttribute("href", ".");
     expect(screen.queryByRole("link", { name: "대화로 돌아가기" })).not.toBeInTheDocument();
   });
 
@@ -37,13 +39,14 @@ describe("Recordings page", () => {
   it("shows an empty-state hint when there are no recordings", async () => {
     vi.mocked(fetchRecordings).mockResolvedValue([]);
     render(<Recordings />);
-    expect(await screen.findByText("아직 저장된 녹음이 없습니다.")).toBeInTheDocument();
+    expect(await screen.findByText("아직 저장된 녹음이 없어요.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "대화하러 가기" })).toHaveAttribute("href", ".");
   });
 
   it("shows an error hint when the fetch fails", async () => {
     vi.mocked(fetchRecordings).mockResolvedValue(null);
     render(<Recordings />);
-    expect(await screen.findByText(/녹음 목록을 불러오지 못했습니다/)).toBeInTheDocument();
+    expect(await screen.findByText(/녹음 목록을 불러오지 못했어요/)).toBeInTheDocument();
   });
 
   it("formats duration and size next to each recording", async () => {
@@ -88,7 +91,7 @@ describe("Recordings page", () => {
 
     expect(confirmSpy).toHaveBeenCalled();
     expect(deleteRecording).toHaveBeenCalledWith("rec-1");
-    expect(await screen.findByText("아직 저장된 녹음이 없습니다.")).toBeInTheDocument();
+    expect(await screen.findByText("아직 저장된 녹음이 없어요.")).toBeInTheDocument();
   });
 
   it("does not delete when the confirmation is declined", async () => {

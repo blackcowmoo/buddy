@@ -1,5 +1,7 @@
 import type { SessionSummary } from "../lib/sessions";
 import { formatRelativeTime } from "../lib/time";
+import { EmptyState, LearningIntro } from "./LearningIntro";
+import { LearningPaths } from "./LearningPaths";
 
 interface SessionListProps {
   sessions: SessionSummary[];
@@ -31,16 +33,33 @@ export function SessionList({
 }: SessionListProps) {
   return (
     <main className="session-list">
-      <button className="new-chat" onClick={() => onOpen()} disabled={openingId !== null}>
-        + 새 대화
-      </button>
-      <button
-        className="new-chat ghost quick-chat"
-        onClick={() => onOpen(undefined, true)}
-        disabled={openingId !== null}
-      >
-        ✏️ 인스턴트 대화
-      </button>
+      <LearningIntro eyebrow="조금씩, 나만의 속도로" title="오늘도 영어와 가까워져요" description="완벽한 문장이 아니어도 괜찮아요. 하고 싶은 이야기부터 시작해 보세요." />
+      <div className="conversation-starts">
+        <div>
+          <button className="new-chat" aria-describedby="free-chat-description" onClick={() => onOpen()} disabled={openingId !== null}>
+            + 새 대화
+          </button>
+          <p id="free-chat-description" className="action-description">Buddy와 자유롭게 이야기해요</p>
+        </div>
+        <div>
+          <button
+            className="new-chat ghost quick-chat"
+            aria-describedby="quick-chat-description"
+            onClick={() => onOpen(undefined, true)}
+            disabled={openingId !== null}
+          >
+            ✏️ 인스턴트 대화
+          </button>
+          <p id="quick-chat-description" className="action-description">한 문장으로 가볍게 연습해요</p>
+        </div>
+      </div>
+
+      <LearningPaths />
+
+      <div className="section-heading history-heading">
+        <h2>나의 대화 기록</h2>
+        <a className="text-link" href="instant">인스턴트 기록 <span aria-hidden="true">→</span></a>
+      </div>
 
       {loadError && (
         <div className="list-notice error" role="alert">
@@ -64,7 +83,7 @@ export function SessionList({
         </p>
       )}
       {!loading && !loadError && sessions.length === 0 && (
-        <p className="hint">아직 대화 기록이 없어요. 새 대화를 시작해보세요.</p>
+        <EmptyState title="아직 대화 기록이 없어요" description="위의 ‘새 대화’를 눌러 첫 이야기를 나눠 보세요. 나눈 대화와 피드백은 여기에서 다시 볼 수 있어요." />
       )}
       {sessions.length > 0 && (
         <ul>

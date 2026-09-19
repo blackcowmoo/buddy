@@ -45,10 +45,12 @@ function cardButtons() {
 }
 
 describe("WordMatch page", () => {
-  it("shows the shared sub-page menu instead of a back button", () => {
+  it("shows a welcoming introduction and direct home navigation", () => {
     vi.mocked(fetchWords).mockReturnValue(new Promise(() => {}));
     render(<WordMatch />);
     expect(screen.getByRole("button", { name: "메뉴" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "단어와 뜻의 짝을 찾아요" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "홈으로" })).toHaveAttribute("href", ".");
     expect(screen.queryByRole("link", { name: "대화로 돌아가기" })).not.toBeInTheDocument();
   });
 
@@ -61,13 +63,16 @@ describe("WordMatch page", () => {
   it("shows an error hint when the fetch fails", async () => {
     vi.mocked(fetchWords).mockResolvedValue(null);
     render(<WordMatch />);
-    expect(await screen.findByText(/단어 목록을 불러오지 못했습니다/)).toBeInTheDocument();
+    expect(await screen.findByText(/단어 목록을 불러오지 못했어요/)).toBeInTheDocument();
   });
 
   it("asks for more saved words instead of dealing a trivial board", async () => {
     vi.mocked(fetchWords).mockResolvedValue({ words: [w1, w2], dueCount: 0 });
     render(<WordMatch />);
     expect(await screen.findByText(/복습 중인 단어가 3개 이상 있어야/)).toBeInTheDocument();
+    expect(screen.getByText(/지금은 2개가 준비되어 있어요/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "단어 모으러 가기" })).toHaveAttribute("href", "words");
+    expect(screen.queryByRole("button", { name: "카드 뒤집기" })).not.toBeInTheDocument();
   });
 
   it("deals every word as a face-down word card and a face-down meaning card", async () => {

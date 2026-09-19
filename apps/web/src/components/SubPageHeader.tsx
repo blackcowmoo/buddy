@@ -1,11 +1,9 @@
 import { useCallback, useRef, useState } from "react";
+import { MenuIcon } from "./MenuIcon";
 import { useDismiss } from "../hooks/useDismiss";
 
-// Shared top bar for every sub-page reached from the room list (Recordings,
-// WordReview, WordMatch, InstantSessions, ArticleQuiz, Writing): a title plus
-// a compact menu back to the main page. The link is relative ("." not "/")
-// so it resolves against the current page URL and still works under a
-// ROOT_PATH prefix like "/pr/14/words".
+// Home links stay relative ("." not "/") so preview deployments such as
+// "/pr/14/words" return to their own home instead of the root deployment.
 export function SubPageHeader({ title }: { title: string }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -15,6 +13,7 @@ export function SubPageHeader({ title }: { title: string }) {
   return (
     <header className="topbar">
       <div className="brand">
+        <a className="ghost icon-btn subpage-home" href="." aria-label="홈으로" title="홈으로">←</a>
         <h1>{title}</h1>
       </div>
       <div className="menu" ref={menuRef}>
@@ -27,7 +26,7 @@ export function SubPageHeader({ title }: { title: string }) {
           aria-expanded={menuOpen}
           title="메뉴"
         >
-          ☰
+          <MenuIcon />
         </button>
         {menuOpen && (
           <div className="menu-panel subpage-menu-panel" role="menu">

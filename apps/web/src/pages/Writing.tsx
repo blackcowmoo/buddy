@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
+import { EmptyState, LearningIntro } from "../components/LearningIntro";
 import type { Correction } from "../lib/protocol";
 import { LoadingHint } from "../components/LoadingHint";
 import { SubPageHeader } from "../components/SubPageHeader";
@@ -95,8 +96,12 @@ export function Writing() {
     <main className="convo writing-page">
       {!prompt && (
         <>
+          <LearningIntro eyebrow="생각을 영어로 옮기는 연습" title="한 문장부터 써 볼까요?" description="한국어 문장을 나만의 영어로 표현해 보세요. 답안을 확인하며 더 자연스러운 표현을 익혀요." steps={["문제 만들기", "영어로 쓰기", "피드백 살펴보기"]} />
+          <button type="button" className="quiz-start-btn" onClick={() => void createPrompt()} disabled={creating}>
+            {creating ? "만드는 중…" : "＋ 새 문제 만들기"}
+          </button>
           {state === "loading" && <LoadingHint />}
-          {state === "ready" && prompts.length === 0 && <p className="hint">아직 만든 작문 문제가 없어요.</p>}
+          {state === "ready" && prompts.length === 0 && <EmptyState title="아직 만든 작문 문제가 없어요." description="‘새 문제 만들기’로 시작해 보세요. 모르는 단어는 답안 옆에서 찾아볼 수 있어요." />}
           {prompts.map((item, i) => {
             const prev = prompts[i - 1];
             const showDivider = shouldShowDateDivider(prev?.createdAt, item.createdAt);
@@ -120,9 +125,6 @@ export function Writing() {
               </Fragment>
             );
           })}
-          <button type="button" className="quiz-start-btn" onClick={() => void createPrompt()} disabled={creating}>
-            {creating ? "만드는 중…" : "＋ 새 문제 만들기"}
-          </button>
         </>
       )}
 

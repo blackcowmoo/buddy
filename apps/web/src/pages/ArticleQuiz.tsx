@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { EmptyState, LearningIntro } from "../components/LearningIntro";
 import { confirmThenDelete } from "../lib/confirmDelete";
 import {
   answerArticle,
@@ -494,14 +495,15 @@ export function ArticleQuiz() {
           <p className="hint">지금은 새로 볼 아티클이 없어요. 나중에 다시 시도해보세요.</p>
         )}
         {drawState === "error" && (
-          <p className="hint">아티클을 가져오지 못했습니다. 네트워크 문제일 수 있습니다.</p>
+          <p className="hint" role="alert">아티클을 가져오지 못했어요. 연결 상태를 확인한 뒤 ‘새 아티클 뽑기’를 다시 눌러 주세요.</p>
         )}
 
         {view === null && (
           <>
+            <LearningIntro eyebrow="읽으며 넓어지는 영어" title="새로운 이야기를 읽어 봐요" description="아티클 속 단어를 눌러 뜻을 알아보고, 퀴즈로 읽은 내용을 되짚어 보세요." steps={["아티클 고르기", "읽고 단어 찾기", "퀴즈로 확인하기"]} />
             {state === "loading" && <LoadingHint />}
             {state === "ready" && instances.length === 0 && (
-              <p className="hint">아직 읽은 아티클이 없어요.</p>
+              <EmptyState title="아직 읽은 아티클이 없어요." description="‘새 아티클 뽑기’를 눌러 읽을거리를 만나 보세요. 읽던 글은 이 목록에서 다시 열 수 있어요." />
             )}
             {visibleInstances.length < instances.length && (
               <p className="hint article-list-load-hint">위로 스크롤하면 이전 아티클을 더 불러와요.</p>
@@ -518,7 +520,8 @@ export function ArticleQuiz() {
                     </div>
                   )}
                   <div className="session-row article-instance-row">
-                    <div
+                    <button
+                      type="button"
                       className="session-item article-instance-item"
                       onClick={() => void openInstance(inst.id)}
                     >
@@ -534,7 +537,7 @@ export function ArticleQuiz() {
                         {formatMessageTime(inst.createdAt)}
                         {inst.answered && (inst.correct ? " · 정답" : " · 오답")}
                       </span>
-                    </div>
+                    </button>
                     <button
                       type="button"
                       className="ghost icon-btn session-delete"
@@ -549,12 +552,7 @@ export function ArticleQuiz() {
               );
             })}
 
-            <button
-              type="button"
-              className="quiz-start-btn"
-              onClick={() => void handleDraw()}
-              disabled={drawState === "drawing"}
-            >
+            <button type="button" className="quiz-start-btn" onClick={() => void handleDraw()} disabled={drawState === "drawing"}>
               {drawState === "drawing" ? "가져오는 중…" : "새 아티클 뽑기"}
             </button>
           </>

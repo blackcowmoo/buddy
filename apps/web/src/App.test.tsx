@@ -280,6 +280,28 @@ describe("room list", () => {
     expect(lastClientInstance().connect).not.toHaveBeenCalled();
   });
 
+  it("guides a first conversation and offers an inviting message field", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterNewChat(user);
+    expect(screen.getByRole("heading", { name: "어떤 이야기를 나눠 볼까요?" })).toBeInTheDocument();
+    expect(screen.getByText(/오늘 있었던 일이나 좋아하는 것을 영어로/)).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "영어 메시지" })).toHaveAttribute("placeholder", "영어로 편하게 이야기해 보세요");
+  });
+
+  it("does not invite new messages in an ended room with no visible turns", async () => {
+    vi.mocked(parseRoomHash).mockReturnValue({ view: "chat", id: "s1" });
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
+      session: { id: "s1", title: "Finished", createdAt: 1, updatedAt: 2, ended: true },
+      turns: [],
+    });
+    render(<App />);
+    await screen.findByText("이 대화는 종료되어 더 이상 메시지를 보낼 수 없어요.");
+    expect(screen.queryByRole("heading", { name: "어떤 이야기를 나눠 볼까요?" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "영어 메시지" })).not.toBeInTheDocument();
+  });
+
   it("shows an empty state with no sessions", async () => {
     render(<App />);
     expect(await screen.findByText(/아직 대화 기록이 없어요/)).toBeInTheDocument();
@@ -1577,14 +1599,14 @@ describe("quick mode (인스턴트 대화)", () => {
     await user.click(screen.getByRole("button", { name: "✏️ 인스턴트 대화" }));
     act(() => emit({ type: "ready", turn: 0, session: "s1" }));
 
-    const textarea = await screen.findByPlaceholderText("…or type in English");
+    const textarea = await screen.findByPlaceholderText("영어로 편하게 이야기해 보세요");
     await user.type(textarea, "I are happy today.{Enter}");
 
     // The composer locks the instant the one sentence is sent, before any
     // reply has come back — nothing lets a second message sneak in while
     // the room is waiting to wrap itself up.
     expect(await screen.findByText(/답변을 기다리는 중이에요/)).toBeInTheDocument();
-    expect(screen.queryByPlaceholderText("…or type in English")).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("영어로 편하게 이야기해 보세요")).not.toBeInTheDocument();
 
     act(() => emit({ type: "final_transcript", turn: 1, text: "I are happy today.", source: "text" }));
     act(() => emit({ type: "assistant_done", turn: 1, text: "That's great to hear!" }));
@@ -1620,7 +1642,7 @@ describe("quick mode (인스턴트 대화)", () => {
     await user.click(screen.getByRole("button", { name: "✏️ 인스턴트 대화" }));
     act(() => emit({ type: "ready", turn: 0, session: "s1" }));
 
-    const textarea = await screen.findByPlaceholderText("…or type in English");
+    const textarea = await screen.findByPlaceholderText("영어로 편하게 이야기해 보세요");
     await user.type(textarea, "I are happy today.{Enter}");
     act(() => emit({ type: "final_transcript", turn: 1, text: "I are happy today.", source: "text" }));
     act(() => emit({ type: "assistant_done", turn: 1, text: "That's great to hear!" }));
@@ -1651,7 +1673,7 @@ describe("quick mode (인스턴트 대화)", () => {
     act(() => emit({ type: "assistant_done", turn: 0, text: "Hi! What's on your mind today?" }));
 
     expect(endSession).not.toHaveBeenCalled();
-    expect(screen.getByPlaceholderText("…or type in English")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("영어로 편하게 이야기해 보세요")).toBeInTheDocument();
   });
 });
 
@@ -2641,7 +2663,7 @@ describe("typing indicator", () => {
     act(() => emit({ type: "assistant_done", turn: 0, text: "Hey there!" }));
     expect(screen.queryByRole("status", { name: "답변 생성 중" })).not.toBeInTheDocument();
 
-    await user.type(screen.getByPlaceholderText("…or type in English"), "Hello Buddy");
+    await user.type(screen.getByPlaceholderText("영어로 편하게 이야기해 보세요"), "Hello Buddy");
     await user.click(screen.getByRole("button", { name: "메시지 보내기" }));
     expect(screen.getByRole("status", { name: "답변 생성 중" })).toBeInTheDocument();
 
@@ -2658,7 +2680,7 @@ describe("typing indicator", () => {
     await enterNewChat(user);
     act(() => emit({ type: "assistant_done", turn: 0, text: "Hey there!" }));
 
-    await user.type(screen.getByPlaceholderText("…or type in English"), "Hello Buddy");
+    await user.type(screen.getByPlaceholderText("영어로 편하게 이야기해 보세요"), "Hello Buddy");
     await user.click(screen.getByRole("button", { name: "메시지 보내기" }));
     expect(screen.getByRole("status", { name: "답변 생성 중" })).toBeInTheDocument();
 
@@ -2724,7 +2746,7 @@ describe("composer", () => {
     await enterNewChat(user);
     act(() => emit({ type: "assistant_done", turn: 0, text: "Hey there!" }));
 
-    const textarea = screen.getByPlaceholderText("…or type in English");
+    const textarea = screen.getByPlaceholderText("영어로 편하게 이야기해 보세요");
     await user.type(textarea, "Hello Buddy{Enter}");
 
     expect(lastSendText()).toHaveBeenCalledWith("Hello Buddy", undefined);
@@ -2737,7 +2759,7 @@ describe("composer", () => {
     await enterNewChat(user);
     act(() => emit({ type: "assistant_done", turn: 0, text: "Hey there!" }));
 
-    const textarea = screen.getByPlaceholderText("…or type in English");
+    const textarea = screen.getByPlaceholderText("영어로 편하게 이야기해 보세요");
     await user.type(textarea, "Hello{Shift>}{Enter}{/Shift}Buddy");
 
     expect(lastSendText()).not.toHaveBeenCalled();
@@ -2751,9 +2773,9 @@ describe("composer", () => {
 
     const send = screen.getByRole("button", { name: "메시지 보내기" });
     expect(send).toBeDisabled();
-    await user.type(screen.getByPlaceholderText("…or type in English"), "   ");
+    await user.type(screen.getByPlaceholderText("영어로 편하게 이야기해 보세요"), "   ");
     expect(send).toBeDisabled();
-    await user.type(screen.getByPlaceholderText("…or type in English"), "Hello");
+    await user.type(screen.getByPlaceholderText("영어로 편하게 이야기해 보세요"), "Hello");
     expect(send).toBeEnabled();
   });
 
@@ -2761,7 +2783,7 @@ describe("composer", () => {
     const user = userEvent.setup();
     render(<App />);
     await enterNewChat(user);
-    const textarea = screen.getByPlaceholderText("…or type in English");
+    const textarea = screen.getByPlaceholderText("영어로 편하게 이야기해 보세요");
     fireEvent.change(textarea, { target: { value: "작성 중" } });
 
     fireEvent.keyDown(textarea, { key: "Enter", code: "Enter", keyCode: 229, isComposing: true });
@@ -2785,7 +2807,7 @@ describe("word search panel", () => {
     });
     render(<App />);
     await user.click(await screen.findByText(title));
-    await screen.findByPlaceholderText("…or type in English");
+    await screen.findByPlaceholderText("영어로 편하게 이야기해 보세요");
   }
 
   it("lets the learner describe a word in Korean and shows the LLM's English suggestions", async () => {
@@ -2855,7 +2877,7 @@ describe("word search panel", () => {
     await openExistingRoom(user);
 
     await user.click(screen.getByRole("button", { name: "모르는 단어 찾기" }));
-    expect(screen.getByPlaceholderText("…or type in English")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("영어로 편하게 이야기해 보세요")).toBeInTheDocument();
   });
 
   // "학습하기" only saves the one suggestion the learner explicitly picks —
@@ -2973,7 +2995,7 @@ describe("composer draft caching", () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(await screen.findByText("draft room"));
-    const textarea = await screen.findByPlaceholderText("…or type in English");
+    const textarea = await screen.findByPlaceholderText("영어로 편하게 이야기해 보세요");
     await user.type(textarea, "half-typed sentence");
 
     expect(localStorage.getItem("buddy.chat.draft.s1")).toContain("half-typed sentence");
@@ -2983,7 +3005,7 @@ describe("composer draft caching", () => {
     await screen.findByRole("button", { name: "+ 새 대화" });
 
     await user.click(await screen.findByText("draft room"));
-    expect(await screen.findByPlaceholderText("…or type in English")).toHaveValue("half-typed sentence");
+    expect(await screen.findByPlaceholderText("영어로 편하게 이야기해 보세요")).toHaveValue("half-typed sentence");
   });
 
   it("clears the cached draft once the message is actually sent", async () => {
@@ -2998,7 +3020,7 @@ describe("composer draft caching", () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(await screen.findByText("draft room"));
-    const textarea = await screen.findByPlaceholderText("…or type in English");
+    const textarea = await screen.findByPlaceholderText("영어로 편하게 이야기해 보세요");
     await user.type(textarea, "send me{Enter}");
 
     expect(localStorage.getItem("buddy.chat.draft.s1")).toBeNull();
@@ -3025,7 +3047,7 @@ describe("voice draft confirmation funnel", () => {
 
     act(() => emit({ type: "pending_transcript", turn: 0, text: "i are hungry", source: "voice" }));
 
-    expect(screen.getByPlaceholderText("…or type in English")).toHaveValue("i are hungry");
+    expect(screen.getByPlaceholderText("영어로 편하게 이야기해 보세요")).toHaveValue("i are hungry");
     expect(screen.getByText("음성 인식 결과예요. 확인한 뒤 보내주세요.")).toBeInTheDocument();
     expect(lastSendText()).not.toHaveBeenCalled();
   });
@@ -3049,7 +3071,7 @@ describe("voice draft confirmation funnel", () => {
     await screen.findByRole("button", { name: "+ 새 대화" });
     await user.click(screen.getByRole("button", { name: "+ 새 대화" }));
 
-    expect(screen.getByPlaceholderText("…or type in English")).toHaveValue("");
+    expect(screen.getByPlaceholderText("영어로 편하게 이야기해 보세요")).toHaveValue("");
     expect(screen.queryByText("음성 인식 결과예요. 확인한 뒤 보내주세요.")).not.toBeInTheDocument();
   });
 
@@ -3062,7 +3084,7 @@ describe("voice draft confirmation funnel", () => {
     await user.click(screen.getByRole("button", { name: "메시지 보내기" }));
 
     expect(lastSendText()).toHaveBeenCalledWith("i are hungry", "voice");
-    expect(screen.getByPlaceholderText("…or type in English")).toHaveValue("");
+    expect(screen.getByPlaceholderText("영어로 편하게 이야기해 보세요")).toHaveValue("");
   });
 
   it("upgrades an untouched draft when a slower (Judge-reconciled) guess arrives", async () => {
@@ -3073,7 +3095,7 @@ describe("voice draft confirmation funnel", () => {
 
     act(() => emit({ type: "pending_transcript", turn: 0, text: "I am hungry", source: "voice" }));
 
-    expect(screen.getByPlaceholderText("…or type in English")).toHaveValue("I am hungry");
+    expect(screen.getByPlaceholderText("영어로 편하게 이야기해 보세요")).toHaveValue("I am hungry");
   });
 
   it("does not clobber a learner's own edit with a later pending_transcript upgrade", async () => {
@@ -3082,7 +3104,7 @@ describe("voice draft confirmation funnel", () => {
     await enterNewChat(user);
     act(() => emit({ type: "pending_transcript", turn: 0, text: "i are hungry", source: "voice" }));
 
-    const textarea = screen.getByPlaceholderText("…or type in English");
+    const textarea = screen.getByPlaceholderText("영어로 편하게 이야기해 보세요");
     await user.type(textarea, " a lot"); // the learner tweaks the draft themselves
 
     act(() => emit({ type: "pending_transcript", turn: 0, text: "I am hungry", source: "voice" }));
@@ -3097,7 +3119,7 @@ describe("voice draft confirmation funnel", () => {
     act(() => emit({ type: "pending_transcript", turn: 0, text: "i are hungry", source: "voice" }));
 
     await user.click(screen.getByRole("button", { name: "음성 초안 취소" }));
-    const textarea = screen.getByPlaceholderText("…or type in English");
+    const textarea = screen.getByPlaceholderText("영어로 편하게 이야기해 보세요");
     expect(textarea).toHaveValue("");
 
     await user.type(textarea, "hello");
@@ -3113,7 +3135,7 @@ describe("voice draft confirmation funnel", () => {
 
     await user.click(screen.getByRole("button", { name: "음성으로 말하기" }));
 
-    expect(screen.getByPlaceholderText("…or type in English")).toHaveValue("");
+    expect(screen.getByPlaceholderText("영어로 편하게 이야기해 보세요")).toHaveValue("");
   });
 });
 
