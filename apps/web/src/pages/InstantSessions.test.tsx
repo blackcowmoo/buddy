@@ -17,6 +17,7 @@ import { formatDateDivider } from "../lib/time";
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   vi.clearAllMocks();
 });
 
@@ -34,13 +35,30 @@ describe("InstantSessions page", () => {
     vi.mocked(fetchInstantSessions).mockReturnValue(new Promise(() => {})); // never resolves
     render(<InstantSessions />);
     expect(screen.getByText("불러오는 중…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "인스턴트 대화 시작" })).toBeEnabled();
+  });
+
+  it("starts a new instant conversation directly from the history page", async () => {
+    vi.mocked(fetchInstantSessions).mockResolvedValue([
+      { id: "i1", title: "previous conversation", createdAt: 1700000000, updatedAt: 1700000000 },
+    ]);
+    const assign = vi.fn();
+    vi.stubGlobal("location", { assign });
+    const user = userEvent.setup();
+    render(<InstantSessions />);
+    await screen.findByText("previous conversation");
+
+    await user.click(screen.getByRole("button", { name: "인스턴트 대화 시작" }));
+
+    expect(assign).toHaveBeenCalledWith(".#instant/new");
   });
 
   it("shows an empty-state hint when there are no instant sessions", async () => {
     vi.mocked(fetchInstantSessions).mockResolvedValue([]);
     render(<InstantSessions />);
     expect(await screen.findByText("아직 인스턴트 대화가 없어요.")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "한 문장 연습하러 가기" })).toHaveAttribute("href", ".");
+    expect(screen.getByRole("button", { name: "인스턴트 대화 시작" })).toBeEnabled();
+    expect(screen.getByText(/위의 ‘인스턴트 대화 시작’을 눌러/)).toBeInTheDocument();
   });
 
   // Guards the total-count purpose stated in the page itself — the whole

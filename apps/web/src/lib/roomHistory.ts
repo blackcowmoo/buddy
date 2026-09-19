@@ -5,13 +5,14 @@
 // of ours to undo and exited the app instead. Kept as its own module (rather
 // than calling window.history directly from App.tsx) so App's tests can mock
 // it instead of fighting jsdom's location/history plumbing.
-export type RoomHistoryState = { view: "list" } | { view: "chat"; id: string | null };
+export type RoomHistoryState = { view: "list" } | { view: "chat"; id: string | null; quick?: boolean };
 
 // A brand-new room has no id until the server mints one on "ready", but the
 // history entry still needs to exist the instant the learner opens it (so an
 // immediate back/swipe returns to the list) — "new" is that placeholder.
 function hashFor(state: RoomHistoryState): string {
   if (state.view !== "chat") return "";
+  if (!state.id && state.quick) return "#instant/new";
   return `#chat/${state.id ? encodeURIComponent(state.id) : "new"}`;
 }
 
@@ -20,6 +21,9 @@ function urlFor(state: RoomHistoryState): string {
 }
 
 export function parseRoomHash(hash: string): RoomHistoryState {
+  // The history page can start an instant room before the server assigns an
+  // id. Keep that intent in the URL across the navigation to the chat page.
+  if (hash === "#instant/new") return { view: "chat", id: null, quick: true };
   const m = /^#chat\/(.+)$/.exec(hash);
   if (!m) return { view: "list" };
   return { view: "chat", id: m[1] === "new" ? null : decodeURIComponent(m[1]) };
