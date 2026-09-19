@@ -156,6 +156,9 @@ body {
 
 .topbar {
   position: relative;
+  /* Give fixed feedback panels the full header as their containing block,
+     independent of the narrower, right-aligned menu or backdrop effects. */
+  contain: layout;
   z-index: 30;
   display: flex;
   align-items: center;
@@ -379,21 +382,22 @@ body {
   font-size: 12px;
 }
 
-/* Session-wide feedback list, opened from the chat header — see App.tsx
-   FeedbackSummary. Wider and scrollable, unlike the per-row study panels.
-   Deliberately not position:relative itself: it anchors off .menu (the
-   nearest positioned ancestor) instead of its own small button, same as
-   .menu-panel, so its right:0 lines up with the true right edge of the
-   header regardless of how many icon buttons sit to its right. */
+/* Center the feedback list across the full header, with equal gutters that
+   keep sentence beginnings clear of damaged phone edges. Using the larger
+   safe-area inset on both sides preserves centering in landscape too. */
 .feedback-summary { display: inline-flex; }
 .feedback-btn { width: 28px; height: 28px; min-height: 28px; font-size: 13px; }
 .feedback-panel {
-  right: 0;
-  left: auto;
-  width: min(94vw, 420px);
-  max-width: calc(100vw - 16px);
+  --feedback-inline-margin: max(24px, var(--layout-inline-padding), env(safe-area-inset-left, 0px), env(safe-area-inset-right, 0px));
+  position: fixed;
+  right: auto;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(420px, calc(100% - 2 * var(--feedback-inline-margin)));
   max-height: min(70vh, 480px);
   overflow-y: auto;
+  overflow-wrap: anywhere;
+  overscroll-behavior-y: contain;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -405,9 +409,9 @@ body {
 .feedback-original { font-size: 13px; color: var(--muted); padding: 0 2px; }
 
 /* Compaction debug view, opened from the chat header — see App.tsx
-   CompactionInfo. Same shape as .feedback-panel next to it, and same
-   not-position:relative reasoning: it sits further left in .menu (with
-   the feedback and hamburger buttons to its right), so anchoring off its
+   CompactionInfo. It anchors to .menu rather than its own button: it sits
+   further left in .menu (with the feedback and hamburger buttons to its
+   right), so anchoring off its
    own button instead of .menu pushed the panel off the left edge of
    narrow viewports. */
 .compaction-info { display: inline-flex; }

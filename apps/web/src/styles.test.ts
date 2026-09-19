@@ -50,6 +50,28 @@ describe("visual design system", () => {
     expect(styles).toContain("@media (prefers-reduced-motion: reduce)");
   });
 
+  it("centers conversation feedback on the full header instead of its right-hand menu", () => {
+    const header = styles.match(/\.topbar\s*\{([\s\S]*?)\n\}/)?.[1] ?? "";
+    const panel = styles.match(/\.feedback-panel\s*\{([\s\S]*?)\n\}/)?.[1] ?? "";
+
+    // Fixed positioning skips .menu; layout containment anchors the panel
+    // to the centered app header even if its backdrop filter is removed.
+    expect(header).toContain("contain: layout;");
+    expect(panel).toContain("position: fixed;");
+    expect(panel).toContain("left: 50%;");
+    expect(panel).toContain("right: auto;");
+    expect(panel).toContain("transform: translateX(-50%);");
+  });
+
+  it("reserves equal feedback gutters of at least 24px, including landscape safe areas", () => {
+    const panel = styles.match(/\.feedback-panel\s*\{([\s\S]*?)\n\}/)?.[1] ?? "";
+
+    expect(panel).toContain("--feedback-inline-margin: max(24px, var(--layout-inline-padding), env(safe-area-inset-left, 0px), env(safe-area-inset-right, 0px));");
+    expect(panel).toContain("calc(100% - 2 * var(--feedback-inline-margin))");
+    expect(panel).toContain("overflow-wrap: anywhere;");
+    expect(panel).toContain("overflow-y: auto;");
+  });
+
   it("keeps tappable article words flat until one is hovered, focused, or selected", () => {
     const articleWord = styles.match(/\.article-word\s*\{([\s\S]*?)\n\}/)?.[1] ?? "";
 
