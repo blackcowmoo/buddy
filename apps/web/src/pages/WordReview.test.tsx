@@ -173,6 +173,16 @@ async function startQuiz(words: WordReviewItem[] = [dueWord]) {
   return user;
 }
 
+// jsdom has no layout. Give the two scroll containers independent heights,
+// with list growth reflecting prepended rows so scroll anchoring is observable.
+function mockScrollHeights() {
+  vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.classList.contains("word-review-page")) return 1800;
+    if (this.classList.contains("word-list-scroll")) return this.querySelectorAll("li").length * 100;
+    return 0;
+  });
+}
+
 describe("WordReview page", () => {
   it("shows a welcoming introduction with the shared hamburger navigation", () => {
     vi.mocked(fetchWords).mockReturnValue(new Promise(() => {}));
@@ -196,6 +206,7 @@ describe("WordReview page", () => {
   });
 
   it("shows an empty-state hint when there are no tracked words", async () => {
+    mockScrollHeights();
     vi.mocked(fetchWords).mockResolvedValue({ words: [], dueCount: 0 });
     render(<WordReview />);
     expect(await screen.findByText(/아직 학습 중인 단어가 없어요/)).toBeInTheDocument();
@@ -204,6 +215,7 @@ describe("WordReview page", () => {
     // The "복습 시작" slot is taken over by the auto-add button instead of
     // being left empty, offering a second path besides manual 🔎 search.
     expect(screen.getByRole("button", { name: "새 단어 추가로 학습하기" })).toBeInTheDocument();
+    expect(screen.getByRole("main").scrollTop).toBe(1800);
   });
 
   it("shows the due count and a start button when words are due", async () => {
@@ -226,13 +238,66 @@ describe("WordReview page", () => {
     expect(screen.queryByRole("button", { name: "복습 시작" })).not.toBeInTheDocument();
   });
 
-  it("renders the review action after the word list", async () => {
-    vi.mocked(fetchWords).mockResolvedValue({ words: [dueWord], dueCount: 1 });
+  it("keeps the due count next to the review action after all word sections", async () => {
+    vi.mocked(fetchWords).mockResolvedValue({ words: [dueWord, pendingWord, rejectedWord], dueCount: 1 });
     render(<WordReview />);
 
-    const word = await screen.findByText(dueWord.word);
+    const word = await screen.findByText(rejectedWord.word);
+    const dueHint = screen.getByText("복습할 단어 1개가 있어요.");
     const startButton = screen.getByRole("button", { name: "복습 시작" });
-    expect(word.compareDocumentPosition(startButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(word.compareDocumentPosition(dueHint) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(dueHint.nextElementSibling).toBe(startButton);
+  });
+
+  it("opens both scroll containers at the bottom after words finish loading", async () => {
+    mockScrollHeights();
+    let resolveWords!: (result: { words: WordReviewItem[]; dueCount: number }) => void;
+    vi.mocked(fetchWords).mockReturnValue(new Promise((resolve) => { resolveWords = resolve; }));
+    render(<WordReview />);
+    const page = screen.getByRole("main");
+    expect(page.scrollTop).toBe(0);
+
+    await act(async () => { resolveWords({ words: [dueWord, futureWord], dueCount: 1 }); });
+
+    expect(page.scrollTop).toBe(1800);
+    expect(page.querySelector(".word-list-scroll")!.scrollTop).toBe(200);
+    expect(screen.getByRole("button", { name: "복습 시작" })).toBeEnabled();
+  });
+
+  it("opens the quiz at the top and returns to the bottom action and newest words", async () => {
+    mockScrollHeights();
+    const user = await startQuiz();
+    const page = screen.getByRole("main");
+    expect(page.scrollTop).toBe(0);
+    expect(screen.getByRole("textbox", { name: "정답 입력" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "← 목록으로" }));
+
+    expect(page.scrollTop).toBe(1800);
+    expect(page.querySelector(".word-list-scroll")!.scrollTop).toBe(100);
+    expect(screen.getByRole("button", { name: "복습 시작" })).toBeEnabled();
+  });
+
+  it("preserves the learner's scroll positions when polling updates and adds words", async () => {
+    vi.useFakeTimers();
+    mockScrollHeights();
+    vi.mocked(fetchWords)
+      .mockResolvedValueOnce({ words: [dueWord, futureWord], dueCount: 1 })
+      .mockResolvedValue({ words: [dueWord, { ...futureWord, meaning: "갱신된 뜻" }, pendingWord], dueCount: 1 });
+    await act(async () => { render(<WordReview />); });
+    const page = screen.getByRole("main");
+    const list = page.querySelector(".word-list-scroll")!;
+    page.scrollTop = 300;
+    list.scrollTop = 50;
+    fireEvent.scroll(page);
+    fireEvent.scroll(list);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+
+    expect(screen.getByText("갱신된 뜻")).toBeInTheDocument();
+    expect(screen.getByText(pendingWord.word)).toBeInTheDocument();
+    expect(page.scrollTop).toBe(300);
+    expect(list.scrollTop).toBe(50);
   });
 
   it("lists each tracked word with its meaning and next review time", async () => {
@@ -245,6 +310,7 @@ describe("WordReview page", () => {
   });
 
   it("shows the review count, sorts newest reviews at the bottom, and loads older words at the top", async () => {
+    mockScrollHeights();
     const manyWords = Array.from({ length: 21 }, (_, i): WordReviewItem => ({
       id: `review-${i}`,
       word: `review-word-${i}`,
@@ -271,16 +337,13 @@ describe("WordReview page", () => {
     expect(visibleWords.at(-1)).toBe("review-word-20");
 
     const scrollList = document.querySelector(".word-list-scroll") as HTMLDivElement;
+    expect(scrollList.scrollTop).toBe(2000);
     await act(async () => {
-      // Simulate an actual scroll reaching the top. Setting 0 when jsdom's
-      // default is already 0 can be ignored by the event machinery on some
-      // runners, making this pagination test flaky.
-      scrollList.scrollTop = 24;
-      fireEvent.scroll(scrollList);
-      scrollList.scrollTop = 0;
+      scrollList.scrollTop = 4;
       fireEvent.scroll(scrollList);
     });
     expect(await screen.findByText("review-word-0")).toBeInTheDocument();
+    expect(scrollList.scrollTop).toBe(104);
   });
 
   // A word never leaves review rotation, however many times it's been

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { EmptyState, LearningIntro } from "../components/LearningIntro";
 import { confirmThenDelete } from "../lib/confirmDelete";
 import {
@@ -90,6 +90,7 @@ export function WordReview() {
   // The newest 20 reviewed words are shown first. Older words are prepended
   // when the learner scrolls to the top of the list.
   const [reviewOlderCount, setReviewOlderCount] = useState(0);
+  const reviewPageRef = useRef<HTMLElement>(null);
   const reviewListRef = useRef<HTMLDivElement>(null);
   const reviewScrollAdjustment = useRef<{ top: number; height: number } | null>(null);
 
@@ -461,7 +462,24 @@ export function WordReview() {
     setReviewOlderCount((count) => count + 1);
   }, [hasOlderReviewWords]);
 
-  useEffect(() => {
+  const isListView = quizQueue === null;
+  const hasReviewWords = verifiedWords.length > 0;
+
+  // Both containers scroll independently. Open at the newest words and the
+  // bottom action before paint, including when returning from a quiz. Polling
+  // must not pull the learner away from older words they scrolled up to read.
+  useLayoutEffect(() => {
+    const list = reviewListRef.current;
+    if (isListView && list) list.scrollTop = list.scrollHeight;
+  }, [isListView, hasReviewWords]);
+
+  useLayoutEffect(() => {
+    const page = reviewPageRef.current;
+    if (state !== "ready" || !page) return;
+    page.scrollTop = isListView ? page.scrollHeight : 0;
+  }, [state, isListView]);
+
+  useLayoutEffect(() => {
     const adjustment = reviewScrollAdjustment.current;
     const container = reviewListRef.current;
     if (!adjustment || !container) return;
@@ -473,20 +491,13 @@ export function WordReview() {
     <div className="app">
       <SubPageHeader title="단어 복습" />
 
-      <main className="convo word-review-page">
+      <main className="convo word-review-page" ref={reviewPageRef}>
         {quizQueue === null && <LearningIntro eyebrow="다시 만날수록 익숙해지는 단어" title="배운 표현을 내 것으로 만들어요" description="복습할 때가 된 단어를 문장 속에서 떠올려 보세요. 아직 낯선 표현은 다시 연습할 수 있어요." steps={["단어 모으기", "문장으로 복습", "다시 익히기"]} />}
         {state === "loading" && <LoadingHint />}
         {state === "error" && <p className="hint" role="alert">단어 목록을 불러오지 못했어요. 연결 상태를 확인한 뒤 다시 열어 주세요.</p>}
 
         {state === "ready" && quizQueue === null && (
           <>
-            <p className="hint word-review-due-hint" role="status">
-              {availableDueCount > 0
-                ? `복습할 단어 ${availableDueCount}개가 있어요.`
-                : dueQuestionBackfillCount > 0
-                  ? `복습 문제 ${dueQuestionBackfillCount}개를 새 버전으로 준비 중이에요.`
-                  : "지금 복습할 단어가 없어요."}
-            </p>
             {words.length === 0 && (
               <EmptyState title="아직 학습 중인 단어가 없어요." description="아래 ‘새 단어 추가로 학습하기’로 시작하거나, 대화에서 단어를 검색한 뒤 ‘학습하기’를 눌러 모아 보세요." />
             )}
@@ -520,6 +531,13 @@ export function WordReview() {
                 </>
               )}
             />
+            <p className="hint word-review-due-hint" role="status">
+              {availableDueCount > 0
+                ? `복습할 단어 ${availableDueCount}개가 있어요.`
+                : dueQuestionBackfillCount > 0
+                  ? `복습 문제 ${dueQuestionBackfillCount}개를 새 버전으로 준비 중이에요.`
+                  : "지금 복습할 단어가 없어요."}
+            </p>
             {availableDueCount > 0 ? (
               <button type="button" className="quiz-start-btn" onClick={startQuiz}>
                 복습 시작
