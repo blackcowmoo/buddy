@@ -258,7 +258,11 @@ describe("WordReview page", () => {
       researchStatus: "confirmed",
     }));
     vi.mocked(fetchWords).mockResolvedValue({ words: manyWords, dueCount: 0 });
-    render(<WordReview />);
+    // The initial word-count effect resets pagination. Settle the fetch and
+    // that effect before scrolling so it cannot overwrite the page change.
+    await act(async () => {
+      render(<WordReview />);
+    });
 
     expect(await screen.findByText("복습중인 단어")).toBeInTheDocument();
     expect(screen.getByText("(21개)")).toBeInTheDocument();
@@ -271,15 +275,7 @@ describe("WordReview page", () => {
     expect(visibleWords.at(-1)).toBe("review-word-20");
 
     const scrollList = document.querySelector(".word-list-scroll") as HTMLDivElement;
-    await act(async () => {
-      // Simulate an actual scroll reaching the top. Setting 0 when jsdom's
-      // default is already 0 can be ignored by the event machinery on some
-      // runners, making this pagination test flaky.
-      scrollList.scrollTop = 24;
-      fireEvent.scroll(scrollList);
-      scrollList.scrollTop = 0;
-      fireEvent.scroll(scrollList);
-    });
+    fireEvent.scroll(scrollList, { target: { scrollTop: 0 } });
     expect(await screen.findByText("review-word-0")).toBeInTheDocument();
   });
 

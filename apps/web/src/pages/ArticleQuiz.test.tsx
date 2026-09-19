@@ -37,6 +37,7 @@ import {
   fetchArticleInstance,
   fetchArticleInstances,
   type ArticleDraw,
+  type ArticleInstance,
 } from "../lib/articles";
 import { formatAbsoluteDate, formatDateDivider } from "../lib/time";
 import { checkDefinedWord, defineWord } from "../lib/wordSearch";
@@ -75,6 +76,18 @@ const sampleDraw: ArticleDraw = {
 };
 
 const pendingDraw: ArticleDraw = { ...sampleDraw, summary: "", subQuestions: [], status: "pending" };
+
+const articleHistory = (count: number): ArticleInstance[] => Array.from({ length: count }, (_, i) => ({
+  id: `i${i}`,
+  source: "BBC",
+  title: `Story ${i}`,
+  summary: "s",
+  answered: false,
+  correct: false,
+  createdAt: 1700000000 + i,
+  publishedAt: 0,
+  status: "done",
+}));
 
 // The reading view now splits the summary into per-word tappable buttons
 // (see ArticleQuiz.tsx's word-lookup feature), so the full summary is no
@@ -117,44 +130,91 @@ describe("ArticleQuiz page — list view", () => {
     expect(screen.getByText(/정답/)).toBeInTheDocument();
   });
 
-  it("shows older attempts above newer ones and puts the draw action at the bottom", async () => {
+  it("starts at the introduction and draw action, followed by history from newest to oldest", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([
-      { id: "new", source: "NPR", title: "New story", summary: "s", answered: false, correct: false, createdAt: 1700003600, publishedAt: 0, status: "done" as const },
       { id: "old", source: "BBC", title: "Old story", summary: "s", answered: false, correct: false, createdAt: 1700000000, publishedAt: 0, status: "done" as const },
+      { id: "new", source: "NPR", title: "New story", summary: "s", answered: false, correct: false, createdAt: 1700003600, publishedAt: 0, status: "done" as const },
     ]);
     render(<ArticleQuiz />);
+    const page = screen.getByRole("main");
+    Object.defineProperty(page, "scrollHeight", { value: 1600 });
 
     const oldRow = (await screen.findByText("[BBC] Old story")).closest(".session-row")!;
     const newRow = screen.getByText("[NPR] New story").closest(".session-row")!;
+    const intro = screen.getByRole("heading", { name: "새로운 이야기를 읽어 봐요" });
     const drawButton = screen.getByRole("button", { name: "새 아티클 뽑기" });
-    expect(oldRow.compareDocumentPosition(newRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(newRow.compareDocumentPosition(drawButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const history = screen.getByRole("heading", { name: "나의 아티클 기록" });
+    expect(intro.compareDocumentPosition(drawButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(drawButton.compareDocumentPosition(history) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(history.compareDocumentPosition(newRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(newRow.compareDocumentPosition(oldRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByText("총 2개 · 최근 기록부터")).toBeInTheDocument();
+    expect(page.scrollTop).toBe(0);
   });
 
-  it("renders the newest page first and loads older attempts when scrolled to the top", async () => {
-    const attempts = Array.from({ length: 22 }, (_, i) => ({
-      id: `i${i}`,
-      source: "BBC",
-      title: `Story ${i}`,
-      summary: "s",
-      answered: false,
-      correct: false,
-      createdAt: 1700000000 + i,
-      publishedAt: 0,
-      status: "done" as const,
-    }));
-    vi.mocked(fetchArticleInstances).mockResolvedValue(attempts.slice().reverse());
+  it("appends older attempts near the bottom without moving the current scroll position", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue(articleHistory(22));
     render(<ArticleQuiz />);
 
     await screen.findByText("[BBC] Story 2");
     expect(screen.queryByText("[BBC] Story 0")).not.toBeInTheDocument();
-    expect(screen.getByText("위로 스크롤하면 이전 아티클을 더 불러와요.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "이전 아티클 더 보기" })).toBeInTheDocument();
 
-    const page = document.querySelector(".article-quiz-page")!;
+    const page = screen.getByRole("main");
+    Object.defineProperties(page, {
+      scrollHeight: { value: 1600 },
+      clientHeight: { value: 600 },
+    });
     fireEvent.scroll(page, { target: { scrollTop: 0 } });
+    expect(screen.queryByText("[BBC] Story 0")).not.toBeInTheDocument();
+    fireEvent.scroll(page, { target: { scrollTop: 919 } });
+    expect(screen.queryByText("[BBC] Story 0")).not.toBeInTheDocument();
+    fireEvent.scroll(page, { target: { scrollTop: 920 } });
 
     expect(await screen.findByText("[BBC] Story 0")).toBeInTheDocument();
-    expect(screen.queryByText("위로 스크롤하면 이전 아티클을 더 불러와요.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "이전 아티클 더 보기" })).not.toBeInTheDocument();
+    expect(page.scrollTop).toBe(920);
+    const titles = [...page.querySelectorAll(".article-instance-item .title")].map((title) => title.textContent);
+    expect(titles).toEqual(Array.from({ length: 22 }, (_, i) => `[BBC] Story ${21 - i}`));
+    expect(screen.getAllByText(formatDateDivider(1700000000))).toHaveLength(1);
+  });
+
+  it("offers a keyboard-accessible way to reveal older attempts in batches", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue(articleHistory(45));
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+
+    const more = await screen.findByRole("button", { name: "이전 아티클 더 보기" });
+    expect(screen.getAllByRole("button", { name: "아티클 퀴즈 삭제" })).toHaveLength(20);
+    expect(screen.getByText("총 45개 · 최근 기록부터")).toBeInTheDocument();
+    more.focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getAllByRole("button", { name: "아티클 퀴즈 삭제" })).toHaveLength(40);
+    expect(more).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(screen.getAllByRole("button", { name: "아티클 퀴즈 삭제" })).toHaveLength(45);
+    expect(screen.queryByRole("button", { name: "이전 아티클 더 보기" })).not.toBeInTheDocument();
+  });
+
+  it("opens a past article and returns to the list at the top of each view", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue(articleHistory(22));
+    vi.mocked(fetchArticleInstance).mockResolvedValue(sampleDraw);
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+
+    await screen.findByText("[BBC] Story 21");
+    const page = screen.getByRole("main");
+    page.scrollTop = 800;
+    await user.click(screen.getByText("[BBC] Story 2").closest("button")!);
+    expect(fetchArticleInstance).toHaveBeenCalledWith("i2");
+    expect(await screen.findByText(articleSummaryMatcher(sampleDraw.summary))).toBeInTheDocument();
+    expect(page.scrollTop).toBe(0);
+
+    page.scrollTop = 500;
+    await user.click(screen.getByRole("button", { name: "← 목록으로" }));
+    expect(await screen.findByRole("heading", { name: "나의 아티클 기록" })).toBeInTheDocument();
+    expect(page.scrollTop).toBe(0);
+    expect(screen.queryByText("[BBC] Story 0")).not.toBeInTheDocument();
   });
 
   it("groups past attempts from the same day under a single date divider", async () => {
@@ -184,6 +244,7 @@ describe("ArticleQuiz page — list view", () => {
     expect(confirmSpy).toHaveBeenCalled();
     expect(deleteArticleInstance).toHaveBeenCalledWith("i1");
     expect(await screen.findByText("아직 읽은 아티클이 없어요.")).toBeInTheDocument();
+    expect(screen.getByText("총 0개 · 최근 기록부터")).toBeInTheDocument();
   });
 });
 
@@ -234,6 +295,10 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("아티클을 가져오지 못했어요. 연결 상태를 확인한 뒤 ‘새 아티클 뽑기’를 다시 눌러 주세요.");
+    const drawButton = screen.getByRole("button", { name: "새 아티클 뽑기" });
+    const history = screen.getByRole("heading", { name: "나의 아티클 기록" });
+    expect(drawButton.compareDocumentPosition(screen.getByRole("alert")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("alert").compareDocumentPosition(history) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("reveals the quiz sub-questions only after tapping 문제풀기, alongside the English original", async () => {
