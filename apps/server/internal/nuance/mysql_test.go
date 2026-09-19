@@ -210,3 +210,150 @@ func TestMySQLGenerationTransitionsAdvanceRevisionForFreshRetry(t *testing.T) {
 		l = next
 	}
 }
+
+func pendingLesson(t *testing.T, st *MySQLStore, user string) Lesson {
+	t.Helper()
+	l, err := st.Create(context.Background(), user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := st.Delete(context.Background(), user, l.ID); err != nil {
+			t.Error(err)
+		}
+	})
+	return l
+}
+
+func comparisonContent(words ...string) Content {
+	c := testContent()
+	c.Words = nil
+	for _, word := range words {
+		w := testContent().Words[0]
+		w.Word = word
+		c.Words = append(c.Words, w)
+	}
+	for i := range c.Questions {
+		c.Questions[i].Answer = words[i%len(words)]
+	}
+	return c
+}
+
+func TestMySQLRejectsDuplicateComparisonWithoutPublishing(t *testing.T) {
+	st := requireDB(t)
+	ctx := context.Background()
+	first := persistedLesson(t, st)
+	next := pendingLesson(t, st, first.UserID)
+	duplicate := comparisonContent("INEXPENSIVE", "Cheap")
+	duplicate.Questions[0].Sentence = "A completely different sentence is ____."
+	if err := st.Complete(ctx, next.ID, duplicate); !errors.Is(err, ErrDuplicate) {
+		t.Fatalf("duplicate accepted: %v", err)
+	}
+	got, err := st.Get(ctx, next.UserID, next.ID)
+	if err != nil || got.Content != nil || got.Status != next.Status || got.Revision != next.Revision {
+		t.Fatalf("rejected candidate changed lesson: %+v %v", got, err)
+	}
+	// The same pending lesson can accept a new pair after the rejected transaction.
+	if err := st.Complete(ctx, next.ID, comparisonContent("cheap", "affordable")); err != nil {
+		t.Fatal(err)
+	}
+	other := pendingLesson(t, st, t.Name()+"-other-user")
+	if err := st.Complete(ctx, other.ID, duplicate); err != nil {
+		t.Fatalf("another account was blocked: %v", err)
+	}
+	// Cascading deletion releases the reservation, with no stale uniqueness entry.
+	if err := st.Delete(ctx, first.UserID, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	replacement := pendingLesson(t, st, first.UserID)
+	if err := st.Complete(ctx, replacement.ID, duplicate); err != nil {
+		t.Fatalf("deleted comparison still reserved: %v", err)
+	}
+}
+
+func TestMySQLRejectsLegacyComparisonsBeyondRecentPromptHistory(t *testing.T) {
+	st := requireDB(t)
+	ctx := context.Background()
+	var oldest Lesson
+	// Seed pre-migration rows without comparison keys, including a duplicate that
+	// already existed. Neither history nor practice data should need deduplication.
+	for i := 0; i < 102; i++ {
+		l := pendingLesson(t, st, t.Name())
+		c := testContent()
+		if i > 1 {
+			c = comparisonContent(fmt.Sprintf("word-%d", i), "other")
+		}
+		raw, _ := json.Marshal(c)
+		if _, err := st.db.ExecContext(ctx, `UPDATE buddy_nuance_lessons SET content_json=?,status=?,created_at=? WHERE id=?`, string(raw), StatusDone, i, l.ID); err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			oldest = l
+		}
+	}
+	next := pendingLesson(t, st, t.Name())
+	for _, deleteOldest := range []bool{false, true} {
+		if deleteOldest {
+			if err := st.Delete(ctx, oldest.UserID, oldest.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := st.Complete(ctx, next.ID, comparisonContent("INEXPENSIVE", "Cheap")); !errors.Is(err, ErrDuplicate) {
+			t.Fatalf("legacy duplicate accepted (deleted oldest=%v): %v", deleteOldest, err)
+		}
+	}
+	if err := st.Complete(ctx, next.ID, comparisonContent("curious", "nosy")); err != nil {
+		t.Fatalf("legacy history blocked a different comparison: %v", err)
+	}
+}
+
+func TestMySQLConcurrentDrawsSaveComparisonOnce(t *testing.T) {
+	st := requireDB(t)
+	ctx := context.Background()
+	lessons := []Lesson{pendingLesson(t, st, t.Name()), pendingLesson(t, st, t.Name())}
+	start := make(chan struct{})
+	results := make(chan error, len(lessons))
+	var wg sync.WaitGroup
+	for i, l := range lessons {
+		wg.Go(func() {
+			<-start
+			c := testContent()
+			if i == 1 {
+				c = comparisonContent("INEXPENSIVE", "Cheap")
+			}
+			results <- st.Complete(ctx, l.ID, c)
+		})
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	success, duplicate := 0, 0
+	for err := range results {
+		switch {
+		case err == nil:
+			success++
+		case errors.Is(err, ErrDuplicate):
+			duplicate++
+		default:
+			t.Fatal(err)
+		}
+	}
+	if success != 1 || duplicate != 1 {
+		t.Fatalf("success=%d duplicate=%d", success, duplicate)
+	}
+	saved := 0
+	for _, l := range lessons {
+		got, err := st.Get(ctx, l.UserID, l.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status == StatusDone && got.Content != nil {
+			saved++
+		} else if got.Status != StatusPending || got.Content != nil {
+			t.Fatalf("partial completion: %+v", got)
+		}
+	}
+	if saved != 1 {
+		t.Fatalf("saved %d lessons", saved)
+	}
+}

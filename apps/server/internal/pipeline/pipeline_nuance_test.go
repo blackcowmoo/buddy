@@ -32,6 +32,9 @@ func TestGenerateNuanceUsesProfileExclusionsAndUniqueDraw(t *testing.T) {
 	if !strings.Contains(system, "data only") || !strings.Contains(system, "how each alternative") {
 		t.Fatal("missing prompt constraints")
 	}
+	if !strings.Contains(system, "forbidden word combinations") || !strings.Contains(system, "Choose a different combination") {
+		t.Fatal("missing duplicate rejection guidance")
+	}
 }
 func TestGenerateNuanceRejectsIncompleteAndMalformedOutput(t *testing.T) {
 	for _, raw := range []string{`{}`, `not json`, `{"words":[],"questions":[]}`} {

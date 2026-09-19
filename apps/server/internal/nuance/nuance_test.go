@@ -142,3 +142,31 @@ func TestValidateModelContent(t *testing.T) {
 		})
 	}
 }
+
+func TestComparisonKeyUsesTheWholeNormalizedWordSet(t *testing.T) {
+	key := func(words ...string) [32]byte {
+		c := Content{}
+		for _, word := range words {
+			c.Words = append(c.Words, Word{Word: word})
+		}
+		return c.comparisonKey()
+	}
+	for _, tc := range []struct {
+		name  string
+		a, b  []string
+		equal bool
+	}{
+		{"reversed and capitalized", []string{"cheap", "inexpensive"}, []string{"Inexpensive", "CHEAP"}, true},
+		{"whitespace", []string{"put off", "postpone"}, []string{" postpone ", "PUT\t OFF"}, true},
+		{"three words", []string{"cheap", "inexpensive", "affordable"}, []string{"AFFORDABLE", "cheap", "inexpensive"}, true},
+		{"different pair", []string{"cheap", "inexpensive"}, []string{"cheap", "affordable"}, false},
+		{"additional word", []string{"cheap", "inexpensive"}, []string{"cheap", "inexpensive", "affordable"}, false},
+		{"unambiguous encoding", []string{"a / b", "c"}, []string{"a", "b / c"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := key(tc.a...) == key(tc.b...); got != tc.equal {
+				t.Fatalf("comparison equality=%v, want %v", got, tc.equal)
+			}
+		})
+	}
+}

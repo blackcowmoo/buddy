@@ -18,6 +18,8 @@ import (
 // not model runtime.
 const NuanceClaimTTL = 15 * time.Minute
 
+const nuanceGenerationAttempts = 3
+
 type nuanceJobPayload struct{ UserID, LessonID string }
 
 var nuanceInlineJobs sync.Map
@@ -50,26 +52,39 @@ func NuanceJobHandler(pipe *pipeline.Pipeline, st nuance.Store, profile func(con
 		previous := []string{}
 		for _, old := range lessons {
 			if old.Content != nil {
-				words := []string{}
-				for _, w := range old.Content.Words {
-					words = append(words, w.Word)
-				}
-				previous = append(previous, strings.Join(words, " / "))
+				previous = append(previous, nuanceComparison(*old.Content))
 			}
-		}
-		// Bound prompt growth while retaining the most recent comparisons.
-		if len(previous) > 100 {
-			previous = previous[len(previous)-100:]
 		}
 		// Status transitions advance the durable revision so a rejected model
 		// response cached by the LLM client cannot poison every retry of this draw.
-		requestID := fmt.Sprintf("%s:%d", p.LessonID, l.Revision)
-		c, err := pipe.GenerateNuance(ctx, learner, previous, requestID)
-		if err != nil {
-			return err
+		for attempt := 0; attempt < nuanceGenerationAttempts; attempt++ {
+			// Only the prompt is bounded; MySQL checks the entire saved history.
+			if len(previous) > 100 {
+				previous = previous[len(previous)-100:]
+			}
+			requestID := fmt.Sprintf("%s:%d:%d", p.LessonID, l.Revision, attempt)
+			c, err := pipe.GenerateNuance(ctx, learner, previous, requestID)
+			if err != nil {
+				return err
+			}
+			err = st.Complete(ctx, p.LessonID, c)
+			if !errors.Is(err, nuance.ErrDuplicate) {
+				return err
+			}
+			// Include the rejected comparison even if it is old or another draw
+			// saved it after we loaded the exclusions. The attempt ID avoids cache reuse.
+			previous = append(previous, nuanceComparison(c))
 		}
-		return st.Complete(ctx, p.LessonID, c)
+		return fmt.Errorf("%w after %d generation attempts", nuance.ErrDuplicate, nuanceGenerationAttempts)
 	})
+}
+
+func nuanceComparison(c nuance.Content) string {
+	words := make([]string, len(c.Words))
+	for i, w := range c.Words {
+		words[i] = w.Word
+	}
+	return strings.Join(words, " / ")
 }
 
 func EnqueueNuance(ctx context.Context, q *asyncjob.Queue, pipe *pipeline.Pipeline, st nuance.Store, profile func(context.Context, string) (string, error), userID, id string) error {
