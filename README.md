@@ -24,9 +24,15 @@ corrections**.
 Open **단어 뉘앙스** from the menu (`nuance`, also under a `ROOT_PATH`
 prefix). Like article practice, the page lists the learner's generated lessons
 and opens each one in a focused comparison/practice view. **새 문제 만들기**
-uses the analysis LLM and learner profile to generate 2–3 overlapping English
+uses the analysis LLM and learner profile to generate 2–3 interchangeable English
 words, Korean usage explanations, translated examples, and 4–6 context
-questions. Recent comparisons are passed as exclusions. MySQL rejects a saved
+questions. The generation prompt requires every option to preserve grammar and
+the same core meaning in every exercise sentence; the preferred answer depends
+on tone, register, or speaker attitude. Shared Korean translations alone do not
+qualify a word set. Explanations compare the feeling of each substitution, and
+the model checks all substitutions before returning the lesson. These semantic
+criteria are prompt instructions; server validation checks the response structure.
+Recent comparisons are passed as exclusions. MySQL rejects a saved
 word combination already present in the same account, ignoring word order,
 case, and spacing, including lessons created before duplicate protection was
 added. A unique key prevents concurrent draws from saving the same combination.

@@ -53,6 +53,9 @@ it("lists generated history, omits search and dictionary links, and opens the co
   expect(new URLSearchParams(window.location.search).get("lesson")).toBe(lesson.id);
   fireEvent.click(screen.getByRole("button", { name: "← 목록으로" }));
   expect(await screen.findByRole("button", { name: "＋ 새 문제 만들기" })).toBeInTheDocument();
+  expect(screen.getByText("같은 뜻, 미묘하게 다른 느낌")).toBeInTheDocument();
+  expect(screen.getByText(/서로 바꿔 써도 기본 뜻이 통하는 단어들을 비교해요/)).toBeInTheDocument();
+  expect(screen.getByText(/의도에 더 잘 맞는 표현을 놓친 문맥은 다시 풀고/)).toBeInTheDocument();
 });
 it("hides the translation and explanation until the server grades, then saves the forced-guess choice", async () => {
   await open(); await start();
