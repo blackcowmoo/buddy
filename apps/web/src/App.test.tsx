@@ -10,12 +10,10 @@ import type { ServerEvent } from "./lib/protocol";
 
 let capturedOnEvent: ((e: ServerEvent) => void) | null = null;
 
-// Mirrors lib/roomHistory's RoomHistoryState — mocked below so these tests
-// assert on the calls App.tsx makes into that module instead of fighting
+// History is mocked below so these tests assert on App's calls instead of fighting
 // jsdom's location/history plumbing (see lib/roomHistory.test.ts for real
 // coverage of the module itself).
-type MockRoomState = { view: "list" } | { view: "chat"; id: string | null };
-let capturedPopStateHandler: ((s: MockRoomState) => void) | null = null;
+let capturedPopStateHandler: ((s: RoomHistoryState) => void) | null = null;
 
 vi.mock("./lib/ws", () => ({
   BuddyClient: vi.fn().mockImplementation(function BuddyClient(
@@ -93,7 +91,7 @@ vi.mock("./lib/roomHistory", () => ({
   pushRoomState: vi.fn(),
   replaceRoomState: vi.fn(),
   goBack: vi.fn(),
-  onRoomPopState: vi.fn((handler: (s: MockRoomState) => void) => {
+  onRoomPopState: vi.fn((handler: (s: RoomHistoryState) => void) => {
     capturedPopStateHandler = handler;
     return vi.fn();
   }),
@@ -107,6 +105,7 @@ import {
   parseRoomHash,
   pushRoomState,
   replaceRoomState,
+  type RoomHistoryState,
 } from "./lib/roomHistory";
 import {
   deleteSession,
@@ -1569,12 +1568,31 @@ describe("room list", () => {
 // markInstant) so it's excluded from the main room list — see the separate
 // "instant sessions page" describe block below for its own dedicated list.
 describe("quick mode (인스턴트 대화)", () => {
+  it("opens and marks a fresh instant room from the start link on mount", async () => {
+    const actual = await vi.importActual<typeof import("./lib/roomHistory")>("./lib/roomHistory");
+    vi.mocked(parseRoomHash).mockImplementation(actual.parseRoomHash);
+    location.hash = "#instant/new";
+    vi.mocked(currentRoomHistoryState).mockReturnValue({ view: "chat", id: null, quick: true });
+    render(<App />);
+
+    expect(await screen.findByText(/인스턴트 대화: 문장을 하나 보내면 답변과 피드백을/)).toBeInTheDocument();
+    expect(lastClientInstance().connect).toHaveBeenCalledWith(undefined);
+    expect(fetchSessionDetail).not.toHaveBeenCalled();
+    expect(pushRoomState).not.toHaveBeenCalled();
+
+    act(() => emit({ type: "ready", turn: 0, session: "i1" }));
+
+    expect(markInstant).toHaveBeenCalledWith("i1");
+    expect(replaceRoomState).toHaveBeenLastCalledWith({ view: "chat", id: "i1" });
+  });
+
   it("opens a fresh room with no session id and shows the quick-mode hint", async () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(screen.getByRole("button", { name: "✏️ 인스턴트 대화" }));
 
     expect(lastClientInstance().connect).toHaveBeenCalledWith(undefined);
+    expect(pushRoomState).toHaveBeenCalledWith({ view: "chat", id: null, quick: true });
     expect(
       await screen.findByText(/인스턴트 대화: 문장을 하나 보내면 답변과 피드백을/),
     ).toBeInTheDocument();
@@ -1592,11 +1610,16 @@ describe("quick mode (인스턴트 대화)", () => {
     await vi.waitFor(() => expect(markInstant).toHaveBeenCalledWith("s1"));
   });
 
-  it("locks the composer right after sending, then auto-ends once the reply's correction lands — no manual 종료 tap", async () => {
+  it.each(["home", "instant start link"])("locks the composer and auto-ends after feedback when started from %s", async (entry) => {
     vi.mocked(endSession).mockResolvedValue(true);
+    if (entry === "instant start link") {
+      vi.mocked(parseRoomHash).mockReturnValue({ view: "chat", id: null, quick: true });
+    }
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "✏️ 인스턴트 대화" }));
+    if (entry === "home") {
+      await user.click(screen.getByRole("button", { name: "✏️ 인스턴트 대화" }));
+    }
     act(() => emit({ type: "ready", turn: 0, session: "s1" }));
 
     const textarea = await screen.findByPlaceholderText("영어로 편하게 이야기해 보세요");
@@ -1678,6 +1701,18 @@ describe("quick mode (인스턴트 대화)", () => {
 });
 
 describe("browser history", () => {
+  it("restores instant mode when navigating forward to a pending instant room", async () => {
+    render(<App />);
+    const state: RoomHistoryState = { view: "chat", id: null, quick: true };
+    act(() => capturedPopStateHandler?.(state));
+
+    expect(await screen.findByText(/인스턴트 대화: 문장을 하나 보내면 답변과 피드백을/)).toBeInTheDocument();
+    expect(lastClientInstance().connect).toHaveBeenCalledWith(undefined);
+    act(() => emit({ type: "ready", turn: 0, session: "i1" }));
+    expect(markInstant).toHaveBeenCalledWith("i1");
+    expect(pushRoomState).not.toHaveBeenCalled();
+  });
+
   it("pushes a history entry for a brand-new room", async () => {
     const user = userEvent.setup();
     render(<App />);
