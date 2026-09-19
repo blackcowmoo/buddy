@@ -133,6 +133,31 @@ export function WordMatch() {
               <span>{elapsedSec}초</span>
             </div>
 
+            <div className="word-match-grid">
+              {cards.map((card) => {
+                const isMatched = matched.has(card.wordId);
+                const isFaceUp = isMatched || flipped.includes(card.cardId);
+                return (
+                  <button
+                    key={card.cardId}
+                    type="button"
+                    className={
+                      isMatched
+                        ? "word-match-card word-match-card-matched"
+                        : isFaceUp
+                          ? "word-match-card word-match-card-flipped"
+                          : "word-match-card"
+                    }
+                    onClick={() => flipCard(card)}
+                    disabled={isMatched}
+                    aria-label={isFaceUp ? card.label : "카드 뒤집기"}
+                  >
+                    {isFaceUp ? card.label : "?"}
+                  </button>
+                );
+              })}
+            </div>
+
             {won ? (
               <div className="word-match-won" role="status">
                 <p>{pairCount}쌍을 모두 맞혔어요! {moves}번 만에, {elapsedSec}초 걸렸어요.</p>
@@ -141,35 +166,9 @@ export function WordMatch() {
                 </button>
               </div>
             ) : (
-              <>
-                <div className="word-match-grid">
-                  {cards.map((card) => {
-                    const isMatched = matched.has(card.wordId);
-                    const isFaceUp = isMatched || flipped.includes(card.cardId);
-                    return (
-                      <button
-                        key={card.cardId}
-                        type="button"
-                        className={
-                          isMatched
-                            ? "word-match-card word-match-card-matched"
-                            : isFaceUp
-                              ? "word-match-card word-match-card-flipped"
-                              : "word-match-card"
-                        }
-                        onClick={() => flipCard(card)}
-                        disabled={isMatched}
-                        aria-label={isFaceUp ? card.label : "카드 뒤집기"}
-                      >
-                        {isFaceUp ? card.label : "?"}
-                      </button>
-                    );
-                  })}
-                </div>
-                <button type="button" className="ghost quiz-back-btn" onClick={restart}>
-                  다시 섞기
-                </button>
-              </>
+              <button type="button" className="ghost quiz-back-btn" onClick={restart}>
+                다시 섞기
+              </button>
             )}
           </>
         )}

@@ -126,11 +126,11 @@ describe("WordMatch page", () => {
     }
   });
 
-  it("shows a completion message with move/time stats and a restart button once every pair is matched", async () => {
+  it("keeps every matched word and meaning on the board with the result below it", async () => {
     vi.mocked(fetchWords).mockResolvedValue({ words: [w1, w2, w3], dueCount: 0 });
     render(<WordMatch />);
     await screen.findAllByRole("button", { name: "카드 뒤집기" });
-    let cards = cardButtons();
+    const cards = cardButtons();
 
     // jaded (1,2) and ecstatic (3,4) match on the first try each.
     fireEvent.click(cards[1]);
@@ -141,7 +141,45 @@ describe("WordMatch page", () => {
     fireEvent.click(cards[0]);
     fireEvent.click(cards[5]);
 
-    expect(await screen.findByText(/3쌍을 모두 맞혔어요/)).toBeInTheDocument();
+    const result = screen.getByText(/3쌍을 모두 맞혔어요! 3번 만에, \d+초 걸렸어요\./);
+    const completedCards = cardButtons();
+    expect(completedCards).toHaveLength(cards.length);
+    completedCards.forEach((card, index) => {
+      expect(card).toBe(cards[index]);
+      expect(card).toBeVisible();
+      expect(card).toBeDisabled();
+      expect(card.compareDocumentPosition(result) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+    for (const { word, meaning } of [w1, w2, w3]) {
+      expect(screen.getByRole("button", { name: word })).toHaveTextContent(word);
+      expect(screen.getByRole("button", { name: meaning })).toHaveTextContent(meaning);
+    }
+    expect(screen.queryByRole("button", { name: "카드 뒤집기" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "다시 섞기" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "다시 하기" })).toBeInTheDocument();
+  });
+
+  it("clears the completed board and result when starting another round", async () => {
+    vi.mocked(fetchWords).mockResolvedValue({ words: [w1, w2, w3], dueCount: 0 });
+    render(<WordMatch />);
+    const cards = await screen.findAllByRole("button", { name: "카드 뒤집기" });
+
+    for (const index of [1, 2, 3, 4, 0, 5]) fireEvent.click(cards[index]);
+    fireEvent.click(screen.getByRole("button", { name: "다시 하기" }));
+
+    expect(screen.queryByText(/모두 맞혔어요/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "다시 하기" })).not.toBeInTheDocument();
+    const restartedCards = screen.getAllByRole("button", { name: "카드 뒤집기" });
+    expect(restartedCards).toHaveLength(6);
+    restartedCards.forEach((card) => expect(card).toBeEnabled());
+    expect(screen.getByText("시도 0번")).toBeInTheDocument();
+    expect(screen.getByText("0초")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "다시 섞기" })).toBeInTheDocument();
+
+    fireEvent.click(restartedCards[1]);
+    fireEvent.click(restartedCards[2]);
+    expect(screen.getByRole("button", { name: "jaded" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "지친" })).toBeDisabled();
+    expect(screen.getByText("시도 1번")).toBeInTheDocument();
   });
 });
