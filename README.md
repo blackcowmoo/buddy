@@ -22,16 +22,32 @@ corrections**.
 ## Word nuance practice
 
 Open **단어 뉘앙스** from the menu (`nuance`, also under a `ROOT_PATH`
-prefix). Six authored comparison sets pair overlapping Korean meanings with
-English usage distinctions, translated examples, dictionary links, and twelve
-context questions. Feedback explains both the preferred word and what the
-alternative would imply; it does not treat every alternative as ungrammatical.
-Learners can search the sets and retry mistakes or a whole set.
+prefix). Like article practice, the page lists the learner's generated lessons
+and opens each one in a focused comparison/practice view. **새 문제 만들기**
+uses the analysis LLM and learner profile to generate 2–3 overlapping English
+words, Korean usage explanations, translated examples, and 4–6 context
+questions. Recent comparisons are passed as exclusions. There is no fixed
+curriculum, comparison search, or dictionary-link UI.
 
-Answers persist in this browser's local storage, with a visible warning if
-saving fails. They are not account data or synchronized across devices. This
-initial curriculum is static (`apps/web/src/lib/nuance.ts`); it does not call
-an LLM or generate new word comparisons from the search box.
+Generation persists `pending` / `processing` / `done` / `failed` in MySQL.
+With Redis, `asyncjob.KindNuance` keeps generating across navigation and worker
+failure; without Redis it uses detached inline execution. Reopening pending
+lessons recovers interrupted inline work or the database/queue enqueue gap.
+Failed lessons offer a retry. The list polls generation status even when a
+different lesson is open.
+
+Answers are graded server-side. Each question uses the same spaced-review
+schedule as today's words: mistakes return at the end of the current queue;
+correct answers advance through 1, 2, 4, 7, 15, 30 days and longer intervals.
+**맞혔지만 다시 복습** preserves the previous stage/spacing. The queue, revealed
+feedback, per-question progress, and attempt history are account-scoped MySQL
+data, so another device can resume. Row locks and revisions prevent duplicate
+submissions from advancing progress twice. Choices move on each retry and stay
+stable during feedback. Deleting a lesson also deletes its attempts.
+
+The previous static curriculum's browser-only answers are not imported into
+generated lessons: those are different questions. New progress does not use
+local storage.
 
 ## Two-track pipeline
 

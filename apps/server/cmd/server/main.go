@@ -20,6 +20,7 @@ import (
 	"buddy/server/internal/identity"
 	"buddy/server/internal/llm"
 	"buddy/server/internal/newsarticle"
+	"buddy/server/internal/nuance"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/recording"
 	"buddy/server/internal/store"
@@ -154,6 +155,9 @@ func main() {
 	defer articles.Close()
 	writingStore := buildWritingStore(context.Background(), st)
 	defer writingStore.Close()
+	nuanceDB, _ := st.DB()
+	nuanceStore := nuance.NewMySQL(nuanceDB)
+	nuanceQueue := startWorker(rdb, jobsCtx, asyncjob.KindNuance, 1, transport.NuanceClaimTTL, transport.NuanceJobHandler(pipe, nuanceStore, st.GetLearnerProfile))
 
 	writingQueue := startWorker(rdb, jobsCtx, asyncjob.KindWritingPrompt, transport.WritingWorkerConcurrency, transport.WritingClaimTTL,
 		transport.WritingJobHandler(pipe, writingStore, st.GetLearnerProfile))
@@ -286,6 +290,7 @@ func main() {
 		Words:        wordReviews,
 		Articles:     articles,
 		Writing:      writingStore,
+		Nuance:       nuanceStore,
 		ArticleAudio: articleAudio,
 		Redis:        rdb,
 		Queues: httpserver.JobQueues{
@@ -297,6 +302,7 @@ func main() {
 			ProfileRegenerate: profileRegenerateQueue,
 			ArticleStudy:      articleStudyQueue,
 			Writing:           writingQueue,
+			Nuance:            nuanceQueue,
 			WordAutoAdd:       wordAutoAddQueue,
 			WordDefine:        wordDefineQueue,
 			WordResearch:      wordResearchQueue,

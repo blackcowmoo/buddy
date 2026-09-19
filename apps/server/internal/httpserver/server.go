@@ -15,6 +15,7 @@ import (
 	"buddy/server/internal/identity"
 	"buddy/server/internal/newsarticle"
 	"buddy/server/internal/newsfeed"
+	"buddy/server/internal/nuance"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/recording"
 	"buddy/server/internal/store"
@@ -35,6 +36,7 @@ type JobQueues struct {
 	ProfileRegenerate *asyncjob.Queue
 	ArticleStudy      *asyncjob.Queue
 	Writing           *asyncjob.Queue
+	Nuance            *asyncjob.Queue
 	WordAutoAdd       *asyncjob.Queue
 	WordDefine        *asyncjob.Queue
 	WordResearch      *asyncjob.Queue
@@ -53,6 +55,7 @@ type Dependencies struct {
 	Words        wordreview.Store
 	Articles     newsarticle.Store
 	Writing      writing.Store
+	Nuance       nuance.Store
 	ArticleAudio *transport.ArticleAudio
 	Redis        redis.UniversalClient
 	Queues       JobQueues
@@ -119,6 +122,9 @@ func New(cfg config.Config, deps Dependencies) *http.Server {
 	mux.HandleFunc("DELETE /api/sessions/{id}", sessionDeleteHandler(ident, st, audio, recordings, pipe, profileRegenerateQueue))
 	mux.HandleFunc("GET /api/settings", settingsGetHandler(ident, st))
 	mux.HandleFunc("PUT /api/settings", settingsSaveHandler(ident, st))
+	if deps.Nuance != nil {
+		registerNuance(mux, ident, deps.Nuance, pipe, st.GetLearnerProfile, deps.Queues.Nuance)
+	}
 	mux.HandleFunc("GET /api/writing", writingListHandler(ident, writingStore))
 	mux.HandleFunc("POST /api/writing/draw", writingDrawHandler(ident, writingStore, st.GetLearnerProfile, pipe, writingQueue))
 	mux.HandleFunc("GET /api/writing/{id}", writingInstanceHandler(ident, writingStore))

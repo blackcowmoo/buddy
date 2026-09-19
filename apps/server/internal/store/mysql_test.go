@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"buddy/server/internal/testdocker"
+
 	"github.com/testcontainers/testcontainers-go"
 	tcmysql "github.com/testcontainers/testcontainers-go/modules/mysql"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -63,7 +65,7 @@ func runMySQLTests(m *testing.M) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
-	container, err := tcmysql.Run(ctx, "mysql:8.0",
+	container, err := tcmysql.Run(ctx, "mysql:8.0", testdocker.WithProcessSession(),
 		tcmysql.WithDatabase("buddy"),
 		tcmysql.WithUsername("buddy"),
 		tcmysql.WithPassword("buddy"),
@@ -160,7 +162,7 @@ func TestMySQLNewMySQLLeavesPoolOpenAfterMigration(t *testing.T) {
 }
 
 // TestMySQLUsesGolangMigrateHistory verifies that startup records the
-// baseline in golang-migrate's version/dirty table. A clean version marker is
+// current schema in golang-migrate's version/dirty table. A clean version marker is
 // what prevents a second replica from re-running DDL after the advisory lock
 // is released.
 func TestMySQLUsesGolangMigrateHistory(t *testing.T) {
@@ -170,8 +172,8 @@ func TestMySQLUsesGolangMigrateHistory(t *testing.T) {
 	if err := st.rw.QueryRow(`SELECT version, dirty FROM buddy_migrate_schema_migrations`).Scan(&version, &dirty); err != nil {
 		t.Fatalf("golang-migrate history: %v", err)
 	}
-	if version != 1 || dirty {
-		t.Fatalf("golang-migrate history = version %d, dirty %v; want version 1, clean", version, dirty)
+	if version != 2 || dirty {
+		t.Fatalf("golang-migrate history = version %d, dirty %v; want version 2, clean", version, dirty)
 	}
 }
 

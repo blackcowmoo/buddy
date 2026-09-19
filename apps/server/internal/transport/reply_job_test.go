@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"buddy/server/internal/testdocker"
+
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -40,7 +42,7 @@ func runReplyJobTests(m *testing.M) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	container, err := tcredis.Run(ctx, "redis:7")
+	container, err := tcredis.Run(ctx, "redis:7", testdocker.WithProcessSession())
 	if err != nil {
 		sharedRedisErr = err
 		return m.Run()
