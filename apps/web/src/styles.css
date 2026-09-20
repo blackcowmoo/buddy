@@ -612,7 +612,7 @@ body {
    of gathered into one separate input/textarea below it (see WordReview.tsx
    computeBlank and EndConversationControl.tsx's QuizPanel). .quiz-blank-
    sentence just needs to let its inline inputs wrap with the surrounding
-   text; .quiz-prompt/.word-search-example already set the font. */
+   text; .quiz-prompt already sets the font. */
 .quiz-blank-sentence { line-height: 1.8; }
 .quiz-blank-input {
   font: inherit;
@@ -1154,32 +1154,22 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
 .recording-row audio { width: 100%; height: 36px; }
 .recording-delete { width: 32px; height: 32px; min-height: 32px; font-size: 14px; flex-shrink: 0; background: transparent; box-shadow: none; }
 
-/* Word-review page (pages/WordReview.tsx) — reuses .recording-row's card
-   shape for each tracked word, and .quiz-* (App.tsx's QuizPanel) for the
-   review-quiz interaction itself. */
+/* Word review uses the same history rows and quiz controls as the other
+   learning pages. Keep all lists in the page's single scroll container. */
 .word-review-page { gap: 10px; }
 .word-review-due-hint { margin: 0; }
+.word-list-section { display: flex; flex-direction: column; gap: 12px; }
 .word-list { display: flex; flex-direction: column; gap: 10px; list-style: none; margin: 0; padding: 0; }
-.word-list-scroll { max-height: min(70vh, 720px); overflow-y: auto; overscroll-behavior: contain; }
-.word-list-more-hint { margin: 0 0 8px; color: var(--muted); font-size: 12px; text-align: center; }
-.word-list-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 14px;
-  box-shadow: var(--shadow-xs);
+.word-list-item {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  cursor: auto;
+  overflow-wrap: anywhere;
 }
-.word-list-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.word-list-item .title { white-space: normal; }
+.word-list-meaning { font-size: 13px; color: var(--muted); }
 .word-list-next { font-size: 12px; color: var(--muted); }
-.word-list-delete { width: 32px; height: 32px; min-height: 32px; font-size: 14px; flex-shrink: 0; background: transparent; box-shadow: none; }
-/* Section headers splitting the word list into 복습중인 단어/확정 전 단어/제외된 단어
-   (see WordReview.tsx) — small and muted like other section-y labels
-   (.tts-settings-label), not competing with the page's own <h1>. */
-.word-section-title { font-size: 13px; font-weight: 600; color: var(--muted); margin: 4px 0 0; }
 .word-list-row-rejected { border-color: var(--err); }
 .word-list-reject-reason { font-size: 12px; color: var(--err); }
 
@@ -1220,9 +1210,9 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
 .nuance-progress, .nuance-translation { color: var(--muted); font-size: 12px; }
 .nuance-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .nuance-list-back { align-self: flex-start; }
-.nuance-tabs, .nuance-options, .nuance-review { display: flex; flex-wrap: wrap; gap: 10px; }
-.nuance-tabs button, .nuance-options button { flex: 1; }
-.nuance-tabs [aria-pressed="true"], .nuance-options [aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent-strong); }
+.nuance-tabs, .nuance-review { display: flex; flex-wrap: wrap; gap: 10px; }
+.nuance-tabs button { flex: 1; }
+.nuance-tabs [aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent-strong); }
 .nuance-word, .nuance-question { padding: 20px; border: 1px solid var(--border-2); border-radius: var(--radius); background: var(--panel); min-width: 0; }
 .nuance-word h3 { margin: 0 0 10px; font-size: 23px; overflow-wrap: anywhere; }
 .nuance-word p, .nuance-question p { line-height: 1.7; font-size: 14px; }
@@ -1231,7 +1221,7 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
 .nuance-sentence { font-weight: 550; }
 .nuance-caveat { margin: 0; padding: 15px 18px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: var(--radius-sm); font-size: 13px; line-height: 1.7; }
 .nuance-question h3 { font-size: 14px; line-height: 1.7; margin: 0; font-weight: 500; }
-.nuance-options button:disabled { opacity: 1; }
+.nuance-question .quiz-check-btn { margin-top: 12px; }
 .nuance-feedback { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border-2); }
 .nuance-feedback strong { color: var(--accent-strong); font-size: 14px; }
 .nuance-feedback p:last-child { margin-bottom: 0; }

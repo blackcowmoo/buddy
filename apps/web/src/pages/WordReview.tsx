@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { QuizChoices } from "../components/QuizChoices";
 import { EmptyState, LearningIntro } from "../components/LearningIntro";
 import { confirmThenDelete } from "../lib/confirmDelete";
 import {
@@ -16,7 +17,7 @@ import {
 import type { WordSuggestion } from "../lib/protocol";
 import { formatAbsoluteDateTime } from "../lib/time";
 import { shuffled } from "../lib/shuffle";
-import { checkQuizAnswer, normalizeQuizAnswer as normalizeAnswer, quizBlankInputClass, quizChoiceClass } from "../lib/quizCheck";
+import { checkQuizAnswer, normalizeQuizAnswer as normalizeAnswer, quizBlankInputClass } from "../lib/quizCheck";
 import { SubPageHeader } from "../components/SubPageHeader";
 import { usePollScaffold } from "../hooks/usePollScaffold";
 import { LoadingHint } from "../components/LoadingHint";
@@ -87,12 +88,10 @@ export function WordReview() {
   const [state, setState] = useState<LoadState>("loading");
   const [words, setWords] = useState<WordReviewItem[]>([]);
   const [dueCount, setDueCount] = useState(0);
-  // The newest 20 reviewed words are shown first. Older words are prepended
-  // when the learner scrolls to the top of the list.
+  // Match the article history: recent reviews first, older entries below.
+  // The page owns scrolling so nested lists do not trap touch gestures.
   const [reviewOlderCount, setReviewOlderCount] = useState(0);
   const reviewPageRef = useRef<HTMLElement>(null);
-  const reviewListRef = useRef<HTMLDivElement>(null);
-  const reviewScrollAdjustment = useRef<{ top: number; height: number } | null>(null);
 
   // null = list view; an array (possibly empty) = quiz in progress, built
   // once from the due words at the moment "복습 시작" was pressed so the
@@ -108,6 +107,7 @@ export function WordReview() {
   const [similarHint, setSimilarHint] = useState(false);
   const [correctCount, setCorrectCount] = useState(0);
   const blankRef = useRef<HTMLInputElement>(null);
+  const nextButtonRef = useRef<HTMLButtonElement>(null);
   const [autoAdding, setAutoAdding] = useState(false);
   const [autoAddError, setAutoAddError] = useState<string | null>(null);
   const [researching, setResearching] = useState<Set<string>>(new Set());
@@ -192,12 +192,6 @@ export function WordReview() {
     }, 2000);
     return () => window.clearInterval(timer);
   }, [words]);
-
-  // A newly added word can change which slice is the newest page. Keep the
-  // initial view focused on the latest words after that happens.
-  useEffect(() => {
-    setReviewOlderCount(0);
-  }, [words.length]);
 
   const handleDelete = (id: string) => confirmThenDelete("이 단어를 삭제할까요?", deleteWord, id, setWords);
 
@@ -351,7 +345,7 @@ export function WordReview() {
   );
 
   const checkRecall = useCallback(async () => {
-    if (!currentItem || checked || currentItem.mode !== "recall" || !recallQuestion || !answer.trim()) return;
+    if (!currentItem || checked || checkingSimilarity || currentItem.mode !== "recall" || !recallQuestion || !answer.trim()) return;
     if (normalizeAnswer(answer) === normalizeAnswer(recallQuestion.answer)) {
       finishCheck(currentItem, true);
       return;
@@ -366,16 +360,25 @@ export function WordReview() {
       return;
     }
     finishCheck(currentItem, false);
-  }, [currentItem, checked, recallQuestion, answer, finishCheck]);
+  }, [currentItem, checked, checkingSimilarity, recallQuestion, answer, finishCheck]);
 
-  const chooseRecognition = useCallback(
-    (choice: string) => {
-      if (!currentItem || checked || currentItem.mode !== "recognition") return;
-      setSelectedChoice(choice);
-      finishCheck(currentItem, choice === currentItem.word.meaning);
-    },
-    [currentItem, checked, finishCheck],
-  );
+  const checkRecognition = () => {
+    if (!currentItem || checked || currentItem.mode !== "recognition" || selectedChoice === null) return;
+    finishCheck(currentItem, selectedChoice === currentItem.word.meaning);
+  };
+
+  const skipQuestion = () => {
+    if (!currentItem || checked || checkingSimilarity) return;
+    // An unsubmitted draft must not count as correct when the learner
+    // explicitly asks to reveal the answer instead.
+    setAnswer("");
+    setSelectedChoice(null);
+    finishCheck(currentItem, false);
+  };
+
+  useEffect(() => {
+    if (checked) nextButtonRef.current?.focus();
+  }, [checked]);
 
   const advanceToNext = useCallback(() => {
     setIndex(index + 1);
@@ -421,7 +424,7 @@ export function WordReview() {
   // question so the learner never has to reach for the mouse mid-question.
   const handleBlankKeyDown = useCallback(
     (e: KeyboardEvent<HTMLInputElement>) => {
-      if (e.key !== "Enter") return;
+      if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
       e.preventDefault();
       if (checked) {
         next();
@@ -446,91 +449,42 @@ export function WordReview() {
   const rejectedWords = words.filter((w) => w.status === "rejected");
 
   const sortedVerifiedWords = [...verifiedWords].sort((a, b) => {
-    const lastReviewedDifference = (a.lastReviewedAt ?? 0) - (b.lastReviewedAt ?? 0);
+    const lastReviewedDifference = (b.lastReviewedAt ?? 0) - (a.lastReviewedAt ?? 0);
     return lastReviewedDifference !== 0 ? lastReviewedDifference : a.id.localeCompare(b.id);
   });
-  const reviewStart = Math.max(0, sortedVerifiedWords.length - reviewWordsPageSize * (reviewOlderCount + 1));
-  const visibleVerifiedWords = sortedVerifiedWords.slice(reviewStart);
-  const hasOlderReviewWords = reviewStart > 0;
-
-  const loadOlderReviewWords = useCallback(() => {
-    if (!reviewListRef.current || !hasOlderReviewWords) return;
-    reviewScrollAdjustment.current = {
-      top: reviewListRef.current.scrollTop,
-      height: reviewListRef.current.scrollHeight,
-    };
-    setReviewOlderCount((count) => count + 1);
-  }, [hasOlderReviewWords]);
-
+  const visibleVerifiedWords = sortedVerifiedWords.slice(0, reviewWordsPageSize * (reviewOlderCount + 1));
+  const hasOlderReviewWords = visibleVerifiedWords.length < sortedVerifiedWords.length;
+  const loadOlderReviewWords = () => {
+    if (hasOlderReviewWords) setReviewOlderCount((count) => count + 1);
+  };
   const isListView = quizQueue === null;
-  const hasReviewWords = verifiedWords.length > 0;
 
-  // Both containers scroll independently. Open at the newest words and the
-  // bottom action before paint, including when returning from a quiz. Polling
-  // must not pull the learner away from older words they scrolled up to read.
+  // Start each view at its heading and primary action. Background polling
+  // must not move the page or collapse words the learner already loaded.
   useLayoutEffect(() => {
-    const list = reviewListRef.current;
-    if (isListView && list) list.scrollTop = list.scrollHeight;
-  }, [isListView, hasReviewWords]);
-
-  useLayoutEffect(() => {
-    const page = reviewPageRef.current;
-    if (state !== "ready" || !page) return;
-    page.scrollTop = isListView ? page.scrollHeight : 0;
+    if (state === "ready" && reviewPageRef.current) reviewPageRef.current.scrollTop = 0;
   }, [state, isListView]);
-
-  useLayoutEffect(() => {
-    const adjustment = reviewScrollAdjustment.current;
-    const container = reviewListRef.current;
-    if (!adjustment || !container) return;
-    container.scrollTop = adjustment.top + (container.scrollHeight - adjustment.height);
-    reviewScrollAdjustment.current = null;
-  }, [visibleVerifiedWords.length]);
 
   return (
     <div className="app">
       <SubPageHeader title="단어 복습" />
 
-      <main className="convo word-review-page" ref={reviewPageRef}>
+      <main
+        className="convo word-review-page"
+        ref={reviewPageRef}
+        onScroll={(event) => {
+          const page = event.currentTarget;
+          if (isListView && state === "ready" && page.scrollHeight - page.scrollTop - page.clientHeight <= 80) {
+            loadOlderReviewWords();
+          }
+        }}
+      >
         {quizQueue === null && <LearningIntro eyebrow="다시 만날수록 익숙해지는 단어" title="배운 표현을 내 것으로 만들어요" description="복습할 때가 된 단어를 문장 속에서 떠올려 보세요. 아직 낯선 표현은 다시 연습할 수 있어요." steps={["단어 모으기", "문장으로 복습", "다시 익히기"]} />}
         {state === "loading" && <LoadingHint />}
         {state === "error" && <p className="hint" role="alert">단어 목록을 불러오지 못했어요. 연결 상태를 확인한 뒤 다시 열어 주세요.</p>}
 
         {state === "ready" && quizQueue === null && (
           <>
-            {words.length === 0 && (
-              <EmptyState title="아직 학습 중인 단어가 없어요." description="아래 ‘새 단어 추가로 학습하기’로 시작하거나, 대화에서 단어를 검색한 뒤 ‘학습하기’를 눌러 모아 보세요." />
-            )}
-
-            <WordListSection
-              title={<><span>복습중인 단어</span> <span>({verifiedWords.length}개)</span></>}
-              words={visibleVerifiedWords}
-              listRef={reviewListRef}
-              hasMoreAbove={hasOlderReviewWords}
-              onScroll={(event) => {
-                if (event.currentTarget.scrollTop <= 8) loadOlderReviewWords();
-              }}
-              onDelete={(id) => void handleDelete(id)}
-              renderMeta={(w) => <><span className="word-list-next">다음 복습: {formatAbsoluteDateTime(w.nextReviewAt)}</span>{researchControls(w)}</>}
-            />
-            <WordListSection
-              title="확정 전 단어"
-              words={unconfirmedWords}
-              onDelete={(id) => void handleDelete(id)}
-              renderMeta={(w) => <><span className="word-list-next">확정 전</span>{researchControls(w)}</>}
-            />
-            <WordListSection
-              title="제외된 단어"
-              words={rejectedWords}
-              rowClassName="word-list-row-rejected"
-              onDelete={(id) => void handleDelete(id)}
-              renderMeta={(w) => (
-                <>
-                  {w.verifyReason && <span className="word-list-reject-reason">{w.verifyReason}</span>}
-                  {researchControls(w)}
-                </>
-              )}
-            />
             <p className="hint word-review-due-hint" role="status">
               {availableDueCount > 0
                 ? `복습할 단어 ${availableDueCount}개가 있어요.`
@@ -557,41 +511,74 @@ export function WordReview() {
               </p>
             )}
             {autoAddError && <p className="hint">{autoAddError}</p>}
+
+            {words.length === 0 && (
+              <EmptyState title="아직 학습 중인 단어가 없어요." description="‘새 단어 추가로 학습하기’로 시작하거나, 대화에서 단어를 검색한 뒤 ‘학습하기’를 눌러 모아 보세요." />
+            )}
+
+            <WordListSection
+              title="복습중인 단어"
+              count={verifiedWords.length}
+              words={visibleVerifiedWords}
+              onLoadMore={hasOlderReviewWords ? loadOlderReviewWords : undefined}
+              onDelete={(id) => void handleDelete(id)}
+              renderMeta={(w) => <><span className="word-list-next">다음 복습: {formatAbsoluteDateTime(w.nextReviewAt)}</span>{researchControls(w)}</>}
+            />
+            <WordListSection
+              title="확정 전 단어"
+              words={unconfirmedWords}
+              onDelete={(id) => void handleDelete(id)}
+              renderMeta={(w) => <><span className="word-list-next">확정 전</span>{researchControls(w)}</>}
+            />
+            <WordListSection
+              title="제외된 단어"
+              words={rejectedWords}
+              rowClassName="word-list-row-rejected"
+              onDelete={(id) => void handleDelete(id)}
+              renderMeta={(w) => (
+                <>
+                  {w.verifyReason && <span className="word-list-reject-reason">{w.verifyReason}</span>}
+                  {researchControls(w)}
+                </>
+              )}
+            />
           </>
         )}
 
         {state === "ready" && quizQueue !== null && (
-          <div className="quiz-panel">
+          <section className="quiz-panel" aria-label="단어 복습 문제">
             <button type="button" className="ghost quiz-back-btn" onClick={backToList}>
               ← 목록으로
             </button>
             {current === null || currentItem === null ? (
               <div className="quiz-question">
+                <div className="section-heading"><h2>복습 결과</h2></div>
                 <div className="quiz-score" role="status">
                   {quizQueue.length === 0
                     ? "복습할 단어가 없어요."
                     : `${quizQueue.length}개 중 ${correctCount}개 맞혔어요!`}
                 </div>
-                <button type="button" className="quiz-next-btn" onClick={backToList}>
+                <button autoFocus type="button" className="quiz-next-btn" onClick={backToList}>
                   완료
                 </button>
               </div>
             ) : (
               <div className="quiz-question">
-                <div className="quiz-progress">
-                  {index + 1} / {quizQueue.length}
+                <div className="section-heading history-heading">
+                  <h2>{currentItem.mode === "recall" ? "문장 속 단어 떠올리기" : "단어의 뜻 고르기"}</h2>
+                  <span className="quiz-progress" aria-label="문제 진행">{index + 1} / {quizQueue.length}</span>
                 </div>
-                <div className="quiz-review-age" role="note">
+                <div className="quiz-progress" role="note">
                   마지막 복습: {formatReviewAge(current.lastReviewedAt)}
                 </div>
                 {currentItem.mode === "recall" ? (
                   <>
-                    <div className="quiz-prompt">{current.meaning}</div>
+                    <p className="quiz-meaning-hint">{current.meaning}</p>
                     {/* The answer is typed directly in place inside the
                         sentence rather than in a separate textarea. Its
                         width follows what has been typed, not the hidden
                         answer's length, which would give it away. */}
-                    <div className="word-search-example quiz-blank-sentence">
+                    <div className="quiz-prompt quiz-blank-sentence" lang="en">
                       <span>
                         {recallPrefix}
                         <input
@@ -613,47 +600,33 @@ export function WordReview() {
                       </span>
                       <span>{recallSuffix}</span>
                     </div>
-                    {!checked && (
-                      <>
-                        {similarHint && <p className="quiz-result similar" role="status">유사한 정답이에요! 다시 입력해보세요.</p>}
-                        <div className="quiz-next-actions">
-                          <button type="button" className="quiz-check-btn" onClick={() => void checkRecall()} disabled={checkingSimilarity || !answer.trim()}>
-                            {checkingSimilarity ? "확인 중…" : "확인"}
-                          </button>
-                          <button type="button" className="ghost quiz-forced-btn" onClick={() => finishCheck(currentItem, false)} disabled={checkingSimilarity}>
-                            잘 모르겠어요
-                          </button>
-                        </div>
-                      </>
-                    )}
                   </>
                 ) : (
                   <>
-                    <div className="quiz-prompt">{current.word}</div>
-                    <div className="word-search-example">{current.example}</div>
-                    <div className="quiz-choices">
-                      {currentItem.choices!.map((choice, i) => {
-                        const isSelected = choice === selectedChoice;
-                        const isAnswer = choice === current.meaning;
-                        const cls = quizChoiceClass(checked, isSelected, isAnswer);
-                        return (
-                          <button
-                            key={i}
-                            type="button"
-                            className={cls}
-                            onClick={() => chooseRecognition(choice)}
-                            disabled={checked}
-                          >
-                            {choice}
-                          </button>
-                        );
-                      })}
+                    <div className="quiz-prompt" lang="en"><strong>{current.word}</strong></div>
+                    <div className="quiz-prompt" lang="en">{current.example}</div>
+                    <QuizChoices
+                      options={currentItem.choices!}
+                      selectedIndex={selectedChoice === null ? null : currentItem.choices!.indexOf(selectedChoice)}
+                      correctIndex={checked ? currentItem.choices!.indexOf(current.meaning) : undefined}
+                      label="단어의 뜻"
+                      onSelect={(index) => setSelectedChoice(currentItem.choices![index])}
+                    />
+                  </>
+                )}
+                {!checked && (
+                  <>
+                    {similarHint && <p className="quiz-result similar" role="status">유사한 정답이에요! 다시 입력해보세요.</p>}
+                    <div className="quiz-next-actions">
                       <button
                         type="button"
-                        className="ghost quiz-forced-btn"
-                        onClick={() => finishCheck(currentItem, false)}
-                        disabled={checked}
+                        className="quiz-check-btn"
+                        onClick={() => currentItem.mode === "recall" ? void checkRecall() : checkRecognition()}
+                        disabled={checkingSimilarity || (currentItem.mode === "recall" ? !answer.trim() : selectedChoice === null)}
                       >
+                        {checkingSimilarity ? "채점 중…" : "답안 확인"}
+                      </button>
+                      <button type="button" className="ghost quiz-forced-btn" onClick={skipQuestion} disabled={checkingSimilarity}>
                         잘 모르겠어요
                       </button>
                     </div>
@@ -667,7 +640,7 @@ export function WordReview() {
                         : `아쉬워요. 정답: ${currentItem.mode === "recall" ? recallQuestion!.answer : current.meaning}`}
                     </div>
                     <div className="quiz-next-actions">
-                      <button type="button" className="quiz-next-btn" onClick={next}>
+                      <button ref={nextButtonRef} type="button" className="quiz-next-btn" onClick={next}>
                         {index + 1 < quizQueue.length ? "다음 단어" : "결과 보기"}
                       </button>
                       {isCorrect && current.stage > 0 && (
@@ -685,59 +658,51 @@ export function WordReview() {
                 )}
               </div>
             )}
-          </div>
+          </section>
         )}
       </main>
     </div>
   );
 }
 
-function WordListSection({
-  title,
-  words,
-  rowClassName,
-  renderMeta,
-  onDelete,
-  listRef,
-  hasMoreAbove = false,
-  onScroll,
-}: {
-  title?: React.ReactNode;
+function WordListSection({ title, words, count = words.length, rowClassName, renderMeta, onDelete, onLoadMore }: {
+  title: string;
   words: WordReviewItem[];
+  count?: number;
   rowClassName?: string;
   renderMeta: (w: WordReviewItem) => React.ReactNode;
   onDelete: (id: string) => void;
-  listRef?: React.RefObject<HTMLDivElement | null>;
-  hasMoreAbove?: boolean;
-  onScroll?: React.UIEventHandler<HTMLDivElement>;
+  onLoadMore?: () => void;
 }) {
+  const titleId = useId();
   if (words.length === 0) return null;
   return (
-    <>
-      {title && <h2 className="word-section-title">{title}</h2>}
-      <div className={listRef ? "word-list-scroll" : undefined} ref={listRef} onScroll={onScroll}>
-        {listRef && hasMoreAbove && <p className="word-list-more-hint">위로 스크롤하면 이전 단어를 더 볼 수 있어요.</p>}
-        <ul className="word-list">
-          {words.map((w) => (
-            <li key={w.id} className={rowClassName ? `word-list-row ${rowClassName}` : "word-list-row"}>
-              <div className="word-list-meta">
-                <span className="word-search-word">{w.word}</span>
-                <span className="word-search-meaning">{w.meaning}</span>
-                {renderMeta(w)}
-              </div>
-              <button
-                type="button"
-                className="ghost icon-btn word-list-delete"
-                onClick={() => onDelete(w.id)}
-                aria-label="단어 삭제"
-                title="단어 삭제"
-              >
-                🗑
-              </button>
-            </li>
-          ))}
-        </ul>
+    <section className="word-list-section" aria-labelledby={titleId}>
+      <div className="section-heading history-heading">
+        <h2 id={titleId}>{title}</h2>
+        <p>{count}개</p>
       </div>
-    </>
+      <ul className="word-list">
+        {words.map((w) => (
+          <li key={w.id} className="session-row">
+            <div className={`session-item word-list-item${rowClassName ? ` ${rowClassName}` : ""}`}>
+              <span className="title" lang="en">{w.word}</span>
+              <span className="word-list-meaning">{w.meaning}</span>
+              {renderMeta(w)}
+            </div>
+            <button
+              type="button"
+              className="ghost icon-btn session-delete"
+              onClick={() => onDelete(w.id)}
+              aria-label="단어 삭제"
+              title="단어 삭제"
+            >
+              🗑
+            </button>
+          </li>
+        ))}
+      </ul>
+      {onLoadMore && <button type="button" className="ghost" onClick={onLoadMore}>이전 단어 더 보기</button>}
+    </section>
   );
 }

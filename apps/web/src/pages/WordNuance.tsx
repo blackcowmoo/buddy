@@ -1,12 +1,14 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { SubPageHeader } from "../components/SubPageHeader";
 import { LoadingHint } from "../components/LoadingHint";
+import { QuizChoices } from "../components/QuizChoices";
 import { deleteNuanceLesson, drawNuanceLesson, dueQuestions, fetchNuanceLesson, fetchNuanceLessons, lessonTitle, nextReview, practiceNuance, retryNuanceLesson, nuanceOptions, type NuanceAction, type NuanceLesson, type NuanceQuestion } from "../lib/nuance";
 import { formatAbsoluteDateTime, formatDateDivider, formatMessageTime, shouldShowDateDivider } from "../lib/time";
 
 function Question({ lesson, question, busy, onAnswer }: {
   lesson: NuanceLesson; question: NuanceQuestion; busy: boolean; onAnswer: (word: string) => void;
 }) {
+  const [selection, setSelection] = useState<string | null>(null);
   const attempt = (lesson.state.progress[question.id]?.attempts ?? 0) - (lesson.state.feedback ? 1 : 0);
   const options = nuanceOptions(lesson, question.id, attempt);
   const feedback = lesson.state.feedback;
@@ -15,10 +17,17 @@ function Question({ lesson, question, busy, onAnswer }: {
     <h3 id={`question-${question.id}`}>{question.context}</h3>
     {!feedback && <p className="hint">{reviewed ? `지난 풀이: ${formatAbsoluteDateTime(reviewed)}` : "처음 만나는 문맥이에요"}</p>}
     <p className="nuance-sentence" lang="en">{question.sentence}</p>
-    <div className="nuance-options" role="group" aria-label="표현 선택">
-      {options.map(({ word }) => <button key={word} type="button" className="ghost" disabled={busy || !!feedback}
-        aria-pressed={feedback?.selected === word} onClick={() => onAnswer(word)} lang="en">{word}</button>)}
-    </div>
+    <QuizChoices
+      options={options.map(({ word }) => word)}
+      selectedIndex={options.findIndex(({ word }) => word === (feedback?.selected ?? selection))}
+      correctIndex={feedback ? options.findIndex(({ word }) => word === question.answer) : undefined}
+      disabled={busy}
+      label="표현 선택"
+      lang="en"
+      onSelect={(index) => setSelection(options[index].word)}
+    />
+    {!feedback && <button type="button" className="quiz-check-btn" disabled={busy || selection === null}
+      onClick={() => { if (selection !== null) onAnswer(selection); }}>{busy ? "채점 중…" : "답안 확인"}</button>}
     {feedback && <div className="nuance-feedback" role="status">
       <strong>{feedback.correct ? "의도에 맞는 표현이에요" : "이 상황에서는 다른 표현이 더 잘 맞아요"}</strong>
       <p>내 선택: <span lang="en">{feedback.selected}</span> · 추천 표현: <b lang="en">{question.answer}</b></p>
@@ -196,7 +205,9 @@ export function WordNuance() {
             <button type="button" disabled={busy} onClick={() => selected.state.queue.length ? setPracticing(true) : act("start")}>{selected.state.queue.length ? "이어서 풀기" : "상황에 맞게 골라 보기"}</button>
           </> : question ? <>
             <p className="hint">남은 문맥 {selected.state.queue.length}개 · 상황과 말하는 사람의 의도에 가장 잘 맞는 표현을 골라 주세요.</p>
-            <Question key={`${selected.id}-${question.id}`} lesson={selected} question={question} busy={busy} onAnswer={(word) => act("answer", { questionId: question.id, selected: word })} />
+            {/* A saved attempt clears the draft even if the same missed
+                question is immediately repeated. Failed saves retain it. */}
+            <Question key={`${selected.id}-${question.id}-${selected.state.progress[question.id]?.attempts ?? 0}`} lesson={selected} question={question} busy={busy} onAnswer={(word) => act("answer", { questionId: question.id, selected: word })} />
             {selected.state.feedback && <div className="nuance-review">
               <button type="button" disabled={busy} onClick={() => act("next")}>{busy ? "저장 중…" : "다음 문맥"}</button>
               {selected.state.feedback.correct && <button type="button" className="ghost" disabled={busy} onClick={() => act("next", { repeat: true })}>맞혔지만 다시 복습</button>}

@@ -13,7 +13,7 @@ import {
   type ArticleInstance,
 } from "../lib/articles";
 import { formatAbsoluteDate, formatDateDivider, formatMessageTime, shouldShowDateDivider } from "../lib/time";
-import { quizChoiceClass } from "../lib/quizCheck";
+import { QuizChoices } from "../components/QuizChoices";
 import { SubPageHeader } from "../components/SubPageHeader";
 import { usePollScaffold } from "../hooks/usePollScaffold";
 import { requestAmbientAudioSession } from "../lib/audioSession";
@@ -709,20 +709,13 @@ export function ArticleQuiz() {
             {draw.subQuestions.map((sub, qi) => (
               <div key={qi} className="article-sub-question">
                 <div className="quiz-prompt">{sub.prompt}</div>
-                <div className="quiz-choices">
-                  {sub.options.map((option, oi) => (
-                    <button
-                      key={oi}
-                      type="button"
-                      className={
-                        selections[qi] === oi ? "quiz-choice-btn selected" : "quiz-choice-btn"
-                      }
-                      onClick={() => pickOption(qi, oi)}
-                    >
-                      {option}
-                    </button>
-                  ))}
-                </div>
+                <QuizChoices
+                  options={sub.options}
+                  selectedIndex={selections[qi] ?? null}
+                  disabled={submitting}
+                  label={sub.prompt}
+                  onSelect={(index) => pickOption(qi, index)}
+                />
               </div>
             ))}
             <button
@@ -731,7 +724,7 @@ export function ArticleQuiz() {
               onClick={() => void submitAnswers()}
               disabled={!allAnswered || submitting}
             >
-              {submitting ? "채점 중…" : "제출하기"}
+              {submitting ? "채점 중…" : "답안 확인"}
             </button>
           </div>
         )}
@@ -754,18 +747,12 @@ export function ArticleQuiz() {
             {result.subQuestions.map((sub, qi) => (
               <div key={qi} className="article-sub-question">
                 <div className="quiz-prompt">{sub.prompt}</div>
-                <div className="quiz-choices">
-                  {sub.options.map((option, oi) => {
-                    const isAnswer = oi === sub.correctOptionIndex;
-                    const isSelected = oi === sub.selectedOptionIndex;
-                    const cls = quizChoiceClass(true, isSelected, isAnswer);
-                    return (
-                      <button key={oi} type="button" className={cls} disabled>
-                        {option}
-                      </button>
-                    );
-                  })}
-                </div>
+                <QuizChoices
+                  options={sub.options}
+                  selectedIndex={sub.selectedOptionIndex}
+                  correctIndex={sub.correctOptionIndex}
+                  label={sub.prompt}
+                />
                 <div className="article-explanation">{sub.explanation}</div>
               </div>
             ))}
