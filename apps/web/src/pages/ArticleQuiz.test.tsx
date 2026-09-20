@@ -350,15 +350,21 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
     await user.click(screen.getByRole("button", { name: "문제풀기" }));
 
-    expect(screen.getByRole("button", { name: "제출하기" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "답안 확인" })).toBeDisabled();
 
+    const wrong = screen.getByRole("button", { name: "틀린 해석" });
+    await user.click(wrong);
+    expect(wrong).toHaveAttribute("aria-pressed", "true");
     await user.click(screen.getByRole("button", { name: "정확한 해석" }));
-    expect(screen.getByRole("button", { name: "제출하기" })).toBeDisabled();
+    expect(wrong).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "정확한 해석" })).toHaveAttribute("aria-pressed", "true");
+    expect(answerArticle).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "답안 확인" })).toBeDisabled();
 
     await user.click(screen.getByRole("button", { name: "오늘" }));
-    expect(screen.getByRole("button", { name: "제출하기" })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "답안 확인" })).not.toBeDisabled();
 
-    await user.click(screen.getByRole("button", { name: "제출하기" }));
+    await user.click(screen.getByRole("button", { name: "답안 확인" }));
 
     expect(answerArticle).toHaveBeenCalledWith("i1", [0, 0]);
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
@@ -366,6 +372,34 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     expect(screen.getByText("원문의 의미를 정확히 반영하기 때문입니다.")).toBeInTheDocument();
     expect(screen.getByText("원문에 명시되어 있습니다.")).toBeInTheDocument();
     expect(screen.getByText(articleSummaryMatcher(sampleDraw.summary))).toBeInTheDocument();
+  });
+
+  it("locks choices and submission until the submitted answers finish grading", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    let resolveAnswer!: (result: null) => void;
+    vi.mocked(answerArticle).mockReturnValue(new Promise((resolve) => { resolveAnswer = resolve; }));
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+    await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
+    await user.click(screen.getByRole("button", { name: "문제풀기" }));
+    await user.click(screen.getByRole("button", { name: "정확한 해석" }));
+    await user.click(screen.getByRole("button", { name: "오늘" }));
+    await user.click(screen.getByRole("button", { name: "답안 확인" }));
+
+    expect(screen.getByRole("button", { name: "채점 중…" })).toBeDisabled();
+    for (const question of sampleDraw.subQuestions) {
+      for (const button of within(screen.getByRole("group", { name: question.prompt })).getAllByRole("button")) {
+        expect(button).toBeDisabled();
+      }
+    }
+    expect(answerArticle).toHaveBeenCalledExactlyOnceWith("i1", [0, 0]);
+
+    await act(async () => { resolveAnswer(null); });
+    expect(screen.getByRole("button", { name: "답안 확인" })).toBeEnabled();
+    const choice = screen.getByRole("button", { name: "정확한 해석" });
+    expect(choice).toBeEnabled();
+    expect(choice).toHaveAttribute("aria-pressed", "true");
   });
 
   it("shows a generating hint for a pending draw, then the summary once polling reports done", async () => {
@@ -595,9 +629,13 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     await user.click(screen.getByRole("button", { name: "문제풀기" }));
     await user.click(screen.getByRole("button", { name: "틀린 해석" }));
     await user.click(screen.getByRole("button", { name: "오늘" }));
-    await user.click(screen.getByRole("button", { name: "제출하기" }));
+    await user.click(screen.getByRole("button", { name: "답안 확인" }));
 
     expect(await screen.findByText("아쉬워요, 1/2 정답이에요.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "틀린 해석" })).toHaveClass("incorrect");
+    expect(screen.getByRole("button", { name: "정확한 해석" })).toHaveClass("correct");
+    expect(screen.getByRole("button", { name: "오늘" })).toHaveClass("correct");
+    expect(screen.getByRole("button", { name: "틀린 해석" })).toBeDisabled();
   });
 });
 

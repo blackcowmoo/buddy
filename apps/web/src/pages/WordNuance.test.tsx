@@ -43,6 +43,7 @@ function answer(correct: boolean, questionId = "q0") {
     l.state.progress[questionId] = { stage: correct ? 1 : 0, attempts: 1, correct: correct ? 1 : 0, lastReviewedAt: 1700000000, nextReviewAt: correct ? 4102444800 : 0 };
   });
   fireEvent.click(screen.getByRole("button", { name: next.state.feedback!.selected }));
+  fireEvent.click(screen.getByRole("button", { name: "답안 확인" }));
 }
 it("lists generated history, omits search and dictionary links, and opens the comparison", async () => {
   await open();
@@ -70,6 +71,44 @@ it("hides the translation and explanation until the server grades, then saves th
   fireEvent.click(screen.getByRole("button", { name: "맞혔지만 다시 복습" }));
   await screen.findByRole("region", { name: /상황 1/ });
   expect(api.practiceNuance).toHaveBeenLastCalledWith("lesson-1", { kind: "next", revision: 3, repeat: true });
+  expect(screen.getByRole("button", { name: "답안 확인" })).toBeDisabled();
+});
+it("allows revising a choice before checking it like the other quizzes", async () => {
+  await open(); await start();
+  const submit = screen.getByRole("button", { name: "답안 확인" });
+  const cheap = screen.getByRole("button", { name: "cheap" });
+  const inexpensive = screen.getByRole("button", { name: "inexpensive" });
+  expect(submit).toBeDisabled();
+  fireEvent.click(inexpensive);
+  expect(inexpensive).toHaveAttribute("aria-pressed", "true");
+  expect(inexpensive).toHaveClass("selected");
+  fireEvent.click(cheap);
+  expect(inexpensive).toHaveAttribute("aria-pressed", "false");
+  expect(cheap).toHaveAttribute("aria-pressed", "true");
+  expect(submit).toBeEnabled();
+  expect(api.practiceNuance).toHaveBeenCalledTimes(1); // start only
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  expect(screen.queryByText(lesson.content!.questions[0].translation)).not.toBeInTheDocument();
+
+  answer(true);
+  await screen.findByText("의도에 맞는 표현이에요");
+  expect(screen.getByRole("button", { name: "cheap" })).toHaveClass("correct");
+  expect(screen.getByRole("button", { name: "cheap" })).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "답안 확인" })).not.toBeInTheDocument();
+});
+it("clears the draft when the same missed question is immediately repeated", async () => {
+  await open(); await start();
+  answer(false);
+  await screen.findByText("이 문제는 잠시 뒤 다시 나와요.");
+  expect(screen.getByRole("button", { name: "inexpensive" })).toHaveClass("incorrect");
+  respond((l) => { l.state.feedback = undefined; l.state.queue = ["q0"]; });
+  fireEvent.click(screen.getByRole("button", { name: "다음 문맥" }));
+
+  expect(await screen.findByRole("button", { name: "답안 확인" })).toBeDisabled();
+  for (const choice of within(screen.getByRole("group", { name: "표현 선택" })).getAllByRole("button")) {
+    expect(choice).toHaveAttribute("aria-pressed", "false");
+    expect(choice).not.toHaveClass("selected");
+  }
 });
 it("repeats a missed context after another question with changed option positions", async () => {
   await open(); await start();
@@ -98,6 +137,7 @@ it("keeps a failed answer on screen and restores a committed answer after a lost
   await open(); await start();
   vi.mocked(api.practiceNuance).mockResolvedValueOnce(null);
   fireEvent.click(screen.getByRole("button", { name: "cheap" }));
+  fireEvent.click(screen.getByRole("button", { name: "답안 확인" }));
   await screen.findByRole("alert");
   expect(screen.queryByText("의도에 맞는 표현이에요")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "cheap" })).toBeEnabled();
@@ -107,6 +147,7 @@ it("keeps a failed answer on screen and restores a committed answer after a lost
   vi.mocked(api.practiceNuance).mockResolvedValueOnce(null);
   vi.mocked(api.fetchNuanceLesson).mockResolvedValueOnce(saved);
   fireEvent.click(screen.getByRole("button", { name: "cheap" }));
+  fireEvent.click(screen.getByRole("button", { name: "답안 확인" }));
   expect(await screen.findByText("의도에 맞는 표현이에요")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "cheap" })).toBeDisabled();
 });
@@ -174,7 +215,9 @@ it("locks answer submission while saving so a double tap sends one attempt", asy
   let resolve!: (value: api.NuanceLesson | null) => void;
   vi.mocked(api.practiceNuance).mockReturnValueOnce(new Promise((done) => { resolve = done; }));
   const choice = screen.getByRole("button", { name: "cheap" });
-  fireEvent.click(choice); fireEvent.click(choice);
+  fireEvent.click(choice);
+  const submit = screen.getByRole("button", { name: "답안 확인" });
+  fireEvent.click(submit); fireEvent.click(submit);
   expect(api.practiceNuance).toHaveBeenCalledTimes(2); // start, answer
   expect(choice).toBeDisabled();
   await act(async () => { resolve(null); });

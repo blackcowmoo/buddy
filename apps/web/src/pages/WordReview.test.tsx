@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -43,7 +43,10 @@ import { checkQuizAnswer } from "../lib/quizCheck";
 // reopening the page resumes watching one — see the mount effect), so every
 // test needs some default here or that unconditional call would reject
 // against an unmocked vi.fn(). Individual tests below override it.
+const testNow = Date.UTC(2026, 8, 20, 12);
+
 beforeEach(() => {
+  vi.spyOn(Date, "now").mockReturnValue(testNow);
   vi.mocked(fetchAutoAddStatus).mockResolvedValue({ status: "", count: 0 });
   vi.mocked(checkQuizAnswer).mockResolvedValue(false);
 });
@@ -62,8 +65,8 @@ const dueWord: WordReviewItem = {
   example: "She was ecstatic.",
   stage: 0,
   reviewCount: 0,
-  lastReviewedAt: Math.floor(Date.now() / 1000) - 8 * 24 * 3600,
-  nextReviewAt: Math.floor(Date.now() / 1000) - 3600, // 1 hour ago: due
+  lastReviewedAt: Math.floor(testNow / 1000) - 8 * 24 * 3600,
+  nextReviewAt: Math.floor(testNow / 1000) - 3600, // 1 hour ago: due
   status: "verified",
   researchStatus: "confirmed",
   reviewQuestion: { version: 1, prompt: "She was ___.", answer: "ecstatic" },
@@ -76,7 +79,7 @@ const idiomWord: WordReviewItem = {
   example: "I will do my best to finish the project on time.",
   stage: 0,
   reviewCount: 0,
-  nextReviewAt: Math.floor(Date.now() / 1000) - 3600, // 1 hour ago: due
+  nextReviewAt: Math.floor(testNow / 1000) - 3600, // 1 hour ago: due
   status: "verified",
   researchStatus: "confirmed",
   reviewQuestion: { version: 1, prompt: "I will ___ to finish the project on time.", answer: "do my best" },
@@ -89,7 +92,7 @@ const optimizeWord: WordReviewItem = {
   example: "We are optimizing the search algorithm for faster results.",
   stage: 0,
   reviewCount: 0,
-  nextReviewAt: Math.floor(Date.now() / 1000) - 3600, // 1 hour ago: due
+  nextReviewAt: Math.floor(testNow / 1000) - 3600, // 1 hour ago: due
   status: "verified",
   researchStatus: "confirmed",
   reviewQuestion: { version: 1, prompt: "We are ___ the search algorithm for faster results.", answer: "optimizing" },
@@ -102,7 +105,7 @@ const organizeWord: WordReviewItem = {
   example: "The criminals planned the attack in a highly organized manner.",
   stage: 0,
   reviewCount: 0,
-  nextReviewAt: Math.floor(Date.now() / 1000) - 3600,
+  nextReviewAt: Math.floor(testNow / 1000) - 3600,
   status: "verified",
   researchStatus: "confirmed",
   reviewQuestion: {
@@ -119,7 +122,7 @@ const futureWord: WordReviewItem = {
   example: "He was elated.",
   stage: 1,
   reviewCount: 1,
-  nextReviewAt: Math.floor(Date.now() / 1000) + 48 * 3600, // in 2 days: not due
+  nextReviewAt: Math.floor(testNow / 1000) + 48 * 3600, // in 2 days: not due
   status: "verified",
   researchStatus: "confirmed",
 };
@@ -151,13 +154,13 @@ const rejectedWord: WordReviewItem = {
 // question about dueWord has enough distractor meanings (see
 // minRecognitionDistractors in WordReview.tsx).
 const otherVerifiedWords: WordReviewItem[] = [
-  { id: "w3", word: "gloomy", meaning: "우울한", example: "a gloomy day", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(Date.now() / 1000) + 999999, status: "verified", researchStatus: "confirmed" },
-  { id: "w4", word: "jaded", meaning: "지친", example: "a jaded look", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(Date.now() / 1000) + 999999, status: "verified", researchStatus: "confirmed" },
-  { id: "w5", word: "content", meaning: "만족하는", example: "feeling content", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(Date.now() / 1000) + 999999, status: "verified", researchStatus: "confirmed" },
-  { id: "w6", word: "vivid", meaning: "생생한", example: "a vivid memory", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(Date.now() / 1000) + 999999, status: "verified", researchStatus: "confirmed" },
-  { id: "w7", word: "fragile", meaning: "깨지기 쉬운", example: "a fragile vase", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(Date.now() / 1000) + 999999, status: "verified", researchStatus: "confirmed" },
-  { id: "w8", word: "reliable", meaning: "믿을 수 있는", example: "a reliable source", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(Date.now() / 1000) + 999999, status: "verified", researchStatus: "confirmed" },
-  { id: "w9", word: "concise", meaning: "간결한", example: "a concise answer", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(Date.now() / 1000) + 999999, status: "verified", researchStatus: "confirmed" },
+  { id: "w3", word: "gloomy", meaning: "우울한", example: "a gloomy day", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(testNow / 1000) + 999999, status: "verified", researchStatus: "confirmed" },
+  { id: "w4", word: "jaded", meaning: "지친", example: "a jaded look", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(testNow / 1000) + 999999, status: "verified", researchStatus: "confirmed" },
+  { id: "w5", word: "content", meaning: "만족하는", example: "feeling content", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(testNow / 1000) + 999999, status: "verified", researchStatus: "confirmed" },
+  { id: "w6", word: "vivid", meaning: "생생한", example: "a vivid memory", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(testNow / 1000) + 999999, status: "verified", researchStatus: "confirmed" },
+  { id: "w7", word: "fragile", meaning: "깨지기 쉬운", example: "a fragile vase", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(testNow / 1000) + 999999, status: "verified", researchStatus: "confirmed" },
+  { id: "w8", word: "reliable", meaning: "믿을 수 있는", example: "a reliable source", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(testNow / 1000) + 999999, status: "verified", researchStatus: "confirmed" },
+  { id: "w9", word: "concise", meaning: "간결한", example: "a concise answer", stage: 0, reviewCount: 0, nextReviewAt: Math.floor(testNow / 1000) + 999999, status: "verified", researchStatus: "confirmed" },
 ];
 
 // Mocks fetchWords to return `words` (always dueCount: 1 — every quiz test
@@ -173,14 +176,11 @@ async function startQuiz(words: WordReviewItem[] = [dueWord]) {
   return user;
 }
 
-// jsdom has no layout. Give the two scroll containers independent heights,
-// with list growth reflecting prepended rows so scroll anchoring is observable.
+// jsdom has no layout. Model the page height to exercise page-level
+// pagination and verify that loading data never jumps past the introduction.
 function mockScrollHeights() {
-  vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLElement) {
-    if (this.classList.contains("word-review-page")) return 1800;
-    if (this.classList.contains("word-list-scroll")) return this.querySelectorAll("li").length * 100;
-    return 0;
-  });
+  vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(1800);
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(600);
 }
 
 describe("WordReview page", () => {
@@ -215,7 +215,7 @@ describe("WordReview page", () => {
     // The "복습 시작" slot is taken over by the auto-add button instead of
     // being left empty, offering a second path besides manual 🔎 search.
     expect(screen.getByRole("button", { name: "새 단어 추가로 학습하기" })).toBeInTheDocument();
-    expect(screen.getByRole("main").scrollTop).toBe(1800);
+    expect(screen.getByRole("main").scrollTop).toBe(0);
   });
 
   it("shows the due count and a start button when words are due", async () => {
@@ -238,18 +238,23 @@ describe("WordReview page", () => {
     expect(screen.queryByRole("button", { name: "복습 시작" })).not.toBeInTheDocument();
   });
 
-  it("keeps the due count next to the review action after all word sections", async () => {
+  it("places the review action before the grouped word history like other learning pages", async () => {
     vi.mocked(fetchWords).mockResolvedValue({ words: [dueWord, pendingWord, rejectedWord], dueCount: 1 });
     render(<WordReview />);
 
-    const word = await screen.findByText(rejectedWord.word);
+    const word = await screen.findByText(dueWord.word);
     const dueHint = screen.getByText("복습할 단어 1개가 있어요.");
     const startButton = screen.getByRole("button", { name: "복습 시작" });
-    expect(word.compareDocumentPosition(dueHint) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(startButton.compareDocumentPosition(word) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(dueHint.nextElementSibling).toBe(startButton);
+    for (const [title, item] of [["복습중인 단어", dueWord], ["확정 전 단어", pendingWord], ["제외된 단어", rejectedWord]] as const) {
+      const group = within(screen.getByRole("region", { name: title }));
+      expect(group.getByText(item.word)).toBeInTheDocument();
+      expect(group.getByRole("button", { name: "단어 삭제" })).toBeInTheDocument();
+    }
   });
 
-  it("opens both scroll containers at the bottom after words finish loading", async () => {
+  it("keeps the introduction at the top after words finish loading", async () => {
     mockScrollHeights();
     let resolveWords!: (result: { words: WordReviewItem[]; dueCount: number }) => void;
     vi.mocked(fetchWords).mockReturnValue(new Promise((resolve) => { resolveWords = resolve; }));
@@ -259,45 +264,45 @@ describe("WordReview page", () => {
 
     await act(async () => { resolveWords({ words: [dueWord, futureWord], dueCount: 1 }); });
 
-    expect(page.scrollTop).toBe(1800);
-    expect(page.querySelector(".word-list-scroll")!.scrollTop).toBe(200);
+    expect(page.scrollTop).toBe(0);
+    expect(page.querySelector(".word-list-scroll")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "복습 시작" })).toBeEnabled();
   });
 
-  it("opens the quiz at the top and returns to the bottom action and newest words", async () => {
+  it("opens the quiz and the returning list at the top", async () => {
     mockScrollHeights();
     const user = await startQuiz();
     const page = screen.getByRole("main");
     expect(page.scrollTop).toBe(0);
+    expect(screen.getByRole("heading", { name: "문장 속 단어 떠올리기" })).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "정답 입력" })).toBeInTheDocument();
+    page.scrollTop = 300;
 
     await user.click(screen.getByRole("button", { name: "← 목록으로" }));
 
-    expect(page.scrollTop).toBe(1800);
-    expect(page.querySelector(".word-list-scroll")!.scrollTop).toBe(100);
+    expect(page.scrollTop).toBe(0);
     expect(screen.getByRole("button", { name: "복습 시작" })).toBeEnabled();
   });
 
-  it("preserves the learner's scroll positions when polling updates and adds words", async () => {
+  it("preserves the page position and expanded history when polling adds words", async () => {
     vi.useFakeTimers();
     mockScrollHeights();
+    const words = Array.from({ length: 21 }, (_, i) => ({ ...futureWord, id: `w-${i}`, word: `word-${i}` }));
     vi.mocked(fetchWords)
-      .mockResolvedValueOnce({ words: [dueWord, futureWord], dueCount: 1 })
-      .mockResolvedValue({ words: [dueWord, { ...futureWord, meaning: "갱신된 뜻" }, pendingWord], dueCount: 1 });
+      .mockResolvedValueOnce({ words, dueCount: 0 })
+      .mockResolvedValue({ words: [...words, pendingWord], dueCount: 0 });
     await act(async () => { render(<WordReview />); });
+    fireEvent.click(screen.getByRole("button", { name: "이전 단어 더 보기" }));
+    const history = screen.getByRole("region", { name: "복습중인 단어" });
+    expect(within(history).getAllByRole("listitem")).toHaveLength(21);
     const page = screen.getByRole("main");
-    const list = page.querySelector(".word-list-scroll")!;
     page.scrollTop = 300;
-    list.scrollTop = 50;
-    fireEvent.scroll(page);
-    fireEvent.scroll(list);
 
     await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
 
-    expect(screen.getByText("갱신된 뜻")).toBeInTheDocument();
     expect(screen.getByText(pendingWord.word)).toBeInTheDocument();
+    expect(within(history).getAllByRole("listitem")).toHaveLength(21);
     expect(page.scrollTop).toBe(300);
-    expect(list.scrollTop).toBe(50);
   });
 
   it("lists each tracked word with its meaning and next review time", async () => {
@@ -309,42 +314,34 @@ describe("WordReview page", () => {
     expect(screen.getByText((content) => content.includes(expectedNextReview))).toBeInTheDocument();
   });
 
-  it("shows the review count, sorts newest reviews at the bottom, and loads older words at the top", async () => {
+  it.each(["scroll", "button"])("lists recent reviews first and loads older words using %s", async (method) => {
     mockScrollHeights();
     const manyWords = Array.from({ length: 21 }, (_, i): WordReviewItem => ({
+      ...futureWord,
       id: `review-${i}`,
       word: `review-word-${i}`,
-      meaning: `뜻 ${i}`,
-      example: `Example ${i}.`,
-      stage: 1,
-      reviewCount: i + 1,
       lastReviewedAt: (i + 1) * 1000,
-      nextReviewAt: Math.floor(Date.now() / 1000) + 86400,
-      status: "verified",
-      researchStatus: "confirmed",
     }));
     vi.mocked(fetchWords).mockResolvedValue({ words: manyWords, dueCount: 0 });
-    // The initial word-count effect resets pagination. Settle the fetch and
-    // that effect before scrolling so it cannot overwrite the page change.
-    await act(async () => {
-      render(<WordReview />);
-    });
+    render(<WordReview />);
 
-    expect(await screen.findByText("복습중인 단어")).toBeInTheDocument();
-    expect(screen.getByText("(21개)")).toBeInTheDocument();
+    const history = await screen.findByRole("region", { name: "복습중인 단어" });
+    expect(within(history).getByText("21개")).toBeInTheDocument();
     expect(screen.queryByText("review-word-0")).not.toBeInTheDocument();
-    expect(screen.getByText("review-word-1")).toBeInTheDocument();
-    expect(screen.getByText("review-word-20")).toBeInTheDocument();
+    const visibleWords = within(history).getAllByRole("listitem");
+    expect(visibleWords).toHaveLength(20);
+    expect(visibleWords[0]).toHaveTextContent("review-word-20");
+    expect(visibleWords.at(-1)).toHaveTextContent("review-word-1");
 
-    const visibleWords = [...document.querySelectorAll(".word-list-scroll .word-search-word")].map((el) => el.textContent);
-    expect(visibleWords[0]).toBe("review-word-1");
-    expect(visibleWords.at(-1)).toBe("review-word-20");
+    const page = screen.getByRole("main");
+    page.scrollTop = 1200;
+    if (method === "scroll") fireEvent.scroll(page);
+    else fireEvent.click(screen.getByRole("button", { name: "이전 단어 더 보기" }));
 
-    const scrollList = document.querySelector(".word-list-scroll") as HTMLDivElement;
-    expect(scrollList.scrollTop).toBe(2000);
-    fireEvent.scroll(scrollList, { target: { scrollTop: 4 } });
-    expect(await screen.findByText("review-word-0")).toBeInTheDocument();
-    expect(scrollList.scrollTop).toBe(104);
+    expect(within(history).getAllByRole("listitem")).toHaveLength(21);
+    expect(within(history).getAllByRole("listitem").at(-1)).toHaveTextContent("review-word-0");
+    expect(screen.queryByRole("button", { name: "이전 단어 더 보기" })).not.toBeInTheDocument();
+    expect(page.scrollTop).toBe(1200);
   });
 
   // A word never leaves review rotation, however many times it's been
@@ -353,7 +350,7 @@ describe("WordReview page", () => {
   // and more reviews onto the same short cap (see wordreview's schedule
   // doc). The list view has no separate "완료" state to show instead.
   it("still shows a next-review date for a well-known word with a far-future schedule, not a terminal state", async () => {
-    const wellKnownWord = { ...futureWord, stage: 9, nextReviewAt: Math.floor(Date.now() / 1000) + 200 * 86400 };
+    const wellKnownWord = { ...futureWord, stage: 9, nextReviewAt: Math.floor(testNow / 1000) + 200 * 86400 };
     vi.mocked(fetchWords).mockResolvedValue({ words: [wellKnownWord], dueCount: 0 });
     render(<WordReview />);
     const expectedNextReview = formatAbsoluteDateTime(wellKnownWord.nextReviewAt);
@@ -427,7 +424,7 @@ describe("WordReview page", () => {
     expect(screen.getByText("확정 전")).toBeInTheDocument();
   });
 
-  it("groups the word list and start action in the requested order", async () => {
+  it("keeps the word groups in order below the start action", async () => {
     const unconfirmedWord = { ...dueWord, id: "w-unconfirmed", word: "uncertain", researchStatus: undefined };
     vi.mocked(fetchWords).mockResolvedValue({
       words: [rejectedWord, pendingWord, unconfirmedWord, dueWord],
@@ -442,7 +439,7 @@ describe("WordReview page", () => {
 
     expect(reviewingTitle.compareDocumentPosition(unconfirmedTitle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(unconfirmedTitle.compareDocumentPosition(rejectedTitle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(rejectedTitle.compareDocumentPosition(startButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(startButton.compareDocumentPosition(reviewingTitle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByText("uncertain")).toBeInTheDocument();
     expect(screen.getByText("wistful")).toBeInTheDocument();
   });
@@ -618,7 +615,7 @@ describe("WordReview page", () => {
     expect(screen.getByText(".")).toBeInTheDocument();
 
     await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "ecstatic");
-    await user.click(screen.getByRole("button", { name: "확인" }));
+    await user.click(screen.getByRole("button", { name: "답안 확인" }));
 
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
     // The review call is deferred until the learner advances -- not sent
@@ -638,10 +635,59 @@ describe("WordReview page", () => {
     expect(input).toHaveFocus();
   });
 
+  it("supports submitting, advancing, and completing a recall quiz by keyboard", async () => {
+    vi.mocked(reviewWord).mockResolvedValue({ ...dueWord, stage: 1 });
+    const user = await startQuiz();
+    expect(screen.getByRole("button", { name: "답안 확인" })).toBeDisabled();
+
+    await user.keyboard("ecstatic{Enter}");
+
+    expect(screen.getByText("정답이에요!")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "결과 보기" })).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("heading", { name: "복습 결과" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "완료" })).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("heading", { name: "배운 표현을 내 것으로 만들어요" })).toBeInTheDocument();
+    expect(reviewWord).toHaveBeenCalledExactlyOnceWith("w1", true, false, 1);
+  });
+
+  it("does not submit an answer while the keyboard is composing text", async () => {
+    const user = await startQuiz();
+    const input = screen.getByRole("textbox", { name: "정답 입력" });
+    await user.type(input, "ecstatic");
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+
+    expect(screen.queryByText("정답이에요!")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "답안 확인" })).toBeEnabled();
+    expect(reviewWord).not.toHaveBeenCalled();
+  });
+
+  it("locks the answer and actions while checking a similar answer", async () => {
+    let resolveCheck!: (similar: boolean) => void;
+    vi.mocked(checkQuizAnswer).mockReturnValue(new Promise((resolve) => { resolveCheck = resolve; }));
+    const user = await startQuiz();
+    const input = screen.getByRole("textbox", { name: "정답 입력" });
+    await user.type(input, "thrilled{Enter}");
+
+    expect(input).toBeDisabled();
+    expect(screen.getByRole("button", { name: "채점 중…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "잘 모르겠어요" })).toBeDisabled();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(checkQuizAnswer).toHaveBeenCalledTimes(1);
+    expect(reviewWord).not.toHaveBeenCalled();
+
+    await act(async () => { resolveCheck(true); });
+    expect(input).toBeEnabled();
+    expect(input).toHaveValue("");
+    expect(input).toHaveFocus();
+    expect(screen.getByRole("status")).toHaveTextContent("유사한 정답이에요!");
+  });
+
   it("does not show the forced-guess button when a correct answer schedules the word for tomorrow", async () => {
     const user = await startQuiz();
     await user.type(await screen.findByRole("textbox", { name: "정답 입력" }), "ecstatic");
-    await user.click(screen.getByRole("button", { name: "확인" }));
+    await user.click(screen.getByRole("button", { name: "답안 확인" }));
 
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "😅 억지로 맞춘 것 같아요" })).not.toBeInTheDocument();
@@ -657,7 +703,7 @@ describe("WordReview page", () => {
     vi.mocked(reviewWord).mockResolvedValue(establishedWord);
     const user = await startQuiz([establishedWord]);
     await user.type(await screen.findByRole("textbox", { name: "정답 입력" }), "ecstatic");
-    await user.click(screen.getByRole("button", { name: "확인" }));
+    await user.click(screen.getByRole("button", { name: "답안 확인" }));
 
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
     const forcedBtn = screen.getByRole("button", { name: "😅 억지로 맞춘 것 같아요" });
@@ -674,7 +720,7 @@ describe("WordReview page", () => {
     vi.mocked(reviewWord).mockResolvedValue({ ...dueWord, stage: 0, reviewCount: 1 });
     const user = await startQuiz();
     await user.type(await screen.findByRole("textbox", { name: "정답 입력" }), "wrong answer");
-    await user.click(screen.getByRole("button", { name: "확인" }));
+    await user.click(screen.getByRole("button", { name: "답안 확인" }));
 
     expect(await screen.findByText(/아쉬워요\. 정답: ecstatic/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "😅 억지로 맞춘 것 같아요" })).not.toBeInTheDocument();
@@ -706,7 +752,7 @@ describe("WordReview page", () => {
 
     const blank = screen.getByRole("textbox", { name: "정답 입력" });
     await user.type(blank, "do my best");
-    await user.click(screen.getByRole("button", { name: "확인" }));
+    await user.click(screen.getByRole("button", { name: "답안 확인" }));
 
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
   });
@@ -727,7 +773,7 @@ describe("WordReview page", () => {
     expect(screen.queryByText(/optimizing/i)).not.toBeInTheDocument();
 
     await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "optimizing");
-    await user.click(screen.getByRole("button", { name: "확인" }));
+    await user.click(screen.getByRole("button", { name: "답안 확인" }));
 
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
   });
@@ -741,7 +787,7 @@ describe("WordReview page", () => {
     expect(screen.queryByText(/^d$/)).not.toBeInTheDocument();
 
     await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "organize");
-    await user.click(screen.getByRole("button", { name: "확인" }));
+    await user.click(screen.getByRole("button", { name: "답안 확인" }));
 
     expect(await screen.findByText("아쉬워요. 정답: organized")).toBeInTheDocument();
   });
@@ -751,7 +797,7 @@ describe("WordReview page", () => {
     const user = await startQuiz();
 
     await user.type(await screen.findByRole("textbox", { name: "정답 입력" }), "thrilled");
-    await user.click(screen.getByRole("button", { name: "확인" }));
+    await user.click(screen.getByRole("button", { name: "답안 확인" }));
 
     expect(await screen.findByRole("status")).toHaveTextContent("유사한 정답이에요! 다시 입력해보세요.");
     expect(screen.queryByText(/시제에 맞춰/)).not.toBeInTheDocument();
@@ -762,7 +808,7 @@ describe("WordReview page", () => {
     const user = await startQuiz([optimizeWord]);
 
     await user.type(await screen.findByRole("textbox", { name: "정답 입력" }), "optimize");
-    await user.click(screen.getByRole("button", { name: "확인" }));
+    await user.click(screen.getByRole("button", { name: "답안 확인" }));
 
     expect(await screen.findByText("아쉬워요. 정답: optimizing")).toBeInTheDocument();
   });
@@ -773,7 +819,7 @@ describe("WordReview page", () => {
 
     const blank = await screen.findByRole("textbox");
     await user.type(blank, "do best");
-    await user.click(screen.getByRole("button", { name: "확인" }));
+    await user.click(screen.getByRole("button", { name: "답안 확인" }));
 
     expect(await screen.findByText(/아쉬워요\. 정답: do my best/)).toBeInTheDocument();
     expect(blank).toHaveClass("incorrect");
@@ -783,7 +829,7 @@ describe("WordReview page", () => {
     vi.mocked(reviewWord).mockResolvedValue({ ...dueWord, stage: 0, reviewCount: 1 });
     const user = await startQuiz();
     await user.type(await screen.findByRole("textbox", { name: "정답 입력" }), "wrong answer");
-    await user.click(screen.getByRole("button", { name: "확인" }));
+    await user.click(screen.getByRole("button", { name: "답안 확인" }));
 
     expect(await screen.findByText(/아쉬워요\. 정답: ecstatic/)).toBeInTheDocument();
     expect(reviewWord).toHaveBeenCalledWith("w1", false, false, 1);
@@ -794,7 +840,7 @@ describe("WordReview page", () => {
     await user.click(screen.getByRole("button", { name: "다음 단어" }));
 
     await user.type(await screen.findByRole("textbox", { name: "정답 입력" }), "ecstatic");
-    await user.click(screen.getByRole("button", { name: "확인" }));
+    await user.click(screen.getByRole("button", { name: "답안 확인" }));
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "결과 보기" }));
@@ -830,6 +876,7 @@ describe("WordReview page", () => {
     expect(screen.getByRole("button", { name: "잘 모르겠어요" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "매우 행복한" }));
+    await user.click(screen.getByRole("button", { name: "답안 확인" }));
 
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
     expect(reviewWord).not.toHaveBeenCalled();
@@ -838,12 +885,64 @@ describe("WordReview page", () => {
     expect(reviewWord).toHaveBeenCalledWith("w1", true, false, 1);
   });
 
+  it("lets learners revise a meaning before explicitly checking it", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const user = await startQuiz([dueWord, ...otherVerifiedWords]);
+    const choices = within(screen.getByRole("group", { name: "단어의 뜻" }));
+    const wrong = choices.getByRole("button", { name: "우울한" });
+    const correct = choices.getByRole("button", { name: "매우 행복한" });
+    const submit = screen.getByRole("button", { name: "답안 확인" });
+    expect(submit).toBeDisabled();
+
+    await user.click(wrong);
+    expect(wrong).toHaveAttribute("aria-pressed", "true");
+    expect(wrong).toHaveClass("selected");
+    expect(submit).toBeEnabled();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(reviewWord).not.toHaveBeenCalled();
+
+    await user.click(correct);
+    expect(wrong).toHaveAttribute("aria-pressed", "false");
+    expect(wrong).not.toHaveClass("selected");
+    expect(correct).toHaveAttribute("aria-pressed", "true");
+    expect(correct).not.toHaveClass("correct");
+    expect(reviewWord).not.toHaveBeenCalled();
+    await user.click(submit);
+
+    expect(screen.getByRole("status")).toHaveTextContent("정답이에요!");
+    expect(correct).toHaveClass("correct");
+    for (const choice of choices.getAllByRole("button")) expect(choice).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "잘 모르겠어요" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "결과 보기" })).toHaveFocus();
+  });
+
+  it.each(["recall", "recognition"])("treats revealing an unsubmitted correct %s answer as a miss", async (mode) => {
+    vi.spyOn(Math, "random").mockReturnValue(mode === "recall" ? 0.9 : 0);
+    vi.mocked(reviewWord).mockResolvedValue({ ...dueWord, stage: 0 });
+    const user = await startQuiz([dueWord, ...otherVerifiedWords]);
+    if (mode === "recall") await user.type(screen.getByRole("textbox"), "ecstatic");
+    else await user.click(screen.getByRole("button", { name: "매우 행복한" }));
+
+    await user.click(screen.getByRole("button", { name: "잘 모르겠어요" }));
+
+    expect(screen.getByRole("status")).toHaveTextContent("아쉬워요. 정답:");
+    expect(reviewWord).toHaveBeenCalledExactlyOnceWith("w1", false, false, 1);
+    await user.click(screen.getByRole("button", { name: "다음 단어" }));
+    expect(reviewWord).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "답안 확인" })).toBeDisabled();
+    if (mode === "recall") expect(screen.getByRole("textbox")).toHaveValue("");
+    else for (const button of within(screen.getByRole("group", { name: "단어의 뜻" })).getAllByRole("button")) {
+      expect(button).toHaveAttribute("aria-pressed", "false");
+    }
+  });
+
   it("marks a recognition-mode question incorrect when the wrong meaning is picked", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0);
     vi.mocked(reviewWord).mockResolvedValue({ ...dueWord, stage: 0, reviewCount: 1 });
     const user = await startQuiz([dueWord, ...otherVerifiedWords]);
     await screen.findByText("ecstatic");
     await user.click(screen.getByRole("button", { name: "우울한" })); // a distractor, not the correct meaning
+    await user.click(screen.getByRole("button", { name: "답안 확인" }));
 
     expect(await screen.findByText(/아쉬워요\. 정답: 매우 행복한/)).toBeInTheDocument();
     expect(reviewWord).toHaveBeenCalledWith("w1", false, false, 1);
@@ -857,6 +956,7 @@ describe("WordReview page", () => {
     const choiceButtons = () => [...document.querySelectorAll<HTMLButtonElement>(".quiz-choice-btn")];
     const initialChoices = choiceButtons().map((button) => button.textContent);
     await user.click(screen.getByRole("button", { name: "우울한" }));
+    await user.click(screen.getByRole("button", { name: "답안 확인" }));
     await user.click(screen.getByRole("button", { name: "다음 단어" }));
 
     const retryChoices = choiceButtons().map((button) => button.textContent);
@@ -879,6 +979,7 @@ describe("WordReview page", () => {
     // session for an immediate day-1 retry.
     await user.click(screen.getByRole("button", { name: "다음 단어" }));
     await user.click(screen.getByRole("button", { name: "매우 행복한" }));
+    await user.click(screen.getByRole("button", { name: "답안 확인" }));
     await user.click(screen.getByRole("button", { name: "결과 보기" }));
     expect(reviewWord).toHaveBeenLastCalledWith("w1", true, false, 1);
   });
@@ -896,6 +997,7 @@ describe("WordReview page", () => {
 
     await user.click(screen.getByRole("button", { name: "다음 단어" }));
     await user.click(screen.getByRole("button", { name: "매우 행복한" }));
+    await user.click(screen.getByRole("button", { name: "답안 확인" }));
 
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "😅 억지로 맞춘 것 같아요" })).not.toBeInTheDocument();
