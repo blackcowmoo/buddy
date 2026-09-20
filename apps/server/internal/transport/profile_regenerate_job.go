@@ -2,12 +2,15 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/store"
+	"buddy/server/internal/workguard"
 )
 
 // ProfileRegenerateClaimTTL/ProfileRegenerateWorkerConcurrency: unlike every
@@ -53,11 +56,53 @@ type profileRegenerateJobPayload struct {
 // than a merely-stale one, and there's no meaningful way to resume a
 // half-finished chain of LLM folds.
 func runProfileRegenerate(ctx context.Context, pipe *pipeline.Pipeline, st store.Store, userID string) error {
+	for {
+		err := regenerateProfileSnapshot(ctx, pipe, st, userID)
+		if !errors.Is(err, workguard.ErrDeleted) && !errors.Is(err, store.ErrProfileChanged) {
+			return err
+		}
+		if err := workguard.Check(ctx); err != nil {
+			return err
+		}
+	}
+}
+
+func regenerateProfileSnapshot(ctx context.Context, pipe *pipeline.Pipeline, st store.Store, userID string) error {
+	revision := int64(-1)
+	if versioned, ok := st.(store.ProfileSnapshotStore); ok {
+		_, current, err := versioned.GetLearnerProfileSnapshot(ctx, userID)
+		if err != nil {
+			return err
+		}
+		revision = current
+		ctx = guardProfileRevision(ctx, versioned, userID, revision)
+	}
+
 	sessions, err := st.ListSessionsWithStudySummary(ctx, userID)
 	if err != nil {
 		return fmt.Errorf("profile regenerate: list sessions: %w", err)
 	}
 
+	// Lock source identities in a stable order when publishing the result.
+	ids := make([]string, 0, len(sessions))
+	for _, sess := range sessions {
+		ids = append(ids, sess.ID)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if source, ok := st.(workguard.Source); ok {
+			ctx = workguard.Bind(ctx, func(ctx context.Context) error {
+				exists, err := source.WorkExists(ctx, userID, id)
+				if err != nil {
+					return err
+				}
+				if !exists {
+					return workguard.ErrDeleted
+				}
+				return nil
+			})
+		}
+	}
 	var profile string
 	for _, sess := range sessions {
 		english := studySummaryEnglish(sess.StudySummary)
@@ -70,7 +115,7 @@ func runProfileRegenerate(ctx context.Context, pipe *pipeline.Pipeline, st store
 		}
 	}
 
-	if err := st.SaveLearnerProfile(ctx, userID, profile); err != nil {
+	if err := saveProfileSnapshot(ctx, st, userID, ids, revision, profile); err != nil {
 		return fmt.Errorf("profile regenerate: save learner profile: %w", err)
 	}
 	return nil
@@ -104,4 +149,53 @@ func EnqueueProfileRegenerateJob(ctx context.Context, queue *asyncjob.Queue, pip
 	payload := profileRegenerateJobPayload{UserID: userID}
 	return queue.EnqueueAndRunInBackground(ctx, asyncjob.KindProfileRegenerate, userID,
 		userID, payload, ProfileRegenerateClaimTTL, ProfileRegenerateJobHandler(pipe, st))
+}
+
+func saveProfileSnapshot(ctx context.Context, st store.LearnerStore, userID string, ids []string, revision int64, profile string) error {
+	if err := workguard.Check(ctx); err != nil {
+		return err
+	}
+	if guarded, ok := st.(store.ProfileSnapshotStore); ok {
+		return guarded.PublishLearnerProfile(ctx, userID, ids, revision, profile)
+	}
+	return workguard.Commit(ctx, func(ctx context.Context) error { return st.SaveLearnerProfile(ctx, userID, profile) })
+}
+
+func guardProfileRevision(ctx context.Context, st store.ProfileSnapshotStore, userID string, revision int64) context.Context {
+	return workguard.Bind(ctx, func(ctx context.Context) error {
+		_, current, err := st.GetLearnerProfileSnapshot(ctx, userID)
+		if err != nil {
+			return err
+		}
+		if current != revision {
+			return store.ErrProfileChanged
+		}
+		return nil
+	})
+}
+
+func mergeSummaryProfile(ctx context.Context, pipe *pipeline.Pipeline, st store.Store, userID, sessionID, summary string) error {
+	generationCtx := ctx
+	revision := int64(-1)
+	var previous string
+	var err error
+	if versioned, ok := st.(store.ProfileSnapshotStore); ok {
+		previous, revision, err = versioned.GetLearnerProfileSnapshot(ctx, userID)
+		generationCtx = guardProfileRevision(ctx, versioned, userID, revision)
+	} else {
+		previous, err = st.GetLearnerProfile(ctx, userID)
+	}
+	if err != nil {
+		return err
+	}
+	merged, err := pipe.UpdateLearnerProfile(generationCtx, previous, summary)
+	if err == nil {
+		err = saveProfileSnapshot(generationCtx, st, userID, []string{sessionID}, revision, merged)
+	}
+	// The old profile may have contained deleted data. Rebuild all surviving
+	// sources on a conflicting publication rather than folding into stale text.
+	if errors.Is(err, store.ErrProfileChanged) {
+		return runProfileRegenerate(ctx, pipe, st, userID)
+	}
+	return err
 }

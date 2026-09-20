@@ -11,6 +11,7 @@ import (
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/protocol"
 	"buddy/server/internal/store"
+	"buddy/server/internal/workguard"
 )
 
 // StudySummaryClaimTTL/StudySummaryWorkerConcurrency mirror TitleClaimTTL/
@@ -66,6 +67,9 @@ var (
 func waitForPendingCorrections(ctx context.Context, st store.Store, userID, sessionID string) ([]store.Turn, error) {
 	deadline := time.Now().Add(pendingCorrectionMaxWait)
 	for {
+		if err := workguard.Check(ctx); err != nil {
+			return nil, err
+		}
 		_, turns, err := st.SessionDetail(ctx, userID, sessionID)
 		if err != nil {
 			return nil, err
@@ -124,6 +128,7 @@ func CollectStudyIssues(turns []store.Turn) []pipeline.StudyIssue {
 // RunStudySummaryInline (httpserver.sessionEndHandler's fallback when Redis
 // isn't configured) so both paths behave identically.
 func runStudySummary(ctx context.Context, pipe *pipeline.Pipeline, st store.Store, userID, sessionID string) error {
+	ctx = workguard.BindStore(ctx, st, userID, sessionID)
 	turns, err := waitForPendingCorrections(ctx, st, userID, sessionID)
 	if err != nil {
 		return fmt.Errorf("study summary: session detail: %w", err)
@@ -169,13 +174,8 @@ func runStudySummary(ctx context.Context, pipe *pipeline.Pipeline, st store.Stor
 	// English-only regardless of its input, and the English sentences alone
 	// already carry the full substance of the wrap-up.
 	if len(summary) > 0 {
-		prevProfile, err := st.GetLearnerProfile(ctx, userID)
-		if err != nil {
-			log.Printf("study summary: get learner profile %s: %v", userID, err)
-		} else if merged, err := pipe.UpdateLearnerProfile(ctx, prevProfile, studySummaryEnglish(summary)); err != nil {
+		if err := mergeSummaryProfile(ctx, pipe, st, userID, sessionID, studySummaryEnglish(summary)); err != nil {
 			log.Printf("study summary: update learner profile %s: %v", userID, err)
-		} else if err := st.SaveLearnerProfile(ctx, userID, merged); err != nil {
-			log.Printf("study summary: save learner profile %s: %v", userID, err)
 		}
 	}
 	return nil

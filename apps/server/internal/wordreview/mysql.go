@@ -14,6 +14,7 @@ import (
 
 	"buddy/server/internal/migration"
 	"buddy/server/internal/mysqlerr"
+	"buddy/server/internal/workguard"
 )
 
 // table carries a buddy_ prefix for the same reason as internal/store's and
@@ -202,6 +203,7 @@ func (s *MySQLStore) Save(ctx context.Context, userID, word, meaning, example st
 }
 
 func (s *MySQLStore) SaveOriginal(ctx context.Context, userID, word, meaning, example, originalWord string) (Word, error) {
+	db := workguard.Executor(ctx, s.rw)
 	now := time.Now()
 	// INSERT IGNORE: the UNIQUE KEY on (user_id, word, meaning) makes this a
 	// no-op if the learner already chose to study this exact word+meaning —
@@ -210,14 +212,14 @@ func (s *MySQLStore) SaveOriginal(ctx context.Context, userID, word, meaning, ex
 	// erroring. NextReviewAt is set here but doesn't matter until
 	// MarkVerified resets it — a pending word is excluded from Due/DueCount
 	// regardless (see their WHERE clauses).
-	_, err := s.rw.ExecContext(ctx, `
+	_, err := db.ExecContext(ctx, `
 		INSERT IGNORE INTO `+table+` (id, user_id, word, original_word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, research_status, research_results, review_question_version, review_prompt, review_answer, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?, 0, ?, '', '', NULL, 0, '', '', ?)
 	`, uuid.New().String(), userID, word, originalWord, meaning, example, now.Add(intervalForStage(0)).Unix(), StatusPending, now.Unix())
 	if err != nil {
 		return Word{}, fmt.Errorf("wordreview: save: insert: %w", err)
 	}
-	w, err := scanWord(s.rw.QueryRowContext(ctx, `SELECT `+wordColumns+` FROM `+table+` WHERE user_id = ? AND word = ? AND meaning = ?`, userID, word, meaning), userID)
+	w, err := scanWord(db.QueryRowContext(ctx, `SELECT `+wordColumns+` FROM `+table+` WHERE user_id = ? AND word = ? AND meaning = ?`, userID, word, meaning), userID)
 	if err != nil {
 		return Word{}, fmt.Errorf("wordreview: save: lookup: %w", err)
 	}

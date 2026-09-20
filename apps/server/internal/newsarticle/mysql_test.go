@@ -2,11 +2,13 @@ package newsarticle
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
 
 	"buddy/server/internal/testdocker"
+	"buddy/server/internal/workguard"
 
 	"github.com/testcontainers/testcontainers-go"
 	tcmysql "github.com/testcontainers/testcontainers-go/modules/mysql"
@@ -143,6 +145,9 @@ func mustSaveArticle(t *testing.T, st *MySQLStore, url string) Article {
 	if err != nil {
 		t.Fatalf("ReserveArticle() error = %v", err)
 	}
+	if _, err := st.CreateInstance(context.Background(), "study-fixture", reserved.ID); err != nil {
+		t.Fatal(err)
+	}
 	completed, err := st.CompleteArticle(context.Background(), reserved.ID,
 		"A short English study paragraph about the test headline.",
 		"테스트 헤드라인에 관한 짧은 영어 학습 문단입니다.",
@@ -198,6 +203,9 @@ func TestCompleteArticleIsNoopIfNoLongerPending(t *testing.T) {
 	reserved, err := st.ReserveArticle(context.Background(), "BBC", "Race", "https://example.com/complete-race", "A race snippet.", time.Time{})
 	if err != nil {
 		t.Fatalf("ReserveArticle() error = %v", err)
+	}
+	if _, err := st.CreateInstance(context.Background(), "study-fixture", reserved.ID); err != nil {
+		t.Fatal(err)
 	}
 	first, err := st.CompleteArticle(context.Background(), reserved.ID, "first summary", "첫 번역", testSubQuestions())
 	if err != nil {
@@ -356,6 +364,10 @@ func TestStalePendingIncludesRowsClaimedLongAgo(t *testing.T) {
 	}
 	backdateClaim(t, st, old.ID, time.Hour)
 
+	if _, err := st.CreateInstance(ctx, "sweep-fixture", old.ID); err != nil {
+		t.Fatal(err)
+	}
+
 	stale, err := st.StalePending(ctx, 10*time.Minute)
 	if err != nil {
 		t.Fatalf("StalePending() error = %v", err)
@@ -391,6 +403,9 @@ func TestClaimArticleReportsWhetherStillPending(t *testing.T) {
 		t.Fatal("ClaimArticle() on a StatusPending article = false, want true")
 	}
 
+	if _, err := st.CreateInstance(context.Background(), "study-fixture", reserved.ID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := st.CompleteArticle(ctx, reserved.ID, "s", "번역", testSubQuestions()); err != nil {
 		t.Fatalf("CompleteArticle() error = %v", err)
 	}
@@ -427,6 +442,10 @@ func TestClaimArticleRefreshesClaimedAtSoItLeavesStalePending(t *testing.T) {
 		t.Fatalf("ReserveArticle() error = %v", err)
 	}
 	backdateClaim(t, st, reserved.ID, time.Hour)
+
+	if _, err := st.CreateInstance(ctx, "sweep-fixture", reserved.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	staleBefore, err := st.StalePending(ctx, 10*time.Minute)
 	if err != nil {
@@ -472,6 +491,9 @@ func TestReopenIncompleteArticleWinsForADoneArticleWithNoSubQuestions(t *testing
 	reserved, err := st.ReserveArticle(ctx, "BBC", "Stale", "https://example.com/reopen-empty", "snippet", time.Time{})
 	if err != nil {
 		t.Fatalf("ReserveArticle() error = %v", err)
+	}
+	if _, err := st.CreateInstance(context.Background(), "study-fixture", reserved.ID); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := st.CompleteArticle(ctx, reserved.ID, "old summary", "오래된 번역", nil); err != nil {
 		t.Fatalf("CompleteArticle() error = %v", err)
@@ -734,5 +756,71 @@ func TestDeleteRemovesInstanceOnly(t *testing.T) {
 	}
 	if !ok || stillCached.ID != article.ID {
 		t.Fatalf("GetArticle() after deleting the instance = (%+v, %v), want the article still cached", stillCached, ok)
+	}
+}
+
+func TestLastConsumerDeletionStopsSharedArticleWork(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	a, err := st.ReserveArticle(ctx, "source", "title", "https://example.com/"+t.Name(), "description", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := st.rw.ExecContext(ctx, `DELETE FROM `+instancesTable+` WHERE article_id=?`, a.ID); err != nil {
+			t.Error(err)
+		}
+		if _, err := st.rw.ExecContext(ctx, `DELETE FROM `+articlesTable+` WHERE id=?`, a.ID); err != nil {
+			t.Error(err)
+		}
+	})
+	first, err := st.CreateInstance(ctx, "first", a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := st.CreateInstance(ctx, "second", a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = st.Delete(ctx, "first", first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if alive, err := st.WorkExists(ctx, "", a.ID); err != nil || !alive {
+		t.Fatalf("other consumer lost work: %v %v", alive, err)
+	}
+	if err = st.Delete(ctx, "second", second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if alive, err := st.WorkExists(ctx, "", a.ID); err != nil || alive {
+		t.Fatalf("orphan still alive: %v %v", alive, err)
+	}
+	if _, err = st.CompleteArticle(ctx, a.ID, "late summary", "late translation", testSubQuestions()); !errors.Is(err, workguard.ErrDeleted) {
+		t.Fatalf("late completion: %v", err)
+	}
+	got, _, err := st.GetArticle(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Summary != "" || got.Status != StatusPending {
+		t.Fatalf("orphan completed: %+v", got)
+	}
+	if _, err = st.rw.ExecContext(ctx, `UPDATE `+articlesTable+` SET claimed_at=0 WHERE id=?`, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := st.StalePending(ctx, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range stale {
+		if candidate.ID == a.ID {
+			t.Fatal("deleted consumer revived by sweep")
+		}
+	}
+	// Drawing again reuses the source and permits a fresh generation.
+	if _, err = st.CreateInstance(ctx, "third", a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.CompleteArticle(ctx, a.ID, "new summary", "new translation", testSubQuestions()); err != nil {
+		t.Fatal(err)
 	}
 }

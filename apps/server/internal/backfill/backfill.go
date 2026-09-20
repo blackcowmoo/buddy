@@ -26,6 +26,7 @@ import (
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/protocol"
 	"buddy/server/internal/store"
+	"buddy/server/internal/workguard"
 )
 
 // claimTTL bounds how long a session's translation pass may run before
@@ -138,11 +139,12 @@ func (w *Worker) Run(ctx context.Context) {
 // picked up again the next time its session is viewed and re-queued (see
 // httpserver.sessionDetailHandler).
 func translateSession(ctx context.Context, st store.Store, pipe *pipeline.Pipeline, userID, sessionID string) {
+	ctx = workguard.BindStore(ctx, st, userID, sessionID)
 	turns, ok := loadSessionTurns(ctx, st, userID, sessionID)
 	if !ok {
 		return
 	}
-	forEachNonBlankTurn(turns, func(priorTurns []llm.Message, t store.Turn, text string) {
+	forEachNonBlankTurn(ctx, turns, func(priorTurns []llm.Message, t store.Turn, text string) {
 		if strings.TrimSpace(t.Translation) != "" {
 			return
 		}
@@ -174,9 +176,12 @@ func loadSessionTurns(ctx context.Context, st store.Store, userID, sessionID str
 // llm.Message context — the "conversation so far" shape both
 // translateSession and correctSession feed to their respective pipeline
 // call.
-func forEachNonBlankTurn(turns []store.Turn, work func(priorTurns []llm.Message, t store.Turn, text string)) {
+func forEachNonBlankTurn(ctx context.Context, turns []store.Turn, work func(priorTurns []llm.Message, t store.Turn, text string)) {
 	var priorTurns []llm.Message
 	for _, t := range turns {
+		if workguard.Check(ctx) != nil {
+			return
+		}
 		text := strings.TrimSpace(t.Text)
 		if text == "" {
 			continue
@@ -246,11 +251,12 @@ func (w *CorrectionWorker) Run(ctx context.Context) {
 // picked up again the next time its session is viewed and re-queued (see
 // httpserver.sessionDetailHandler).
 func correctSession(ctx context.Context, st store.Store, pipe *pipeline.Pipeline, userID, sessionID string) {
+	ctx = workguard.BindStore(ctx, st, userID, sessionID)
 	turns, ok := loadSessionTurns(ctx, st, userID, sessionID)
 	if !ok {
 		return
 	}
-	forEachNonBlankTurn(turns, func(priorTurns []llm.Message, t store.Turn, text string) {
+	forEachNonBlankTurn(ctx, turns, func(priorTurns []llm.Message, t store.Turn, text string) {
 		if t.Role != "user" || t.Correction != nil || t.CorrectionStatus != "" {
 			return
 		}

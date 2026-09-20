@@ -15,6 +15,7 @@ import (
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/transport"
 	"buddy/server/internal/ttsstore"
+	"buddy/server/internal/workguard"
 )
 
 // articleListItem mirrors one newsarticle.Instance for the "오늘의 아티클" list
@@ -319,14 +320,14 @@ func articleDrawHandler(ident identity.Identifier, articles newsarticle.Store, p
 		if healed, reopened := selfHealIncompleteArticle(r.Context(), articles, article); reopened {
 			article = healed
 		}
-		if article.Status == newsarticle.StatusPending {
-			dispatchArticleStudy(r.Context(), articleStudyQueue, pipe, articles, audio, article, "")
-		}
 
 		inst, err := articles.CreateInstance(r.Context(), userID, article.ID)
 		if err != nil {
 			serverError(w, "articles: create instance "+userID, err)
 			return
+		}
+		if article.Status == newsarticle.StatusPending {
+			dispatchArticleStudy(r.Context(), articleStudyQueue, pipe, articles, audio, article, "")
 		}
 		writeJSON(w, toArticleDraw(inst))
 	}
@@ -476,7 +477,7 @@ func articleAudioHandler(ident identity.Identifier, articles newsarticle.Store, 
 		key := transport.ArticleAudioKey(inst.Article.ID, inst.Article.Summary)
 		body, err := audio.Cache.Open(r.Context(), key, audio.Client.Version())
 		if errors.Is(err, ttsstore.ErrNotFound) {
-			generated, genErr := audio.Generate(r.Context(), key, inst.Article.Summary)
+			generated, genErr := audio.Generate(workguard.BindStore(r.Context(), articles, "", inst.Article.ID), key, inst.Article.Summary)
 			if genErr != nil {
 				serverError(w, "articles: audio generate "+inst.Article.ID, genErr)
 				return

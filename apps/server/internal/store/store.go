@@ -460,3 +460,12 @@ type Store interface {
 	SessionStore
 	Close() error
 }
+
+// ProfileSnapshotStore prevents a stale aggregate from restoring a deleted
+// session's influence after another worker has rebuilt the learner profile.
+type ProfileSnapshotStore interface {
+	GetLearnerProfileSnapshot(context.Context, string) (string, int64, error)
+	PublishLearnerProfile(context.Context, string, []string, int64, string) error
+}
+
+var ErrProfileChanged = errors.New("store: learner profile changed during generation")

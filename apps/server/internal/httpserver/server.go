@@ -118,7 +118,7 @@ func New(cfg config.Config, deps Dependencies) *http.Server {
 	if candidate, ok := words.(wordreview.AnswerCache); ok {
 		answerCache = candidate
 	}
-	mux.HandleFunc("POST /api/quiz/check-answer", quizAnswerCheckHandler(ident, pipe, answerCache))
+	mux.HandleFunc("POST /api/quiz/check-answer", quizAnswerCheckWithOwners(ident, pipe, quizOwners{Sessions: st, Words: words}, answerCache))
 	mux.HandleFunc("DELETE /api/sessions/{id}", sessionDeleteHandler(ident, st, audio, recordings, pipe, profileRegenerateQueue))
 	mux.HandleFunc("GET /api/settings", settingsGetHandler(ident, st))
 	mux.HandleFunc("PUT /api/settings", settingsSaveHandler(ident, st))
@@ -129,7 +129,7 @@ func New(cfg config.Config, deps Dependencies) *http.Server {
 	mux.HandleFunc("POST /api/writing/draw", writingDrawHandler(ident, writingStore, st.GetLearnerProfile, pipe, writingQueue))
 	mux.HandleFunc("GET /api/writing/{id}", writingInstanceHandler(ident, writingStore))
 	mux.HandleFunc("DELETE /api/writing/{id}", writingDeleteHandler(ident, writingStore))
-	mux.HandleFunc("POST /api/writing/check", writingCheckHandler(ident, pipe))
+	mux.HandleFunc("POST /api/writing/check", writingCheckHandler(ident, pipe, deps.Writing))
 	mux.HandleFunc("POST /api/words/suggest", wordSuggestHandler(ident, pipe))
 	mux.HandleFunc("POST /api/words/define", wordDefineHandler(ident, pipe))
 	mux.HandleFunc("POST /api/words/save", wordSaveHandler(ident, words, pipe, wordVerifyQueue))

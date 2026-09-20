@@ -10,6 +10,7 @@ import (
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/protocol"
 	"buddy/server/internal/wordreview"
+	"buddy/server/internal/workguard"
 )
 
 // maxCapturedWordLen/maxCapturedFieldLen mirror httpserver's
@@ -54,6 +55,9 @@ func captureCorrectionWords(ctx context.Context, pipe *pipeline.Pipeline, words 
 	}
 	example := strings.TrimSpace(c.Corrected)
 	for _, issue := range c.Issues {
+		if workguard.Check(ctx) != nil {
+			return
+		}
 		if issue.Type != "vocabulary" && issue.Type != "phrasing" {
 			continue
 		}
@@ -68,7 +72,11 @@ func captureCorrectionWords(ctx context.Context, pipe *pipeline.Pipeline, words 
 			continue // wildly oversized LLM output isn't worth failing the correction save over
 		}
 
-		saved, err := words.Save(ctx, userID, word, meaning, example)
+		var saved wordreview.Word
+		err := workguard.Commit(ctx, func(ctx context.Context) (err error) {
+			saved, err = words.Save(ctx, userID, word, meaning, example)
+			return err
+		})
 		if err != nil {
 			log.Printf("word capture: save %s: %v", userID, err)
 			continue

@@ -20,6 +20,6 @@ export function deleteWritingPrompt(id: string): Promise<boolean> {
 	return requestOK(`api/writing/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
-export function checkWriting(prompt: string, answer: string): Promise<Correction | null> {
-  return postJSON<Correction | null>("api/writing/check", { prompt, answer }, null);
+export function checkWriting(prompt: string, answer: string, promptId?: string): Promise<Correction | null> {
+  return postJSON<Correction | null>("api/writing/check", { prompt, answer, promptId }, null);
 }

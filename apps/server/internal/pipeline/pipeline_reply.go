@@ -8,6 +8,7 @@ import (
 	"buddy/server/internal/llm"
 	"buddy/server/internal/protocol"
 	"buddy/server/internal/session"
+	"buddy/server/internal/workguard"
 )
 
 // reply streams the assistant response and records it in the session.
@@ -34,6 +35,9 @@ func (p *Pipeline) runReply(ctx context.Context, userID, sessionID string, sess 
 	// didn't) — either way it's the same completion, so it's handled once,
 	// here, rather than duplicated in every hook implementation.
 	onDone := func(full string) {
+		if workguard.Check(context.WithoutCancel(ctx)) != nil {
+			return
+		}
 		emit(protocol.ServerEvent{Type: protocol.EvAssistantDone, Turn: turn, Text: full})
 		sess.AppendAssistant(full)
 		if strings.TrimSpace(full) != "" {
@@ -43,7 +47,7 @@ func (p *Pipeline) runReply(ctx context.Context, userID, sessionID string, sess 
 			// it, same reasoning as backupAudio/persistEvent detaching from ctx.
 			go p.translateAssistant(context.WithoutCancel(ctx), userID, sessionID, turn, full, emit)
 		}
-		go p.compact(sess) // background: fold old turns into the long-term summary
+		go p.compact(ctx, sess) // background: fold old turns into the long-term summary
 	}
 	if p.ReplyHook != nil {
 		p.ReplyHook(ctx, userID, sessionID, turn, msgs, fallback, onToken, onDone)
@@ -55,7 +59,7 @@ func (p *Pipeline) runReply(ctx context.Context, userID, sessionID string, sess 
 	// ever see. Only applies to this direct, in-process path — once a
 	// ReplyHook is handling durability, ctx no longer governs whether the
 	// reply completes (see that field's doc comment).
-	if ctx.Err() != nil {
+	if workguard.Check(ctx) != nil {
 		return
 	}
 	onDone(full)
@@ -78,7 +82,7 @@ func (p *Pipeline) GenerateReply(ctx context.Context, msgs []llm.Message, fallba
 	// caller running on context.Background() (every ReplyHook path) never
 	// hits this, so the fallback substitution below still always applies
 	// there.
-	if ctx.Err() != nil {
+	if workguard.Check(ctx) != nil {
 		return full, err
 	}
 	if err != nil {

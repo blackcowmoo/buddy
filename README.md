@@ -497,3 +497,28 @@ without touching the pipeline:
 - The voice recording archive (`internal/recording`) uses `aws-sdk-go-v2`,
   which is pure Go — no cgo, so it doesn't affect the static/scratch export
   build (`docker build --target export`).
+
+### Deleting items during generation
+
+Background jobs survive navigation, disconnects, and ended conversations. Explicit
+item deletion is different: `workguard` checks the primary database before and
+after each model call and once per second during an active request. Deletion
+cancels the request, discards late responses, and consumes the queued job without
+retrying it. Keep the guard context when starting detached follow-up work.
+
+Session identity tombstones (`buddy_session_lifetimes`) and transactional locks
+prevent delayed greetings, titles, turns, or job reservations from recreating a
+deleted room. Short derived writes (captured vocabulary and learner profiles)
+also use the session guard. Profile rebuilding restarts if a source session is
+deleted during generation. Profile revisions also reject a stale aggregate from
+a surviving room if another room was deleted or another worker published a newer
+profile; contaminated profile text is cleared until the rebuild completes.
+Tombstones must be retained for deleted IDs.
+
+Article sources are shared caches: generation remains valid while at least one
+learner still has an instance. Deleting the last instance stops generation and
+excludes the source from orphan recovery; a future draw can reuse the cached
+source. New item-owned model work must bind its store's `workguard.Source`, whose
+existence checks must read the primary, and ensure persistence cannot recreate
+a deleted owner. Writing and quiz checks carry their owner IDs; legacy requests
+without an owner remain stateless.

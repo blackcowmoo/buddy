@@ -14,6 +14,7 @@ import (
 	"buddy/server/internal/protocol"
 	"buddy/server/internal/tts"
 	"buddy/server/internal/ttsstore"
+	"buddy/server/internal/workguard"
 )
 
 // ArticleAudio best-effort generates and caches "오늘의 아티클" read-aloud
@@ -48,7 +49,8 @@ func ArticleAudioKey(articleID, text string) string {
 // first (generate's nil guard; httpserver's handler answers 503 instead of
 // calling this at all when TTS isn't configured).
 func (a *ArticleAudio) Generate(ctx context.Context, key, text string) ([]byte, error) {
-	audio, err := a.Client.Speak(ctx, text)
+	var audio []byte
+	err := workguard.Run(ctx, func(ctx context.Context) (err error) { audio, err = a.Client.Speak(ctx, text); return err })
 	if err != nil {
 		return nil, fmt.Errorf("tts: generate: %w", err)
 	}
@@ -63,7 +65,7 @@ func (a *ArticleAudio) Generate(ctx context.Context, key, text string) ([]byte, 
 // (the summary/quiz are the feature; read-aloud is a bonus, and the audio
 // handler's own lazy-generate-on-miss path covers this case anyway).
 func (a *ArticleAudio) generate(ctx context.Context, articleID, text string) {
-	if a == nil {
+	if a == nil || workguard.Check(ctx) != nil {
 		return
 	}
 	if _, err := a.Generate(ctx, ArticleAudioKey(articleID, text), text); err != nil {
@@ -138,6 +140,7 @@ func toNewsArticleSubQuestions(qs []protocol.ArticleSubQuestion) []newsarticle.S
 }
 
 func runArticleStudy(ctx context.Context, pipe *pipeline.Pipeline, articles newsarticle.Store, audio *ArticleAudio, articleID, source, title, description string) error {
+	ctx = workguard.BindStore(ctx, articles, "", articleID)
 	target, ok, err := articles.GetArticle(ctx, articleID)
 	if err != nil {
 		return fmt.Errorf("article study: get: %w", err)
@@ -164,7 +167,10 @@ func runArticleStudy(ctx context.Context, pipe *pipeline.Pipeline, articles news
 
 	study, err := pipe.GenerateArticleStudy(ctx, source, title, description)
 	if err != nil {
-		if failErr := articles.FailArticle(context.Background(), articleID); failErr != nil {
+		if checkErr := workguard.Check(ctx); checkErr != nil {
+			return checkErr
+		}
+		if failErr := articles.FailArticle(ctx, articleID); failErr != nil {
 			log.Printf("article study: fail %s: %v", articleID, failErr)
 		}
 		return fmt.Errorf("article study: generate: %w", err)

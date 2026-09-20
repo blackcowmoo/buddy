@@ -18,7 +18,7 @@ vi.mock("../lib/wordReview", () => ({ saveWord: vi.fn() }));
 
 import { Writing } from "./Writing";
 import "../styles.css";
-import { deleteWritingPrompt, drawWritingPrompt, fetchWritingPrompt, fetchWritingPrompts } from "../lib/writing";
+import { checkWriting, deleteWritingPrompt, drawWritingPrompt, fetchWritingPrompt, fetchWritingPrompts } from "../lib/writing";
 import { suggestWords } from "../lib/wordSearch";
 import { formatDateDivider } from "../lib/time";
 
@@ -133,4 +133,14 @@ describe("Writing page list/detail flow", () => {
     expect(panel.closest(".writing-answer-tools")).toBeInTheDocument();
     expect(panel.closest(".writing-detail-card")).toBeInTheDocument();
   });
+});
+
+it("associates a submitted answer with the selected prompt", async () => {
+ const user = userEvent.setup();
+ vi.mocked(checkWriting).mockResolvedValue(null);
+ render(<Writing />);
+ await user.click(await screen.findByRole("button", { name: /어제 영화를 봤어요/ }));
+ await user.type(await screen.findByLabelText("영어 답안"), "I watched a movie.");
+ await user.click(screen.getByRole("button", { name: "답안 확인" }));
+ expect(checkWriting).toHaveBeenCalledWith(oldPrompt.korean, "I watched a movie.", oldPrompt.id);
 });

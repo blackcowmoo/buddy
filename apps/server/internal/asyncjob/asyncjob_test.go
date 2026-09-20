@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"sync"
 	"testing"
 	"time"
 
 	"buddy/server/internal/testdocker"
+	"buddy/server/internal/workguard"
 
 	"github.com/redis/go-redis/v9"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
@@ -740,5 +742,46 @@ func waitForCondition(t *testing.T, timeout time.Duration, cond func() bool) {
 	}
 	if !cond() {
 		t.Fatalf("condition not met within %s", timeout)
+	}
+}
+
+func TestDeletedJobsAreConsumedByFastPathAndWorker(t *testing.T) {
+	for _, path := range []string{"fast", "worker"} {
+		t.Run(path, func(t *testing.T) {
+			rdb := requireRedis(t)
+			ctx := context.Background()
+			kind := testKind(t)
+			q := NewQueue(rdb)
+			job, _, err := q.Enqueue(ctx, kind, "deleted-owner", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			handler := func(context.Context, Job) error { return fmt.Errorf("late model response: %w", workguard.ErrDeleted) }
+			if path == "fast" {
+				claimed, err := q.TryClaimByID(ctx, job, time.Minute)
+				if err != nil || !claimed {
+					t.Fatalf("claim=%v %v", claimed, err)
+				}
+				if err = q.Execute(ctx, job, time.Minute, handler); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				raw, err := rdb.RPopLPush(ctx, queueKey(kind), processingKey(kind)).Result()
+				if err != nil {
+					t.Fatal(err)
+				}
+				worker := NewWorker(rdb, kind, 1, time.Minute, handler)
+				worker.run(raw)
+			}
+			if n := rdb.LLen(ctx, processingKey(kind)).Val(); n != 0 {
+				t.Fatalf("retryable entries=%d", n)
+			}
+			if n := rdb.Exists(ctx, claimKey(kind, job.ID)).Val(); n != 0 {
+				t.Fatal("claim remains")
+			}
+			if _, added, err := q.Enqueue(ctx, kind, "deleted-owner", nil); err != nil || !added {
+				t.Fatalf("dedupe was not released: %v %v", added, err)
+			}
+		})
 	}
 }

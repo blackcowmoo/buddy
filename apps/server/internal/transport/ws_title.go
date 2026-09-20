@@ -6,6 +6,7 @@ import (
 
 	"buddy/server/internal/llm"
 	"buddy/server/internal/session"
+	"buddy/server/internal/workguard"
 )
 
 // titleTimeout bounds Handler.generateTitle's LLM call — its own budget,
@@ -92,9 +93,9 @@ func (h *Handler) generateTitle(userID, sessionID string, sess *session.Session,
 	// disconnect" convention as NewReplyHook/NewCorrectHook. save is only
 	// consulted on the direct (no-hook) fallback — see RunTitle's doc
 	// comment for why the hook path persists on its own.
-	ctx, cancel := context.WithTimeout(context.Background(), titleTimeout)
+	ctx, cancel := context.WithTimeout(workguard.BindStore(context.Background(), h.store, userID, sessionID), titleTimeout)
 	defer cancel()
 	h.pipe.RunTitle(ctx, userID, sessionID, turn, transcript, func(title string) error {
-		return h.store.SaveGeneratedTitle(context.Background(), userID, sessionID, title)
+		return h.store.SaveGeneratedTitle(ctx, userID, sessionID, title)
 	})
 }

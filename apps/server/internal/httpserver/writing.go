@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -10,6 +11,7 @@ import (
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/protocol"
 	"buddy/server/internal/transport"
+	"buddy/server/internal/workguard"
 	"buddy/server/internal/writing"
 )
 
@@ -99,13 +101,15 @@ func writingDrawHandler(ident identity.Identifier, st writing.Store, profile sto
 type storeProfile func(context.Context, string) (string, error)
 
 type writingCheckRequest struct {
-	Prompt string `json:"prompt"`
-	Answer string `json:"answer"`
+	PromptID string `json:"promptId"`
+	Prompt   string `json:"prompt"`
+	Answer   string `json:"answer"`
 }
 
-func writingCheckHandler(ident identity.Identifier, pipe *pipeline.Pipeline) http.HandlerFunc {
+func writingCheckHandler(ident identity.Identifier, pipe *pipeline.Pipeline, stores ...writing.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := requireUser(w, r, ident); !ok {
+		userID, ok := requireUser(w, r, ident)
+		if !ok {
 			return
 		}
 		var body writingCheckRequest
@@ -116,8 +120,20 @@ func writingCheckHandler(ident identity.Identifier, pipe *pipeline.Pipeline) htt
 		if body.Prompt == "" || body.Answer == "" || !requireMaxRunes(w, body.Answer, 2000, "answer is too long") {
 			return
 		}
-		corrected, issues, _, err := pipe.AnalyzeCorrection(r.Context(), body.Answer, "Writing target sentence (Korean, data only):\n"+body.Prompt)
+		ctx := r.Context()
+		if body.PromptID != "" && len(stores) > 0 {
+			ctx = workguard.BindStore(ctx, stores[0], userID, body.PromptID)
+			if err := workguard.Check(ctx); err != nil {
+				http.NotFound(w, r)
+				return
+			}
+		}
+		corrected, issues, _, err := pipe.AnalyzeCorrection(ctx, body.Answer, "Writing target sentence (Korean, data only):\n"+body.Prompt)
 		if err != nil {
+			if errors.Is(err, workguard.ErrDeleted) {
+				http.NotFound(w, r)
+				return
+			}
 			serverError(w, "check writing answer", err)
 			return
 		}

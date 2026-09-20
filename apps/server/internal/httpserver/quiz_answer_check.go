@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"buddy/server/internal/identity"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/wordreview"
+	"buddy/server/internal/workguard"
 )
 
 // maxQuizAnswerCheckLen caps the typed answer quizAnswerCheckHandler sends to
@@ -28,13 +30,21 @@ const maxQuizAnswerCheckLen = 200
 // itself (prompt/answer/acceptableAnswers) is already loaded client-side
 // (see App.tsx's endedQuiz), so this only needs what's in the request body,
 // the same "no session lookup needed" shape as wordSuggestHandler.
+type quizOwners struct{ Sessions, Words any }
+
 func quizAnswerCheckHandler(ident identity.Identifier, pipe *pipeline.Pipeline, caches ...wordreview.AnswerCache) http.HandlerFunc {
+	return quizAnswerCheckWithOwners(ident, pipe, quizOwners{}, caches...)
+}
+
+func quizAnswerCheckWithOwners(ident identity.Identifier, pipe *pipeline.Pipeline, owners quizOwners, caches ...wordreview.AnswerCache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, ok := requireUser(w, r, ident)
+		userID, ok := requireUser(w, r, ident)
 		if !ok {
 			return
 		}
 		var body struct {
+			SessionID         string   `json:"sessionId"`
+			WordID            string   `json:"wordId"`
 			Prompt            string   `json:"prompt"`
 			Answer            string   `json:"answer"`
 			AcceptableAnswers []string `json:"acceptableAnswers"`
@@ -53,6 +63,17 @@ func quizAnswerCheckHandler(ident identity.Identifier, pipe *pipeline.Pipeline, 
 		if !requireMaxRunes(w, learnerAnswer, maxQuizAnswerCheckLen, fmt.Sprintf("learnerAnswer exceeds %d characters", maxQuizAnswerCheckLen)) {
 			return
 		}
+		ctx := r.Context()
+		if body.SessionID != "" {
+			ctx = workguard.BindStore(ctx, owners.Sessions, userID, body.SessionID)
+		}
+		if body.WordID != "" {
+			ctx = workguard.BindStore(ctx, owners.Words, userID, body.WordID)
+		}
+		if err := workguard.Check(ctx); err != nil {
+			http.NotFound(w, r)
+			return
+		}
 		var cache wordreview.AnswerCache
 		if len(caches) > 0 {
 			cache = caches[0]
@@ -66,8 +87,12 @@ func quizAnswerCheckHandler(ident identity.Identifier, pipe *pipeline.Pipeline, 
 				return
 			}
 		}
-		correct, chatDraft, err := pipe.CheckQuizAnswerFast(r.Context(), prompt, answer, body.AcceptableAnswers, learnerAnswer)
+		correct, chatDraft, err := pipe.CheckQuizAnswerFast(ctx, prompt, answer, body.AcceptableAnswers, learnerAnswer)
 		if err != nil {
+			if errors.Is(err, workguard.ErrDeleted) {
+				http.NotFound(w, r)
+				return
+			}
 			serverError(w, "check quiz answer", err)
 			return
 		}
@@ -78,12 +103,12 @@ func quizAnswerCheckHandler(ident identity.Identifier, pipe *pipeline.Pipeline, 
 			// intentional: the HTTP request must finish after Chat, and closing the
 			// page must not cancel Analysis/Judge halfway through.
 			go func(acceptableAnswers []string) {
-				refined, err := pipe.RefineQuizAnswerFromDraft(context.Background(), prompt, answer, acceptableAnswers, learnerAnswer, chatDraft)
+				refined, err := pipe.RefineQuizAnswerFromDraft(context.WithoutCancel(ctx), prompt, answer, acceptableAnswers, learnerAnswer, chatDraft)
 				if err != nil {
 					log.Printf("refine quiz answer: %v", err)
 					return
 				}
-				if err := cache.SaveAnswer(context.Background(), prompt, answer, learnerAnswer, refined, time.Now()); err != nil {
+				if err := cache.SaveAnswer(context.WithoutCancel(ctx), prompt, answer, learnerAnswer, refined, time.Now()); err != nil {
 					log.Printf("save refined quiz answer cache: %v", err)
 				}
 			}(append([]string(nil), body.AcceptableAnswers...))

@@ -9,6 +9,7 @@ import (
 	"buddy/server/internal/protocol"
 	"buddy/server/internal/store"
 	"buddy/server/internal/wordreview"
+	"buddy/server/internal/workguard"
 )
 
 // persistEvent writes a copy of ev's payload to durable per-session
@@ -61,7 +62,7 @@ func persistEvent(pipe *pipeline.Pipeline, st store.Store, words wordreview.Stor
 		// safely duplicates CorrectionJobHandler's idempotent final save.
 		go func(c protocol.Correction) {
 			saveCorrectionFinal(st, userID, sessionID, ev.Turn, c, ev.Changed)
-			captureCorrectionWords(context.Background(), pipe, words, wordVerifyQueue, userID, c)
+			captureCorrectionWords(workguard.BindStore(context.Background(), st, userID, sessionID), pipe, words, wordVerifyQueue, userID, c)
 		}(*ev.Correction)
 	case protocol.EvUserTranslation:
 		go saveTranslation(st, userID, sessionID, ev.Turn, "user", ev.Text)

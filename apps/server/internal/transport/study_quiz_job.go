@@ -10,6 +10,7 @@ import (
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/protocol"
 	"buddy/server/internal/store"
+	"buddy/server/internal/workguard"
 )
 
 // StudyQuizClaimTTL/StudyQuizWorkerConcurrency mirror StudySummaryClaimTTL/
@@ -42,6 +43,7 @@ type studyQuizJobPayload struct {
 // how httpserver.sessionQuizHandler already represented "nothing to quiz",
 // so there's no ambiguity here for a retry to resolve.
 func runStudyQuiz(ctx context.Context, pipe *pipeline.Pipeline, st store.Store, userID, sessionID string) error {
+	ctx = workguard.BindStore(ctx, st, userID, sessionID)
 	turns, err := waitForPendingCorrections(ctx, st, userID, sessionID)
 	if err != nil {
 		return fmt.Errorf("study quiz: session detail: %w", err)

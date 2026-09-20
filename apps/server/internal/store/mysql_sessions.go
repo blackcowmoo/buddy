@@ -110,7 +110,8 @@ func ensureSessionRow(ctx context.Context, exec execer, userID, sessionID, text 
 // runs after this one, its `IF(title_generated = 0, ...)` guard already
 // knows to leave this title alone.
 func (s *MySQLStore) SaveGeneratedTitle(ctx context.Context, userID, sessionID, title string) error {
-	if _, err := s.rw.ExecContext(ctx, `
+	return s.withLiveSession(ctx, userID, sessionID, "SaveGeneratedTitle", func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `
 		INSERT INTO `+sessionsTable+` (user_id, id, title, summary, recent, created_at, updated_at, title_generated, study_summary, quiz)
 		VALUES (?, ?, ?, '', '[]', UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), 1, '', '')
 		ON DUPLICATE KEY UPDATE
@@ -118,9 +119,10 @@ func (s *MySQLStore) SaveGeneratedTitle(ctx context.Context, userID, sessionID, 
 			title_generated = 1,
 			updated_at = VALUES(updated_at)
 	`, userID, sessionID, truncateTitle(title)); err != nil {
-		return fmt.Errorf("store: save generated title: %w", err)
-	}
-	return nil
+			return fmt.Errorf("store: save generated title: %w", err)
+		}
+		return nil
+	})
 }
 
 // EndSession is a plain UPDATE, not an upsert: by the time a learner can
@@ -228,7 +230,7 @@ func (s *MySQLStore) listSessions(ctx context.Context, userID string, instant bo
 // MarkInstant's doc comment — instant mode changes nothing about the
 // pipeline itself, only how the room is displayed), so both must be replayed.
 func (s *MySQLStore) ListSessionsWithStudySummary(ctx context.Context, userID string) ([]SessionMeta, error) {
-	rows, err := s.ro.QueryContext(ctx, `
+	rows, err := s.rw.QueryContext(ctx, `
 		SELECT id, title, created_at, updated_at, study_summary FROM `+sessionsTable+`
 		WHERE user_id = ? AND ended = 1 AND study_summary <> '' ORDER BY updated_at ASC
 	`, userID)
@@ -261,14 +263,16 @@ func (s *MySQLStore) ListSessionsWithStudySummary(ctx context.Context, userID st
 // eventually run" — whichever lands first creates the row, the other just
 // updates the one column it owns, so the outcome is correct either way.
 func (s *MySQLStore) MarkInstant(ctx context.Context, userID, sessionID string) error {
-	if _, err := s.rw.ExecContext(ctx, `
+	return s.withLiveSession(ctx, userID, sessionID, "MarkInstant", func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `
 		INSERT INTO `+sessionsTable+` (user_id, id, title, summary, recent, created_at, updated_at, study_summary, quiz, instant)
 		VALUES (?, ?, '', '', '[]', UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), '', '', 1)
 		ON DUPLICATE KEY UPDATE instant = 1
 	`, userID, sessionID); err != nil {
-		return fmt.Errorf("store: mark instant: %w", err)
-	}
-	return nil
+			return fmt.Errorf("store: mark instant: %w", err)
+		}
+		return nil
+	})
 }
 
 // SessionDetail loads the session's metadata and its full transcript. The
@@ -341,11 +345,41 @@ func (s *MySQLStore) sessionDetail(ctx context.Context, userID, sessionID string
 // a crash or error partway through never leaves an orphaned buddy_turns row
 // pointing at a session that no longer exists in buddy_sessions.
 func (s *MySQLStore) DeleteSession(ctx context.Context, userID, sessionID string) error {
-	return s.withTx(ctx, "delete session", func(tx *sql.Tx) error {
+	_, err := s.DeleteSessionWithProfileState(ctx, userID, sessionID)
+	return err
+}
+
+func (s *MySQLStore) DeleteSessionWithProfileState(ctx context.Context, userID, sessionID string) (contributed bool, err error) {
+	err = s.withTx(ctx, "delete session", func(tx *sql.Tx) error {
+		if _, err := lockSessionLifetime(ctx, tx, userID, sessionID); err != nil {
+			return err
+		}
+		var summary string
+		if err := tx.QueryRowContext(ctx, `SELECT study_summary FROM `+sessionsTable+` WHERE user_id=? AND id=? FOR UPDATE`, userID, sessionID).Scan(&summary); err != nil && err != sql.ErrNoRows {
+			return err
+		}
+		contributed = len(decodeStudySummary(summary)) > 0
+		// Invalidate every in-flight aggregate, including folds for a different
+		// surviving room that read the previous profile. Clear contaminated text
+		// immediately; the detached rebuild fills it from the remaining sessions.
+		if _, err := tx.ExecContext(ctx, `INSERT INTO `+settingsTable+` (user_id, interlocutor_style, learner_profile, updated_at, learner_profile_revision)
+   VALUES (?, '', '', UNIX_TIMESTAMP(), 1)
+   ON DUPLICATE KEY UPDATE learner_profile=IF(?, '', learner_profile), learner_profile_revision=learner_profile_revision+1`, userID, contributed); err != nil {
+			return err
+		}
+
+		if _, err := tx.ExecContext(ctx, `UPDATE `+lifetimesTable+` SET deleted=1 WHERE user_id=? AND session_id=?`, userID, sessionID); err != nil {
+			return err
+		}
+
 		if _, err := tx.ExecContext(ctx, `
 			DELETE FROM `+turnsTable+` WHERE user_id = ? AND session_id = ?
 		`, userID, sessionID); err != nil {
 			return fmt.Errorf("store: delete session: turns: %w", err)
+		}
+		// Match correction completion's turn-then-job lock order.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM `+jobsTable+` WHERE user_id=? AND session_id=?`, userID, sessionID); err != nil {
+			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
 			DELETE FROM `+sessionsTable+` WHERE user_id = ? AND id = ?
@@ -354,4 +388,5 @@ func (s *MySQLStore) DeleteSession(ctx context.Context, userID, sessionID string
 		}
 		return nil
 	})
+	return contributed, err
 }

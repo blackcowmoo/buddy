@@ -2,16 +2,24 @@ package asyncjob
 
 import (
 	"context"
+	"errors"
 	"log"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"buddy/server/internal/workguard"
 )
 
 // runWithLease keeps a claimed job alive for as long as its handler is
 // actually running. If the process dies, the heartbeat dies with it and the
 // existing reaper can safely put the processing entry back on the queue.
-func runWithLease(ctx context.Context, rdb redis.UniversalClient, kind Kind, id string, ttl time.Duration, handler func(context.Context) error) error {
+func runWithLease(ctx context.Context, rdb redis.UniversalClient, kind Kind, id string, ttl time.Duration, handler func(context.Context) error) (result error) {
+	defer func() {
+		if errors.Is(result, workguard.ErrDeleted) {
+			result = nil
+		}
+	}()
 	if ttl <= 0 {
 		return handler(ctx)
 	}

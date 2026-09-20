@@ -999,7 +999,7 @@ describe("room list", () => {
     await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "commutes");
     await user.click(screen.getByRole("button", { name: "확인" }));
 
-    expect(checkQuizAnswer).toHaveBeenCalledWith("He ___ to school every day.", "goes", undefined, "commutes");
+    expect(checkQuizAnswer).toHaveBeenCalledWith("He ___ to school every day.", "goes", undefined, "commutes", { sessionId: "s1" });
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
     await vi.waitFor(() => expect(markQuizCompleted).toHaveBeenCalledWith("s1"));
   });

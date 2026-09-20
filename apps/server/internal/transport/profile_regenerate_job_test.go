@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"buddy/server/internal/llm"
@@ -201,4 +202,51 @@ func stringSlicesEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestProfileRegenerationRestartsAfterSourceDeletion(t *testing.T) {
+	base := newFakeStore()
+	endedSessionWithSummary(t, base, "first", "deleted source")
+	endedSessionWithSummary(t, base, "second", "remaining source")
+	st := &profileDeletionStore{fakeStore: base}
+	calls := 0
+	model := &profileDeletingModel{call: func() string {
+		calls++
+		if calls == 1 {
+			if err := base.DeleteSession(context.Background(), "alex", "first"); err != nil {
+				t.Fatal(err)
+			}
+			st.deleted.Store(true)
+			return "contains deleted source"
+		}
+		return "remaining profile"
+	}}
+	if err := runProfileRegenerate(context.Background(), &pipeline.Pipeline{LLM: model, ChatModel: "chat"}, st, "alex"); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := st.GetLearnerProfile(context.Background(), "alex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile != "remaining profile" || calls != 2 {
+		t.Fatalf("profile=%q calls=%d", profile, calls)
+	}
+}
+
+type profileDeletionStore struct {
+	*fakeStore
+	deleted atomic.Bool
+}
+
+func (s *profileDeletionStore) WorkExists(_ context.Context, _ string, id string) (bool, error) {
+	return id != "first" || !s.deleted.Load(), nil
+}
+
+type profileDeletingModel struct{ call func() string }
+
+func (m *profileDeletingModel) Complete(context.Context, string, []llm.Message, bool) (string, error) {
+	return m.call(), nil
+}
+func (m *profileDeletingModel) ChatStream(context.Context, string, []llm.Message, func(string)) (string, error) {
+	return "", nil
 }

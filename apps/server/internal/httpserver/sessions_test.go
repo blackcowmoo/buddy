@@ -257,6 +257,8 @@ func (f *fakeSessionStore) MarkInstant(ctx context.Context, userID, sessionID st
 }
 
 func (f *fakeSessionStore) SessionDetail(ctx context.Context, userID, sessionID string) (store.SessionMeta, []store.Turn, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.detailUnboundedCalled = true
 	if f.detailTurns == nil && f.detailErr == nil {
 		return store.SessionMeta{}, nil, errors.New("not used by these tests")
@@ -268,6 +270,8 @@ func (f *fakeSessionStore) SessionDetail(ctx context.Context, userID, sessionID 
 }
 
 func (f *fakeSessionStore) SessionDetailPage(ctx context.Context, userID, sessionID string, beforeTurn, limit int) (store.SessionMeta, []store.Turn, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.detailBeforeTurn = beforeTurn
 	f.detailLimit = limit
 	if f.detailTurns == nil && f.detailErr == nil {
@@ -754,5 +758,28 @@ func TestSessionDeleteSucceedsWhenAudioCascadeFails(t *testing.T) {
 	}
 	if len(st.deleted) != 1 {
 		t.Fatalf("session delete should still have happened, deleted = %+v", st.deleted)
+	}
+}
+
+// Summary and quiz workers read the same fake concurrently, just as production
+// uses two independent jobs. Keep request-observation fields synchronized too.
+func TestFakeSessionStoreConcurrentDetailReads(t *testing.T) {
+	st := &fakeSessionStore{detailTurns: []store.Turn{}}
+	var readers sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for n := 0; n < 20; n++ {
+				_, _, err := st.SessionDetail(context.Background(), "alex", "room")
+				if err != nil {
+					t.Error(err)
+				}
+			}
+		}()
+	}
+	readers.Wait()
+	if !st.detailUnboundedCalled {
+		t.Fatal("detail read was not recorded")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/wordreview"
+	"buddy/server/internal/workguard"
 	"context"
 	"fmt"
 	"time"
@@ -18,6 +19,10 @@ type wordResearchJobPayload struct{ UserID, WordID string }
 
 func WordResearchJobHandler(pipe *pipeline.Pipeline, words wordreview.Store) asyncjob.Handler {
 	return asyncjob.DecodePayloadHandler(asyncjob.KindWordResearch, func(ctx context.Context, p wordResearchJobPayload) error {
+		ctx = workguard.BindStore(ctx, words, p.UserID, p.WordID)
+		if err := workguard.Check(ctx); err != nil {
+			return err
+		}
 		store, ok := words.(wordreview.ResearchStore)
 		if !ok {
 			return fmt.Errorf("word research: store does not support research")

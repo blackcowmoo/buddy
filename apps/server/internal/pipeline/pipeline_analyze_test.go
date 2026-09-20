@@ -25,7 +25,7 @@ func TestCompactNoopBelowThreshold(t *testing.T) {
 		MaxHistoryMessages: 20,
 	}
 
-	p.compact(sess)
+	p.compact(context.Background(), sess)
 
 	if calls != 0 {
 		t.Fatalf("expected no LLM call below threshold, got %d calls", calls)
@@ -49,7 +49,7 @@ func TestCompactFoldsOldestAtThreshold(t *testing.T) {
 		MaxHistoryMessages: 4,
 	}
 
-	p.compact(sess)
+	p.compact(context.Background(), sess)
 
 	summary, recent := sess.Export()
 	if summary != "rolled-up summary" {
@@ -74,7 +74,7 @@ func TestCompactLeavesHistoryOnLLMError(t *testing.T) {
 		}}}},
 		MaxHistoryMessages: 4,
 	}
-	p.compact(sess)
+	p.compact(context.Background(), sess)
 
 	summary, after := sess.Export()
 	if summary != "" {

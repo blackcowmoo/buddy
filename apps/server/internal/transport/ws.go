@@ -17,6 +17,7 @@ import (
 	"buddy/server/internal/session"
 	"buddy/server/internal/store"
 	"buddy/server/internal/wordreview"
+	"buddy/server/internal/workguard"
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
@@ -110,7 +111,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c.SetReadLimit(maxAudioBytes)
 	defer c.CloseNow()
 
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cancel := context.WithCancel(workguard.BindStore(r.Context(), h.store, userID, sessionID))
 	defer cancel()
 
 	// Load, LastTurn, GetInterlocutorStyle, and GetLearnerProfile are four
@@ -249,6 +250,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		turnCancel()
+		if err := workguard.Check(ctx); err != nil {
+			return
+		}
 		var tctx context.Context
 		tctx, turnCancel = context.WithCancel(ctx)
 
