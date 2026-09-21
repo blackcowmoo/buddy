@@ -41,6 +41,14 @@ to the exclusions; exhausted jobs enter the normal failure/retry path. Deleting
 a lesson allows its combination again if no other saved lesson uses it.
 There is no fixed curriculum, comparison search, or dictionary-link UI.
 
+The server owns question IDs and normalizes harmless whitespace/casing in model
+output. It also accepts a single JSON lesson wrapped in markdown or explanatory
+text. If the final cascade result still violates the lesson contract, the Judge
+gets one focused repair call with the exact validation error; Buddy does not
+repay the full Chat → Analysis → Judge cascade. A second structurally invalid
+result becomes a persisted `failed` lesson for explicit retry, while transient
+model/network/storage errors retain the durable queue's automatic retry path.
+
 Generation persists `pending` / `processing` / `done` / `failed` in MySQL.
 With Redis, `asyncjob.KindNuance` keeps generating across navigation and worker
 failure; without Redis it uses detached inline execution. Reopening pending
