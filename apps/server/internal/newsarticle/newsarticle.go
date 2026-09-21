@@ -147,7 +147,8 @@ type Store interface {
 	// content and flips Status to StatusDone. A no-op that just re-reads the
 	// row if it's no longer StatusPending (e.g. another attempt already
 	// completed it first) — same race-tolerant idempotence ReserveArticle's
-	// insert-ignore gives the reservation itself.
+	// insert-ignore gives the reservation itself. At least one instance must
+	// still reference the article; orphaned completion returns workguard.ErrDeleted.
 	CompleteArticle(ctx context.Context, id, summary, translation string, subQuestions []SubQuestion) (Article, error)
 	// FailArticle marks a StatusPending Article StatusFailed after a
 	// pipeline.GenerateArticleStudy attempt errored — observability only; the
@@ -160,7 +161,8 @@ type Store interface {
 	// call, same early-exit reasoning as runWordVerify.
 	GetArticle(ctx context.Context, id string) (Article, bool, error)
 	// StalePending returns every unfinished Article (StatusPending or
-	// StatusFailed) last (re)claimed more than olderThan ago — see ClaimArticle. This is the DB-only orphan
+	// StatusFailed) with a remaining instance, last (re)claimed more than
+	// olderThan ago — see ClaimArticle. This is the DB-only orphan
 	// detection transport.SweepStaleArticleStudies polls on, independent of
 	// whether Redis (and asyncjob's own claim-based reaper) is configured at
 	// all: a generation goroutine killed mid-job by a crash or a redeploy

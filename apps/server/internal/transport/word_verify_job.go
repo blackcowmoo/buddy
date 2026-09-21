@@ -9,6 +9,7 @@ import (
 	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/wordreview"
+	"buddy/server/internal/workguard"
 )
 
 // WordVerifyClaimTTL/WordVerifyWorkerConcurrency mirror StudyQuizClaimTTL/
@@ -50,6 +51,7 @@ func wordVerifyKey(userID, wordID string) string {
 // pending) is treated as already done — nothing left to verify, not an
 // error worth retrying.
 func runWordVerify(ctx context.Context, pipe *pipeline.Pipeline, words wordreview.Store, userID, wordID string, questionVersion int) error {
+	ctx = workguard.BindStore(ctx, words, userID, wordID)
 	target, err := words.Get(ctx, userID, wordID)
 	if err != nil {
 		return fmt.Errorf("word verify: get: %w", err)

@@ -351,7 +351,7 @@ export function WordReview() {
       return;
     }
     setCheckingSimilarity(true);
-    const similar = await checkQuizAnswer(recallQuestion.prompt, recallQuestion.answer, undefined, answer);
+    const similar = await checkQuizAnswer(recallQuestion.prompt, recallQuestion.answer, undefined, answer, { wordId: currentItem.word.id });
     setCheckingSimilarity(false);
     if (similar) {
       setSimilarHint(true);

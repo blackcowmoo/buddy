@@ -675,6 +675,7 @@ describe("WordReview page", () => {
     expect(screen.getByRole("button", { name: "잘 모르겠어요" })).toBeDisabled();
     fireEvent.keyDown(input, { key: "Enter" });
     expect(checkQuizAnswer).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(checkQuizAnswer).mock.calls[0][4]).toEqual({ wordId: expect.any(String) });
     expect(reviewWord).not.toHaveBeenCalled();
 
     await act(async () => { resolveCheck(true); });

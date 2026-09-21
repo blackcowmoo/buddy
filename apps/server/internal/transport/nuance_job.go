@@ -12,6 +12,7 @@ import (
 	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/nuance"
 	"buddy/server/internal/pipeline"
+	"buddy/server/internal/workguard"
 )
 
 // asyncjob renews this lease during slow inference; it bounds crash recovery,
@@ -26,6 +27,10 @@ var nuanceInlineJobs sync.Map
 
 func NuanceJobHandler(pipe *pipeline.Pipeline, st nuance.Store, profile func(context.Context, string) (string, error)) asyncjob.Handler {
 	return asyncjob.DecodePayloadHandler(asyncjob.KindNuance, func(ctx context.Context, p nuanceJobPayload) (err error) {
+		ctx = workguard.BindStore(ctx, st, p.UserID, p.LessonID)
+		if err := workguard.Check(ctx); err != nil {
+			return err
+		}
 		l, err := st.Get(ctx, p.UserID, p.LessonID)
 		if errors.Is(err, nuance.ErrNotFound) || (err == nil && l.Status == nuance.StatusDone) {
 			return nil
@@ -34,7 +39,7 @@ func NuanceJobHandler(pipe *pipeline.Pipeline, st nuance.Store, profile func(con
 			return err
 		}
 		defer func() {
-			if err != nil {
+			if err != nil && workguard.Check(ctx) == nil {
 				_ = st.SetStatus(context.Background(), p.LessonID, nuance.StatusFailed)
 			}
 		}()

@@ -8,8 +8,10 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"buddy/server/internal/asyncjob"
+	"buddy/server/internal/newsarticle"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/wordlookup"
+	"buddy/server/internal/workguard"
 )
 
 const (
@@ -22,7 +24,11 @@ type wordDefineJobPayload struct {
 	Request  wordlookup.Request
 }
 
-func runWordDefine(ctx context.Context, pipe *pipeline.Pipeline, rdb redis.UniversalClient, payload wordDefineJobPayload) error {
+func runWordDefine(ctx context.Context, pipe *pipeline.Pipeline, rdb redis.UniversalClient, payload wordDefineJobPayload, articles newsarticle.Store) error {
+	ctx = workguard.BindStore(ctx, articles, "", payload.Request.ArticleID)
+	if err := workguard.Check(ctx); err != nil {
+		return err
+	}
 	if rdb == nil {
 		return fmt.Errorf("word define: redis is unavailable")
 	}
@@ -41,34 +47,34 @@ func runWordDefine(ctx context.Context, pipe *pipeline.Pipeline, rdb redis.Unive
 	return nil
 }
 
-func WordDefineJobHandler(pipe *pipeline.Pipeline, rdb redis.UniversalClient) asyncjob.Handler {
+func WordDefineJobHandler(pipe *pipeline.Pipeline, rdb redis.UniversalClient, articles newsarticle.Store) asyncjob.Handler {
 	return asyncjob.DecodePayloadHandler(asyncjob.KindWordDefine, func(ctx context.Context, payload wordDefineJobPayload) error {
-		return runWordDefine(ctx, pipe, rdb, payload)
+		return runWordDefine(ctx, pipe, rdb, payload, articles)
 	})
 }
 
-func EnqueueWordDefineJob(ctx context.Context, queue *asyncjob.Queue, pipe *pipeline.Pipeline, rdb redis.UniversalClient, req wordlookup.Request) error {
+func EnqueueWordDefineJob(ctx context.Context, queue *asyncjob.Queue, pipe *pipeline.Pipeline, rdb redis.UniversalClient, req wordlookup.Request, articles newsarticle.Store) error {
 	payload := wordDefineJobPayload{CacheKey: wordlookup.Key(req), Request: req}
 	key := payload.CacheKey
-	return queue.EnqueueAndRunInBackground(ctx, asyncjob.KindWordDefine, key, key, payload, WordDefineClaimTTL, WordDefineJobHandler(pipe, rdb))
+	return queue.EnqueueAndRunInBackground(ctx, asyncjob.KindWordDefine, key, key, payload, WordDefineClaimTTL, WordDefineJobHandler(pipe, rdb, articles))
 }
 
-func RunWordDefineInline(ctx context.Context, pipe *pipeline.Pipeline, rdb redis.UniversalClient, req wordlookup.Request) error {
-	return runWordDefine(ctx, pipe, rdb, wordDefineJobPayload{CacheKey: wordlookup.Key(req), Request: req})
+func RunWordDefineInline(ctx context.Context, pipe *pipeline.Pipeline, rdb redis.UniversalClient, req wordlookup.Request, articles newsarticle.Store) error {
+	return runWordDefine(ctx, pipe, rdb, wordDefineJobPayload{CacheKey: wordlookup.Key(req), Request: req}, articles)
 }
 
-func dispatchWordDefine(ctx context.Context, queue *asyncjob.Queue, pipe *pipeline.Pipeline, rdb redis.UniversalClient, req wordlookup.Request) {
+func dispatchWordDefine(ctx context.Context, queue *asyncjob.Queue, pipe *pipeline.Pipeline, rdb redis.UniversalClient, req wordlookup.Request, articles newsarticle.Store) {
 	asyncjob.EnqueueOrRunInline(queue, ctx,
 		"words: enqueue article lookup "+req.ArticleID,
-		func(ctx context.Context) error { return EnqueueWordDefineJob(ctx, queue, pipe, rdb, req) },
+		func(ctx context.Context) error { return EnqueueWordDefineJob(ctx, queue, pipe, rdb, req, articles) },
 		"words: article lookup "+req.ArticleID,
-		func(ctx context.Context) error { return RunWordDefineInline(ctx, pipe, rdb, req) },
+		func(ctx context.Context) error { return RunWordDefineInline(ctx, pipe, rdb, req, articles) },
 	)
 }
 
 // StartWordDefine is intentionally detached from the request. It is kept
 // small so the HTTP layer cannot accidentally pass its request context into
 // the LLM call.
-func StartWordDefine(queue *asyncjob.Queue, pipe *pipeline.Pipeline, rdb redis.UniversalClient, req wordlookup.Request) {
-	go dispatchWordDefine(context.Background(), queue, pipe, rdb, req)
+func StartWordDefine(queue *asyncjob.Queue, pipe *pipeline.Pipeline, rdb redis.UniversalClient, req wordlookup.Request, articles newsarticle.Store) {
+	go dispatchWordDefine(context.Background(), queue, pipe, rdb, req, articles)
 }

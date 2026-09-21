@@ -12,6 +12,7 @@ import (
 
 	"buddy/server/internal/migration"
 	"buddy/server/internal/mysqlerr"
+	"buddy/server/internal/workguard"
 )
 
 // Tables carry a buddy_ prefix for the same reason as internal/store's and
@@ -255,6 +256,7 @@ func (s *MySQLStore) StalePending(ctx context.Context, olderThan time.Duration) 
 	rows, err := s.ro.QueryContext(ctx, `
 		SELECT `+articleColumns+` FROM `+articlesTable+`
 		WHERE status IN (?, ?) AND claimed_at < ?
+ AND EXISTS (SELECT 1 FROM `+instancesTable+` i WHERE i.article_id = `+articlesTable+`.id)
 	`, StatusPending, StatusFailed, cutoff)
 	if err != nil {
 		return nil, fmt.Errorf("newsarticle: stale pending: %w", err)
@@ -327,8 +329,14 @@ func (s *MySQLStore) CompleteArticle(ctx context.Context, id, summary, translati
 	if _, err := s.rw.ExecContext(ctx, `
 		UPDATE `+articlesTable+` SET summary = ?, translation = ?, sub_questions_json = ?, status = ?
 		WHERE id = ? AND status = ?
+ AND EXISTS (SELECT 1 FROM `+instancesTable+` i WHERE i.article_id = `+articlesTable+`.id)
 	`, summary, translation, string(subQuestionsJSON), StatusDone, id, StatusPending); err != nil {
 		return Article{}, fmt.Errorf("newsarticle: complete article: update: %w", err)
+	}
+	if exists, err := s.WorkExists(ctx, "", id); err != nil {
+		return Article{}, err
+	} else if !exists {
+		return Article{}, workguard.ErrDeleted
 	}
 	saved, err := scanArticle(s.rw.QueryRowContext(ctx, `SELECT `+articleColumns+` FROM `+articlesTable+` WHERE id = ?`, id))
 	if err != nil {
@@ -361,7 +369,7 @@ func (s *MySQLStore) ClaimMissingTranslation(ctx context.Context, id string) (bo
 func (s *MySQLStore) CompleteArticleTranslation(ctx context.Context, id, translation string) error {
 	if _, err := s.rw.ExecContext(ctx, `
 		UPDATE `+articlesTable+` SET translation = ?
-		WHERE id = ? AND status = ? AND (translation IS NULL OR TRIM(translation) = '')
+		WHERE id = ? AND status = ? AND EXISTS (SELECT 1 FROM `+instancesTable+` i WHERE i.article_id = `+articlesTable+`.id) AND (translation IS NULL OR TRIM(translation) = '')
 	`, translation, id, StatusDone); err != nil {
 		return fmt.Errorf("newsarticle: complete article translation: %w", err)
 	}

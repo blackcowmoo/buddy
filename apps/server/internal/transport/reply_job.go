@@ -13,6 +13,7 @@ import (
 	"buddy/server/internal/llm"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/store"
+	"buddy/server/internal/workguard"
 )
 
 const (
@@ -89,6 +90,10 @@ func ReplyJobHandler(pipe *pipeline.Pipeline, st store.Store, onToken func(strin
 		if err := json.Unmarshal(job.Payload, &payload); err != nil {
 			return fmt.Errorf("reply job: bad payload: %w", err)
 		}
+		ctx = workguard.BindStore(ctx, st, payload.UserID, payload.SessionID)
+		if err := workguard.Check(ctx); err != nil {
+			return err
+		}
 		status, err := st.JobStatus(ctx, payload.UserID, payload.SessionID, payload.Turn, "reply")
 		if err != nil {
 			return fmt.Errorf("reply job: status: %w", err)
@@ -101,6 +106,9 @@ func ReplyJobHandler(pipe *pipeline.Pipeline, st store.Store, onToken func(strin
 			tok = func(string) {}
 		}
 		full, _ := pipe.GenerateReply(ctx, payload.Messages, payload.Fallback, tok)
+		if err := workguard.Check(ctx); err != nil {
+			return err
+		}
 		if strings.TrimSpace(full) == "" {
 			// GenerateReply already substitutes Fallback (always non-empty)
 			// on any LLM error, so reaching here means even that failed to
@@ -110,6 +118,9 @@ func ReplyJobHandler(pipe *pipeline.Pipeline, st store.Store, onToken func(strin
 		}
 		if err := st.CompleteAssistantTurn(ctx, payload.UserID, payload.SessionID, payload.Turn, full); err != nil {
 			return fmt.Errorf("reply job: complete: %w", err)
+		}
+		if err := workguard.Check(ctx); err != nil {
+			return err
 		}
 		if onDone != nil {
 			onDone(full)

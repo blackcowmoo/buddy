@@ -93,8 +93,8 @@ func sessionMarkInstantHandler(ident identity.Identifier, st store.Store) http.H
 // asyncjob.KindProfileRegenerate's doc comment) — otherwise a deleted
 // session's influence would linger in the profile forever, even though the
 // whole point of deleting it (e.g. a wrong/bad reply) was to keep it out of
-// future study material. Checked and gated on before the delete, but
-// enqueued after: the rebuild reads whatever sessions are left via
+// future study material. Checked in the deletion transaction and
+// enqueued afterward: the rebuild reads whatever sessions are left via
 // store.Store.ListSessionsWithStudySummary, which must not still include
 // the one being deleted.
 func sessionDeleteHandler(ident identity.Identifier, st store.Store, audio transport.AudioSaver, recordings recording.Store, pipe *pipeline.Pipeline, profileRegenerateQueue *asyncjob.Queue) http.HandlerFunc {
@@ -105,14 +105,23 @@ func sessionDeleteHandler(ident identity.Identifier, st store.Store, audio trans
 		}
 		sessionID := r.PathValue("id")
 
-		// Any error here (including "doesn't exist") just means "nothing to
-		// rebuild for" — never blocks the delete itself, which is why this
-		// isn't wired into the fns/error-handling below.
 		contributedToProfile := false
-		if meta, _, err := st.SessionDetail(r.Context(), userID, sessionID); err == nil {
-			contributedToProfile = meta.Ended && len(meta.StudySummary) > 0
+		var deleteErr error
+		if atomic, ok := st.(interface {
+			DeleteSessionWithProfileState(context.Context, string, string) (bool, error)
+		}); ok {
+			contributedToProfile, deleteErr = atomic.DeleteSessionWithProfileState(r.Context(), userID, sessionID)
+		} else {
+			// Compatibility for stores without the atomic deletion capability.
+			if meta, _, err := st.SessionDetail(r.Context(), userID, sessionID); err == nil {
+				contributedToProfile = meta.Ended && len(meta.StudySummary) > 0
+			}
+			deleteErr = st.DeleteSession(r.Context(), userID, sessionID)
 		}
-
+		if deleteErr != nil {
+			serverError(w, "delete session", deleteErr)
+			return
+		}
 		var fns []func()
 		if audio != nil {
 			fns = append(fns, func() {
@@ -129,10 +138,6 @@ func sessionDeleteHandler(ident identity.Identifier, st store.Store, audio trans
 			})
 		}
 		concurrent.Run(fns...)
-		if err := st.DeleteSession(r.Context(), userID, sessionID); err != nil {
-			serverError(w, "delete session", err)
-			return
-		}
 
 		if contributedToProfile {
 			asyncjob.EnqueueOrRunInline(profileRegenerateQueue, r.Context(),

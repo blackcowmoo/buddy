@@ -7,6 +7,7 @@ import (
 
 	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/pipeline"
+	"buddy/server/internal/workguard"
 	"buddy/server/internal/writing"
 )
 
@@ -22,6 +23,7 @@ const (
 type writingJobPayload struct{ PromptID, UserID string }
 
 func generateWritingPrompt(ctx context.Context, pipe *pipeline.Pipeline, st writing.Store, id, userID, profile string) error {
+	ctx = workguard.BindStore(ctx, st, userID, id)
 	p, err := st.Get(ctx, userID, id)
 	if err != nil {
 		return err
@@ -43,7 +45,9 @@ func generateWritingPrompt(ctx context.Context, pipe *pipeline.Pipeline, st writ
 	}
 	result, err := pipe.GenerateWritingPrompt(ctx, profile, previous, id)
 	if err != nil {
-		_ = st.Fail(context.Background(), id)
+		if workguard.Check(ctx) == nil {
+			_ = st.Fail(context.Background(), id)
+		}
 		return err
 	}
 	return st.Complete(ctx, id, result.Korean)
@@ -63,7 +67,9 @@ func WritingJobHandler(pipe *pipeline.Pipeline, st writing.Store, profile func(c
 func RunWritingPromptInline(ctx context.Context, pipe *pipeline.Pipeline, st writing.Store, profile func(context.Context, string) (string, error), id, userID string) error {
 	profileText, err := profile(ctx, userID)
 	if err != nil {
-		_ = st.Fail(context.Background(), id)
+		if workguard.Check(ctx) == nil {
+			_ = st.Fail(context.Background(), id)
+		}
 		return err
 	}
 	return generateWritingPrompt(ctx, pipe, st, id, userID, profileText)

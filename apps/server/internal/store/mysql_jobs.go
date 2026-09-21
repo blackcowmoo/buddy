@@ -15,7 +15,7 @@ import (
 // the original connection's inline claim) can never clobber an
 // already-completed row's text or job status.
 func (s *MySQLStore) ReserveAssistantTurn(ctx context.Context, userID, sessionID string, turn int) error {
-	return s.withTx(ctx, "reserve assistant turn", func(tx *sql.Tx) error {
+	return s.withLiveSession(ctx, userID, sessionID, "reserve assistant turn", func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO `+turnsTable+` (user_id, session_id, turn, role, text, refined, source, created_at)
 			VALUES (?, ?, ?, 'assistant', '', 0, '', UNIX_TIMESTAMP())
@@ -39,7 +39,7 @@ func (s *MySQLStore) ReserveAssistantTurn(ctx context.Context, userID, sessionID
 // after this job ran elsewhere) never observes a "done" status with the
 // old empty placeholder text, or vice versa.
 func (s *MySQLStore) CompleteAssistantTurn(ctx context.Context, userID, sessionID string, turn int, text string) error {
-	return s.withTx(ctx, "complete assistant turn", func(tx *sql.Tx) error {
+	return s.withLiveSession(ctx, userID, sessionID, "complete assistant turn", func(tx *sql.Tx) error {
 		// Turn 0 is the opening greeting (see pipeline.StartConversation): its
 		// text is only known now, at completion, not at ReserveAssistantTurn
 		// time — so the session-row-creation side effect SaveTurn's turn==0

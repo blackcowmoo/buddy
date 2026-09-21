@@ -332,7 +332,7 @@ function QuizPanel({
     // biased toward "no" server-side, so a hallucinated false positive can't
     // teach the learner something wrong).
     setProgress((p) => ({ ...p, checking: true }));
-    void checkQuizAnswer(question.prompt, question.answer, question.acceptableAnswers, answer).then((verdict) => {
+    void checkQuizAnswer(question.prompt, question.answer, question.acceptableAnswers, answer, { sessionId }).then((verdict) => {
       finalize(verdict);
     });
   }, [question, checked, checking, answer, finalize, setProgress]);

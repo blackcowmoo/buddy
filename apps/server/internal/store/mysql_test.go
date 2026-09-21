@@ -172,8 +172,8 @@ func TestMySQLUsesGolangMigrateHistory(t *testing.T) {
 	if err := st.rw.QueryRow(`SELECT version, dirty FROM buddy_migrate_schema_migrations`).Scan(&version, &dirty); err != nil {
 		t.Fatalf("golang-migrate history: %v", err)
 	}
-	if version != 3 || dirty {
-		t.Fatalf("golang-migrate history = version %d, dirty %v; want version 3, clean", version, dirty)
+	if version != 4 || dirty {
+		t.Fatalf("golang-migrate history = version %d, dirty %v; want version 4, clean", version, dirty)
 	}
 }
 

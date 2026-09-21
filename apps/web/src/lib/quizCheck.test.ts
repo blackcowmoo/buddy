@@ -38,3 +38,10 @@ describe("checkQuizAnswer", () => {
     await expect(checkQuizAnswer("p", "a", undefined, "b")).resolves.toBe(false);
   });
 });
+
+it.each([{ sessionId: "room" }, { wordId: "word" }])("sends the owner so a deleted item cancels checking: %o", async (owner) => {
+ const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ correct: true }) });
+ vi.stubGlobal("fetch", fetchMock);
+ await checkQuizAnswer("prompt", "answer", undefined, "response", owner);
+ expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject(owner);
+});

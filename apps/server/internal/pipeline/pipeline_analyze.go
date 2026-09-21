@@ -8,6 +8,7 @@ import (
 
 	"buddy/server/internal/llm"
 	"buddy/server/internal/session"
+	"buddy/server/internal/workguard"
 )
 
 // analyze runs every learning-facing generation through one ordered cascade:
@@ -57,7 +58,15 @@ func (p *Pipeline) chatDraft(ctx context.Context, systemPrompt, input string, js
 // failed after the job was durably queued): Analysis and Judge still get the
 // authoritative task/input and may recover, but they are only invoked after
 // the failed Chat stage has settled, preserving stage ordering.
-func (p *Pipeline) analyzeFromDraft(ctx context.Context, systemPrompt, input string, jsonMode bool, draft string) (string, error) {
+func (p *Pipeline) analyzeFromDraft(ctx context.Context, systemPrompt, input string, jsonMode bool, draft string) (result string, resultErr error) {
+	if err := workguard.Check(ctx); err != nil {
+		return "", err
+	}
+	defer func() {
+		if err := workguard.Check(ctx); err != nil {
+			result, resultErr = "", err
+		}
+	}()
 	if strings.TrimSpace(draft) == "" && len(p.Analysis) == 0 && p.Judge == nil {
 		return "", fmt.Errorf("analyze: no model produced a draft and no refine models are configured")
 	}
@@ -89,6 +98,9 @@ func (p *Pipeline) analyzeFromDraft(ctx context.Context, systemPrompt, input str
 		return candidateResult{model: c.Model, text: text, ok: true}
 	})
 
+	if err := workguard.Check(ctx); err != nil {
+		return "", err
+	}
 	var results []candidateResult
 	for _, r := range slots {
 		if r.ok {
@@ -190,14 +202,14 @@ about the advisory analyses or judging process.`
 // compact folds the oldest verbatim turns into the session's long-term
 // summary once the window exceeds MaxHistoryMessages, so long conversations
 // stay cheap to send to the LLM and to persist (internal/store). It uses
-// context.Background() — bookkeeping on already-committed history, so a
-// barge-in on the current turn must not cancel it.
-func (p *Pipeline) compact(sess *session.Session) {
+// a detached context: barge-in must not cancel bookkeeping on committed
+// history, but the owning session's deletion guard must survive.
+func (p *Pipeline) compact(ctx context.Context, sess *session.Session) {
 	old, curSummary, ok := sess.PeekOldestForCompaction(p.MaxHistoryMessages)
 	if !ok {
 		return
 	}
-	newSummary, err := p.analyze(context.Background(), compactionSystemPrompt, renderCompactionInput(curSummary, old), false)
+	newSummary, err := p.analyze(context.WithoutCancel(ctx), compactionSystemPrompt, renderCompactionInput(curSummary, old), false)
 	if err != nil {
 		log.Printf("compact: %v", err) // leave history untouched; retried next turn
 		return

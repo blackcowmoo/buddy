@@ -86,7 +86,7 @@ func articleWordDefineHandler(ident identity.Identifier, articles newsarticle.St
 			writeJSON(w, articleWordLookupResponse{Status: "missing"})
 			return
 		}
-		transport.StartWordDefine(queue, pipe, rdb, lookup)
+		transport.StartWordDefine(queue, pipe, rdb, lookup, articles)
 		writeJSON(w, articleWordLookupResponse{Status: "pending"})
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/protocol"
 	"buddy/server/internal/store"
+	"buddy/server/internal/workguard"
 )
 
 // Generic queue-mechanics behavior (concurrent claiming across replicas,
@@ -745,5 +746,20 @@ func TestQueueAndWorkerEndToEnd(t *testing.T) {
 
 	if st.saved[0].turn != 1 || st.saved[0].translation != "번역" {
 		t.Fatalf("saved translation wrong: %+v", st.saved[0])
+	}
+}
+
+func TestTurnBackfillStopsAtDeletion(t *testing.T) {
+	deleted := false
+	ctx := workguard.Bind(context.Background(), func(context.Context) error {
+		if deleted {
+			return workguard.ErrDeleted
+		}
+		return nil
+	})
+	calls := 0
+	forEachNonBlankTurn(ctx, []store.Turn{{Text: "first"}, {Text: "second"}}, func(_ []llm.Message, _ store.Turn, _ string) { calls++; deleted = true })
+	if calls != 1 {
+		t.Fatalf("backfill continued after deletion: %d calls", calls)
 	}
 }

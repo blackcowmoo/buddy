@@ -15,6 +15,7 @@ import (
 	"buddy/server/internal/protocol"
 	"buddy/server/internal/store"
 	"buddy/server/internal/wordreview"
+	"buddy/server/internal/workguard"
 )
 
 const (
@@ -95,6 +96,7 @@ func CorrectionJobHandler(pipe *pipeline.Pipeline, st store.Store, words wordrev
 		if err := json.Unmarshal(job.Payload, &payload); err != nil {
 			return fmt.Errorf("correction job: bad payload: %w", err)
 		}
+		ctx = workguard.BindStore(ctx, st, payload.UserID, payload.SessionID)
 		corrected, issues, translation, err := pipe.AnalyzeCorrectionFromDraft(ctx, payload.Text, payload.ContextMsg, payload.ChatDraft)
 		if err != nil {
 			if failErr := st.FailJob(ctx, payload.UserID, payload.SessionID, payload.Turn, "correction", err.Error()); failErr != nil {
@@ -113,6 +115,9 @@ func CorrectionJobHandler(pipe *pipeline.Pipeline, st store.Store, words wordrev
 			if err := st.SaveTranslation(ctx, payload.UserID, payload.SessionID, payload.Turn, "user", translation); err != nil {
 				log.Printf("correction job: save translation %s/%s#%d: %v", payload.UserID, payload.SessionID, payload.Turn, err)
 			}
+		}
+		if err := workguard.Check(ctx); err != nil {
+			return err
 		}
 		if onResult != nil {
 			onResult(corrected, issues, translation)
@@ -203,12 +208,16 @@ func TranslationJobHandler(pipe *pipeline.Pipeline, st store.Store, onResult fun
 		if err := json.Unmarshal(job.Payload, &payload); err != nil {
 			return fmt.Errorf("translation job: bad payload: %w", err)
 		}
+		ctx = workguard.BindStore(ctx, st, payload.UserID, payload.SessionID)
 		translation, err := pipe.AnalyzeTranslationFromDraft(ctx, payload.Text, payload.ChatDraft)
 		if err != nil {
 			return fmt.Errorf("translation job: analyze: %w", err)
 		}
 		if err := st.SaveTranslation(ctx, payload.UserID, payload.SessionID, payload.Turn, payload.Role, translation); err != nil {
 			return fmt.Errorf("translation job: save: %w", err)
+		}
+		if err := workguard.Check(ctx); err != nil {
+			return err
 		}
 		if onResult != nil {
 			onResult(translation)
@@ -251,6 +260,7 @@ func TitleJobHandler(pipe *pipeline.Pipeline, st store.Store) asyncjob.Handler {
 		if err := json.Unmarshal(job.Payload, &payload); err != nil {
 			return fmt.Errorf("title job: bad payload: %w", err)
 		}
+		ctx = workguard.BindStore(ctx, st, payload.UserID, payload.SessionID)
 		title, err := pipe.GenerateTitle(ctx, payload.Transcript)
 		if err != nil {
 			return fmt.Errorf("title job: generate: %w", err)

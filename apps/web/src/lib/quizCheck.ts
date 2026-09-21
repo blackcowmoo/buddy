@@ -42,10 +42,11 @@ export async function checkQuizAnswer(
   answer: string,
   acceptableAnswers: string[] | undefined,
   learnerAnswer: string,
+  owner?: { sessionId?: string; wordId?: string },
 ): Promise<boolean> {
   const body = await postJSON<{ correct: boolean }>(
     "api/quiz/check-answer",
-    { prompt, answer, acceptableAnswers, learnerAnswer },
+    { prompt, answer, acceptableAnswers, learnerAnswer, ...owner },
     { correct: false },
   );
   return body.correct === true;

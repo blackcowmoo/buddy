@@ -87,7 +87,7 @@ export function Writing() {
     e.preventDefault();
     if (!prompt?.korean || !answer.trim() || checking) return;
     setChecking(true);
-    setResult(await checkWriting(prompt.korean, answer));
+    setResult(await checkWriting(prompt.korean, answer, prompt.id));
     setChecking(false);
   };
 

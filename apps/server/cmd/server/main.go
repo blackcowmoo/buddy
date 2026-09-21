@@ -203,7 +203,7 @@ func main() {
 		transport.WordAutoAddJobHandler(pipe, wordReviews, st, wordVerifyQueue))
 
 	wordDefineQueue := startWorker(rdb, jobsCtx, asyncjob.KindWordDefine, transport.WordDefineWorkerConcurrency, transport.WordDefineClaimTTL,
-		transport.WordDefineJobHandler(pipe, rdb))
+		transport.WordDefineJobHandler(pipe, rdb, articles))
 	wordResearchQueue := startWorker(rdb, jobsCtx, asyncjob.KindWordResearch, transport.WordResearchWorkerConcurrency, transport.WordResearchClaimTTL,
 		transport.WordResearchJobHandler(pipe, wordReviews))
 
