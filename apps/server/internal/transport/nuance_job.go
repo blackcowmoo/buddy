@@ -70,6 +70,15 @@ func NuanceJobHandler(pipe *pipeline.Pipeline, st nuance.Store, profile func(con
 			requestID := fmt.Sprintf("%s:%d:%d", p.LessonID, l.Revision, attempt)
 			c, err := pipe.GenerateNuance(ctx, learner, previous, requestID)
 			if err != nil {
+				// A candidate that still violates the lesson contract after its
+				// focused Judge repair will fail identically on an automatic job
+				// retry. Persist the terminal state and reserve queue retries for
+				// transient model, network, and storage failures. The explicit UI
+				// retry gets a fresh durable revision and request ID.
+				if errors.Is(err, nuance.ErrInvalid) {
+					log.Printf("nuance: invalid generated lesson %s: %v", p.LessonID, err)
+					return st.SetStatus(ctx, p.LessonID, nuance.StatusFailed)
+				}
 				return err
 			}
 			err = st.Complete(ctx, p.LessonID, c)

@@ -148,7 +148,7 @@ func TestNuanceWorkerPersistsFailure(t *testing.T) {
 	}
 }
 
-func TestNuanceRetryChangesCachedModelInputAfterInvalidGeneration(t *testing.T) {
+func TestNuanceInvalidGenerationIsTerminalAndExplicitRetryGetsFreshInput(t *testing.T) {
 	data, err := os.ReadFile("../nuance/testdata/lesson.json")
 	if err != nil {
 		t.Fatal(err)
@@ -167,8 +167,11 @@ func TestNuanceRetryChangesCachedModelInputAfterInvalidGeneration(t *testing.T) 
 	pipe := &pipeline.Pipeline{Analysis: []pipeline.Candidate{{LLM: model}}}
 	handler := NuanceJobHandler(pipe, st, func(context.Context, string) (string, error) { return "", nil })
 	payload := asyncjob.Job{Payload: mustPayload(nuanceJobPayload{"user", "lesson"})}
-	if err := handler(context.Background(), payload); err == nil {
-		t.Fatal("invalid model output accepted")
+	if err := handler(context.Background(), payload); err != nil {
+		t.Fatalf("terminal model output error must not trigger an automatic job retry: %v", err)
+	}
+	if st.lesson.Status != nuance.StatusFailed {
+		t.Fatalf("invalid generation status = %q, want failed", st.lesson.Status)
 	}
 	if err := handler(context.Background(), payload); err != nil {
 		t.Fatal(err)

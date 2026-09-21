@@ -3,11 +3,13 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 
 	"buddy/server/internal/llm"
+	"buddy/server/internal/nuance"
 )
 
 func TestGenerateNuanceUsesProfileExclusionsAndUniqueDraw(t *testing.T) {
@@ -76,13 +78,109 @@ func TestGenerateNuanceRejectsIncompleteAndMalformedOutput(t *testing.T) {
 	for _, raw := range []string{`{}`, `not json`, `{"words":[],"questions":[]}`} {
 		t.Run(raw, func(t *testing.T) {
 			p := &Pipeline{Analysis: []Candidate{{LLM: &fakeLLM{complete: func([]llm.Message) (string, error) { return raw, nil }}}}}
-			if _, err := p.GenerateNuance(context.Background(), "", nil, "id"); err == nil {
-				t.Fatal("invalid generation accepted")
+			if _, err := p.GenerateNuance(context.Background(), "", nil, "id"); !errors.Is(err, nuance.ErrInvalid) {
+				t.Fatalf("GenerateNuance() error = %v, want nuance.ErrInvalid", err)
 			}
 		})
 	}
 	p := &Pipeline{Analysis: []Candidate{{LLM: &fakeLLM{complete: func([]llm.Message) (string, error) { return "", errors.New("offline") }}}}}
 	if _, err := p.GenerateNuance(context.Background(), "", nil, "id"); err == nil {
 		t.Fatal("model error lost")
+	}
+}
+
+func TestGenerateNuanceAcceptsWrappedJSONAndOwnsQuestionIDs(t *testing.T) {
+	data, err := os.ReadFile("../nuance/testdata/lesson.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &Pipeline{Analysis: []Candidate{{LLM: &fakeLLM{complete: func([]llm.Message) (string, error) {
+		return "Here is the lesson:\n```json\n" + string(data) + "\n```", nil
+	}}}}}
+	c, err := p.GenerateNuance(context.Background(), "", nil, "id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, q := range c.Questions {
+		if want := fmt.Sprintf("q%d", i+1); q.ID != want {
+			t.Fatalf("question %d ID = %q, want server-owned %q", i, q.ID, want)
+		}
+	}
+}
+
+func TestGenerateNuanceRepairsInvalidFinalWithOneDirectJudgeCall(t *testing.T) {
+	data, err := os.ReadFile("../nuance/testdata/lesson.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chatCalls, analysisCalls, judgeCalls := 0, 0, 0
+	var repairInput string
+	p := &Pipeline{
+		LLM: &fakeLLM{complete: func([]llm.Message) (string, error) {
+			chatCalls++
+			return `{}`, nil
+		}},
+		Analysis: []Candidate{{Model: "analysis", LLM: &fakeLLM{complete: func([]llm.Message) (string, error) {
+			analysisCalls++
+			return `{}`, nil
+		}}}},
+		Judge: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			judgeCalls++
+			if judgeCalls == 1 {
+				return `{}`, nil
+			}
+			repairInput = msgs[len(msgs)-1].Content
+			return string(data), nil
+		}},
+		JudgeModel: "judge",
+	}
+	c, err := p.GenerateNuance(context.Background(), "likes travel", nil, "draw-1")
+	if err != nil || len(c.Questions) != 4 {
+		t.Fatalf("GenerateNuance() = (%+v, %v)", c, err)
+	}
+	if chatCalls != 1 || analysisCalls != 1 || judgeCalls != 2 {
+		t.Fatalf("calls = chat:%d analysis:%d judge:%d, want 1/1/2", chatCalls, analysisCalls, judgeCalls)
+	}
+	for _, want := range []string{"Server validation error", "Candidate output to repair", "draw-1"} {
+		if !strings.Contains(repairInput, want) {
+			t.Fatalf("repair input missing %q: %s", want, repairInput)
+		}
+	}
+}
+
+func TestGenerateNuanceStopsAfterOneInvalidRepair(t *testing.T) {
+	judgeCalls := 0
+	p := &Pipeline{
+		Analysis: []Candidate{{LLM: &fakeLLM{complete: func([]llm.Message) (string, error) { return `{}`, nil }}}},
+		Judge: &fakeLLM{complete: func([]llm.Message) (string, error) {
+			judgeCalls++
+			return `{}`, nil
+		}},
+		JudgeModel: "judge",
+	}
+	if _, err := p.GenerateNuance(context.Background(), "", nil, "id"); !errors.Is(err, nuance.ErrInvalid) {
+		t.Fatalf("GenerateNuance() error = %v, want nuance.ErrInvalid", err)
+	}
+	if judgeCalls != 2 {
+		t.Fatalf("Judge calls = %d, want one final generation plus one repair", judgeCalls)
+	}
+}
+
+func TestGenerateNuanceKeepsRepairTransportFailureRetryable(t *testing.T) {
+	judgeCalls := 0
+	p := &Pipeline{
+		Analysis: []Candidate{{LLM: &fakeLLM{complete: func([]llm.Message) (string, error) { return `{}`, nil }}}},
+		Judge: &fakeLLM{complete: func([]llm.Message) (string, error) {
+			judgeCalls++
+			if judgeCalls == 1 {
+				return `{}`, nil
+			}
+			return "", errors.New("judge temporarily unavailable")
+		}},
+		JudgeModel: "judge",
+	}
+	_, err := p.GenerateNuance(context.Background(), "", nil, "id")
+	if err == nil || errors.Is(err, nuance.ErrInvalid) {
+		t.Fatalf("GenerateNuance() error = %v, want a retryable transport error", err)
 	}
 }
