@@ -578,6 +578,7 @@ body {
 }
 .word-lookup-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .article-reading-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.article-result-search-history { display: flex; justify-content: flex-end; }
 .article-searched-words-control { position: relative; z-index: 12; margin-top: 2px; }
 .article-searched-words-btn { min-height: 40px; padding: 8px 14px; border-radius: 999px; box-shadow: 0 8px 22px var(--accent-shadow); }
 .article-searched-words-panel {
