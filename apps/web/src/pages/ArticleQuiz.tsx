@@ -467,6 +467,103 @@ export function ArticleQuiz() {
     <p className="hint" role="alert">아티클을 가져오지 못했어요. 연결 상태를 확인한 뒤 ‘새 아티클 뽑기’를 다시 눌러 주세요.</p>
   ) : null;
 
+  // Reading and answer review intentionally share this exact renderer. The
+  // lookup state, per-position cache, and persisted searched-word history
+  // therefore continue across the quiz instead of the result view becoming
+  // a separate, non-interactive copy of the English passage.
+  const searchableSummary = draw && (
+    <div className="article-summary">
+      {draw.summary.split(/([A-Za-z']+)/g).map((part, i) =>
+        /^[A-Za-z']+$/.test(part) ? (
+          <span className="article-word-anchor" key={i} ref={wordLookup?.key === i ? wordLookupAnchorRef : undefined}>
+            <button
+              type="button"
+              className={wordLookup?.key === i ? "article-word selected" : "article-word"}
+              onClick={() => openWordLookup(i, part)}
+              aria-haspopup="menu"
+              aria-expanded={wordLookup?.key === i}
+            >
+              {part}
+            </button>
+            {wordLookup?.key === i && (
+              <div
+                className={`word-lookup-panel${centerWordLookup ? " word-lookup-panel-centered" : ""}`}
+                role="menu"
+                ref={wordLookupRef}
+              >
+                <div className="word-lookup-header">
+                  <span className="word-search-word">{wordLookup.word}</span>
+                  <button
+                    type="button"
+                    className="ghost icon-btn"
+                    onClick={() => setWordLookup(null)}
+                    aria-label="단어 뜻 닫기"
+                  >
+                    ✕
+                  </button>
+                </div>
+                {wordLookup.loading && <div className="word-search-status">찾는 중…</div>}
+                {!wordLookup.loading && !wordLookup.result && !wordLookup.failed && (
+                  <button type="button" className="word-learn-btn" onClick={requestWordLookup}>
+                    찾기
+                  </button>
+                )}
+                {!wordLookup.loading && wordLookup.failed && (
+                  <div className="word-search-status">뜻을 가져오지 못했어요.</div>
+                )}
+                {!wordLookup.loading && !wordLookup.failed && wordLookup.result && (
+                  <>
+                    <span className="word-search-meaning">{wordLookup.result.meaning}</span>
+                    <span className="word-search-example">{wordLookup.result.example}</span>
+                    <button
+                      type="button"
+                      className="word-learn-btn"
+                      onClick={learnLookedUpWord}
+                      disabled={wordLookup.saving || wordLookup.saved}
+                    >
+                      {wordLookup.saved ? "✓ 확인 중" : "학습하기"}
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </span>
+        ) : (
+          <span key={i}>{part}</span>
+        ),
+      )}
+    </div>
+  );
+
+  const searchedWordsControl = draw?.status === "done" && searchedWords.length > 0 && (
+    <div className="article-searched-words-control">
+      {searchedWordsOpen && (
+        <div className="article-searched-words-panel" role="dialog" aria-label="검색한 단어 목록">
+          <div className="word-lookup-header">
+            <strong>검색한 단어</strong>
+            <button type="button" className="ghost icon-btn" onClick={() => setSearchedWordsOpen(false)} aria-label="검색한 단어 목록 닫기">✕</button>
+          </div>
+          {searchedWords.map((item) => (
+            <div className="searched-word-row" key={item.key}>
+              <div className="searched-word-definition">
+                <strong>{item.word}</strong>
+                <span>{item.loading ? "뜻을 찾는 중…" : item.result?.meaning ?? "뜻을 가져오지 못했어요."}</span>
+              </div>
+              {item.result && (
+                <button type="button" className="word-learn-btn" onClick={() => learnSearchedWord(item)} disabled={item.saving || item.saved}>
+                  {item.saved ? "✓ 확인 중" : item.saving ? "저장 중…" : "학습하기"}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      <button type="button" className="article-searched-words-btn" onClick={() => setSearchedWordsOpen((open) => !open)} aria-expanded={searchedWordsOpen}>
+        🔎 검색한 단어 {searchedWords.length}
+      </button>
+    </div>
+  );
+
   return (
     <div className="app">
       <SubPageHeader title="오늘의 아티클" />
@@ -560,67 +657,7 @@ export function ArticleQuiz() {
                 {/* This container includes the block-level lookup popover for
                     the selected token. A <p> cannot legally contain that
                     panel and browsers may re-parent it unpredictably. */}
-                <div className="article-summary">
-                  {draw.summary.split(/([A-Za-z']+)/g).map((part, i) =>
-                    /^[A-Za-z']+$/.test(part) ? (
-                      <span className="article-word-anchor" key={i} ref={wordLookup?.key === i ? wordLookupAnchorRef : undefined}>
-                        <button
-                          type="button"
-                          className={wordLookup?.key === i ? "article-word selected" : "article-word"}
-                          onClick={() => openWordLookup(i, part)}
-                          aria-haspopup="menu"
-                          aria-expanded={wordLookup?.key === i}
-                        >
-                          {part}
-                        </button>
-                        {wordLookup?.key === i && (
-                          <div
-                            className={`word-lookup-panel${centerWordLookup ? " word-lookup-panel-centered" : ""}`}
-                            role="menu"
-                            ref={wordLookupRef}
-                          >
-                            <div className="word-lookup-header">
-                              <span className="word-search-word">{wordLookup.word}</span>
-                              <button
-                                type="button"
-                                className="ghost icon-btn"
-                                onClick={() => setWordLookup(null)}
-                                aria-label="단어 뜻 닫기"
-                              >
-                                ✕
-                              </button>
-                            </div>
-                            {wordLookup.loading && <div className="word-search-status">찾는 중…</div>}
-                            {!wordLookup.loading && !wordLookup.result && !wordLookup.failed && (
-                              <button type="button" className="word-learn-btn" onClick={requestWordLookup}>
-                                찾기
-                              </button>
-                            )}
-                            {!wordLookup.loading && wordLookup.failed && (
-                              <div className="word-search-status">뜻을 가져오지 못했어요.</div>
-                            )}
-                            {!wordLookup.loading && !wordLookup.failed && wordLookup.result && (
-                              <>
-                                <span className="word-search-meaning">{wordLookup.result.meaning}</span>
-                                <span className="word-search-example">{wordLookup.result.example}</span>
-                                <button
-                                  type="button"
-                                  className="word-learn-btn"
-                                  onClick={learnLookedUpWord}
-                                  disabled={wordLookup.saving || wordLookup.saved}
-                                >
-                                  {wordLookup.saved ? "✓ 확인 중" : "학습하기"}
-                                </button>
-                              </>
-                            )}
-                          </div>
-                        )}
-                      </span>
-                    ) : (
-                      <span key={i}>{part}</span>
-                    ),
-                  )}
-                </div>
+                {searchableSummary}
                 <audio
                   ref={audioRef}
                   style={{ display: "none" }}
@@ -669,34 +706,7 @@ export function ArticleQuiz() {
               <button type="button" className="ghost quiz-back-btn" onClick={backToList}>
                 ← 목록으로
               </button>
-              {draw.status === "done" && searchedWords.length > 0 && (
-                <div className="article-searched-words-control">
-                {searchedWordsOpen && (
-                  <div className="article-searched-words-panel" role="dialog" aria-label="검색한 단어 목록">
-                    <div className="word-lookup-header">
-                      <strong>검색한 단어</strong>
-                      <button type="button" className="ghost icon-btn" onClick={() => setSearchedWordsOpen(false)} aria-label="검색한 단어 목록 닫기">✕</button>
-                    </div>
-                    {searchedWords.map((item) => (
-                      <div className="searched-word-row" key={item.key}>
-                        <div className="searched-word-definition">
-                          <strong>{item.word}</strong>
-                          <span>{item.loading ? "뜻을 찾는 중…" : item.result?.meaning ?? "뜻을 가져오지 못했어요."}</span>
-                        </div>
-                        {item.result && (
-                          <button type="button" className="word-learn-btn" onClick={() => learnSearchedWord(item)} disabled={item.saving || item.saved}>
-                            {item.saved ? "✓ 확인 중" : item.saving ? "저장 중…" : "학습하기"}
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <button type="button" className="article-searched-words-btn" onClick={() => setSearchedWordsOpen((open) => !open)} aria-expanded={searchedWordsOpen}>
-                  🔎 검색한 단어 {searchedWords.length}
-                </button>
-                </div>
-              )}
+              {searchedWordsControl}
             </div>
           </div>
         )}
@@ -735,7 +745,7 @@ export function ArticleQuiz() {
               {result.correct ? "정답이에요!" : `아쉬워요, ${result.score}/${result.total} 정답이에요.`}
             </div>
             <div className="article-language-label">영어 원문</div>
-            <p className="article-summary">{draw.summary}</p>
+            {searchableSummary}
             {(result.translation || draw.translation) && (
               <>
                 <div className="article-language-label">한글 번역</div>
@@ -743,6 +753,11 @@ export function ArticleQuiz() {
                   {result.translation || draw.translation}
                 </p>
               </>
+            )}
+            {searchedWordsControl && (
+              <div className="article-result-search-history">
+                {searchedWordsControl}
+              </div>
             )}
             {result.subQuestions.map((sub, qi) => (
               <div key={qi} className="article-sub-question">

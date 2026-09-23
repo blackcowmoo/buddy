@@ -792,6 +792,60 @@ describe("ArticleQuiz page — word lookup while reading", () => {
     expect(await screen.findByRole("button", { name: "✓ 확인 중" })).toBeInTheDocument();
   });
 
+  it("keeps the same word lookup and search history available while reviewing the answer", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    vi.mocked(defineWord).mockImplementation(async (_articleID, word) => ({
+      word,
+      meaning: word === "discovery" ? "발견" : "과학자들",
+      example: word === "discovery" ? "A new discovery." : "Scientists announced the result.",
+    }));
+    vi.mocked(answerArticle).mockResolvedValue({
+      correct: true,
+      score: 2,
+      total: 2,
+      translation: sampleDraw.translation,
+      subQuestions: sampleDraw.subQuestions.map((sub) => ({
+        ...sub,
+        correctOptionIndex: 0,
+        selectedOptionIndex: 0,
+        correct: true,
+        explanation: "원문에 나온 내용입니다.",
+      })),
+    });
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+
+    await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
+    await user.click(screen.getByRole("button", { name: "discovery" }));
+    await user.click(await screen.findByRole("button", { name: "찾기" }));
+    expect(await screen.findByText("발견")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "문제풀기" }));
+    await user.click(screen.getByRole("button", { name: "정확한 해석" }));
+    await user.click(screen.getByRole("button", { name: "오늘" }));
+    await user.click(screen.getByRole("button", { name: "답안 확인" }));
+
+    expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
+    const historyButton = screen.getByRole("button", { name: /검색한 단어 1/ });
+    await user.click(historyButton);
+    const history = screen.getByRole("dialog", { name: "검색한 단어 목록" });
+    expect(within(history).getByText("discovery")).toBeInTheDocument();
+    expect(within(history).getByText("발견")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "검색한 단어 목록 닫기" }));
+    await user.click(screen.getByRole("button", { name: "Scientists" }));
+    await user.click(await screen.findByRole("button", { name: "찾기" }));
+    expect(await screen.findByText("과학자들")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /검색한 단어 2/ })).toBeInTheDocument();
+
+    expect(JSON.parse(localStorage.getItem("buddy.article.searched-words.i1") ?? "[]"))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ word: "discovery", result: expect.objectContaining({ meaning: "발견" }) }),
+        expect.objectContaining({ word: "Scientists", result: expect.objectContaining({ meaning: "과학자들" }) }),
+      ]));
+  });
+
   it("restores an article's searched words after returning to the list", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([{
       id: "i1",
