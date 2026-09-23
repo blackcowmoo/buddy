@@ -178,7 +178,7 @@ export function WordNuance() {
         {lessons.map((lesson, i) => <Fragment key={lesson.id}>
           {shouldShowDateDivider(lessons[i - 1]?.createdAt, lesson.createdAt) && <div className="date-divider"><span>{formatDateDivider(lesson.createdAt)}</span></div>}
           <div className="session-row">
-            <button type="button" className="session-item" aria-label={`${lessonTitle(lesson)} 열기`} disabled={busy || loading} onClick={() => void open(lesson.id)}>
+            <button type="button" className="session-item nuance-list-item" aria-label={`${lessonTitle(lesson)} 열기`} disabled={busy || loading} onClick={() => void open(lesson.id)}>
               <span className="title">{lessonTitle(lesson)}</span>
               {lesson.content && <span className="nuance-list-description">{lesson.content.distinction}</span>}
               <span className="time writing-list-meta">
