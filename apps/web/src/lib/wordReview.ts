@@ -10,8 +10,8 @@ export type WordReviewStatus = "pending" | "verified" | "rejected";
 export interface WordReviewQuestion {
   version: number;
   prompt: string;
-  /** The complete grammatical form that replaces the prompt's one blank. */
-  answer: string;
+  /** One complete grammatical form for each prompt blank, in order. */
+  answers: string[];
 }
 
 export interface WordReviewItem {

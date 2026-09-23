@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"unicode"
@@ -60,13 +61,15 @@ Rules:
 }
 
 // GenerateWordReviewQuestion turns one verified dictionary entry into the
-// exact recall question shown by WordReview. The answer is intentionally the
-// surface form required by the sentence, not necessarily the stored base
-// Word: learners should supply "organized" when the sentence requires past
-// tense, rather than type "organize" into a partially hidden "___d".
+// exact recall question shown by WordReview. Each answer is intentionally the
+// surface form required by its blank, not necessarily the stored base Word:
+// learners should supply "organized" when the sentence requires past tense,
+// rather than type "organize" into a partially hidden "___d". Grammar-only
+// placeholders in dictionary phrases stay visible: "do one's best" produces
+// "___ his ___" and tests only "do" and "best".
 //
 // Questions are versioned in application code rather than trusted to the
-// model. The caller persists this value with the prompt and answer so legacy
+// model. The caller persists this value with the prompt and answers so legacy
 // questions can be regenerated and stale workers can be rejected atomically.
 func (p *Pipeline) GenerateWordReviewQuestion(ctx context.Context, word, meaning, example string) (wordreview.Question, error) {
 	raw, err := p.analyze(ctx, wordReviewQuestionSystemPrompt(p.FeedbackLang), fmt.Sprintf("dictionary word: %s\nmeaning: %s\nexisting example: %s", word, meaning, example), true)
@@ -74,29 +77,83 @@ func (p *Pipeline) GenerateWordReviewQuestion(ctx context.Context, word, meaning
 		return wordreview.Question{}, err
 	}
 	parsed, err := parseJSON[struct {
-		Prompt string `json:"prompt"`
-		Answer string `json:"answer"`
+		Prompt  string   `json:"prompt"`
+		Answers []string `json:"answers"`
 	}](raw, "word review question")
 	if err != nil {
 		return wordreview.Question{}, err
 	}
 	prompt := strings.TrimSpace(parsed.Prompt)
-	answer := strings.TrimSpace(parsed.Answer)
-	if strings.Count(prompt, "___") != 1 {
-		return wordreview.Question{}, fmt.Errorf("word review question: prompt must contain exactly one blank")
+	answers := make([]string, len(parsed.Answers))
+	for i, answer := range parsed.Answers {
+		answers[i] = strings.TrimSpace(answer)
 	}
-	blankAt := strings.Index(prompt, "___")
-	before, after := []rune(prompt[:blankAt]), []rune(prompt[blankAt+len("___"):])
-	if (len(before) > 0 && isWordFormRune(before[len(before)-1])) || (len(after) > 0 && isWordFormRune(after[0])) {
-		return wordreview.Question{}, fmt.Errorf("word review question: blank must replace the complete grammatical form")
+	parts := strings.Split(prompt, "___")
+	if len(answers) == 0 || len(parts) != len(answers)+1 {
+		return wordreview.Question{}, fmt.Errorf("word review question: prompt blanks must match answers")
 	}
-	if answer == "" {
-		return wordreview.Question{}, fmt.Errorf("word review question: answer is empty")
+	for i, answer := range answers {
+		before, after := []rune(parts[i]), []rune(parts[i+1])
+		if (len(before) > 0 && isWordFormRune(before[len(before)-1])) || (len(after) > 0 && isWordFormRune(after[0])) {
+			return wordreview.Question{}, fmt.Errorf("word review question: blank must replace a complete grammatical form")
+		}
+		if answer == "" {
+			return wordreview.Question{}, fmt.Errorf("word review question: answer is empty")
+		}
 	}
-	if len([]rune(answer)) > 255 {
-		return wordreview.Question{}, fmt.Errorf("word review question: answer exceeds 255 characters")
+	if expectedCounts, hasPlaceholder := placeholderSeparatedWordCounts(word); hasPlaceholder {
+		if len(answers) != len(expectedCounts) {
+			return wordreview.Question{}, fmt.Errorf("word review question: grammar placeholders must remain visible")
+		}
+		for i, expected := range expectedCounts {
+			if len(strings.Fields(answers[i])) != expected {
+				return wordreview.Question{}, fmt.Errorf("word review question: answer %d includes context-only words", i+1)
+			}
+		}
+	} else if len(answers) != 1 {
+		return wordreview.Question{}, fmt.Errorf("word review question: ordinary entries require one blank")
 	}
-	return wordreview.Question{Version: wordreview.CurrentQuestionVersion, Prompt: prompt, Answer: answer}, nil
+	encodedAnswers, err := json.Marshal(answers)
+	if err != nil || len([]rune(string(encodedAnswers))) > 255 {
+		return wordreview.Question{}, fmt.Errorf("word review question: answers exceed 255 characters")
+	}
+	question := wordreview.Question{Version: wordreview.CurrentQuestionVersion, Prompt: prompt, Answers: answers}
+	if len(answers) == 1 {
+		question.Answer = answers[0]
+	}
+	return question, nil
+}
+
+// placeholderSeparatedWordCounts returns the number of lexical words on each
+// side of a dictionary grammar placeholder. For example, "do one's best"
+// becomes [1, 1]. Matching generated answer lengths to these segments keeps
+// the context-selected possessive out of the learner's blanks while still
+// allowing lexical inflection ("make" -> "made").
+func placeholderSeparatedWordCounts(word string) ([]int, bool) {
+	placeholders := map[string]bool{
+		"one's": true, "oneself": true,
+		"someone": true, "someone's": true, "somebody": true, "somebody's": true,
+		"something": true, "something's": true,
+	}
+	counts := []int{}
+	count := 0
+	found := false
+	for _, raw := range strings.Fields(strings.ReplaceAll(strings.ToLower(word), "’", "'")) {
+		token := strings.Trim(raw, `.,;:!?()[]{}"`)
+		if placeholders[token] {
+			found = true
+			if count > 0 {
+				counts = append(counts, count)
+				count = 0
+			}
+			continue
+		}
+		count++
+	}
+	if count > 0 {
+		counts = append(counts, count)
+	}
+	return counts, found
 }
 
 func isWordFormRune(r rune) bool {
@@ -108,19 +165,26 @@ func wordReviewQuestionSystemPrompt(lang string) string {
 	return fmt.Sprintf(`You create one fill-in-the-blank recall question for a %[1]s-speaking
 English learner from a verified vocabulary entry.
 Return STRICT JSON only, no prose, in exactly this shape:
-{"prompt":"<one natural English sentence with exactly one ___ blank>","answer":"<the exact text that replaces the blank>"}
+{"prompt":"<one natural English sentence with one or more ___ blanks>","answers":["<exact text for the first blank>"]}
 Rules:
 - Test the supplied dictionary word/phrase in the supplied meaning.
 - The sentence must make the required grammatical form clear from context.
-- "answer" MUST use the complete grammatical form required by the sentence,
-  including tense, aspect, subject agreement, number, or pronoun changes. It
-  does NOT have to equal the dictionary form. For example, use "organized"
-  rather than "organize" when the sentence is in the past.
-- Replace the entire answer with "___". Never leave an inflectional suffix
-  visible outside the blank (wrong: "___d" for "organized").
+- Each item in "answers" MUST use the complete grammatical form required by
+  its corresponding blank, including tense, aspect, subject agreement, or
+  number. It does NOT have to equal the dictionary form. For example, use
+  "organized" rather than "organize" when the sentence is in the past.
+- Replace each complete lexical answer with "___". Never leave an inflectional
+  suffix visible outside the blank (wrong: "___d" for "organized").
+- Dictionary placeholders such as "one's", "someone", "something", or
+  "oneself" are grammar context, not vocabulary to test. Leave their natural
+  sentence-specific replacement visible and blank only the lexical parts on
+  either side. Example: "do one's best" with subject "he" MUST be
+  "He promised to ___ his ___." with answers ["do","best"], never one blank
+  whose answer is "do his best" and never a blank for "his".
+- Use one blank for an ordinary word or phrase with no dictionary placeholder.
 - The completed sentence must be natural and unambiguous. You may rewrite the
   existing example when it does not satisfy these rules.
-- Keep both fields in English.`, native)
+- Keep the prompt and every answer in English.`, native)
 }
 
 // DefineWord is the common word-search entry point. It first uses the fast

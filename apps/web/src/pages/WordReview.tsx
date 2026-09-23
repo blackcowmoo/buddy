@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { QuizChoices } from "../components/QuizChoices";
 import { EmptyState, LearningIntro } from "../components/LearningIntro";
 import { confirmThenDelete } from "../lib/confirmDelete";
@@ -28,17 +28,24 @@ import type { LoadState } from "../lib/loadState";
 // reasoning as ArticleQuiz.tsx's articleStudyPollIntervalMs.
 const wordAutoAddPollIntervalMs = 3000;
 const reviewWordsPageSize = 20;
-const currentReviewQuestionVersion = 1;
+const currentReviewQuestionVersion = 2;
 
 // Recall questions are generated and persisted server-side. Unlike the old
-// client-side substring masking, the stored answer is the complete form the
-// sentence requires ("organized", not dictionary-form "organize" plus a
-// visible trailing "d"). The version check is a defensive rolling-deploy
-// guard for responses served by an older backend replica.
+// client-side substring masking, the stored answers are the complete forms
+// the sentence requires ("organized", not dictionary-form "organize" plus a
+// visible trailing "d"). Multiple blanks let context-only grammar stay
+// visible: "do one's best" can test "do" and "best" around a visible "his".
+// The version check is a defensive rolling-deploy guard for responses served
+// by an older backend replica.
 function currentQuestion(word: WordReviewItem): WordReviewQuestion | null {
   const question = word.reviewQuestion;
   if (!question || question.version < currentReviewQuestionVersion) return null;
-  if (question.prompt.split("___").length !== 2 || !question.answer.trim()) return null;
+  // A version-1 backend replica can briefly project a version-2 database row
+  // without the new array field. Treat that mixed-deploy response as pending
+  // instead of dereferencing an absent value in the browser.
+  if (!Array.isArray(question.answers)) return null;
+  if (question.answers.length === 0 || question.prompt.split("___").length !== question.answers.length + 1) return null;
+  if (question.answers.some((answer) => !answer.trim())) return null;
   return question;
 }
 
@@ -98,15 +105,16 @@ export function WordReview() {
   // question order/mode stays stable even as reviews update `words` below.
   const [quizQueue, setQuizQueue] = useState<QuizItem[] | null>(null);
   const [index, setIndex] = useState(0);
-  // The current recall answer, typed directly into the generated sentence's
-  // one blank rather than a separate free-text box.
-  const [answer, setAnswer] = useState("");
+  // Current recall answers, typed directly into the generated sentence's
+  // lexical blanks rather than a separate free-text box. There can be more
+  // than one when a context-only pronoun stays visible between phrase parts.
+  const [answers, setAnswers] = useState<string[]>([]);
   const [selectedChoice, setSelectedChoice] = useState<string | null>(null);
   const [checked, setChecked] = useState(false);
   const [checkingSimilarity, setCheckingSimilarity] = useState(false);
   const [similarHint, setSimilarHint] = useState(false);
   const [correctCount, setCorrectCount] = useState(0);
-  const blankRef = useRef<HTMLInputElement>(null);
+  const blankRefs = useRef<Array<HTMLInputElement | null>>([]);
   const nextButtonRef = useRef<HTMLButtonElement>(null);
   const [autoAdding, setAutoAdding] = useState(false);
   const [autoAddError, setAutoAddError] = useState<string | null>(null);
@@ -245,7 +253,7 @@ export function WordReview() {
     const verified = words.filter((w) => w.status === "verified" && w.researchStatus === "confirmed");
     // A rolling deployment can briefly return a legacy row alongside a new
     // dueCount. Do not construct any question until its current version and
-    // exact grammatical answer are both present.
+    // exact grammatical answers are all present.
     const due = verified.filter((w) => w.nextReviewAt <= now && currentQuestion(w) !== null);
     const queue: QuizItem[] = shuffled(due).map((w) => {
       const otherMeanings = verified.filter((other) => other.id !== w.id).map((other) => other.meaning);
@@ -258,7 +266,7 @@ export function WordReview() {
     });
     setQuizQueue(queue);
     setIndex(0);
-    setAnswer("");
+    setAnswers([]);
     setSelectedChoice(null);
     setChecked(false);
     setCheckingSimilarity(false);
@@ -294,20 +302,25 @@ export function WordReview() {
   const currentItem = quizQueue?.[index] ?? null;
   const current = currentItem?.word ?? null;
   const recallQuestion = currentItem?.mode === "recall" ? currentQuestion(currentItem.word) : null;
-  const [recallPrefix, recallSuffix] = recallQuestion?.prompt.split("___") ?? [];
+  const recallParts = recallQuestion?.prompt.split("___") ?? [];
+  const recallAnswers = recallQuestion?.answers.map((_, i) => answers[i] ?? "") ?? [];
+  const recallIsExact = recallQuestion !== null && recallQuestion.answers.every(
+    (expected, i) => normalizeAnswer(recallAnswers[i]) === normalizeAnswer(expected),
+  );
+  const recallIsComplete = recallQuestion !== null && recallAnswers.every((answer) => answer.trim());
 
   // Put the learner straight into the first answer field whenever a recall
   // question appears. This is especially important on mobile, where focusing
   // the field is what brings up the keyboard without an extra tap.
   useEffect(() => {
     if (!recallQuestion || checked || checkingSimilarity) return;
-    blankRef.current?.focus();
+    blankRefs.current.find((input) => input && !input.value.trim())?.focus();
   }, [recallQuestion, checked, checkingSimilarity]);
 
   const isCorrect =
     checked && currentItem
       ? currentItem.mode === "recall"
-        ? normalizeAnswer(answer) === normalizeAnswer(recallQuestion!.answer)
+        ? recallIsExact
         : selectedChoice === currentItem.word.meaning
       : false;
 
@@ -345,22 +358,28 @@ export function WordReview() {
   );
 
   const checkRecall = useCallback(async () => {
-    if (!currentItem || checked || checkingSimilarity || currentItem.mode !== "recall" || !recallQuestion || !answer.trim()) return;
-    if (normalizeAnswer(answer) === normalizeAnswer(recallQuestion.answer)) {
+    if (!currentItem || checked || checkingSimilarity || currentItem.mode !== "recall" || !recallQuestion || !recallIsComplete) return;
+    if (recallIsExact) {
       finishCheck(currentItem, true);
       return;
     }
     setCheckingSimilarity(true);
-    const similar = await checkQuizAnswer(recallQuestion.prompt, recallQuestion.answer, undefined, answer, { wordId: currentItem.word.id });
+    const similar = await checkQuizAnswer(
+      recallQuestion.prompt,
+      recallQuestion.answers.join(" | "),
+      undefined,
+      recallAnswers.join(" | "),
+      { wordId: currentItem.word.id },
+    );
     setCheckingSimilarity(false);
     if (similar) {
       setSimilarHint(true);
-      setAnswer("");
-      blankRef.current?.focus();
+      setAnswers([]);
+      blankRefs.current[0]?.focus();
       return;
     }
     finishCheck(currentItem, false);
-  }, [currentItem, checked, checkingSimilarity, recallQuestion, answer, finishCheck]);
+  }, [currentItem, checked, checkingSimilarity, recallQuestion, recallAnswers, recallIsComplete, recallIsExact, finishCheck]);
 
   const checkRecognition = () => {
     if (!currentItem || checked || currentItem.mode !== "recognition" || selectedChoice === null) return;
@@ -371,7 +390,7 @@ export function WordReview() {
     if (!currentItem || checked || checkingSimilarity) return;
     // An unsubmitted draft must not count as correct when the learner
     // explicitly asks to reveal the answer instead.
-    setAnswer("");
+    setAnswers([]);
     setSelectedChoice(null);
     finishCheck(currentItem, false);
   };
@@ -382,7 +401,7 @@ export function WordReview() {
 
   const advanceToNext = useCallback(() => {
     setIndex(index + 1);
-    setAnswer("");
+    setAnswers([]);
     setSelectedChoice(null);
     setChecked(false);
     setCheckingSimilarity(false);
@@ -423,11 +442,16 @@ export function WordReview() {
   // Enter submits the sentence blank or, once checked, advances to the next
   // question so the learner never has to reach for the mouse mid-question.
   const handleBlankKeyDown = useCallback(
-    (e: KeyboardEvent<HTMLInputElement>) => {
+    (e: KeyboardEvent<HTMLInputElement>, blankIndex: number) => {
       if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
       e.preventDefault();
       if (checked) {
         next();
+        return;
+      }
+      const nextEmpty = blankRefs.current.findIndex((input, i) => i > blankIndex && input && !input.value.trim());
+      if (nextEmpty >= 0) {
+        blankRefs.current[nextEmpty]?.focus();
         return;
       }
       checkRecall();
@@ -574,31 +598,37 @@ export function WordReview() {
                 {currentItem.mode === "recall" ? (
                   <>
                     <p className="quiz-meaning-hint">{current.meaning}</p>
-                    {/* The answer is typed directly in place inside the
-                        sentence rather than in a separate textarea. Its
-                        width follows what has been typed, not the hidden
-                        answer's length, which would give it away. */}
+                    {/* Answers are typed directly in place inside the
+                        sentence. Each width follows what has been typed, not
+                        the hidden answer's length, which would give it away. */}
                     <div className="quiz-prompt quiz-blank-sentence" lang="en">
-                      <span>
-                        {recallPrefix}
-                        <input
-                          autoFocus
-                          ref={blankRef}
-                          type="text"
-                          className={quizBlankInputClass(
-                            checked,
-                            normalizeAnswer(answer) === normalizeAnswer(recallQuestion!.answer),
+                      {recallParts.map((part, blankIndex) => (
+                        <Fragment key={blankIndex}>
+                          <span>{part}</span>
+                          {blankIndex < recallQuestion!.answers.length && (
+                            <input
+                              autoFocus={blankIndex === 0}
+                              ref={(input) => { blankRefs.current[blankIndex] = input; }}
+                              type="text"
+                              className={quizBlankInputClass(
+                                checked,
+                                normalizeAnswer(recallAnswers[blankIndex]) === normalizeAnswer(recallQuestion!.answers[blankIndex]),
+                              )}
+                              style={{ width: `${Math.min(16, Math.max(3, recallAnswers[blankIndex].length + 1))}ch` }}
+                              maxLength={255}
+                              value={recallAnswers[blankIndex]}
+                              onChange={(e) => setAnswers((currentAnswers) => {
+                                const nextAnswers = [...currentAnswers];
+                                nextAnswers[blankIndex] = e.target.value;
+                                return nextAnswers;
+                              })}
+                              onKeyDown={(e) => handleBlankKeyDown(e, blankIndex)}
+                              disabled={checked || checkingSimilarity}
+                              aria-label={recallQuestion!.answers.length === 1 ? "정답 입력" : `정답 ${blankIndex + 1} 입력`}
+                            />
                           )}
-                          style={{ width: `${Math.min(16, Math.max(3, answer.length + 1))}ch` }}
-                          maxLength={255}
-                          value={answer}
-                          onChange={(e) => setAnswer(e.target.value)}
-                          onKeyDown={handleBlankKeyDown}
-                          disabled={checked || checkingSimilarity}
-                          aria-label="정답 입력"
-                        />
-                      </span>
-                      <span>{recallSuffix}</span>
+                        </Fragment>
+                      ))}
                     </div>
                   </>
                 ) : (
@@ -622,7 +652,7 @@ export function WordReview() {
                         type="button"
                         className="quiz-check-btn"
                         onClick={() => currentItem.mode === "recall" ? void checkRecall() : checkRecognition()}
-                        disabled={checkingSimilarity || (currentItem.mode === "recall" ? !answer.trim() : selectedChoice === null)}
+                        disabled={checkingSimilarity || (currentItem.mode === "recall" ? !recallIsComplete : selectedChoice === null)}
                       >
                         {checkingSimilarity ? "채점 중…" : "답안 확인"}
                       </button>
@@ -637,7 +667,7 @@ export function WordReview() {
                     <div className={`quiz-result ${isCorrect ? "correct" : "incorrect"}`} role="status">
                       {isCorrect
                         ? "정답이에요!"
-                        : `아쉬워요. 정답: ${currentItem.mode === "recall" ? recallQuestion!.answer : current.meaning}`}
+                        : `아쉬워요. 정답: ${currentItem.mode === "recall" ? recallQuestion!.answers.join(", ") : current.meaning}`}
                     </div>
                     <div className="quiz-next-actions">
                       <button ref={nextButtonRef} type="button" className="quiz-next-btn" onClick={next}>

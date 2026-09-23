@@ -145,31 +145,44 @@ const (
 
 // CurrentQuestionVersion identifies the word-review question contract used
 // by the current server and frontend. Version 0 is reserved for legacy rows
-// that only have Word/Meaning/Example and therefore cannot prove which full
-// grammatical form belongs in the blank. Bump this whenever the generation
-// prompt or persisted question shape changes in a way that requires old
-// questions to be regenerated.
-const CurrentQuestionVersion = 1
+// that only have Word/Meaning/Example. Version 1 stored one whole surface
+// phrase in one blank; version 2 stores one answer per lexical blank so
+// context-only words such as the "his" in "do his best" can remain visible.
+// Bump this whenever the generation prompt or persisted question shape
+// changes in a way that requires old questions to be regenerated.
+const CurrentQuestionVersion = 2
 
-// Question is the persisted recall question for one vocabulary entry. Answer
-// is deliberately separate from Word: Word is the dictionary form shown in
-// the study list ("organize"), while Answer is the exact surface form Prompt
-// requires ("organized"). Keeping Version on every question lets readers
-// ignore stale content during a rolling deployment and lets a newer worker
-// prevent an older generation from overwriting it.
+// Question is the persisted recall question for one vocabulary entry.
+// Answers has one exact surface form for each ___ in Prompt, in order. A
+// simple word normally has one answer ("organized"). An idiom with a grammar
+// placeholder can have more: "do one's best" becomes "___ his ___" with
+// ["do", "best"], so the learner is not asked to guess the context-selected
+// possessive. Keeping Version on every question lets readers ignore stale
+// content during a rolling deployment and lets a newer worker prevent an
+// older generation from overwriting it.
 type Question struct {
-	Version int    `json:"version"`
-	Prompt  string `json:"prompt"` // one natural English sentence containing exactly one "___"
-	Answer  string `json:"answer"` // the complete grammatical form that replaces "___"
+	Version int      `json:"version"`
+	Prompt  string   `json:"prompt"`  // one natural English sentence containing one or more "___" blanks
+	Answers []string `json:"answers"` // one complete grammatical form for each blank, in order
+	// Answer keeps one-blank version-1 clients safe during a rolling deploy.
+	// Version-2 readers and grading use Answers exclusively.
+	Answer string `json:"answer,omitempty"`
 }
 
 // QuestionReady reports whether w has a complete question produced under the
 // current-or-newer contract. Accepting a future version keeps an older replica
 // from hiding a compatible question already written by a newer replica.
 func QuestionReady(w Word) bool {
-	return w.ReviewQuestion.Version >= CurrentQuestionVersion &&
-		strings.Count(w.ReviewQuestion.Prompt, "___") == 1 &&
-		strings.TrimSpace(w.ReviewQuestion.Answer) != ""
+	if w.ReviewQuestion.Version < CurrentQuestionVersion || len(w.ReviewQuestion.Answers) == 0 ||
+		strings.Count(w.ReviewQuestion.Prompt, "___") != len(w.ReviewQuestion.Answers) {
+		return false
+	}
+	for _, answer := range w.ReviewQuestion.Answers {
+		if strings.TrimSpace(answer) == "" {
+			return false
+		}
+	}
+	return true
 }
 
 // Word is one word/phrase/idiom the learner chose to study, plus its review

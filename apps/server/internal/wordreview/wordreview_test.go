@@ -20,6 +20,21 @@ func TestNormalizeWordLowercasesVocabularyButPreservesFirstPersonPronouns(t *tes
 	}
 }
 
+func TestQuestionReadyRequiresOneAnswerPerBlank(t *testing.T) {
+	ready := Word{ReviewQuestion: Question{
+		Version: CurrentQuestionVersion,
+		Prompt:  "He promised to ___ his ___ for the team.",
+		Answers: []string{"do", "best"},
+	}}
+	if !QuestionReady(ready) {
+		t.Fatal("QuestionReady() = false for matching lexical blanks")
+	}
+	ready.ReviewQuestion.Answers = []string{"do his best"}
+	if QuestionReady(ready) {
+		t.Fatal("QuestionReady() = true when answer count does not match blank count")
+	}
+}
+
 func TestNextScheduleAdvancesStageOnCorrectAnswer(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 

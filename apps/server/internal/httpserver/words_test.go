@@ -546,8 +546,8 @@ func TestWordsListReturnsOwnWordsAndDueCount(t *testing.T) {
 	now := time.Now()
 	store := &fakeWordStore{byUser: map[string][]wordreview.Word{
 		"alex": {
-			{ID: "w1", UserID: "alex", Word: "ecstatic", Status: wordreview.StatusVerified, ResearchStatus: wordreview.ResearchConfirmed, NextReviewAt: now.Add(-time.Hour), ReviewQuestion: wordreview.Question{Version: wordreview.CurrentQuestionVersion, Prompt: "She was ___.", Answer: "ecstatic"}}, // due
-			{ID: "w2", UserID: "alex", Word: "elated", Status: wordreview.StatusVerified, NextReviewAt: now.Add(48 * time.Hour)},                                                                                                                                                                          // not due yet
+			{ID: "w1", UserID: "alex", Word: "ecstatic", Status: wordreview.StatusVerified, ResearchStatus: wordreview.ResearchConfirmed, NextReviewAt: now.Add(-time.Hour), ReviewQuestion: wordreview.Question{Version: wordreview.CurrentQuestionVersion, Prompt: "She was ___.", Answers: []string{"ecstatic"}}}, // due
+			{ID: "w2", UserID: "alex", Word: "elated", Status: wordreview.StatusVerified, NextReviewAt: now.Add(48 * time.Hour)}, // not due yet
 		},
 		"sam": {{ID: "w4", UserID: "sam", Word: "other", Status: wordreview.StatusVerified, NextReviewAt: now.Add(-time.Hour)}},
 	}}
@@ -621,7 +621,7 @@ func (s *questionBackfillStore) SaveQuestion(ctx context.Context, userID, id str
 			continue
 		}
 		if word.ReviewQuestion.Version > question.Version ||
-			(word.ReviewQuestion.Version == question.Version && word.ReviewQuestion.Prompt != "" && word.ReviewQuestion.Answer != "") {
+			(word.ReviewQuestion.Version == question.Version && word.ReviewQuestion.Prompt != "" && len(word.ReviewQuestion.Answers) > 0) {
 			return word, false, nil
 		}
 		word.ReviewQuestion = question
@@ -643,7 +643,7 @@ func TestWordsListHidesLegacyQuestionAndRegeneratesItInBackground(t *testing.T) 
 	words := &questionBackfillStore{fakeWordStore: base}
 	pipe := &pipeline.Pipeline{
 		LLM: &fakeWordSuggestLLM{complete: func([]llm.Message) (string, error) {
-			return `{"prompt":"They ___ the files yesterday.","answer":"organized"}`, nil
+			return `{"prompt":"They ___ the files yesterday.","answers":["organized"]}`, nil
 		}},
 		ChatModel: "m",
 	}
@@ -664,7 +664,9 @@ func TestWordsListHidesLegacyQuestionAndRegeneratesItInBackground(t *testing.T) 
 
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/words", nil))
-	if !strings.Contains(rec.Body.String(), `"answer":"organized"`) || !strings.Contains(rec.Body.String(), `"version":1`) {
+	if !strings.Contains(rec.Body.String(), `"answers":["organized"]`) ||
+		!strings.Contains(rec.Body.String(), `"answer":"organized"`) ||
+		!strings.Contains(rec.Body.String(), `"version":2`) {
 		t.Fatalf("regenerated current question missing from response: %s", rec.Body.String())
 	}
 }
@@ -715,7 +717,7 @@ func TestWordReviewRejectsSubmissionFromStaleQuestionVersion(t *testing.T) {
 		"alex": {{
 			ID: "w1", UserID: "alex", Word: "organize", Status: wordreview.StatusVerified,
 			ResearchStatus: wordreview.ResearchConfirmed,
-			ReviewQuestion: wordreview.Question{Version: wordreview.CurrentQuestionVersion, Prompt: "They ___ it yesterday.", Answer: "organized"},
+			ReviewQuestion: wordreview.Question{Version: wordreview.CurrentQuestionVersion, Prompt: "They ___ it yesterday.", Answers: []string{"organized"}},
 		}},
 	}}
 	h := wordReviewHandler(fakeIdentifier{id: "alex", ok: true}, &versionedReviewStore{fakeWordStore: base})
@@ -801,7 +803,7 @@ func (f *fakeWordAutoSuggestLLM) Complete(ctx context.Context, model string, msg
 		return `{"valid":true,"reason":""}`, nil
 	}
 	if strings.Contains(system, "fill-in-the-blank recall question") {
-		return `{"prompt":"She stayed ___ through the setback.","answer":"resilient"}`, nil
+		return `{"prompt":"She stayed ___ through the setback.","answers":["resilient"]}`, nil
 	}
 	return f.complete(msgs)
 }

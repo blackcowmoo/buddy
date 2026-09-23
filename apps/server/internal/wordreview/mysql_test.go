@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
@@ -153,21 +154,21 @@ func TestSaveQuestionPersistsVersionedSurfaceFormAndRejectsOlderOverwrite(t *tes
 		t.Fatalf("Save() error = %v", err)
 	}
 
-	newer := Question{Version: CurrentQuestionVersion + 1, Prompt: "They ___ the files yesterday.", Answer: "organized"}
+	newer := Question{Version: CurrentQuestionVersion + 1, Prompt: "They ___ the files yesterday.", Answers: []string{"organized"}, Answer: "organized"}
 	got, written, err := st.SaveQuestion(ctx, "alex-question-version", saved.ID, newer)
 	if err != nil {
 		t.Fatalf("SaveQuestion(newer) error = %v", err)
 	}
-	if !written || got.ReviewQuestion != newer {
+	if !written || !reflect.DeepEqual(got.ReviewQuestion, newer) {
 		t.Fatalf("SaveQuestion(newer) = (%+v, %v), want persisted newer question", got.ReviewQuestion, written)
 	}
 
-	stale := Question{Version: CurrentQuestionVersion, Prompt: "They ___ the files.", Answer: "organize"}
+	stale := Question{Version: CurrentQuestionVersion, Prompt: "They ___ the files.", Answers: []string{"organize"}, Answer: "organize"}
 	got, written, err = st.SaveQuestion(ctx, "alex-question-version", saved.ID, stale)
 	if err != nil {
 		t.Fatalf("SaveQuestion(stale) error = %v", err)
 	}
-	if written || got.ReviewQuestion != newer {
+	if written || !reflect.DeepEqual(got.ReviewQuestion, newer) {
 		t.Fatalf("stale write = (%+v, %v), want newer question preserved", got.ReviewQuestion, written)
 	}
 }
@@ -185,7 +186,7 @@ func TestReviewVersionedRejectsQuestionThatWasReplaced(t *testing.T) {
 	if _, err := st.ConfirmResearch(ctx, "alex-versioned-review", saved.ID); err != nil {
 		t.Fatalf("ConfirmResearch() error = %v", err)
 	}
-	question := Question{Version: CurrentQuestionVersion, Prompt: "They ___ the files yesterday.", Answer: "organized"}
+	question := Question{Version: CurrentQuestionVersion, Prompt: "They ___ the files yesterday.", Answers: []string{"organized"}}
 	if _, _, err := st.SaveQuestion(ctx, "alex-versioned-review", saved.ID, question); err != nil {
 		t.Fatalf("SaveQuestion() error = %v", err)
 	}
@@ -561,8 +562,8 @@ func TestDueCountOnlyCountsVerifiedWordsPastDue(t *testing.T) {
 		id       string
 		question Question
 	}{
-		{overdue.ID, Question{Version: CurrentQuestionVersion, Prompt: "A ___ smile crossed her face.", Answer: "wistful"}},
-		{notYet.ID, Question{Version: CurrentQuestionVersion, Prompt: "A ___ tune played.", Answer: "melancholy"}},
+		{overdue.ID, Question{Version: CurrentQuestionVersion, Prompt: "A ___ smile crossed her face.", Answers: []string{"wistful"}}},
+		{notYet.ID, Question{Version: CurrentQuestionVersion, Prompt: "A ___ tune played.", Answers: []string{"melancholy"}}},
 	} {
 		if _, _, err := st.SaveQuestion(ctx, "alex-due", word.id, word.question); err != nil {
 			t.Fatalf("SaveQuestion(%s) error = %v", word.id, err)
