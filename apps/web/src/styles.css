@@ -1228,7 +1228,24 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
 .nuance-review { align-items: center; }
 .nuance-review p { width: 100%; margin: 0; font-size: 13px; color: var(--muted); }
 .nuance-list-description { color: var(--muted); font-size: 13px; line-height: 1.6; }
-.nuance-page .session-item { white-space: normal; }
+.nuance-list-item {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 4px;
+  white-space: normal;
+}
+.nuance-list-item .title {
+  flex: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.nuance-list-item .time {
+  display: block;
+  flex-shrink: 1;
+  white-space: normal;
+  line-height: 1.5;
+}
 .nuance-page .quiz-panel { display: grid; gap: 12px; }
 @media (max-width: 520px) {
   .nuance-comparison { grid-template-columns: 1fr; }

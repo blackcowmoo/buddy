@@ -45,6 +45,12 @@ function answer(correct: boolean, questionId = "q0") {
   fireEvent.click(screen.getByRole("button", { name: next.state.feedback!.selected }));
   fireEvent.click(screen.getByRole("button", { name: "답안 확인" }));
 }
+it("uses a dedicated stacked card layout for long history titles", async () => {
+  render(<WordNuance />);
+  const historyItem = await screen.findByRole("button", { name: "cheap / inexpensive 열기" });
+  expect(historyItem).toHaveClass("nuance-list-item");
+  expect(within(historyItem).getByText("cheap / inexpensive")).toHaveClass("title");
+});
 it("lists generated history, omits search and dictionary links, and opens the comparison", async () => {
   await open();
   expect(screen.queryByRole("searchbox")).not.toBeInTheDocument();
