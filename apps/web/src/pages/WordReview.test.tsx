@@ -69,7 +69,7 @@ const dueWord: WordReviewItem = {
   nextReviewAt: Math.floor(testNow / 1000) - 3600, // 1 hour ago: due
   status: "verified",
   researchStatus: "confirmed",
-  reviewQuestion: { version: 1, prompt: "She was ___.", answer: "ecstatic" },
+  reviewQuestion: { version: 2, prompt: "She was ___.", answers: ["ecstatic"] },
 };
 
 const idiomWord: WordReviewItem = {
@@ -82,7 +82,11 @@ const idiomWord: WordReviewItem = {
   nextReviewAt: Math.floor(testNow / 1000) - 3600, // 1 hour ago: due
   status: "verified",
   researchStatus: "confirmed",
-  reviewQuestion: { version: 1, prompt: "I will ___ to finish the project on time.", answer: "do my best" },
+  reviewQuestion: {
+    version: 2,
+    prompt: "Even though the task was complicated, he promised to ___ his ___ for the sake of the team.",
+    answers: ["do", "best"],
+  },
 };
 
 const optimizeWord: WordReviewItem = {
@@ -95,7 +99,7 @@ const optimizeWord: WordReviewItem = {
   nextReviewAt: Math.floor(testNow / 1000) - 3600, // 1 hour ago: due
   status: "verified",
   researchStatus: "confirmed",
-  reviewQuestion: { version: 1, prompt: "We are ___ the search algorithm for faster results.", answer: "optimizing" },
+  reviewQuestion: { version: 2, prompt: "We are ___ the search algorithm for faster results.", answers: ["optimizing"] },
 };
 
 const organizeWord: WordReviewItem = {
@@ -109,9 +113,9 @@ const organizeWord: WordReviewItem = {
   status: "verified",
   researchStatus: "confirmed",
   reviewQuestion: {
-    version: 1,
+    version: 2,
     prompt: "The criminals planned the attack in a highly ___ manner.",
-    answer: "organized",
+    answers: ["organized"],
   },
 };
 
@@ -228,7 +232,7 @@ describe("WordReview page", () => {
   it("ignores a due legacy question while its current version is regenerated", async () => {
     const legacy = {
       ...dueWord,
-      reviewQuestion: { version: 0, prompt: "She was ___.", answer: "ecstatic" },
+      reviewQuestion: { version: 1, prompt: "She was ___.", answers: ["ecstatic"] },
     };
     vi.mocked(fetchWords).mockResolvedValue({ words: [legacy], dueCount: 0 });
     render(<WordReview />);
@@ -624,7 +628,7 @@ describe("WordReview page", () => {
     expect(reviewWord).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "결과 보기" }));
-    expect(reviewWord).toHaveBeenCalledWith("w1", true, false, 1);
+    expect(reviewWord).toHaveBeenCalledWith("w1", true, false, 2);
     expect(await screen.findByText("1개 중 1개 맞혔어요!")).toBeInTheDocument();
   });
 
@@ -649,7 +653,7 @@ describe("WordReview page", () => {
     expect(screen.getByRole("button", { name: "완료" })).toHaveFocus();
     await user.keyboard("{Enter}");
     expect(screen.getByRole("heading", { name: "배운 표현을 내 것으로 만들어요" })).toBeInTheDocument();
-    expect(reviewWord).toHaveBeenCalledExactlyOnceWith("w1", true, false, 1);
+    expect(reviewWord).toHaveBeenCalledExactlyOnceWith("w1", true, false, 2);
   });
 
   it("does not submit an answer while the keyboard is composing text", async () => {
@@ -710,7 +714,7 @@ describe("WordReview page", () => {
     const forcedBtn = screen.getByRole("button", { name: "😅 억지로 맞춘 것 같아요" });
     await user.click(forcedBtn);
 
-    expect(reviewWord).toHaveBeenCalledWith("w1", true, true, 1);
+    expect(reviewWord).toHaveBeenCalledWith("w1", true, true, 2);
     expect(await screen.findByText("1개 중 1개 맞혔어요!")).toBeInTheDocument();
   });
 
@@ -740,19 +744,21 @@ describe("WordReview page", () => {
     expect(parseInt(widthAfter, 10)).toBeGreaterThan(parseInt(widthBefore, 10));
   });
 
-  it("asks for the complete context-adjusted phrase in one versioned blank", async () => {
+  it("leaves a context-selected possessive visible and tests only the idiom's lexical words", async () => {
     vi.mocked(reviewWord).mockResolvedValue({ ...idiomWord, stage: 1, reviewCount: 1 });
     const user = await startQuiz([idiomWord]);
 
-    // The dictionary phrase "do one's best" becomes "do my best" in this
-    // sentence. The generated question stores that complete surface form as
-    // its answer rather than deriving separate substrings in the browser.
+    // "his" is selected by the sentence subject, not recoverable from the
+    // Korean meaning alone, so it stays visible between the two real targets.
     expect(await screen.findByText("최선을 다하다")).toBeInTheDocument();
-    expect(screen.getByText("I will")).toBeInTheDocument();
-    expect(screen.getByText("to finish the project on time.")).toBeInTheDocument();
+    expect(screen.getByText("Even though the task was complicated, he promised to")).toBeInTheDocument();
+    expect(screen.getByText("his")).toBeInTheDocument();
+    expect(screen.getByText("for the sake of the team.")).toBeInTheDocument();
 
-    const blank = screen.getByRole("textbox", { name: "정답 입력" });
-    await user.type(blank, "do my best");
+    const firstBlank = screen.getByRole("textbox", { name: "정답 1 입력" });
+    const secondBlank = screen.getByRole("textbox", { name: "정답 2 입력" });
+    await user.type(firstBlank, "do");
+    await user.type(secondBlank, "best");
     await user.click(screen.getByRole("button", { name: "답안 확인" }));
 
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
@@ -814,16 +820,19 @@ describe("WordReview page", () => {
     expect(await screen.findByText("아쉬워요. 정답: optimizing")).toBeInTheDocument();
   });
 
-  it("marks an incomplete multi-word surface form incorrect", async () => {
+  it("marks an incorrect lexical slot in a placeholder idiom incorrect", async () => {
     vi.mocked(reviewWord).mockResolvedValue({ ...idiomWord, stage: 0, reviewCount: 1 });
     const user = await startQuiz([idiomWord]);
 
-    const blank = await screen.findByRole("textbox");
-    await user.type(blank, "do best");
+    const firstBlank = await screen.findByRole("textbox", { name: "정답 1 입력" });
+    const secondBlank = screen.getByRole("textbox", { name: "정답 2 입력" });
+    await user.type(firstBlank, "do");
+    await user.type(secondBlank, "good");
     await user.click(screen.getByRole("button", { name: "답안 확인" }));
 
-    expect(await screen.findByText(/아쉬워요\. 정답: do my best/)).toBeInTheDocument();
-    expect(blank).toHaveClass("incorrect");
+    expect(await screen.findByText(/아쉬워요\. 정답: do, best/)).toBeInTheDocument();
+    expect(firstBlank).toHaveClass("correct");
+    expect(secondBlank).toHaveClass("incorrect");
   });
 
   it("requeues a missed word for a same-session retry instead of ending the session on it", async () => {
@@ -833,7 +842,7 @@ describe("WordReview page", () => {
     await user.click(screen.getByRole("button", { name: "답안 확인" }));
 
     expect(await screen.findByText(/아쉬워요\. 정답: ecstatic/)).toBeInTheDocument();
-    expect(reviewWord).toHaveBeenCalledWith("w1", false, false, 1);
+    expect(reviewWord).toHaveBeenCalledWith("w1", false, false, 2);
 
     // Missing the only word in the queue doesn't end the session -- it's
     // requeued for a same-day retry, so there's another question to go.
@@ -883,7 +892,7 @@ describe("WordReview page", () => {
     expect(reviewWord).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "결과 보기" }));
-    expect(reviewWord).toHaveBeenCalledWith("w1", true, false, 1);
+    expect(reviewWord).toHaveBeenCalledWith("w1", true, false, 2);
   });
 
   it("lets learners revise a meaning before explicitly checking it", async () => {
@@ -927,7 +936,7 @@ describe("WordReview page", () => {
     await user.click(screen.getByRole("button", { name: "잘 모르겠어요" }));
 
     expect(screen.getByRole("status")).toHaveTextContent("아쉬워요. 정답:");
-    expect(reviewWord).toHaveBeenCalledExactlyOnceWith("w1", false, false, 1);
+    expect(reviewWord).toHaveBeenCalledExactlyOnceWith("w1", false, false, 2);
     await user.click(screen.getByRole("button", { name: "다음 단어" }));
     expect(reviewWord).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: "답안 확인" })).toBeDisabled();
@@ -946,7 +955,7 @@ describe("WordReview page", () => {
     await user.click(screen.getByRole("button", { name: "답안 확인" }));
 
     expect(await screen.findByText(/아쉬워요\. 정답: 매우 행복한/)).toBeInTheDocument();
-    expect(reviewWord).toHaveBeenCalledWith("w1", false, false, 1);
+    expect(reviewWord).toHaveBeenCalledWith("w1", false, false, 2);
   });
 
   it("reshuffles recognition choices when a missed word is retried", async () => {
@@ -974,7 +983,7 @@ describe("WordReview page", () => {
 
     await user.click(screen.getByRole("button", { name: "잘 모르겠어요" }));
     expect(await screen.findByText(/아쉬워요\. 정답: 매우 행복한/)).toBeInTheDocument();
-    expect(reviewWord).toHaveBeenCalledWith("w1", false, false, 1);
+    expect(reviewWord).toHaveBeenCalledWith("w1", false, false, 2);
 
     // "모르겠어요" resets the word and puts it back at the end of the
     // session for an immediate day-1 retry.
@@ -982,7 +991,7 @@ describe("WordReview page", () => {
     await user.click(screen.getByRole("button", { name: "매우 행복한" }));
     await user.click(screen.getByRole("button", { name: "답안 확인" }));
     await user.click(screen.getByRole("button", { name: "결과 보기" }));
-    expect(reviewWord).toHaveBeenLastCalledWith("w1", true, false, 1);
+    expect(reviewWord).toHaveBeenLastCalledWith("w1", true, false, 2);
   });
 
   it("treats 모르겠어요 as an incorrect answer even when the retry is answered correctly", async () => {
@@ -994,7 +1003,7 @@ describe("WordReview page", () => {
 
     await user.click(screen.getByRole("button", { name: "잘 모르겠어요" }));
     expect(await screen.findByText(/아쉬워요\. 정답: 매우 행복한/)).toBeInTheDocument();
-    expect(reviewWord).toHaveBeenCalledWith("w1", false, false, 1);
+    expect(reviewWord).toHaveBeenCalledWith("w1", false, false, 2);
 
     await user.click(screen.getByRole("button", { name: "다음 단어" }));
     await user.click(screen.getByRole("button", { name: "매우 행복한" }));
@@ -1003,7 +1012,7 @@ describe("WordReview page", () => {
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "😅 억지로 맞춘 것 같아요" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "결과 보기" }));
-    expect(reviewWord).toHaveBeenLastCalledWith("w1", true, false, 1);
+    expect(reviewWord).toHaveBeenLastCalledWith("w1", true, false, 2);
   });
 
   it("returns to the list from the quiz view", async () => {

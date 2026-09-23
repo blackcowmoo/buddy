@@ -128,7 +128,7 @@ func (s *fakeWordReviewStore) SaveQuestion(ctx context.Context, userID, id strin
 		return wordreview.Word{}, false, nil
 	}
 	if w.ReviewQuestion.Version > question.Version ||
-		(w.ReviewQuestion.Version == question.Version && w.ReviewQuestion.Prompt != "" && w.ReviewQuestion.Answer != "") {
+		(w.ReviewQuestion.Version == question.Version && w.ReviewQuestion.Prompt != "" && len(w.ReviewQuestion.Answers) > 0) {
 		return w, false, nil
 	}
 	w.ReviewQuestion = question
@@ -171,7 +171,7 @@ func (f wordLearningLLM) ChatStream(context.Context, string, []llm.Message, func
 
 func (f wordLearningLLM) Complete(_ context.Context, _ string, msgs []llm.Message, _ bool) (string, error) {
 	if strings.Contains(msgs[0].Content, "fill-in-the-blank recall question") {
-		return `{"prompt":"She was ___.","answer":"furious"}`, nil
+		return `{"prompt":"She was ___.","answers":["furious"]}`, nil
 	}
 	return fmt.Sprintf(`{"valid":%t,"reason":%q}`, f.valid, f.reason), nil
 }
@@ -260,7 +260,7 @@ func TestRunWordVerifyIsNoopForAlreadyDecidedWord(t *testing.T) {
 	words := newFakeWordReviewStore(wordreview.Word{ID: "w1", UserID: "alex", Word: "furious", Status: wordreview.StatusVerified})
 	words.words["w1"] = wordreview.Word{
 		ID: "w1", UserID: "alex", Word: "furious", Status: wordreview.StatusVerified,
-		ReviewQuestion: wordreview.Question{Version: wordreview.CurrentQuestionVersion, Prompt: "She was ___.", Answer: "furious"},
+		ReviewQuestion: wordreview.Question{Version: wordreview.CurrentQuestionVersion, Prompt: "She was ___.", Answers: []string{"furious"}},
 	}
 
 	if err := RunWordVerifyInline(context.Background(), pipe, words, "alex", "w1"); err != nil {
@@ -273,7 +273,7 @@ func TestRunWordVerifyIsNoopForAlreadyDecidedWord(t *testing.T) {
 
 func TestRunWordVerifyBackfillsVersionedQuestionWithSentenceForm(t *testing.T) {
 	pipe := &pipeline.Pipeline{
-		LLM:       fakeAnalysisLLM{complete: `{"prompt":"They ___ the files yesterday.","answer":"organized"}`},
+		LLM:       fakeAnalysisLLM{complete: `{"prompt":"They ___ the files yesterday.","answers":["organized"]}`},
 		ChatModel: "m",
 	}
 	words := newFakeWordReviewStore(wordreview.Word{
@@ -285,14 +285,14 @@ func TestRunWordVerifyBackfillsVersionedQuestionWithSentenceForm(t *testing.T) {
 		t.Fatalf("RunWordVerifyInline() error = %v", err)
 	}
 	got := words.question("w-old")
-	if got.Version != wordreview.CurrentQuestionVersion || got.Answer != "organized" || got.Prompt != "They ___ the files yesterday." {
+	if got.Version != wordreview.CurrentQuestionVersion || len(got.Answers) != 1 || got.Answers[0] != "organized" || got.Prompt != "They ___ the files yesterday." {
 		t.Fatalf("question = %+v, want current version with the sentence-required past form", got)
 	}
 }
 
 func TestWordVerifyJobHandlerIgnoresLegacyQuestionGenerationPayload(t *testing.T) {
 	calls := 0
-	pipe := &pipeline.Pipeline{LLM: countingLLM{&calls, `{"prompt":"She was ___.","answer":"furious"}`}, ChatModel: "m"}
+	pipe := &pipeline.Pipeline{LLM: countingLLM{&calls, `{"prompt":"She was ___.","answers":["furious"]}`}, ChatModel: "m"}
 	words := newFakeWordReviewStore(wordreview.Word{ID: "w1", UserID: "alex", Word: "furious", Status: wordreview.StatusVerified})
 	handler := WordVerifyJobHandler(pipe, words)
 	payload, err := json.Marshal(wordVerifyJobPayload{UserID: "alex", WordID: "w1"}) // legacy: no QuestionVersion

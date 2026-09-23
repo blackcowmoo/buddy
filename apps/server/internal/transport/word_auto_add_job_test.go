@@ -38,7 +38,7 @@ func TestRunWordAutoAddSavesSuggestionsAndCompletesJob(t *testing.T) {
 			<-verificationRelease
 			return `{"valid":true,"reason":""}`, nil
 		case strings.Contains(msgs[0].Content, "fill-in-the-blank recall question"):
-			return `{"prompt":"She stayed ___.","answer":"resilient"}`, nil
+			return `{"prompt":"She stayed ___.","answers":["resilient"]}`, nil
 		default:
 			return fakeAutoAddSuggestionJSON, nil
 		}

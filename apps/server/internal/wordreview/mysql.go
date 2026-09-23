@@ -61,6 +61,7 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 		review_question_version INT   NOT NULL DEFAULT 0,
 		review_prompt    TEXT         NOT NULL,
 		review_answer    VARCHAR(255) NOT NULL DEFAULT '',
+		review_answers   JSON         NULL,
 		created_at       BIGINT       NOT NULL,
 		PRIMARY KEY (id),
 		UNIQUE KEY idx_user_word_meaning (user_id, word(191), meaning(191)),
@@ -106,6 +107,12 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 		{Version: 6, Name: "word_reviews.review_answer", Up: func(ctx context.Context, db *sql.DB) error {
 			return mysqlerr.ApplyAdditive(func() error {
 				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN review_answer VARCHAR(255) NOT NULL DEFAULT ''`)
+				return err
+			}, mysqlerr.DupFieldName)
+		}},
+		{Version: 7, Name: "word_reviews.review_answers", Up: func(ctx context.Context, db *sql.DB) error {
+			return mysqlerr.ApplyAdditive(func() error {
+				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN review_answers JSON NULL`)
 				return err
 			}, mysqlerr.DupFieldName)
 		}},
@@ -175,14 +182,19 @@ type scanner interface {
 func scanWord(row scanner, userID string) (Word, error) {
 	var w Word
 	var nextReviewAt, lastReviewedAt, createdAt int64
-	var researchResults []byte
+	var researchResults, reviewAnswers []byte
 	if err := row.Scan(
 		&w.ID, &w.Word, &w.OriginalWord, &w.Meaning, &w.Example,
 		&w.Stage, &w.ReviewCount, &w.CorrectStreak,
 		&nextReviewAt, &lastReviewedAt, &w.Status, &w.VerifyReason, &w.ResearchStatus, &researchResults,
-		&w.ReviewQuestion.Version, &w.ReviewQuestion.Prompt, &w.ReviewQuestion.Answer, &createdAt,
+		&w.ReviewQuestion.Version, &w.ReviewQuestion.Prompt, &w.ReviewQuestion.Answer, &reviewAnswers, &createdAt,
 	); err != nil {
 		return Word{}, err
+	}
+	if w.ReviewQuestion.Version >= CurrentQuestionVersion && len(reviewAnswers) > 0 {
+		if err := json.Unmarshal(reviewAnswers, &w.ReviewQuestion.Answers); err != nil {
+			return Word{}, fmt.Errorf("wordreview: decode question answers: %w", err)
+		}
 	}
 	w.UserID = userID
 	w.NextReviewAt = time.Unix(nextReviewAt, 0)
@@ -196,7 +208,7 @@ func scanWord(row scanner, userID string) (Word, error) {
 	return w, nil
 }
 
-const wordColumns = `id, word, original_word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, research_status, research_results, review_question_version, review_prompt, review_answer, created_at`
+const wordColumns = `id, word, original_word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, research_status, research_results, review_question_version, review_prompt, review_answer, review_answers, created_at`
 
 func (s *MySQLStore) Save(ctx context.Context, userID, word, meaning, example string) (Word, error) {
 	return s.SaveOriginal(ctx, userID, word, meaning, example, word)
@@ -213,8 +225,8 @@ func (s *MySQLStore) SaveOriginal(ctx context.Context, userID, word, meaning, ex
 	// MarkVerified resets it — a pending word is excluded from Due/DueCount
 	// regardless (see their WHERE clauses).
 	_, err := db.ExecContext(ctx, `
-		INSERT IGNORE INTO `+table+` (id, user_id, word, original_word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, research_status, research_results, review_question_version, review_prompt, review_answer, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?, 0, ?, '', '', NULL, 0, '', '', ?)
+		INSERT IGNORE INTO `+table+` (id, user_id, word, original_word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, research_status, research_results, review_question_version, review_prompt, review_answer, review_answers, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?, 0, ?, '', '', NULL, 0, '', '', NULL, ?)
 	`, uuid.New().String(), userID, word, originalWord, meaning, example, now.Add(intervalForStage(0)).Unix(), StatusPending, now.Unix())
 	if err != nil {
 		return Word{}, fmt.Errorf("wordreview: save: insert: %w", err)
@@ -258,7 +270,7 @@ func (s *MySQLStore) DueCount(ctx context.Context, userID string, now time.Time)
 	var n int
 	err := s.ro.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM `+table+` WHERE user_id = ? AND status = ? AND research_status = ?
-			AND review_question_version >= ? AND review_prompt <> '' AND review_answer <> '' AND next_review_at <= ?
+			AND review_question_version >= ? AND review_prompt <> '' AND review_answers IS NOT NULL AND next_review_at <= ?
 	`, userID, StatusVerified, ResearchConfirmed, CurrentQuestionVersion, now.Unix()).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("wordreview: due count: %w", err)
@@ -271,13 +283,21 @@ func (s *MySQLStore) DueCount(ctx context.Context, userID string, now time.Time)
 // This comparison is performed by MySQL in the UPDATE itself, so workers from
 // overlapping deployments cannot race a stale result over a newer question.
 func (s *MySQLStore) SaveQuestion(ctx context.Context, userID, id string, question Question) (Word, bool, error) {
+	answers, err := json.Marshal(question.Answers)
+	if err != nil {
+		return Word{}, false, fmt.Errorf("wordreview: save question: encode answers: %w", err)
+	}
+	legacyAnswer := question.Answer
+	if legacyAnswer == "" {
+		legacyAnswer = strings.Join(question.Answers, " ")
+	}
 	res, err := s.rw.ExecContext(ctx, `
-		UPDATE `+table+` SET review_question_version = ?, review_prompt = ?, review_answer = ?
+		UPDATE `+table+` SET review_question_version = ?, review_prompt = ?, review_answer = ?, review_answers = ?
 		WHERE id = ? AND user_id = ? AND (
 			review_question_version < ? OR
-			(review_question_version = ? AND (review_prompt = '' OR review_answer = ''))
+			(review_question_version = ? AND (review_prompt = '' OR review_answers IS NULL))
 		)
-	`, question.Version, question.Prompt, question.Answer, id, userID, question.Version, question.Version)
+	`, question.Version, question.Prompt, legacyAnswer, string(answers), id, userID, question.Version, question.Version)
 	if err != nil {
 		return Word{}, false, fmt.Errorf("wordreview: save question: %w", err)
 	}

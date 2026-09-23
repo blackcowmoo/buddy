@@ -223,14 +223,14 @@ func TestGenerateWordReviewQuestionUsesCompleteGrammaticalFormAndStampsVersion(t
 	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 		systemPrompt = msgs[0].Content
 		input = msgs[len(msgs)-1].Content
-		return `{"prompt":"The criminals planned the attack in a highly ___ manner.","answer":"organized"}`, nil
+		return `{"prompt":"The criminals planned the attack in a highly ___ manner.","answers":["organized"]}`, nil
 	}}, ChatModel: "m", FeedbackLang: "ko"}
 
 	got, err := p.GenerateWordReviewQuestion(context.Background(), "organize", "조직하다", "The criminals planned the attack in a highly organized manner.")
 	if err != nil {
 		t.Fatalf("GenerateWordReviewQuestion() error = %v", err)
 	}
-	if got.Version != wordreview.CurrentQuestionVersion || got.Answer != "organized" {
+	if got.Version != wordreview.CurrentQuestionVersion || len(got.Answers) != 1 || got.Answers[0] != "organized" {
 		t.Fatalf("question = %+v, want current version and complete past form", got)
 	}
 	if strings.Contains(got.Prompt, "___d") {
@@ -244,12 +244,42 @@ func TestGenerateWordReviewQuestionUsesCompleteGrammaticalFormAndStampsVersion(t
 	}
 }
 
+func TestGenerateWordReviewQuestionLeavesContextPronounVisible(t *testing.T) {
+	var systemPrompt string
+	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		systemPrompt = msgs[0].Content
+		return `{"prompt":"Even though the task was complicated, he promised to ___ his ___ for the sake of the team.","answers":["do","best"]}`, nil
+	}}, ChatModel: "m", FeedbackLang: "ko"}
+
+	got, err := p.GenerateWordReviewQuestion(context.Background(), "do one's best", "최선을 다하다", "He always does his best.")
+	if err != nil {
+		t.Fatalf("GenerateWordReviewQuestion() error = %v", err)
+	}
+	if got.Prompt != "Even though the task was complicated, he promised to ___ his ___ for the sake of the team." ||
+		!reflect.DeepEqual(got.Answers, []string{"do", "best"}) {
+		t.Fatalf("question = %+v, want only the lexical parts blanked", got)
+	}
+	if !strings.Contains(systemPrompt, `"He promised to ___ his ___."`) || !strings.Contains(systemPrompt, `answers ["do","best"]`) {
+		t.Fatalf("system prompt does not explain grammar-placeholder handling: %q", systemPrompt)
+	}
+}
+
+func TestGenerateWordReviewQuestionRejectsContextPronounInsideAnswer(t *testing.T) {
+	p := &Pipeline{LLM: &fakeLLM{complete: func([]llm.Message) (string, error) {
+		return `{"prompt":"He promised to ___ ___ for the team.","answers":["do his","best"]}`, nil
+	}}, ChatModel: "m"}
+
+	if _, err := p.GenerateWordReviewQuestion(context.Background(), "do one's best", "최선을 다하다", "He did his best."); err == nil {
+		t.Fatal("error = nil, want context-only possessive rejected from the answer")
+	}
+}
+
 func TestGenerateWordReviewQuestionRejectsMalformedQuestion(t *testing.T) {
 	cases := []string{
-		`{"prompt":"No blank here.","answer":"organized"}`,
-		`{"prompt":"Two ___ blanks ___.","answer":"organized"}`,
-		`{"prompt":"They were highly ___d.","answer":"organize"}`,
-		`{"prompt":"They ___.","answer":"   "}`,
+		`{"prompt":"No blank here.","answers":["organized"]}`,
+		`{"prompt":"Two ___ blanks ___.","answers":["organized"]}`,
+		`{"prompt":"They were highly ___d.","answers":["organize"]}`,
+		`{"prompt":"They ___.","answers":["   "]}`,
 	}
 	for _, response := range cases {
 		p := &Pipeline{LLM: &fakeLLM{complete: func([]llm.Message) (string, error) { return response, nil }}, ChatModel: "m"}
