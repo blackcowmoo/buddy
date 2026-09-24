@@ -136,7 +136,9 @@ func wordsListHandler(ident identity.Identifier, words wordreview.Store, pipe *p
 		}
 		if _, ok := words.(wordreview.QuestionStore); ok {
 			for _, tracked := range list {
-				if tracked.Status != wordreview.StatusVerified || wordreview.QuestionReady(tracked) {
+				needsVerification := tracked.Status == wordreview.StatusPending
+				needsQuestion := tracked.Status == wordreview.StatusVerified && !wordreview.QuestionReady(tracked)
+				if !needsVerification && !needsQuestion {
 					continue
 				}
 				wordID := tracked.ID

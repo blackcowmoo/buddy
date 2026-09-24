@@ -72,12 +72,11 @@ type Worker struct {
 }
 
 // NewWorker builds a Worker for kind. concurrency is how many jobs of this
-// kind this one Worker (i.e. this one replica) runs at once. claimTTL
-// bounds how long a claimed job may run before reapOnce treats its owner as
-// dead and puts it back on the queue for someone else to retry — set it
-// comfortably above the slowest realistic handler call (e.g. LLM request
-// timeout plus margin): too short a TTL reaps and duplicates a job whose
-// handler is still legitimately running.
+// kind this one Worker (i.e. this one replica) runs at once. claimTTL is the
+// kind-specific upper bound requested by the caller; the actual renewable
+// Redis lease is capped by MaxClaimLeaseTTL. runWithLease keeps that shorter
+// lease alive for the full handler run, while a dead process becomes reapable
+// promptly instead of remaining hidden for a slow LLM's worst-case timeout.
 func NewWorker(rdb redis.UniversalClient, kind Kind, concurrency int, claimTTL time.Duration, handler Handler) *Worker {
 	if concurrency < 1 {
 		concurrency = 1
@@ -138,7 +137,8 @@ func (w *Worker) run(raw string) {
 		return
 	}
 	ck := claimKey(w.kind, job.ID)
-	ok, err := w.rdb.SetNX(context.Background(), ck, "1", w.claimTTL).Result()
+	token := claimToken(job)
+	ok, err := w.rdb.SetNX(context.Background(), ck, token, claimLeaseTTL(w.claimTTL)).Result()
 	if err != nil {
 		log.Printf("asyncjob: %s: claim token %s: %v", w.kind, job.ID, err)
 		return
@@ -150,12 +150,12 @@ func (w *Worker) run(raw string) {
 		// handler twice concurrently rather than assuming it can't occur.
 		return
 	}
-	if handlerErr := runWithLease(context.Background(), w.rdb, w.kind, job.ID, w.claimTTL, func(ctx context.Context) error {
+	if handlerErr := runWithLease(context.Background(), w.rdb, w.kind, job.ID, token, w.claimTTL, func(ctx context.Context) error {
 		return w.handler(ctx, job)
 	}); handlerErr != nil {
 		if job.Attempts+1 >= MaxAttempts {
 			log.Printf("asyncjob: %s: giving up job %s after %d attempts: %v", w.kind, job.ID, job.Attempts+1, handlerErr)
-			if err := abandonJob(context.Background(), w.rdb, w.kind, job.ID, raw, job.DedupeKey); err != nil {
+			if err := abandonJob(context.Background(), w.rdb, w.kind, job.ID, raw, job.DedupeKey, token); err != nil && !errors.Is(err, ErrClaimLost) {
 				log.Printf("asyncjob: %s: abandon job %s: %v", w.kind, job.ID, err)
 			}
 			return
@@ -166,12 +166,15 @@ func (w *Worker) run(raw string) {
 		// scratch soon, without hot-looping a handler that's failing fast
 		// (e.g. a downstream LLM outage).
 		log.Printf("asyncjob: %s: handler failed for job %s: %v", w.kind, job.ID, handlerErr)
-		if err := w.rdb.PExpire(context.Background(), ck, FailureRetryBackoff).Err(); err != nil {
+		owned, err := renewClaim(context.Background(), w.rdb, w.kind, job.ID, token, FailureRetryBackoff)
+		if err != nil {
 			log.Printf("asyncjob: %s: shorten claim after failure %s: %v", w.kind, job.ID, err)
+		} else if !owned {
+			log.Printf("asyncjob: %s: claim ownership lost after handler failure %s", w.kind, job.ID)
 		}
 		return
 	}
-	if err := completeJob(context.Background(), w.rdb, w.kind, job.ID, raw, job.DedupeKey); err != nil {
+	if err := completeJob(context.Background(), w.rdb, w.kind, job.ID, raw, job.DedupeKey, token); err != nil && !errors.Is(err, ErrClaimLost) {
 		log.Printf("asyncjob: %s: complete job %s: %v", w.kind, job.ID, err)
 	}
 }

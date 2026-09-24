@@ -3,6 +3,7 @@ package asyncjob
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -45,7 +46,18 @@ if removed == 0 then
 	return 0
 end
 redis.call('RPUSH', KEYS[2], ARGV[1])
-redis.call('SET', KEYS[3], '1', 'PX', ARGV[2])
+redis.call('SET', KEYS[3], ARGV[3], 'PX', ARGV[2])
+return 1
+`)
+
+// renewClaimScript is both the heartbeat and the ownership fence. A stale
+// execution can neither extend nor shorten a newer attempt's claim because
+// every mutation first compares the per-attempt token stored in the key.
+var renewClaimScript = redis.NewScript(`
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then
+	return 0
+end
+redis.call('PEXPIRE', KEYS[1], ARGV[2])
 return 1
 `)
 
@@ -53,6 +65,9 @@ return 1
 // release its claim, and clear its dedupe entry so the same dedupeKey can
 // be enqueued again in the future.
 var completeScript = redis.NewScript(`
+if redis.call('GET', KEYS[2]) ~= ARGV[3] then
+	return 0
+end
 redis.call('LREM', KEYS[1], 1, ARGV[1])
 redis.call('DEL', KEYS[2])
 redis.call('SREM', KEYS[3], ARGV[2])
@@ -175,7 +190,7 @@ func (q *Queue) TryClaimByID(ctx context.Context, job Job, claimTTL time.Duratio
 	}
 	claimed, err := claimByIDScript.Run(ctx, q.rdb,
 		[]string{queueKey(job.Kind), processingKey(job.Kind), claimKey(job.Kind, job.ID)},
-		raw, claimTTL.Milliseconds(),
+		raw, claimLeaseTTL(claimTTL).Milliseconds(), claimToken(job),
 	).Int()
 	if err != nil {
 		return false, fmt.Errorf("asyncjob: claim by id: %w", err)
@@ -197,20 +212,24 @@ func (q *Queue) Execute(ctx context.Context, job Job, claimTTL time.Duration, ha
 	if q == nil {
 		return nil
 	}
-	if err := runWithLease(ctx, q.rdb, job.Kind, job.ID, claimTTL, func(handlerCtx context.Context) error {
+	token := claimToken(job)
+	if err := runWithLease(ctx, q.rdb, job.Kind, job.ID, token, claimTTL, func(handlerCtx context.Context) error {
 		return handler(handlerCtx, job)
 	}); err != nil {
 		if job.Attempts+1 >= MaxAttempts {
 			raw, marshalErr := json.Marshal(job)
 			if marshalErr == nil {
-				if abandonErr := abandonJob(ctx, q.rdb, job.Kind, job.ID, raw, job.DedupeKey); abandonErr != nil {
+				if abandonErr := abandonJob(ctx, q.rdb, job.Kind, job.ID, raw, job.DedupeKey, token); abandonErr != nil && !errors.Is(abandonErr, ErrClaimLost) {
 					log.Printf("asyncjob: %s: abandon job %s: %v", job.Kind, job.ID, abandonErr)
 				}
 			}
 			return err
 		}
-		if expireErr := q.rdb.PExpire(ctx, claimKey(job.Kind, job.ID), FailureRetryBackoff).Err(); expireErr != nil {
+		owned, expireErr := renewClaim(ctx, q.rdb, job.Kind, job.ID, token, FailureRetryBackoff)
+		if expireErr != nil {
 			log.Printf("asyncjob: %s: shorten claim after failure %s: %v", job.Kind, job.ID, expireErr)
+		} else if !owned {
+			return ErrClaimLost
 		}
 		return err
 	}
@@ -218,7 +237,7 @@ func (q *Queue) Execute(ctx context.Context, job Job, claimTTL time.Duration, ha
 	if err != nil {
 		return fmt.Errorf("asyncjob: marshal job: %w", err)
 	}
-	if err := completeJob(ctx, q.rdb, job.Kind, job.ID, raw, job.DedupeKey); err != nil {
+	if err := completeJob(ctx, q.rdb, job.Kind, job.ID, raw, job.DedupeKey, token); err != nil {
 		return fmt.Errorf("asyncjob: complete: %w", err)
 	}
 	return nil
@@ -344,15 +363,22 @@ func EnqueueOrRunInline(queue *Queue, ctx context.Context, enqueueErrLabel strin
 // (whatever bytes/string form the caller already has on hand — Execute's
 // freshly marshaled JSON, or Worker.run's raw BLMove result) that
 // completeScript needs to LREM out of processingKey.
-func completeJob(ctx context.Context, rdb redis.UniversalClient, kind Kind, id string, raw any, dedupeKey string) error {
-	return completeScript.Run(ctx, rdb,
-		[]string{processingKey(kind), claimKey(kind, id), dedupeSetKey(kind)}, raw, dedupeKey,
-	).Err()
+func completeJob(ctx context.Context, rdb redis.UniversalClient, kind Kind, id string, raw any, dedupeKey, token string) error {
+	n, err := completeScript.Run(ctx, rdb,
+		[]string{processingKey(kind), claimKey(kind, id), dedupeSetKey(kind)}, raw, dedupeKey, token,
+	).Int()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrClaimLost
+	}
+	return nil
 }
 
 // abandonJob permanently removes a failed job and releases its dedupe key.
 // It intentionally uses the same atomic cleanup as successful completion so
 // a later user action can enqueue a fresh attempt.
-func abandonJob(ctx context.Context, rdb redis.UniversalClient, kind Kind, id string, raw any, dedupeKey string) error {
-	return completeJob(ctx, rdb, kind, id, raw, dedupeKey)
+func abandonJob(ctx context.Context, rdb redis.UniversalClient, kind Kind, id string, raw any, dedupeKey, token string) error {
+	return completeJob(ctx, rdb, kind, id, raw, dedupeKey, token)
 }
