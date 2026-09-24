@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { fetchMe } from "../lib/me";
 import { fetchSettings, MAX_INTERLOCUTOR_STYLE_LEN, saveSettings } from "../lib/settings";
 import { applyTheme, getStoredTheme, onSystemThemeChange, setStoredTheme, type Theme } from "../lib/theme";
-import { fetchWords } from "../lib/wordReview";
+import { useLearningDueCounts } from "./useLearningDueCounts";
 import {
   NATIVE_RATE,
   loadAutoReadAloud,
@@ -27,7 +27,7 @@ export function useUserPreferences() {
   const [styleLoadError, setStyleLoadError] = useState(false);
   const [styleSaveError, setStyleSaveError] = useState<string | null>(null);
   const [learnerProfile, setLearnerProfile] = useState("");
-  const [wordDueCount, setWordDueCount] = useState(0);
+  const { wordDueCount, nuanceDueCount } = useLearningDueCounts();
 
   useEffect(() => {
     autoReadAloudRef.current = autoReadAloud;
@@ -50,9 +50,6 @@ export function useUserPreferences() {
       }
       setStyleInput(settings.interlocutorStyle);
       setLearnerProfile(settings.learnerProfile);
-    });
-    void fetchWords().then((result) => {
-      if (result) setWordDueCount(result.dueCount);
     });
   }, []);
 
@@ -115,6 +112,7 @@ export function useUserPreferences() {
     styleSaveError,
     learnerProfile,
     wordDueCount,
+    nuanceDueCount,
     submitStyle,
     handleStyleInputChange,
   };

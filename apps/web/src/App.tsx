@@ -85,6 +85,7 @@ export function App() {
     styleSaveError,
     learnerProfile,
     wordDueCount,
+    nuanceDueCount,
     submitStyle,
     handleStyleInputChange,
   } = useUserPreferences();
@@ -1298,6 +1299,7 @@ export function App() {
     onGoToArticle: goTo("article"),
     onGoToWriting: goTo("writing"),
     wordDueCount,
+    nuanceDueCount,
     styleInput,
     onStyleInputChange: handleStyleInputChange,
     styleSaving,

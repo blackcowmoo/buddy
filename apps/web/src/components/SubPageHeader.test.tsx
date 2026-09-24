@@ -4,7 +4,11 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../hooks/useLearningDueCounts", () => ({
+  useLearningDueCounts: () => ({ wordDueCount: 5, nuanceDueCount: 3 }),
+}));
 
 import { SubPageHeader } from "./SubPageHeader";
 
@@ -33,6 +37,8 @@ describe("SubPageHeader", () => {
     expect(menu).toBeInTheDocument();
     expect(screen.getAllByRole("menuitem")).toHaveLength(8);
     expect(screen.getByRole("menuitem", { name: "메인으로" })).toHaveAttribute("href", ".");
+    expect(screen.getByRole("menuitem", { name: /단어 복습/ })).toHaveTextContent("5");
+    expect(screen.getByRole("menuitem", { name: /단어 뉘앙스/ })).toHaveTextContent("3");
     for (const [name, href] of [
       ["녹음 목록", "recordings"],
       ["인스턴트 대화 목록", "instant"],
