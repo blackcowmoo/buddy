@@ -2,10 +2,16 @@ import { useCallback, useRef, useState } from "react";
 import { MenuIcon } from "./MenuIcon";
 import { LearningMenuItems } from "./LearningMenuItems";
 import { useDismiss } from "../hooks/useDismiss";
+import { useLearningDueCounts } from "../hooks/useLearningDueCounts";
 
 // The hamburger keeps the same learning destinations as the main screen and
 // adds a relative home link, so every page remains one menu away from the
 // complete app navigation under preview deployments such as "/pr/14/words".
+function SubPageLearningMenu() {
+  const { wordDueCount, nuanceDueCount } = useLearningDueCounts();
+  return <LearningMenuItems wordDueCount={wordDueCount} nuanceDueCount={nuanceDueCount} />;
+}
+
 export function SubPageHeader({ title }: { title: string }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -35,7 +41,7 @@ export function SubPageHeader({ title }: { title: string }) {
               <span aria-hidden="true">🏠</span> 메인으로
             </a>
             <div className="menu-divider" />
-            <LearningMenuItems />
+            <SubPageLearningMenu />
           </div>
         )}
       </div>

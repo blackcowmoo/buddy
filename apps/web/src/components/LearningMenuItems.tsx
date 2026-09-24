@@ -20,14 +20,17 @@ const learningMenuItems: Array<{ key: LearningMenuKey; href: string; label: stri
 export function LearningMenuItems({
   onSelect,
   wordDueCount = 0,
+  nuanceDueCount = 0,
 }: {
   onSelect?: (key: LearningMenuKey) => void;
   wordDueCount?: number;
+  nuanceDueCount?: number;
 }) {
   return (
     <>
       {learningMenuItems.map((item) => {
-        const content = <><span aria-hidden="true">{item.icon}</span> {item.label}{item.key === "words" && wordDueCount > 0 && <span className="menu-badge">{wordDueCount}</span>}</>;
+        const dueCount = item.key === "words" ? wordDueCount : item.key === "nuance" ? nuanceDueCount : 0;
+        const content = <><span aria-hidden="true">{item.icon}</span> {item.label}{dueCount > 0 && <span className="menu-badge">{dueCount}</span>}</>;
         if (onSelect) {
           return <button key={item.key} type="button" className="ghost menu-item" onClick={() => onSelect(item.key)} role="menuitem">{content}</button>;
         }

@@ -252,10 +252,8 @@ body {
   gap: 8px;
   border-color: transparent;
 }
-/* Due-review count on the "단어 복습" menu item — the only proactive nudge
-   this feature gives (no push notifications, see wordreview's package doc),
-   so it needs to actually catch the eye: filled accent pill, not a muted
-   badge. */
+/* Due-review counts on the vocabulary menus are the proactive nudge to
+   resume practice, so they need to catch the eye as filled accent pills. */
 .menu-badge {
   margin-left: auto;
   min-width: 20px;

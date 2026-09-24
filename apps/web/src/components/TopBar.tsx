@@ -110,6 +110,7 @@ function MenuPanel({
   onGoToArticle,
   onGoToWriting,
   wordDueCount,
+  nuanceDueCount,
   styleInput,
   onStyleInputChange,
   styleSaving,
@@ -135,6 +136,7 @@ function MenuPanel({
   onGoToArticle: () => void;
   onGoToWriting: () => void;
   wordDueCount: number;
+  nuanceDueCount: number;
   styleInput: string;
   onStyleInputChange: (v: string) => void;
   styleSaving: boolean;
@@ -230,7 +232,7 @@ function MenuPanel({
           writing: onGoToWriting,
         };
         actions[key]();
-      }} wordDueCount={wordDueCount} />
+      }} wordDueCount={wordDueCount} nuanceDueCount={nuanceDueCount} />
       <div className="menu-divider" />
       <form className="path-form" onSubmit={onGoToPath}>
         <label htmlFor="pr-path">PR 미리보기로 이동</label>

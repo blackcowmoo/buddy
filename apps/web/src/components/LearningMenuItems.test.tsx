@@ -8,9 +8,10 @@ afterEach(cleanup);
 
 describe("LearningMenuItems", () => {
   it("keeps every learning destination in one relative-link list", () => {
-    render(<div role="menu"><LearningMenuItems wordDueCount={3} /></div>);
+    render(<div role="menu"><LearningMenuItems wordDueCount={3} nuanceDueCount={4} /></div>);
     expect(screen.getAllByRole("menuitem")).toHaveLength(7);
     expect(screen.getByRole("menuitem", { name: /단어 복습/ })).toHaveTextContent("3");
+    expect(screen.getByRole("menuitem", { name: /단어 뉘앙스/ })).toHaveTextContent("4");
     expect(screen.getByRole("menuitem", { name: /오늘의 작문/ })).toHaveAttribute("href", "writing");
   });
 
