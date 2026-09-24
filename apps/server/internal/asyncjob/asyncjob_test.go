@@ -395,23 +395,169 @@ func TestExecuteRenewsLeaseWhileHandlerRuns(t *testing.T) {
 	kind := testKind(t)
 	q := NewQueue(rdb)
 	ctx := context.Background()
+	oldLeaseTTL := MaxClaimLeaseTTL
+	MaxClaimLeaseTTL = 50 * time.Millisecond
+	t.Cleanup(func() { MaxClaimLeaseTTL = oldLeaseTTL })
 	job, ok, err := q.Enqueue(ctx, kind, "renew", 1)
 	if err != nil || !ok {
 		t.Fatalf("enqueue: ok=%v err=%v", ok, err)
 	}
-	claimed, err := q.TryClaimByID(ctx, job, time.Second)
+	claimed, err := q.TryClaimByID(ctx, job, 25*time.Hour)
 	if err != nil || !claimed {
 		t.Fatalf("claim: claimed=%v err=%v", claimed, err)
 	}
 
-	if err := q.Execute(ctx, job, time.Second, func(context.Context, Job) error {
-		time.Sleep(2200 * time.Millisecond)
+	if err := q.Execute(ctx, job, 25*time.Hour, func(context.Context, Job) error {
+		time.Sleep(220 * time.Millisecond)
 		if exists, _ := rdb.Exists(ctx, claimKey(kind, job.ID)).Result(); exists != 1 {
 			t.Fatal("claim expired while the handler was still running")
+		}
+		if _, added, err := q.Enqueue(ctx, kind, "renew", 2); err != nil || added {
+			t.Fatalf("duplicate enqueue while handler is active: added=%v err=%v", added, err)
 		}
 		return nil
 	}); err != nil {
 		t.Fatalf("execute: %v", err)
+	}
+}
+
+func TestDeadLongRunningClaimExpiresOnShortLease(t *testing.T) {
+	rdb := requireRedis(t)
+	kind := testKind(t)
+	q := NewQueue(rdb)
+	ctx := context.Background()
+	oldLeaseTTL := MaxClaimLeaseTTL
+	MaxClaimLeaseTTL = 50 * time.Millisecond
+	t.Cleanup(func() { MaxClaimLeaseTTL = oldLeaseTTL })
+
+	job, ok, err := q.Enqueue(ctx, kind, "stuck-local-llm", 1)
+	if err != nil || !ok {
+		t.Fatalf("enqueue: ok=%v err=%v", ok, err)
+	}
+	claimed, err := q.TryClaimByID(ctx, job, 25*time.Hour)
+	if err != nil || !claimed {
+		t.Fatalf("claim: claimed=%v err=%v", claimed, err)
+	}
+
+	// No Execute call means no heartbeat: this is the Redis state left by a
+	// container that died while its local-model request was in flight.
+	time.Sleep(200 * time.Millisecond)
+	w := NewWorker(rdb, kind, 1, 25*time.Hour, nil)
+	w.reapOnce(ctx)
+	if n, _ := rdb.LLen(ctx, queueKey(kind)).Result(); n != 1 {
+		t.Fatalf("queue length = %d, want crashed job requeued after the short renewable lease", n)
+	}
+}
+
+func TestLostClaimCancelsRunningHandler(t *testing.T) {
+	rdb := requireRedis(t)
+	kind := testKind(t)
+	q := NewQueue(rdb)
+	ctx := context.Background()
+	job, ok, err := q.Enqueue(ctx, kind, "owned-request", 1)
+	if err != nil || !ok {
+		t.Fatalf("enqueue: ok=%v err=%v", ok, err)
+	}
+	const leaseTTL = 60 * time.Millisecond
+	claimed, err := q.TryClaimByID(ctx, job, leaseTTL)
+	if err != nil || !claimed {
+		t.Fatalf("claim: claimed=%v err=%v", claimed, err)
+	}
+
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- q.Execute(ctx, job, leaseTTL, func(handlerCtx context.Context, _ Job) error {
+			close(started)
+			<-handlerCtx.Done()
+			return handlerCtx.Err()
+		})
+	}()
+	<-started
+	newToken := claimToken(Job{Attempts: job.Attempts + 1})
+	if err := rdb.Set(ctx, claimKey(kind, job.ID), newToken, time.Minute).Err(); err != nil {
+		t.Fatalf("replace claim owner: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrClaimLost) {
+			t.Fatalf("Execute() error = %v, want ErrClaimLost", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler was not canceled after its claim ownership changed")
+	}
+	if got := rdb.Get(ctx, claimKey(kind, job.ID)).Val(); got != newToken {
+		t.Fatalf("claim token = %q, want newer owner %q preserved", got, newToken)
+	}
+}
+
+func TestStaleAttemptCannotRenewOrCompleteNewClaim(t *testing.T) {
+	rdb := requireRedis(t)
+	kind := testKind(t)
+	q := NewQueue(rdb)
+	ctx := context.Background()
+	job, ok, err := q.Enqueue(ctx, kind, "fenced-request", 1)
+	if err != nil || !ok {
+		t.Fatalf("enqueue: ok=%v err=%v", ok, err)
+	}
+	claimed, err := q.TryClaimByID(ctx, job, time.Minute)
+	if err != nil || !claimed {
+		t.Fatalf("claim first attempt: claimed=%v err=%v", claimed, err)
+	}
+	staleRaw, err := json.Marshal(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate the first process dying: its claim disappears, the reaper
+	// increments Attempts, and a new worker claims that requeued envelope.
+	if err := rdb.Del(ctx, claimKey(kind, job.ID)).Err(); err != nil {
+		t.Fatalf("expire first claim: %v", err)
+	}
+	NewWorker(rdb, kind, 1, time.Minute, nil).reapOnce(ctx)
+	requeuedRaw, err := rdb.LIndex(ctx, queueKey(kind), 0).Result()
+	if err != nil {
+		t.Fatalf("read requeued job: %v", err)
+	}
+	var next Job
+	if err := json.Unmarshal([]byte(requeuedRaw), &next); err != nil {
+		t.Fatalf("decode requeued job: %v", err)
+	}
+	if next.Attempts != job.Attempts+1 {
+		t.Fatalf("requeued attempts = %d, want %d", next.Attempts, job.Attempts+1)
+	}
+	claimed, err = q.TryClaimByID(ctx, next, time.Minute)
+	if err != nil || !claimed {
+		t.Fatalf("claim next attempt: claimed=%v err=%v", claimed, err)
+	}
+
+	owned, err := renewClaim(ctx, rdb, kind, job.ID, claimToken(job), time.Minute)
+	if err != nil {
+		t.Fatalf("stale renew: %v", err)
+	}
+	if owned {
+		t.Fatal("stale attempt renewed the newer owner's claim")
+	}
+	if err := completeJob(ctx, rdb, kind, job.ID, staleRaw, job.DedupeKey, claimToken(job)); !errors.Is(err, ErrClaimLost) {
+		t.Fatalf("stale complete error = %v, want ErrClaimLost", err)
+	}
+	if got := rdb.Get(ctx, claimKey(kind, job.ID)).Val(); got != claimToken(next) {
+		t.Fatalf("claim token = %q, want newer owner %q preserved", got, claimToken(next))
+	}
+	if n := rdb.LLen(ctx, processingKey(kind)).Val(); n != 1 {
+		t.Fatalf("processing length = %d, want newer attempt preserved", n)
+	}
+	if member := rdb.SIsMember(ctx, dedupeSetKey(kind), job.DedupeKey).Val(); !member {
+		t.Fatal("stale completion released the newer attempt's dedupe marker")
+	}
+
+	nextRaw, err := json.Marshal(next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := completeJob(ctx, rdb, kind, next.ID, nextRaw, next.DedupeKey, claimToken(next)); err != nil {
+		t.Fatalf("complete current owner: %v", err)
 	}
 }
 

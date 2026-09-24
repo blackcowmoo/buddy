@@ -671,6 +671,36 @@ func TestWordsListHidesLegacyQuestionAndRegeneratesItInBackground(t *testing.T) 
 	}
 }
 
+func TestWordsListRestartsPendingVerificationInBackground(t *testing.T) {
+	base := &fakeWordStore{byUser: map[string][]wordreview.Word{
+		"alex": {{
+			ID: "w-pending", UserID: "alex", Word: "organize", Meaning: "정리하다",
+			Example: "They organized the files.", Status: wordreview.StatusPending,
+		}},
+	}}
+	words := &questionBackfillStore{fakeWordStore: base}
+	pipe := &pipeline.Pipeline{
+		LLM: &fakeWordSuggestLLM{complete: func(msgs []llm.Message) (string, error) {
+			if strings.Contains(msgs[0].Content, "strict fact-checker") {
+				return `{"valid":true,"reason":""}`, nil
+			}
+			return `{"prompt":"They ___ the files yesterday.","answers":["organized"]}`, nil
+		}},
+		ChatModel: "m",
+	}
+	h := wordsListHandler(fakeIdentifier{id: "alex", ok: true}, words, pipe, nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/words", nil))
+	requireStatus(t, rec, http.StatusOK)
+
+	waitForCondition(t, 2*time.Second, func() bool {
+		base.mu.Lock()
+		defer base.mu.Unlock()
+		word := base.byUser["alex"][0]
+		return word.Status == wordreview.StatusVerified && wordreview.QuestionReady(word)
+	})
+}
+
 func TestWordReviewUpdatesAndReturnsWord(t *testing.T) {
 	store := &fakeWordStore{byUser: map[string][]wordreview.Word{
 		"alex": {{ID: "w1", UserID: "alex", Word: "ecstatic"}},

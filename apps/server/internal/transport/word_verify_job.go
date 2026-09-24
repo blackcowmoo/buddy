@@ -14,11 +14,13 @@ import (
 
 // WordVerifyClaimTTL/WordVerifyWorkerConcurrency mirror StudyQuizClaimTTL/
 // StudyQuizWorkerConcurrency's reasoning, except this job runs the ordered
-// multi-model verification cascade instead of one call — a local model
-// can be slow, so the claim TTL stays generous. Concurrency is a bit higher
-// than the study-quiz/summary jobs since "학습하기" can be tapped repeatedly
-// in quick succession while browsing search results, unlike ending a
-// conversation (at most one in flight per learner).
+// multi-model verification cascade instead of one call. The requested TTL
+// remains generous for that slow work, while asyncjob caps the actual Redis
+// lease and renews it by heartbeat so a dead worker is recovered promptly.
+// Concurrency is a bit higher than the study-quiz/summary jobs since
+// "학습하기" can be tapped repeatedly in quick succession while browsing
+// search results, unlike ending a conversation (at most one in flight per
+// learner).
 const (
 	WordVerifyClaimTTL          = 25 * time.Hour
 	WordVerifyWorkerConcurrency = 8
