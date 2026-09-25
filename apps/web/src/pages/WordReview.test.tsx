@@ -428,7 +428,7 @@ describe("WordReview page", () => {
     expect(screen.getByText("확정 전")).toBeInTheDocument();
   });
 
-  it("keeps the word groups in order below the start action", async () => {
+  it("keeps decision queues ahead of the paginated review history", async () => {
     const unconfirmedWord = { ...dueWord, id: "w-unconfirmed", word: "uncertain", researchStatus: undefined };
     vi.mocked(fetchWords).mockResolvedValue({
       words: [rejectedWord, pendingWord, unconfirmedWord, dueWord],
@@ -441,11 +441,35 @@ describe("WordReview page", () => {
     const rejectedTitle = screen.getByText("제외된 단어");
     const startButton = screen.getByRole("button", { name: "복습 시작" });
 
-    expect(reviewingTitle.compareDocumentPosition(unconfirmedTitle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(startButton.compareDocumentPosition(unconfirmedTitle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(unconfirmedTitle.compareDocumentPosition(rejectedTitle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(startButton.compareDocumentPosition(reviewingTitle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(rejectedTitle.compareDocumentPosition(reviewingTitle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByText("uncertain")).toBeInTheDocument();
     expect(screen.getByText("wistful")).toBeInTheDocument();
+  });
+
+  it("does not bury decision queues behind a very large review history", async () => {
+    const manyReviewedWords = Array.from({ length: 10_000 }, (_, i): WordReviewItem => ({
+      ...futureWord,
+      id: `review-${i}`,
+      word: `review-word-${i}`,
+      lastReviewedAt: i,
+    }));
+    vi.mocked(fetchWords).mockResolvedValue({
+      words: [...manyReviewedWords, pendingWord, rejectedWord],
+      dueCount: 0,
+    });
+    render(<WordReview />);
+
+    const unconfirmedSection = await screen.findByRole("region", { name: "확정 전 단어" });
+    const rejectedSection = screen.getByRole("region", { name: "제외된 단어" });
+    const historySection = screen.getByRole("region", { name: "복습중인 단어" });
+
+    expect(within(unconfirmedSection).getByText(pendingWord.word)).toBeInTheDocument();
+    expect(within(rejectedSection).getByText(rejectedWord.word)).toBeInTheDocument();
+    expect(unconfirmedSection.compareDocumentPosition(historySection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(rejectedSection.compareDocumentPosition(historySection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(historySection).getAllByRole("listitem")).toHaveLength(20);
   });
 
   it("can delete a rejected word", async () => {
