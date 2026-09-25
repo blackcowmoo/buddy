@@ -26,6 +26,6 @@ describe("useLearningDueCounts", () => {
   it("loads the independently due word and nuance question totals", async () => {
     const { result } = renderHook(() => useLearningDueCounts());
 
-    await waitFor(() => expect(result.current).toEqual({ wordDueCount: 5, nuanceDueCount: 3 }));
+    await waitFor(() => expect(result.current).toEqual({ wordDueCount: 5, nuanceDueCount: 4 }));
   });
 });

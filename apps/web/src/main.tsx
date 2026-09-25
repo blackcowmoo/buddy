@@ -8,6 +8,7 @@ import { InstantSessions } from "./pages/InstantSessions";
 import { ArticleQuiz } from "./pages/ArticleQuiz";
 import { Writing } from "./pages/Writing";
 import { WordNuance } from "./pages/WordNuance";
+import { WordNuanceReview } from "./pages/WordNuanceReview";
 import { currentPage } from "./lib/route";
 import "./styles.css";
 
@@ -20,6 +21,7 @@ function renderPage() {
   if (page === "instant") return <InstantSessions />;
   if (page === "article") return <ArticleQuiz />;
   if (page === "writing") return <Writing />;
+  if (page === "nuance-review") return <WordNuanceReview />;
   if (page === "nuance") return <WordNuance />;
   return <App />;
 }

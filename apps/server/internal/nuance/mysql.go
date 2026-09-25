@@ -2,9 +2,11 @@ package nuance
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"math/big"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -135,6 +137,98 @@ func checkLegacyComparisons(ctx context.Context, tx *sql.Tx, userID string, key 
 	}
 	return rows.Err()
 }
+
+// StartReview draws one durable five-question batch from every due context,
+// regardless of which generated comparison owns it. The row locks make the
+// draw and all per-lesson queues one atomic operation across tabs/replicas.
+func (s *MySQLStore) StartReview(ctx context.Context, userID string) (ReviewBatch, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ReviewBatch{}, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT `+columns+` FROM buddy_nuance_lessons WHERE user_id=? AND status=? ORDER BY id FOR UPDATE`, userID, StatusDone)
+	if err != nil {
+		return ReviewBatch{}, err
+	}
+	lessons := []Lesson{}
+	for rows.Next() {
+		l, scanErr := scan(rows)
+		if scanErr != nil {
+			rows.Close()
+			return ReviewBatch{}, scanErr
+		}
+		lessons = append(lessons, l)
+	}
+	if err = rows.Close(); err != nil {
+		return ReviewBatch{}, err
+	}
+	if err = rows.Err(); err != nil {
+		return ReviewBatch{}, err
+	}
+
+	now := time.Now().Unix()
+	reveals := []ReviewItem{}
+	candidates := []ReviewItem{}
+	for _, l := range lessons {
+		if l.Content == nil {
+			continue
+		}
+		// Resume a saved reveal before replacing any queue from that lesson.
+		if l.State.Feedback != nil {
+			reveals = append(reveals, ReviewItem{LessonID: l.ID, QuestionID: l.State.Feedback.QuestionID})
+			continue
+		}
+		for _, q := range l.Content.Questions {
+			if l.State.Progress[q.ID].NextReviewAt <= now {
+				candidates = append(candidates, ReviewItem{LessonID: l.ID, QuestionID: q.ID})
+			}
+		}
+	}
+	shuffle := func(items []ReviewItem) error {
+		for i := len(items) - 1; i > 0; i-- {
+			n, randomErr := rand.Int(rand.Reader, big.NewInt(int64(i+1)))
+			if randomErr != nil {
+				return randomErr
+			}
+			j := int(n.Int64())
+			items[i], items[j] = items[j], items[i]
+		}
+		return nil
+	}
+	if err = shuffle(reveals); err != nil {
+		return ReviewBatch{}, err
+	}
+	if err = shuffle(candidates); err != nil {
+		return ReviewBatch{}, err
+	}
+	candidates = append(reveals, candidates...)
+	if len(candidates) > ReviewBatchSize {
+		candidates = candidates[:ReviewBatchSize]
+	}
+	queues := map[string][]string{}
+	for _, item := range candidates {
+		queues[item.LessonID] = append(queues[item.LessonID], item.QuestionID)
+	}
+	for i := range lessons {
+		queue, selected := queues[lessons[i].ID]
+		if !selected || lessons[i].State.Feedback != nil {
+			continue
+		}
+		lessons[i].State.Queue = queue
+		lessons[i].State.Feedback = nil
+		lessons[i].Revision++
+		state, _ := json.Marshal(lessons[i].State)
+		if _, err = tx.ExecContext(ctx, `UPDATE buddy_nuance_lessons SET state_json=?,revision=? WHERE user_id=? AND id=?`, string(state), lessons[i].Revision, userID, lessons[i].ID); err != nil {
+			return ReviewBatch{}, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return ReviewBatch{}, err
+	}
+	return ReviewBatch{Items: candidates, Lessons: lessons}, nil
+}
+
 func (s *MySQLStore) Act(ctx context.Context, userID, id string, a Action) (Lesson, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

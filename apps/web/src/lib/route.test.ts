@@ -6,6 +6,10 @@ describe("currentPage", () => {
     expect(currentPage(path)).toBe("nuance");
   });
 
+  it.each(["/nuance-review", "/nuance-review/", "/pr/14/nuance-review"])("recognizes the separate nuance-review page at %s", (path) => {
+    expect(currentPage(path)).toBe("nuance-review");
+  });
+
   it("treats root as the chat page", () => {
     expect(currentPage("/")).toBe("chat");
   });

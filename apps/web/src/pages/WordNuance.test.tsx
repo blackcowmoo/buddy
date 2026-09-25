@@ -198,23 +198,11 @@ it("distinguishes load failure from empty history and surfaces deletion failures
   fireEvent.click(del);
   await waitFor(() => expect(screen.queryByRole("button", { name: "cheap / inexpensive 삭제" })).not.toBeInTheDocument());
 });
-it("starts due practice directly from the history and finishes with a persisted next-review date", async () => {
+it("sends list review to the separate all-problem review page", async () => {
   render(<WordNuance />);
-  const review = await screen.findByRole("button", { name: "복습 시작" });
-  respond((l) => { l.state.queue = ["q0"]; });
-  fireEvent.click(review);
-  await screen.findByRole("region", { name: /상황 0/ });
-  answer(true); await screen.findByText("의도에 맞는 표현이에요");
-  respond((l) => {
-    l.state.feedback = undefined; l.state.queue = [];
-    for (const q of l.content!.questions) l.state.progress[q.id] = { stage: 1, attempts: 1, correct: 1, lastReviewedAt: 1700000000, nextReviewAt: 4102444800 };
-  });
-  fireEvent.click(screen.getByRole("button", { name: "다음 문맥" }));
-  expect(await screen.findByText("지금 복습할 문맥을 모두 풀었어요")).toBeInTheDocument();
-  expect(screen.getByText(/다음 복습:/)).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "학습 목록 보기" }));
-  await screen.findByRole("button", { name: "＋ 새 문제 만들기" });
-  expect(screen.queryByRole("button", { name: "복습 시작" })).not.toBeInTheDocument();
+  const review = await screen.findByRole("link", { name: "복습 시작" });
+  expect(review).toHaveAttribute("href", "/nuance-review");
+  expect(api.practiceNuance).not.toHaveBeenCalled();
 });
 it("locks answer submission while saving so a double tap sends one attempt", async () => {
   await open(); await start();
