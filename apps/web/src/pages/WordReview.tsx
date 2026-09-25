@@ -540,14 +540,10 @@ export function WordReview() {
               <EmptyState title="아직 학습 중인 단어가 없어요." description="‘새 단어 추가로 학습하기’로 시작하거나, 대화에서 단어를 검색한 뒤 ‘학습하기’를 눌러 모아 보세요." />
             )}
 
-            <WordListSection
-              title="복습중인 단어"
-              count={verifiedWords.length}
-              words={visibleVerifiedWords}
-              onLoadMore={hasOlderReviewWords ? loadOlderReviewWords : undefined}
-              onDelete={(id) => void handleDelete(id)}
-              renderMeta={(w) => <><span className="word-list-next">다음 복습: {formatAbsoluteDateTime(w.nextReviewAt)}</span>{researchControls(w)}</>}
-            />
+            {/* Keep the two decision queues ahead of the paginated review
+                history. Otherwise every newly loaded history page pushes
+                pending/rejected words farther away, making them effectively
+                unreachable for learners with a large vocabulary. */}
             <WordListSection
               title="확정 전 단어"
               words={unconfirmedWords}
@@ -565,6 +561,14 @@ export function WordReview() {
                   {researchControls(w)}
                 </>
               )}
+            />
+            <WordListSection
+              title="복습중인 단어"
+              count={verifiedWords.length}
+              words={visibleVerifiedWords}
+              onLoadMore={hasOlderReviewWords ? loadOlderReviewWords : undefined}
+              onDelete={(id) => void handleDelete(id)}
+              renderMeta={(w) => <><span className="word-list-next">다음 복습: {formatAbsoluteDateTime(w.nextReviewAt)}</span>{researchControls(w)}</>}
             />
           </>
         )}
