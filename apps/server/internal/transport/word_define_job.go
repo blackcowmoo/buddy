@@ -62,19 +62,3 @@ func EnqueueWordDefineJob(ctx context.Context, queue *asyncjob.Queue, pipe *pipe
 func RunWordDefineInline(ctx context.Context, pipe *pipeline.Pipeline, rdb redis.UniversalClient, req wordlookup.Request, articles newsarticle.Store) error {
 	return runWordDefine(ctx, pipe, rdb, wordDefineJobPayload{CacheKey: wordlookup.Key(req), Request: req}, articles)
 }
-
-func dispatchWordDefine(ctx context.Context, queue *asyncjob.Queue, pipe *pipeline.Pipeline, rdb redis.UniversalClient, req wordlookup.Request, articles newsarticle.Store) {
-	asyncjob.EnqueueOrRunInline(queue, ctx,
-		"words: enqueue article lookup "+req.ArticleID,
-		func(ctx context.Context) error { return EnqueueWordDefineJob(ctx, queue, pipe, rdb, req, articles) },
-		"words: article lookup "+req.ArticleID,
-		func(ctx context.Context) error { return RunWordDefineInline(ctx, pipe, rdb, req, articles) },
-	)
-}
-
-// StartWordDefine is intentionally detached from the request. It is kept
-// small so the HTTP layer cannot accidentally pass its request context into
-// the LLM call.
-func StartWordDefine(queue *asyncjob.Queue, pipe *pipeline.Pipeline, rdb redis.UniversalClient, req wordlookup.Request, articles newsarticle.Store) {
-	go dispatchWordDefine(context.Background(), queue, pipe, rdb, req, articles)
-}

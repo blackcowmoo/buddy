@@ -16,8 +16,7 @@ export async function suggestWords(query: string): Promise<WordSuggestion[] | nu
 // while reading (see ArticleQuiz.tsx's clickable article summary) — rather
 // than described vaguely in their native language (that's suggestWords).
 // context is the passage the word was tapped in, so the definition matches
-// how it's actually used there. Returns null on any failure, same reasoning
-// as suggestWords.
+// how it's actually used there.
 type ArticleWordLookupResponse = {
   status: "pending" | "done" | "missing";
   result?: WordSuggestion;
@@ -29,9 +28,16 @@ const wordLookupPollIntervalMs = 1000;
 // job. This lets the reading UI distinguish an existing server result from a
 // word that still needs the learner to request a lookup.
 export async function checkDefinedWord(articleID: string, word: string, position: number): Promise<WordSuggestion | null> {
-  const path = `api/articles/${encodeURIComponent(articleID)}/words/define`;
-  const response = await postJSON<ArticleWordLookupResponse | null>(path, { word, position, checkOnly: true }, null);
+  const response = await checkDefinedWordStatus(articleID, word, position);
   return response?.status === "done" ? response.result ?? null : null;
+}
+
+// Returns the durable server-side state as well as a completed result. The
+// reading page uses "pending" to resume watching a lookup after navigation
+// or a deployment instead of mistaking an in-flight Redis job for a miss.
+export async function checkDefinedWordStatus(articleID: string, word: string, position: number): Promise<ArticleWordLookupResponse | null> {
+  const path = `api/articles/${encodeURIComponent(articleID)}/words/define`;
+  return postJSON<ArticleWordLookupResponse | null>(path, { word, position, checkOnly: true }, null);
 }
 
 // Starts a durable article lookup and waits for its Redis-backed result while
@@ -42,8 +48,11 @@ export async function defineWord(articleID: string, word: string, position: numb
   const path = `api/articles/${encodeURIComponent(articleID)}/words/define`;
   for (;;) {
     const response = await postJSON<ArticleWordLookupResponse | null>(path, { word, position }, null);
-    if (!response) return null;
-    if (response.status === "done") return response.result ?? null;
+    if (response?.status === "done") return response.result ?? null;
+    // A transient browser/network error is not a lookup failure. The Redis
+    // job continues independently, so keep polling; once a failed server
+    // attempt exhausts its retries, this same POST durably enqueues a fresh
+    // attempt instead of freezing the UI in a permanent failure state.
     await new Promise((resolve) => setTimeout(resolve, wordLookupPollIntervalMs));
   }
 }

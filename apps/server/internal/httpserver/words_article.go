@@ -29,7 +29,7 @@ func articleWordDefineHandler(ident identity.Identifier, articles newsarticle.St
 		if !ok {
 			return
 		}
-		if rdb == nil {
+		if rdb == nil || queue == nil {
 			http.Error(w, "word lookup requires Redis", http.StatusServiceUnavailable)
 			return
 		}
@@ -75,18 +75,49 @@ func articleWordDefineHandler(ident identity.Identifier, articles newsarticle.St
 			Model:     pipe.ChatModel,
 		}
 		key := wordlookup.Key(lookup)
-		if result, found, err := wordlookup.Get(r.Context(), rdb, key); err != nil {
+		writeCachedResult := func() (bool, error) {
+			result, found, err := wordlookup.Get(r.Context(), rdb, key)
+			if err != nil || !found {
+				return found, err
+			}
+			writeJSON(w, articleWordLookupResponse{Status: "done", Result: &result})
+			return true, nil
+		}
+		if found, err := writeCachedResult(); err != nil {
 			serverError(w, "word lookup: cache read", err)
 			return
 		} else if found {
-			writeJSON(w, articleWordLookupResponse{Status: "done", Result: &result})
+			return
+		}
+		pending, err := queue.Pending(r.Context(), asyncjob.KindWordDefine, key)
+		if err != nil {
+			serverError(w, "word lookup: pending status", err)
+			return
+		}
+		if pending {
+			writeJSON(w, articleWordLookupResponse{Status: "pending"})
+			return
+		}
+		// Completion writes the result before clearing the queue's dedupe
+		// marker. Re-read after observing no pending job to close the narrow
+		// race where both changed between the first cache read and Pending.
+		if found, err := writeCachedResult(); err != nil {
+			serverError(w, "word lookup: cache re-read", err)
+			return
+		} else if found {
 			return
 		}
 		if body.CheckOnly {
 			writeJSON(w, articleWordLookupResponse{Status: "missing"})
 			return
 		}
-		transport.StartWordDefine(queue, pipe, rdb, lookup, articles)
+		// Enqueue before acknowledging pending. EnqueueAndRunInBackground
+		// detaches only the expensive handler, so a navigation or deployment
+		// after this response cannot lose the job before Redis has it.
+		if err := transport.EnqueueWordDefineJob(r.Context(), queue, pipe, rdb, lookup, articles); err != nil {
+			serverError(w, "word lookup: enqueue", err)
+			return
+		}
 		writeJSON(w, articleWordLookupResponse{Status: "pending"})
 	}
 }

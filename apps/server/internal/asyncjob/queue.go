@@ -135,6 +135,23 @@ func (q *Queue) Enqueue(ctx context.Context, kind Kind, dedupeKey string, payloa
 	return job, true, nil
 }
 
+// Pending reports whether a job with dedupeKey is queued or currently being
+// processed. The dedupe set is the authoritative lifecycle marker: Enqueue
+// adds it atomically with the queue entry, and completion/abandonment removes
+// it atomically with the processing entry. Callers can therefore expose a
+// durable pending state without maintaining a second status key that could
+// drift from the actual job during a crash or redeploy.
+func (q *Queue) Pending(ctx context.Context, kind Kind, dedupeKey string) (bool, error) {
+	if q == nil {
+		return false, nil
+	}
+	pending, err := q.rdb.SIsMember(ctx, dedupeSetKey(kind), dedupeKey).Result()
+	if err != nil {
+		return false, fmt.Errorf("asyncjob: inspect pending job: %w", err)
+	}
+	return pending, nil
+}
+
 // RequeueExpired moves an abandoned processing entry back to its queue when
 // its claim has already expired. This is useful on a new enqueue attempt:
 // the dedupe key intentionally survives reaping, so the new request must not
