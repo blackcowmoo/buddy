@@ -102,6 +102,32 @@ func TestEnqueueDedupesInFlight(t *testing.T) {
 	}
 }
 
+func TestPendingTracksQueuedJobLifecycle(t *testing.T) {
+	rdb := requireRedis(t)
+	kind := testKind(t)
+	q := NewQueue(rdb)
+	ctx := context.Background()
+
+	job, ok, err := q.Enqueue(ctx, kind, "lookup-1", map[string]string{"word": "run"})
+	if err != nil || !ok {
+		t.Fatalf("enqueue: job=%+v ok=%v err=%v", job, ok, err)
+	}
+	if pending, err := q.Pending(ctx, kind, "lookup-1"); err != nil || !pending {
+		t.Fatalf("Pending() while queued = (%v, %v), want (true, nil)", pending, err)
+	}
+
+	claimed, err := q.TryClaimByID(ctx, job, time.Minute)
+	if err != nil || !claimed {
+		t.Fatalf("TryClaimByID() = (%v, %v), want (true, nil)", claimed, err)
+	}
+	if err := q.Execute(ctx, job, time.Minute, func(context.Context, Job) error { return nil }); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if pending, err := q.Pending(ctx, kind, "lookup-1"); err != nil || pending {
+		t.Fatalf("Pending() after completion = (%v, %v), want (false, nil)", pending, err)
+	}
+}
+
 func TestEnqueueAllowsDistinctDedupeKeys(t *testing.T) {
 	rdb := requireRedis(t)
 	kind := testKind(t)

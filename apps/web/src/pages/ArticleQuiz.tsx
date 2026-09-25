@@ -18,7 +18,7 @@ import { SubPageHeader } from "../components/SubPageHeader";
 import { usePollScaffold } from "../hooks/usePollScaffold";
 import { requestAmbientAudioSession } from "../lib/audioSession";
 import { loadPlaybackRate } from "../lib/ttsSettings";
-import { checkDefinedWord, defineWord } from "../lib/wordSearch";
+import { checkDefinedWordStatus, defineWord } from "../lib/wordSearch";
 import { saveWord } from "../lib/wordReview";
 import type { WordSuggestion } from "../lib/protocol";
 import { useDismiss } from "../hooks/useDismiss";
@@ -73,7 +73,7 @@ function loadSearchedWords(articleID: string): SearchedWord[] {
       if (!item || typeof item !== "object") return false;
       const value = item as Partial<SearchedWord>;
       return typeof value.key === "number" && typeof value.word === "string" && (value.result === null || typeof value.result === "object");
-    }).map((item) => ({ ...item, loading: false, saving: false, saved: false }));
+    }).map((item) => ({ ...item, loading: item.result === null, saving: false, saved: false }));
   }, []);
 }
 
@@ -137,6 +137,7 @@ export function ArticleQuiz() {
   // again, and a failed attempt must not regress to the initial "찾기" action.
   const pendingWordLookupsRef = useRef(new Map<string, Promise<WordSuggestion | null>>());
   const failedWordLookupsRef = useRef(new Set<string>());
+  const resumedStoredLookupsRef = useRef(new Set<string>());
   useDismiss(wordLookup !== null, wordLookupRef, () => setWordLookup(null));
 
   const updateSearchedWord = useCallback((key: number, word: string, update: Partial<SearchedWord>) => {
@@ -316,9 +317,52 @@ export function ArticleQuiz() {
     setTts("idle");
   }, []);
 
+  const followWordLookup = useCallback((articleID: string, key: number, word: string) => {
+    const lookupKey = `${articleID}:${key}`;
+    const existing = pendingWordLookupsRef.current.get(lookupKey);
+    if (existing) {
+      setWordLookup((prev) => (prev && prev.key === key ? { ...prev, loading: true, failed: false } : prev));
+      return;
+    }
+
+    setWordLookup((prev) => (prev && prev.key === key ? { ...prev, loading: true, failed: false } : prev));
+    updateSearchedWord(key, word, { loading: true });
+    const lookup = defineWord(articleID, word, key);
+    pendingWordLookupsRef.current.set(lookupKey, lookup);
+    void lookup.then((result) => {
+      pendingWordLookupsRef.current.delete(lookupKey);
+      if (result) {
+        wordLookupCacheRef.current.set(lookupKey, result);
+        failedWordLookupsRef.current.delete(lookupKey);
+      } else {
+        failedWordLookupsRef.current.add(lookupKey);
+      }
+      updateSearchedWord(key, word, { loading: false, result });
+      setWordLookup((prev) =>
+        prev && prev.key === key ? { ...prev, loading: false, failed: result === null, result } : prev,
+      );
+    });
+  }, [updateSearchedWord]);
+
+  // A searched word with no stored result represents an interrupted lookup
+  // from an earlier visit. Resume it as soon as the article is reopened;
+  // Redis deduplication means this watches the existing job when it is still
+  // running and safely starts a fresh retry only after that job is gone.
+  useEffect(() => {
+    if (!draw || draw.status !== "done") return;
+    for (const item of searchedWords) {
+      const lookupKey = `${draw.id}:${item.key}`;
+      if (!item.result && !resumedStoredLookupsRef.current.has(lookupKey)) {
+        resumedStoredLookupsRef.current.add(lookupKey);
+        followWordLookup(draw.id, item.key, item.word);
+      }
+    }
+  }, [draw, followWordLookup, searchedWords]);
+
   // Selects one word tapped inside the reading paragraph (see the word-token
-  // buttons in the reading view below). The server cache is checked first;
-  // only a cache miss leaves the learner a second action to start a lookup.
+  // buttons in the reading view below). The server cache and durable job
+  // status are checked first; only a true miss leaves the learner a second
+  // action to start a lookup.
   const openWordLookup = useCallback(
     (key: number, word: string) => {
       if (!draw) return;
@@ -337,7 +381,12 @@ export function ArticleQuiz() {
       });
 
       if (localResult || pending || failedWordLookupsRef.current.has(lookupKey)) return;
-      void checkDefinedWord(draw.id, word, key).then((serverResult) => {
+      void checkDefinedWordStatus(draw.id, word, key).then((response) => {
+        if (response?.status === "pending") {
+          followWordLookup(draw.id, key, word);
+          return;
+        }
+        const serverResult = response?.status === "done" ? response.result ?? null : null;
         if (serverResult) {
           wordLookupCacheRef.current.set(lookupKey, serverResult);
           // Keep the searched-words overlay in sync with the popover when
@@ -353,7 +402,7 @@ export function ArticleQuiz() {
         );
       });
     },
-    [draw, searchedWords, updateSearchedWord],
+    [draw, followWordLookup, searchedWords, updateSearchedWord],
   );
 
   // The whole study paragraph is short (one paragraph), so it's sent as
@@ -362,30 +411,8 @@ export function ArticleQuiz() {
   const requestWordLookup = useCallback(() => {
     if (!draw || !wordLookup || wordLookup.loading) return;
     const { key, word } = wordLookup;
-    const lookupKey = `${draw.id}:${key}`;
-    const pending = pendingWordLookupsRef.current.get(lookupKey);
-    if (pending) {
-      setWordLookup((prev) => (prev && prev.key === key ? { ...prev, loading: true, failed: false } : prev));
-      return;
-    }
-    setWordLookup((prev) => (prev && prev.key === key ? { ...prev, loading: true } : prev));
-    updateSearchedWord(key, word, { loading: true });
-    const lookup = defineWord(draw.id, word, key);
-    pendingWordLookupsRef.current.set(lookupKey, lookup);
-    void lookup.then((result) => {
-      pendingWordLookupsRef.current.delete(lookupKey);
-      if (result) {
-        wordLookupCacheRef.current.set(lookupKey, result);
-        failedWordLookupsRef.current.delete(lookupKey);
-      } else {
-        failedWordLookupsRef.current.add(lookupKey);
-      }
-      updateSearchedWord(key, word, { loading: false, result });
-      setWordLookup((prev) =>
-        prev && prev.key === key ? { ...prev, loading: false, failed: result === null, result } : prev,
-      );
-    });
-  }, [draw, updateSearchedWord, wordLookup]);
+    followWordLookup(draw.id, key, word);
+  }, [draw, followWordLookup, wordLookup]);
 
   // Saves the currently open word-lookup popover's result to the learner's
   // vocabulary study list — same saveWord() call and pending-until-verified

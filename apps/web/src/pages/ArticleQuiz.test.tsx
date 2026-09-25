@@ -20,7 +20,7 @@ vi.mock("../lib/articles", async () => {
 
 vi.mock("../lib/wordSearch", async () => {
   const actual = await vi.importActual<typeof import("../lib/wordSearch")>("../lib/wordSearch");
-  return { ...actual, checkDefinedWord: vi.fn(), defineWord: vi.fn() };
+  return { ...actual, checkDefinedWordStatus: vi.fn(), defineWord: vi.fn() };
 });
 
 vi.mock("../lib/wordReview", async () => {
@@ -40,7 +40,7 @@ import {
   type ArticleInstance,
 } from "../lib/articles";
 import { formatAbsoluteDate, formatDateDivider } from "../lib/time";
-import { checkDefinedWord, defineWord } from "../lib/wordSearch";
+import { checkDefinedWordStatus, defineWord } from "../lib/wordSearch";
 import { saveWord } from "../lib/wordReview";
 
 // jsdom doesn't implement HTMLMediaElement.play() — stub it so handleRead's
@@ -50,7 +50,7 @@ import { saveWord } from "../lib/wordReview";
 beforeEach(() => {
   HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
   HTMLMediaElement.prototype.pause = vi.fn();
-  vi.mocked(checkDefinedWord).mockResolvedValue(null);
+  vi.mocked(checkDefinedWordStatus).mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -723,10 +723,13 @@ describe("ArticleQuiz page — word lookup while reading", () => {
   it("shows a server-cached lookup immediately without the find button", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
-    vi.mocked(checkDefinedWord).mockResolvedValue({
-      word: "discovery",
-      meaning: "발견",
-      example: "Scientists announced a new discovery today.",
+    vi.mocked(checkDefinedWordStatus).mockResolvedValue({
+      status: "done",
+      result: {
+        word: "discovery",
+        meaning: "발견",
+        example: "Scientists announced a new discovery today.",
+      },
     });
     const user = userEvent.setup();
     render(<ArticleQuiz />);
@@ -737,7 +740,7 @@ describe("ArticleQuiz page — word lookup while reading", () => {
     expect(await screen.findByText("발견")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "찾기" })).not.toBeInTheDocument();
     expect(defineWord).not.toHaveBeenCalled();
-    expect(checkDefinedWord).toHaveBeenCalledWith(sampleDraw.id, "discovery", 9);
+    expect(checkDefinedWordStatus).toHaveBeenCalledWith(sampleDraw.id, "discovery", 9);
 
     // A cached result must also populate the searched-words overlay; the
     // popover and the overlay represent the same lookup.
@@ -746,6 +749,26 @@ describe("ArticleQuiz page — word lookup while reading", () => {
     const searchedWordsPanel = screen.getByRole("dialog", { name: "검색한 단어 목록" });
     expect(within(searchedWordsPanel).getByText("발견")).toBeInTheDocument();
     expect(within(searchedWordsPanel).queryByText("뜻을 가져오지 못했어요.")).not.toBeInTheDocument();
+  });
+
+  it("resumes a server-pending lookup without asking the learner to search again", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    vi.mocked(checkDefinedWordStatus).mockResolvedValue({ status: "pending" });
+    vi.mocked(defineWord).mockResolvedValue({
+      word: "discovery",
+      meaning: "발견",
+      example: "A new discovery.",
+    });
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+
+    await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
+    await user.click(screen.getByRole("button", { name: "discovery" }));
+
+    expect(await screen.findByText("발견")).toBeInTheDocument();
+    expect(defineWord).toHaveBeenCalledWith(sampleDraw.id, "discovery", 9);
+    expect(screen.queryByRole("button", { name: "찾기" })).not.toBeInTheDocument();
   });
 
   it("keeps searched words in a bottom overlay so they can be saved later", async () => {
@@ -872,6 +895,35 @@ describe("ArticleQuiz page — word lookup while reading", () => {
     const panel = screen.getByRole("dialog", { name: "검색한 단어 목록" });
     expect(within(panel).getByText("discovery")).toBeInTheDocument();
     expect(within(panel).getAllByText("발견").length).toBeGreaterThan(0);
+  });
+
+  it("restarts polling for an unfinished stored lookup after returning to the article", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([{
+      id: "i1",
+      source: "BBC",
+      title: sampleDraw.title,
+      summary: sampleDraw.summary,
+      answered: false,
+      correct: false,
+      createdAt: 1710494400,
+      publishedAt: sampleDraw.publishedAt,
+      status: "done",
+    }]);
+    vi.mocked(fetchArticleInstance).mockResolvedValue(sampleDraw);
+    vi.mocked(defineWord).mockResolvedValue({ word: "discovery", meaning: "발견", example: "A discovery." });
+    localStorage.setItem("buddy.article.searched-words.i1", JSON.stringify([{
+      key: 9,
+      word: "discovery",
+      result: null,
+    }]));
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+
+    await user.click(await screen.findByText("[BBC] Scientists make discovery"));
+    await vi.waitFor(() => expect(defineWord).toHaveBeenCalledWith(sampleDraw.id, "discovery", 9));
+    await user.click(screen.getByRole("button", { name: /검색한 단어 1/ }));
+
+    expect(within(screen.getByRole("dialog", { name: "검색한 단어 목록" })).getByText("발견")).toBeInTheDocument();
   });
 
   it("shows a failure message when the lookup fails", async () => {
