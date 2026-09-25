@@ -107,7 +107,7 @@ func TestNuanceInlineSurvivesCancellationAndDeduplicatesPolls(t *testing.T) {
 	}
 	once.Do(func() { close(release) })
 	c := <-st.completed
-	if len(c.Questions) != 4 {
+	if len(c.Questions) != 5 {
 		t.Fatal("lesson not saved")
 	}
 }

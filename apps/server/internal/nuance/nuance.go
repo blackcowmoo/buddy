@@ -20,6 +20,7 @@ const (
 	StatusProcessing = "processing"
 	StatusDone       = "done"
 	StatusFailed     = "failed"
+	ReviewBatchSize  = 5
 )
 
 var (
@@ -73,7 +74,7 @@ func (c Content) Validate() error {
 		}
 		return true
 	}
-	if !nonempty(c.Meaning, c.Distinction, c.Caveat) || len(c.Words) < 2 || len(c.Words) > 3 || len(c.Questions) < 4 || len(c.Questions) > 6 {
+	if !nonempty(c.Meaning, c.Distinction, c.Caveat) || len(c.Words) < 2 || len(c.Words) > 3 || len(c.Questions) < 5 || len(c.Questions) > 6 {
 		return fmt.Errorf("%w: incomplete comparison", ErrInvalid)
 	}
 	words := map[string]bool{}
@@ -132,6 +133,14 @@ type Lesson struct {
 	Revision  int      `json:"revision"`
 	Content   *Content `json:"content,omitempty"`
 	State     State    `json:"state"`
+}
+type ReviewItem struct {
+	LessonID   string `json:"lessonId"`
+	QuestionID string `json:"questionId"`
+}
+type ReviewBatch struct {
+	Items   []ReviewItem `json:"items"`
+	Lessons []Lesson     `json:"lessons"`
 }
 type Action struct {
 	Kind       string `json:"kind"`
@@ -226,5 +235,6 @@ type Store interface {
 	Delete(context.Context, string, string) error
 	SetStatus(context.Context, string, string) error
 	Complete(context.Context, string, Content) error
+	StartReview(context.Context, string) (ReviewBatch, error)
 	Act(context.Context, string, string, Action) (Lesson, error)
 }

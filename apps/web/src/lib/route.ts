@@ -4,9 +4,9 @@
 // mounted (root, or under a ROOT_PATH prefix like "/pr/14"; see
 // httpserver.withRootPath and lib/rootPath.ts). The server's SPA fallback
 // (spaHandlerFS) serves index.html for any unmatched path, so this works
-// without a server-side route for "/recordings", "/words", "/instant", or
+// without a server-side route for "/recordings", "/words", "/nuance-review", or
 // their "/pr/14/..." equivalents.
-export type Page = "chat" | "recordings" | "words" | "match" | "instant" | "article" | "writing" | "nuance";
+export type Page = "chat" | "recordings" | "words" | "match" | "instant" | "article" | "writing" | "nuance" | "nuance-review";
 
 export function currentPage(pathname: string): Page {
   const trimmed = pathname.replace(/\/+$/, "");
@@ -16,6 +16,7 @@ export function currentPage(pathname: string): Page {
   if (trimmed.endsWith("/instant")) return "instant";
   if (trimmed.endsWith("/article")) return "article";
   if (trimmed.endsWith("/writing")) return "writing";
+  if (trimmed.endsWith("/nuance-review")) return "nuance-review";
   if (trimmed.endsWith("/nuance")) return "nuance";
   return "chat";
 }

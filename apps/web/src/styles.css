@@ -1210,6 +1210,21 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
 .nuance-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .nuance-list-back { align-self: flex-start; }
 .nuance-tabs, .nuance-review { display: flex; flex-wrap: wrap; gap: 10px; }
+.nuance-review-link, .ghost-link {
+  min-height: 44px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  color: var(--text);
+  box-shadow: var(--shadow-xs);
+  font-weight: 680;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.nuance-review-link[aria-disabled="true"] { opacity: .55; pointer-events: none; }
 .nuance-tabs button { flex: 1; }
 .nuance-tabs [aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent-strong); }
 .nuance-word, .nuance-question { padding: 20px; border: 1px solid var(--border-2); border-radius: var(--radius); background: var(--panel); min-width: 0; }

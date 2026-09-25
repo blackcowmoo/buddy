@@ -134,6 +134,61 @@ func TestMySQLPersistsResumeHistoryOwnershipAndDeletion(t *testing.T) {
 		t.Fatalf("cascade: %d %v", n, err)
 	}
 }
+
+func TestMySQLStartsOneRandomReviewBatchAcrossLessons(t *testing.T) {
+	st := requireDB(t)
+	ctx := context.Background()
+	first := persistedLesson(t, st)
+	second := pendingLesson(t, st, first.UserID)
+	if err := st.Complete(ctx, second.ID, comparisonContent("affordable", "budget-friendly")); err != nil {
+		t.Fatal(err)
+	}
+
+	batch, err := st.StartReview(ctx, first.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch.Items) != ReviewBatchSize || len(batch.Lessons) != 2 {
+		t.Fatalf("batch = %+v, lessons = %d", batch.Items, len(batch.Lessons))
+	}
+	wantQueues := map[string][]string{}
+	for _, item := range batch.Items {
+		wantQueues[item.LessonID] = append(wantQueues[item.LessonID], item.QuestionID)
+	}
+	queued := 0
+	for _, lesson := range batch.Lessons {
+		want, selected := wantQueues[lesson.ID]
+		if selected && fmt.Sprint(lesson.State.Queue) != fmt.Sprint(want) {
+			t.Fatalf("lesson %s queue = %v, want %v", lesson.ID, lesson.State.Queue, want)
+		}
+		queued += len(lesson.State.Queue)
+	}
+	if queued != ReviewBatchSize {
+		t.Fatalf("persisted %d queued questions, want %d", queued, ReviewBatchSize)
+	}
+
+	firstItem := batch.Items[0]
+	var selected Lesson
+	for _, lesson := range batch.Lessons {
+		if lesson.ID == firstItem.LessonID {
+			selected = lesson
+			break
+		}
+	}
+	answer := ""
+	for _, question := range selected.Content.Questions {
+		if question.ID == firstItem.QuestionID {
+			answer = question.Answer
+		}
+	}
+	if _, err = st.Act(ctx, first.UserID, selected.ID, Action{Kind: "answer", Revision: selected.Revision, QuestionID: firstItem.QuestionID, Selected: answer}); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := st.StartReview(ctx, first.UserID)
+	if err != nil || len(resumed.Items) == 0 || resumed.Items[0] != firstItem {
+		t.Fatalf("saved reveal was not resumed first: items=%+v err=%v", resumed.Items, err)
+	}
+}
 func TestMySQLConcurrentAnswerCommitsOnce(t *testing.T) {
 	st := requireDB(t)
 	ctx := context.Background()

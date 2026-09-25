@@ -1,43 +1,9 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { SubPageHeader } from "../components/SubPageHeader";
 import { LoadingHint } from "../components/LoadingHint";
-import { QuizChoices } from "../components/QuizChoices";
-import { deleteNuanceLesson, drawNuanceLesson, dueQuestions, fetchNuanceLesson, fetchNuanceLessons, lessonTitle, nextReview, practiceNuance, retryNuanceLesson, nuanceOptions, type NuanceAction, type NuanceLesson, type NuanceQuestion } from "../lib/nuance";
+import { NuanceQuestionCard } from "../components/NuanceQuestionCard";
+import { deleteNuanceLesson, drawNuanceLesson, dueQuestions, fetchNuanceLesson, fetchNuanceLessons, lessonTitle, nextReview, practiceNuance, retryNuanceLesson, type NuanceAction, type NuanceLesson } from "../lib/nuance";
 import { formatAbsoluteDateTime, formatDateDivider, formatMessageTime, shouldShowDateDivider } from "../lib/time";
-
-function Question({ lesson, question, busy, onAnswer }: {
-  lesson: NuanceLesson; question: NuanceQuestion; busy: boolean; onAnswer: (word: string) => void;
-}) {
-  const [selection, setSelection] = useState<string | null>(null);
-  const attempt = (lesson.state.progress[question.id]?.attempts ?? 0) - (lesson.state.feedback ? 1 : 0);
-  const options = nuanceOptions(lesson, question.id, attempt);
-  const feedback = lesson.state.feedback;
-  const reviewed = lesson.state.progress[question.id]?.lastReviewedAt;
-  return <section className="nuance-question" aria-labelledby={`question-${question.id}`}>
-    <h3 id={`question-${question.id}`}>{question.context}</h3>
-    {!feedback && <p className="hint">{reviewed ? `지난 풀이: ${formatAbsoluteDateTime(reviewed)}` : "처음 만나는 문맥이에요"}</p>}
-    <p className="nuance-sentence" lang="en">{question.sentence}</p>
-    <QuizChoices
-      options={options.map(({ word }) => word)}
-      selectedIndex={options.findIndex(({ word }) => word === (feedback?.selected ?? selection))}
-      correctIndex={feedback ? options.findIndex(({ word }) => word === question.answer) : undefined}
-      disabled={busy}
-      label="표현 선택"
-      lang="en"
-      onSelect={(index) => setSelection(options[index].word)}
-    />
-    {!feedback && <button type="button" className="quiz-check-btn" disabled={busy || selection === null}
-      onClick={() => { if (selection !== null) onAnswer(selection); }}>{busy ? "채점 중…" : "답안 확인"}</button>}
-    {feedback && <div className="nuance-feedback" role="status">
-      <strong>{feedback.correct ? "의도에 맞는 표현이에요" : "이 상황에서는 다른 표현이 더 잘 맞아요"}</strong>
-      <p>내 선택: <span lang="en">{feedback.selected}</span> · 추천 표현: <b lang="en">{question.answer}</b></p>
-      <p className="nuance-sentence" lang="en">{question.sentence.replace("____", question.answer)}</p>
-      <p className="nuance-translation">{question.translation}</p>
-      <p>{question.explanation}</p>
-      {!feedback.correct && <p>이 문제는 잠시 뒤 다시 나와요.</p>}
-    </div>}
-  </section>;
-}
 
 const selectedID = () => new URLSearchParams(window.location.search).get("lesson");
 function navigate(id: string | null) {
@@ -70,18 +36,14 @@ export function WordNuance() {
     setLoading(false);
   }, []);
 
-  const open = useCallback(async (id: string, push = true, review = false) => {
+  const open = useCallback(async (id: string, push = true) => {
     const token = ++navigation.current;
     setLoading(true); setError(null);
     let lesson = await fetchNuanceLesson(id);
     if (token !== navigation.current) return;
-    if (review && lesson?.status === "done" && !lesson.state.queue.length) {
-      lesson = await practiceNuance(id, { kind: "start", revision: lesson.revision });
-    }
-    if (token !== navigation.current) return;
     setLoading(false);
     if (!lesson) { setError("문제를 불러오지 못했어요. 목록에서 다시 열어 주세요."); return; }
-    remember(lesson); setSelected(lesson); setPracticing(review || lesson.state.queue.length > 0);
+    remember(lesson); setSelected(lesson); setPracticing(lesson.state.queue.length > 0);
     if (push) navigate(id);
   }, [remember]);
 
@@ -152,7 +114,7 @@ export function WordNuance() {
     });
   };
   const due = lessons.reduce((sum, l) => sum + dueQuestions(l), 0);
-  const reviewLesson = lessons.find((l) => l.state.queue.length > 0 || dueQuestions(l) > 0);
+  const hasReview = lessons.some((l) => l.state.queue.length > 0 || dueQuestions(l) > 0);
   const content = selected?.content;
   const question = content?.questions.find((q) => q.id === selected?.state.queue[0]);
   const next = selected ? nextReview(selected) : null;
@@ -171,7 +133,7 @@ export function WordNuance() {
         </div>
         <div className="nuance-review">
           <button type="button" onClick={create} disabled={busy || loading}>{busy ? "처리 중…" : "＋ 새 문제 만들기"}</button>
-          {reviewLesson && <button type="button" className="ghost" disabled={busy || loading} onClick={() => void open(reviewLesson.id, true, true)}>복습 시작</button>}
+          {hasReview && <a className="nuance-review-link" aria-disabled={busy || loading} onClick={(event) => { if (busy || loading) event.preventDefault(); }} href={window.location.pathname.replace(/\/nuance\/?$/, "/nuance-review")}>복습 시작</a>}
         </div>
         {!loading && error && <button type="button" className="ghost" onClick={() => void load()}>목록 다시 불러오기</button>}
         {!loading && !error && lessons.length === 0 && <p className="hint">아직 만든 문제가 없어요. 첫 비교 묶음을 만들어 보세요.</p>}
@@ -207,12 +169,12 @@ export function WordNuance() {
             <p className="hint">남은 문맥 {selected.state.queue.length}개 · 상황과 말하는 사람의 의도에 가장 잘 맞는 표현을 골라 주세요.</p>
             {/* A saved attempt clears the draft even if the same missed
                 question is immediately repeated. Failed saves retain it. */}
-            <Question key={`${selected.id}-${question.id}-${selected.state.progress[question.id]?.attempts ?? 0}`} lesson={selected} question={question} busy={busy} onAnswer={(word) => act("answer", { questionId: question.id, selected: word })} />
+            <NuanceQuestionCard key={`${selected.id}-${question.id}-${selected.state.progress[question.id]?.attempts ?? 0}`} lesson={selected} question={question} busy={busy} onAnswer={(word) => act("answer", { questionId: question.id, selected: word })} />
             {selected.state.feedback && <div className="nuance-review">
               <button type="button" disabled={busy} onClick={() => act("next")}>{busy ? "저장 중…" : "다음 문맥"}</button>
               {selected.state.feedback.correct && <button type="button" className="ghost" disabled={busy} onClick={() => act("next", { repeat: true })}>맞혔지만 다시 복습</button>}
             </div>}
-          </> : <section className="quiz-panel" aria-live="polite"><h3>지금 복습할 문맥을 모두 풀었어요</h3><p>맞힌 문제는 간격을 두고 다시 나와요.</p>{next !== null && <p className="hint">다음 복습: {formatAbsoluteDateTime(next)}</p>}{reviewLesson && reviewLesson.id !== selected.id && <button type="button" onClick={() => void open(reviewLesson.id, true, true)}>다음 묶음 복습하기</button>}<button type="button" className="ghost" onClick={back}>학습 목록 보기</button></section>}
+          </> : <section className="quiz-panel" aria-live="polite"><h3>이 묶음의 문맥을 모두 풀었어요</h3><p>맞힌 문제는 간격을 두고 다시 나와요.</p>{next !== null && <p className="hint">다음 복습: {formatAbsoluteDateTime(next)}</p>}<button type="button" className="ghost" onClick={back}>학습 목록 보기</button></section>}
         </>}
       </>}
     </main>

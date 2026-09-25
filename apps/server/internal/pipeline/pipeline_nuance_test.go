@@ -23,7 +23,7 @@ func TestGenerateNuanceUsesProfileExclusionsAndUniqueDraw(t *testing.T) {
 		return string(data), nil
 	}}}}}
 	c, err := p.GenerateNuance(context.Background(), "likes travel", []string{"curious / nosy"}, "draw-123")
-	if err != nil || len(c.Questions) != 4 {
+	if err != nil || len(c.Questions) != 5 {
 		t.Fatalf("generation: %+v %v", c, err)
 	}
 	for _, want := range []string{"likes travel", "curious / nosy", "draw-123"} {
@@ -36,6 +36,9 @@ func TestGenerateNuanceUsesProfileExclusionsAndUniqueDraw(t *testing.T) {
 	}
 	if !strings.Contains(system, "forbidden word combinations") || !strings.Contains(system, "Choose a different combination") {
 		t.Fatal("missing duplicate rejection guidance")
+	}
+	if !strings.Contains(system, "Generate 5 or 6 distinct") {
+		t.Fatal("new lessons must contain at least five practice questions")
 	}
 	for name, constraints := range map[string][]string{
 		"shared sense rather than related vocabulary": {
@@ -135,7 +138,7 @@ func TestGenerateNuanceRepairsInvalidFinalWithOneDirectJudgeCall(t *testing.T) {
 		JudgeModel: "judge",
 	}
 	c, err := p.GenerateNuance(context.Background(), "likes travel", nil, "draw-1")
-	if err != nil || len(c.Questions) != 4 {
+	if err != nil || len(c.Questions) != 5 {
 		t.Fatalf("GenerateNuance() = (%+v, %v)", c, err)
 	}
 	if chatCalls != 1 || analysisCalls != 1 || judgeCalls != 2 {

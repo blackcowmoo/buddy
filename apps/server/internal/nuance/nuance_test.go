@@ -12,7 +12,7 @@ func testContent() Content {
 		{Word: "cheap", Tone: "부정적일 수 있음", Description: "가격이나 품질", Example: "It looks cheap.", Translation: "싸구려 같아요."},
 		{Word: "inexpensive", Tone: "중립", Description: "가격", Example: "It is inexpensive.", Translation: "저렴해요."},
 	}}
-	for i := 0; i < 4; i++ {
+	for i := 0; i < 5; i++ {
 		c.Questions = append(c.Questions, Question{ID: fmt.Sprintf("q%d", i), Context: "상황", Sentence: fmt.Sprintf("Item %d is ____.", i), Translation: "번역", Answer: c.Words[i%2].Word, Explanation: "선택에 따른 차이"})
 	}
 	return c
@@ -39,7 +39,7 @@ func TestPracticeRepeatsMistakesAndResumesFeedback(t *testing.T) {
 	}
 	// Nothing advances until the saved reveal is acknowledged.
 	apply(t, &l, now, Action{Kind: "next"})
-	if got := fmt.Sprint(l.State.Queue); got != "[q1 q2 q3 q0]" {
+	if got := fmt.Sprint(l.State.Queue); got != "[q1 q2 q3 q4 q0]" {
 		t.Fatal(got)
 	}
 	for len(l.State.Queue) > 0 {
@@ -62,7 +62,7 @@ func TestPracticeRepeatsMistakesAndResumesFeedback(t *testing.T) {
 		t.Fatal("early reviews inflate progress")
 	}
 	apply(t, &l, now.Add(24*time.Hour), Action{Kind: "start"})
-	if len(l.State.Queue) != 4 {
+	if len(l.State.Queue) != 5 {
 		t.Fatal("due questions not restored")
 	}
 }
@@ -128,9 +128,9 @@ func TestValidateModelContent(t *testing.T) {
 				c.Questions[i].Answer = "cheap"
 			}
 		},
-		"no caveat":         func(c *Content) { c.Caveat = "" },
-		"duplicate word":    func(c *Content) { c.Words[1].Word = "CHEAP" },
-		"too few questions": func(c *Content) { c.Questions = c.Questions[:2] },
+		"no caveat":           func(c *Content) { c.Caveat = "" },
+		"duplicate word":      func(c *Content) { c.Words[1].Word = "CHEAP" },
+		"only four questions": func(c *Content) { c.Questions = c.Questions[:4] },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {

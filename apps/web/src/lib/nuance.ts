@@ -48,9 +48,18 @@ export interface NuanceAction {
   selected?: string;
   repeat?: boolean;
 }
+export interface NuanceReviewItem {
+  lessonId: string;
+  questionId: string;
+}
+export interface NuanceReviewBatch {
+  items: NuanceReviewItem[];
+  lessons: NuanceLesson[];
+}
 export const fetchNuanceLessons = () => fetchJSON<NuanceLesson[] | null>("api/nuance", null);
 export const fetchNuanceLesson = (id: string) => fetchJSON<NuanceLesson | null>(`api/nuance/${encodeURIComponent(id)}`, null);
 export const drawNuanceLesson = () => postJSON<NuanceLesson | null>("api/nuance/draw", {}, null);
+export const startNuanceReview = () => postJSON<NuanceReviewBatch | null>("api/nuance/review", {}, null);
 export const retryNuanceLesson = (id: string) => postJSON<NuanceLesson | null>(`api/nuance/${encodeURIComponent(id)}/retry`, {}, null);
 export const practiceNuance = (id: string, action: NuanceAction) => postJSON<NuanceLesson | null>(`api/nuance/${encodeURIComponent(id)}/practice`, action, null);
 export const deleteNuanceLesson = (id: string) => requestOK(`api/nuance/${encodeURIComponent(id)}`, { method: "DELETE" });

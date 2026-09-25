@@ -58,6 +58,14 @@ export function nuanceFixture(): NuanceLesson {
         "translation": "물건 3의 가격과 품질에 대한 번역",
         "answer": "inexpensive",
         "explanation": "cheap은 품질을 낮춰 말할 수 있고 inexpensive는 가격을 설명해요."
+      },
+      {
+        "id": "q4",
+        "context": "상황 4: 전달할 느낌을 골라요.",
+        "sentence": "Item 4 is ____.",
+        "translation": "물건 4의 가격과 품질에 대한 번역",
+        "answer": "cheap",
+        "explanation": "cheap은 품질을 낮춰 말할 수 있고 inexpensive는 가격을 설명해요."
       }
     ]
   },
