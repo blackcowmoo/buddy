@@ -71,6 +71,14 @@ func wordResearchConfirmHandler(ident identity.Identifier, words wordreview.Stor
 			http.NotFound(w, r)
 			return
 		}
+		// ConfirmResearch deliberately lets a learner restore a rejected word,
+		// but it must not short-circuit the initial model verification. This
+		// protects against stale or non-browser clients even though the current
+		// UI also disables confirmation while status is pending.
+		if target.Status == wordreview.StatusPending {
+			http.Error(w, "word verification is still pending", http.StatusConflict)
+			return
+		}
 		list, err := words.List(r.Context(), userID)
 		if err != nil {
 			serverError(w, "words: research duplicate list", err)

@@ -25,7 +25,7 @@ vi.mock("../lib/wordSearch", async () => {
 
 vi.mock("../lib/wordReview", async () => {
   const actual = await vi.importActual<typeof import("../lib/wordReview")>("../lib/wordReview");
-  return { ...actual, saveWord: vi.fn() };
+  return { ...actual, fetchWords: vi.fn(), saveWord: vi.fn() };
 });
 
 import { ArticleQuiz, shouldCenterWordLookup } from "./ArticleQuiz";
@@ -41,7 +41,7 @@ import {
 } from "../lib/articles";
 import { formatAbsoluteDate, formatDateDivider } from "../lib/time";
 import { checkDefinedWordStatus, defineWord } from "../lib/wordSearch";
-import { saveWord } from "../lib/wordReview";
+import { fetchWords, saveWord } from "../lib/wordReview";
 
 // jsdom doesn't implement HTMLMediaElement.play() — stub it so handleRead's
 // el.play() resolves instead of throwing "not implemented", the same reason
@@ -51,6 +51,7 @@ beforeEach(() => {
   HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
   HTMLMediaElement.prototype.pause = vi.fn();
   vi.mocked(checkDefinedWordStatus).mockResolvedValue(null);
+  vi.mocked(fetchWords).mockResolvedValue({ words: [], dueCount: 0 });
 });
 
 afterEach(() => {
@@ -895,6 +896,50 @@ describe("ArticleQuiz page — word lookup while reading", () => {
     const panel = screen.getByRole("dialog", { name: "검색한 단어 목록" });
     expect(within(panel).getByText("discovery")).toBeInTheDocument();
     expect(within(panel).getAllByText("발견").length).toBeGreaterThan(0);
+  });
+
+  it("marks a restored searched word already in the study list and does not save it again", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([{
+      id: "i1",
+      source: "BBC",
+      title: sampleDraw.title,
+      summary: sampleDraw.summary,
+      answered: false,
+      correct: false,
+      createdAt: 1710494400,
+      publishedAt: sampleDraw.publishedAt,
+      status: "done",
+    }]);
+    vi.mocked(fetchArticleInstance).mockResolvedValue(sampleDraw);
+    vi.mocked(fetchWords).mockResolvedValue({
+      words: [{
+        id: "w1",
+        word: "discovery",
+        meaning: "발견",
+        example: "A discovery.",
+        stage: 1,
+        reviewCount: 2,
+        nextReviewAt: 1710580800,
+        status: "verified",
+      }],
+      dueCount: 0,
+    });
+    localStorage.setItem("buddy.article.searched-words.i1", JSON.stringify([{
+      key: 9,
+      word: "discovery",
+      result: { word: "Discovery", meaning: "발견", example: "A discovery." },
+    }]));
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+
+    await user.click(await screen.findByText("[BBC] Scientists make discovery"));
+    await user.click(screen.getByRole("button", { name: /검색한 단어 1/ }));
+
+    const panel = screen.getByRole("dialog", { name: "검색한 단어 목록" });
+    const learnedButton = await within(panel).findByRole("button", { name: "✓ 학습 중" });
+    expect(learnedButton).toBeDisabled();
+    await user.click(learnedButton);
+    expect(saveWord).not.toHaveBeenCalled();
   });
 
   it("restarts polling for an unfinished stored lookup after returning to the article", async () => {
