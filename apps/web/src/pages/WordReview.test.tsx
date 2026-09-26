@@ -419,13 +419,26 @@ describe("WordReview page", () => {
     expect(screen.queryByRole("button", { name: "확정" })).not.toBeInTheDocument();
   });
 
-  it("shows a 확정 전 단어 section for words still awaiting confirmation", async () => {
-    vi.mocked(fetchWords).mockResolvedValue({ words: [pendingWord], dueCount: 0 });
-    render(<WordReview />);
+  it("keeps confirmation disabled while a word is still being verified", async () => {
+    vi.useFakeTimers();
+    const verifiedWord = { ...pendingWord, status: "verified" as const };
+    vi.mocked(fetchWords)
+      .mockResolvedValueOnce({ words: [pendingWord], dueCount: 0 })
+      .mockResolvedValue({ words: [verifiedWord], dueCount: 0 });
+    await act(async () => { render(<WordReview />); });
 
-    expect(await screen.findByText("확정 전 단어")).toBeInTheDocument();
+    expect(screen.getByText("확정 전 단어")).toBeInTheDocument();
     expect(screen.getByText("wistful")).toBeInTheDocument();
     expect(screen.getByText("확정 전")).toBeInTheDocument();
+    const verificationButton = screen.getByRole("button", { name: "검증 중…" });
+    expect(verificationButton).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "확정" })).not.toBeInTheDocument();
+    fireEvent.click(verificationButton);
+    expect(confirmResearchWord).not.toHaveBeenCalled();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+
+    expect(screen.getByRole("button", { name: "확정" })).toBeEnabled();
   });
 
   it("keeps decision queues ahead of the paginated review history", async () => {

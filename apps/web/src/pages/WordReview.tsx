@@ -192,6 +192,7 @@ export function WordReview() {
   useEffect(() => {
     const timer = window.setInterval(() => {
       const hasPendingWork = words.some((w) =>
+        w.status === "pending" ||
         w.researchStatus === "pending" ||
         (w.status === "verified" && currentQuestion(w) === null),
       );
@@ -211,6 +212,10 @@ export function WordReview() {
   }, []);
 
   const handleConfirmResearch = useCallback(async (word: WordReviewItem) => {
+    // Confirmation can intentionally restore a rejected word, but it must
+    // never bypass the initial model verification while that check is still
+    // pending. The server enforces the same boundary for stale clients.
+    if (word.status === "pending") return;
     const updated = await confirmResearchWord(word.id);
     if (updated) {
       setWords((prev) => {
@@ -243,7 +248,16 @@ export function WordReview() {
             {s.meaning} · {s.example}
           </button>
         ))}
-        {word.researchStatus !== "pending" && <button type="button" className="ghost word-research-btn" onClick={() => void handleConfirmResearch(word)}>확정</button>}
+        {word.researchStatus !== "pending" && (
+          <button
+            type="button"
+            className="ghost word-research-btn"
+            onClick={() => void handleConfirmResearch(word)}
+            disabled={word.status === "pending"}
+          >
+            {word.status === "pending" ? "검증 중…" : "확정"}
+          </button>
+        )}
       </>
     );
   };

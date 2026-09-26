@@ -413,6 +413,26 @@ func TestWordResearchConfirmHidesTheControl(t *testing.T) {
 	}
 }
 
+func TestWordResearchConfirmRejectsPendingVerification(t *testing.T) {
+	words := &fakeWordStore{byUser: map[string][]wordreview.Word{"alex": {{
+		ID: "w1", UserID: "alex", Word: "wistful", Status: wordreview.StatusPending,
+	}}}}
+	h := wordResearchConfirmHandler(fakeIdentifier{id: "alex", ok: true}, words)
+	req := httptest.NewRequest("POST", "/api/words/w1/research/confirm", nil)
+	req.SetPathValue("id", "w1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	requireStatus(t, rec, http.StatusConflict)
+	stored, err := words.Get(context.Background(), "alex", "w1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != wordreview.StatusPending || stored.ResearchStatus == wordreview.ResearchConfirmed {
+		t.Fatalf("stored word = %+v, want verification pending and research unconfirmed", stored)
+	}
+}
+
 func TestWordResearchConfirmRemovesDuplicateAndKeepsExistingWord(t *testing.T) {
 	words := &fakeWordStore{byUser: map[string][]wordreview.Word{"alex": {
 		{ID: "duplicate", UserID: "alex", Word: "discovery", Meaning: "발견", Status: wordreview.StatusRejected},
