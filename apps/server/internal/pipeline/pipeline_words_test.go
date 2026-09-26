@@ -31,6 +31,23 @@ func TestSuggestWordsParsesSuggestions(t *testing.T) {
 	}
 }
 
+func assertArticleMemorizationMeaningPrompt(t *testing.T, prompt string) {
+	t.Helper()
+	for _, required := range []string{
+		`"meaning" MUST be written in Korean as a concise, dictionary-style translation`,
+		`answer the learner should memorize`,
+		`MUST NOT contain metacommentary`,
+		`MUST NOT contain an extra English definition`,
+		`Good: {"word":"facility","meaning":"생산 시설"`,
+		`Good meaning for despite: "~에도 불구하고"`,
+		`do not mix unrelated senses`,
+	} {
+		if !strings.Contains(prompt, required) {
+			t.Errorf("prompt does not contain %q: %s", required, prompt)
+		}
+	}
+}
+
 func TestSuggestWordsPropagatesLLMError(t *testing.T) {
 	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 		return "", errors.New("down")
@@ -99,9 +116,12 @@ func TestSuggestNewWordsPropagatesLLMError(t *testing.T) {
 // ---- DefineWord() -----------------------------------------------------------
 
 func TestDefineWordParsesDefinition(t *testing.T) {
-	var gotInput string
+	var gotInput, definitionPrompt string
 	p := &Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 		gotInput = msgs[len(msgs)-1].Content
+		if strings.Contains(msgs[0].Content, "Define \"word\"") {
+			definitionPrompt = msgs[0].Content
+		}
 		return `{"word":"resilient","meaning":"회복력이 있는","example":"She stayed resilient through the setback."}`, nil
 	}}, ChatModel: "m", FeedbackLang: "ko"}
 	got, err := p.DefineWord(context.Background(), "resilient", "She stayed resilient through the setback.")
@@ -115,6 +135,7 @@ func TestDefineWordParsesDefinition(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("DefineWord() = %+v, want %+v", got, want)
 	}
+	assertArticleMemorizationMeaningPrompt(t, definitionPrompt)
 }
 
 func TestDefineWordNormalizesInflectedWordBeforeLookup(t *testing.T) {

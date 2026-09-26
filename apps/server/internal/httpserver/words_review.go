@@ -40,6 +40,9 @@ type wordItem struct {
 	ResearchStatus  string                          `json:"researchStatus,omitempty"`
 	ResearchResults []wordreview.ResearchSuggestion `json:"researchResults,omitempty"`
 	ReviewQuestion  *wordreview.Question            `json:"reviewQuestion,omitempty"`
+	MeaningStatus   string                          `json:"meaningStatus,omitempty"`
+	MeaningError    string                          `json:"meaningError,omitempty"`
+	PreviousMeaning string                          `json:"previousMeaning,omitempty"`
 }
 
 func toWordItem(word wordreview.Word) wordItem {
@@ -61,6 +64,9 @@ func toWordItem(word wordreview.Word) wordItem {
 		VerifyReason:    word.VerifyReason,
 		ResearchStatus:  word.ResearchStatus,
 		ResearchResults: word.ResearchResults,
+		MeaningStatus:   word.MeaningStatus,
+		MeaningError:    word.MeaningError,
+		PreviousMeaning: word.PreviousMeaning,
 	}
 	if wordreview.QuestionReady(word) {
 		question := word.ReviewQuestion
@@ -114,7 +120,7 @@ func wordSaveHandler(ident identity.Identifier, words wordreview.Store, pipe *pi
 
 // wordsListHandler returns the study list and due count in one round trip. It
 // also lazily backfills review questions on verified legacy rows.
-func wordsListHandler(ident identity.Identifier, words wordreview.Store, pipe *pipeline.Pipeline, wordVerifyQueue *asyncjob.Queue) http.HandlerFunc {
+func wordsListHandler(ident identity.Identifier, words wordreview.Store, pipe *pipeline.Pipeline, wordVerifyQueue *asyncjob.Queue, resumeMeanings ...func(context.Context, string)) http.HandlerFunc {
 	// Redis deduplicates across replicas. The map provides the same one-run-per-
 	// word property inside a no-Redis process while the page polls.
 	var inlineBackfills sync.Map
@@ -168,8 +174,13 @@ func wordsListHandler(ident identity.Identifier, words wordreview.Store, pipe *p
 			}
 		}
 		out := make([]wordItem, len(list))
+		pendingMeanings := false
 		for i, word := range list {
 			out[i] = toWordItem(word)
+			pendingMeanings = pendingMeanings || word.MeaningStatus == "pending"
+		}
+		if pendingMeanings && len(resumeMeanings) > 0 {
+			resumeMeanings[0](r.Context(), userID)
 		}
 		writeJSON(w, map[string]any{"words": out, "dueCount": dueCount})
 	}

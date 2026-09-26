@@ -16,6 +16,7 @@ export interface Issue {
   type: string; // "grammar" | "vocabulary" | "phrasing" | "context"
   span: string;
   suggestion: string;
+  studyMeaning?: string; // dictionary gloss of suggestion for vocabulary review
   explanation: string; // why it's wrong, in English
   explanationTranslation: string; // native-language translation of explanation
 }

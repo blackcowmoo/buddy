@@ -113,6 +113,7 @@ type Issue struct {
 	Type                   string `json:"type"`                   // "grammar" | "vocabulary" | "phrasing" | "context"
 	Span                   string `json:"span"`                   // the problematic text
 	Suggestion             string `json:"suggestion"`             // the fix
+	StudyMeaning           string `json:"studyMeaning,omitempty"` // dictionary gloss, separate from correction reasoning
 	Explanation            string `json:"explanation"`            // why it's wrong, in English, short and kind
 	ExplanationTranslation string `json:"explanationTranslation"` // native-language translation of Explanation
 }

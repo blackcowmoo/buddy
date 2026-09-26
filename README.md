@@ -19,6 +19,31 @@ corrections**.
 **Toolchain:** Go **1.26.5**, Node **26.5.0** (`.nvmrc`), pnpm 9 (via corepack).
 `GOTOOLCHAIN=auto` will fetch go1.26.5 automatically if your local Go is older.
 
+## Vocabulary meanings
+
+Search, article lookup, recommendations, and meaning research use a shared
+dictionary-gloss prompt with Korean positive/negative examples. Context selects
+one sense and part of speech; the saved meaning contains short equivalents to
+memorize, without commentary such as “맥락상 …을 의미함” or an appended English
+definition. Distinct senses remain separate entries. Correction-generated
+vocabulary has a separate study gloss from the correction explanation.
+
+In **단어 복습**, **단어 뜻 정리** polishes existing verified entries using their
+old meaning and example. It preserves the entry ID, original spelling, example,
+review question, confirmation state, schedule, and review counts. The old gloss
+is retained as **정리 전 뜻**. Ambiguous results and duplicate word/meaning pairs
+keep their original gloss and show a retryable failure; entries are never merged
+or deleted by cleanup. Semantic preservation is checked by the model cascade,
+while the server validates the response and protects concurrent writes.
+
+Cleanup persists per-word `pending` / `done` / `failed` state in MySQL and reuses
+the durable word-research queue, processing words sequentially. Without Redis
+it uses detached execution; reopening the list resumes pending work. Completed
+entries are processed once per meaning-contract version. Article lookup caches
+are versioned on both the server and browser so old results are refreshed while
+preserving the browser's search history. Previously saved study cards change
+only when cleanup is requested.
+
 ## Word nuance practice
 
 Open **단어 뉘앙스** from the menu (`nuance`, also under a `ROOT_PATH`

@@ -1,6 +1,9 @@
 package wordlookup
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestKeySeparatesArticleContextAndPosition(t *testing.T) {
 	base := Request{ArticleID: "article-1", Word: "run", Position: 2, Context: "They run the company.", Language: "ko", Model: "model-a"}
@@ -19,5 +22,14 @@ func TestKeyIsStableForIdenticalRequest(t *testing.T) {
 	r := Request{ArticleID: "article-1", Word: "run", Position: 2, Context: "They run the company.", Language: "ko", Model: "model-a"}
 	if Key(r) != Key(r) {
 		t.Fatal("identical lookup request produced different keys")
+	}
+}
+
+// The versioned namespace prevents results generated under an older prompt
+// contract from hiding a newly generated memorization-ready definition.
+func TestKeyUsesCurrentDefinitionContractVersion(t *testing.T) {
+	r := Request{ArticleID: "article-1", Word: "facility", Position: 2, Context: "The facility produces steel.", Language: "ko", Model: "model-a"}
+	if got := Key(r); !strings.HasPrefix(got, "buddy:word-lookup:v2:") {
+		t.Fatalf("Key() = %q, want the current definition-contract namespace", got)
 	}
 }

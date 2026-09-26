@@ -20,8 +20,8 @@ func TestCaptureCorrectionWordsSavesVocabularyAndPhrasingIssues(t *testing.T) {
 	c := protocol.Correction{
 		Corrected: "She was furious about the delay.",
 		Issues: []protocol.Issue{
-			{Type: "vocabulary", Span: "very angry", Suggestion: "furious", ExplanationTranslation: "몹시 화난"},
-			{Type: "phrasing", Span: "angry about", Suggestion: "furious about", ExplanationTranslation: "더 자연스러운 표현"},
+			{Type: "vocabulary", Span: "very angry", Suggestion: "furious", StudyMeaning: "몹시 화난", ExplanationTranslation: "더 강한 감정을 표현합니다."},
+			{Type: "phrasing", Span: "angry about", Suggestion: "furious about", StudyMeaning: "~에 격분한", ExplanationTranslation: "더 자연스러운 표현"},
 			{Type: "grammar", Span: "was", Suggestion: "were", ExplanationTranslation: "should be skipped"},
 		},
 	}
@@ -38,6 +38,10 @@ func TestCaptureCorrectionWordsSavesVocabularyAndPhrasingIssues(t *testing.T) {
 	var gotWords []string
 	for _, w := range list {
 		gotWords = append(gotWords, w.Word)
+		want := map[string]string{"furious": "몹시 화난", "furious about": "~에 격분한"}
+		if w.Meaning != want[w.Word] {
+			t.Errorf("meaning = %q, want %q", w.Meaning, want[w.Word])
+		}
 		if w.Example != c.Corrected {
 			t.Errorf("word %q example = %q, want the corrected sentence %q", w.Word, w.Example, c.Corrected)
 		}

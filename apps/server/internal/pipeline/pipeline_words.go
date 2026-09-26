@@ -55,9 +55,57 @@ Rules:
 - "word" MUST stay in English.
 - "word" MUST be lowercase, except the pronoun "I" and its contractions
   ("I'm", "I'll", "I'd", "I've") when they are part of the word/phrase.
-- "meaning" MUST be written in %[1]s.
+%[2]s
 - "example" MUST be a natural English sentence that uses "word".
-- If the description is too vague to suggest anything meaningful, return an empty "suggestions" array rather than guessing wildly.`, native)
+- If the description is too vague to suggest anything meaningful, return an empty "suggestions" array rather than guessing wildly.`, native, dictionaryMeaningRules(native))
+}
+
+// All vocabulary sources share the same flashcard contract. Context selects
+// a dictionary sense; the gloss must remain useful outside the source passage.
+func dictionaryMeaningRules(native string) string {
+	rules := fmt.Sprintf(`- "meaning" MUST be written in %[1]s as a concise, dictionary-style translation
+  of the English word/phrase in the intended sense. It must stand on its own
+  beside the English entry as the answer the learner should memorize.
+- Use context to select ONE dictionary sense and part of speech. Give one to
+  three short equivalents within that sense; do not mix unrelated senses.
+  Use base dictionary wording, not the sentence's tense or named referents.
+- Preserve essential distinctions and grammatical complements. A brief sense
+  qualifier is allowed when necessary to distinguish meanings, but omit
+  redundant explanations, technical background, and long parenthetical notes.
+- "meaning" MUST NOT contain metacommentary such as "in this context", "here",
+  "means", "refers to", or "is used to", or their %[1]s equivalents.
+- "meaning" MUST NOT contain an extra English definition, an example,
+  etymology, a usage note, or a translation of the full sentence.
+- When listing several senses, put each distinct sense in a separate entry.
+  Examples below illustrate individual entries, not the number to return.`, native)
+	if native == "Korean" {
+		rules += `
+Korean dictionary-gloss examples (follow the requested JSON wrapper):
+Context: "The company closed its steel facility."
+Good: {"word":"facility","meaning":"생산 시설","example":"The company closed its steel facility."}
+Bad meaning: "맥락상 공장이나 설비, 또는 운영 장소를 의미함"
+Context: "The jury convicted him of fraud."
+Good: {"word":"convict","meaning":"유죄 판결을 내리다","example":"The jury convicted him of fraud."}
+Bad meaning: "유죄 판결을 선고하다 (To find someone guilty of a crime)"
+Context: "The bridge is made of steel."
+Good: {"word":"steel","meaning":"강철, 철강","example":"The bridge is made of steel."}
+Bad meaning: "강철 또는 철강 (철과 탄소를 가열하여 만든 산업용 금속 재료)"
+Context: "The shop will close next month."
+Good meaning for close: "문을 닫다, 영업을 중단하다"
+Context: "They are close friends."
+Good meaning for close: "친한, 가까운" (a separate sense, not mixed with "닫다")
+Context: "Despite the rain, we left."
+Good meaning for despite: "~에도 불구하고"
+Context: "The country faces a budget deficit."
+Good meaning for deficit: "재정 적자"
+Context: "She runs the company."
+Good meaning for run: "경영하다, 운영하다" (not "달리다" or "그녀는 회사를 운영한다")
+Context: "They put off the meeting."
+Good meaning for put off: "미루다, 연기하다"
+Keep these examples' concise style; do not copy their words or meanings when
+the input refers to a different word or sense.`
+	}
+	return rules
 }
 
 // GenerateWordReviewQuestion turns one verified dictionary entry into the
@@ -232,7 +280,8 @@ func (p *Pipeline) DefineWordMeanings(ctx context.Context, word, passage string)
 
 func (p *Pipeline) defineWordMeanings(ctx context.Context, word, passage string) ([]protocol.WordSuggestion, error) {
 	native := languageName(p.FeedbackLang)
-	systemPrompt := fmt.Sprintf(`You are a dictionary assistant for a %s-speaking English learner. List 3-6 common meanings of the given English word or phrase in its base dictionary form. Return STRICT JSON only: {"suggestions":[{"word":"...","meaning":"...","example":"..."}]}. Keep word in English, meaning in %s, and give one natural English example for every meaning.`, native, native)
+	systemPrompt := fmt.Sprintf(`You are a dictionary assistant for a %[1]s-speaking English learner. List up to 6 distinct common meanings of the given English word or phrase in its base dictionary form; do not invent senses to fill a quota. Put the context-matching sense first. Return STRICT JSON only: {"suggestions":[{"word":"...","meaning":"...","example":"..."}]}. Keep word in English and give one natural English example for every meaning.
+%[2]s`, native, dictionaryMeaningRules(native))
 	raw, err := p.analyze(ctx, systemPrompt, fmt.Sprintf("word: %s\ncontext: %s", word, passage), true)
 	if err != nil {
 		return nil, err
@@ -313,8 +362,8 @@ Rules:
 - "word" MUST stay in English.
 - "word" MUST be lowercase, except the pronoun "I" and its contractions
   ("I'm", "I'll", "I'd", "I've") when they are part of the word/phrase.
-- "meaning" MUST be written in %[1]s.
-- "example" MUST be a natural English sentence that uses "word".`, native)
+%[2]s
+- "example" MUST be a natural English sentence that uses "word".`, native, dictionaryMeaningRules(native))
 }
 
 // autoAddSuggestionCount is how many candidates SuggestNewWords asks for —
@@ -372,8 +421,8 @@ Rules:
 - "word" MUST stay in English, and MUST NOT be one already in the learner's tracked list.
 - "word" MUST be lowercase, except the pronoun "I" and its contractions
   ("I'm", "I'll", "I'd", "I've") when they are part of the word/phrase.
-- "meaning" MUST be written in %[1]s.
-- "example" MUST be a natural English sentence that uses "word".`, native, autoAddSuggestionCount)
+%[3]s
+- "example" MUST be a natural English sentence that uses "word".`, native, autoAddSuggestionCount, dictionaryMeaningRules(native))
 }
 
 func renderAutoSuggestInput(learnerProfile string, existingWords []string) string {

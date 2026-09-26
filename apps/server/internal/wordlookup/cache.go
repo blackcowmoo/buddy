@@ -1,7 +1,8 @@
 // Package wordlookup owns the Redis representation of context-aware article
 // word lookups. The key includes the complete reading context, not just the
 // spelling, because one word can have different meanings in different
-// articles or positions.
+// articles or positions. Its version also follows the definition prompt's
+// output contract so a prompt upgrade does not keep serving stale meanings.
 package wordlookup
 
 import (
@@ -16,7 +17,10 @@ import (
 	"buddy/server/internal/protocol"
 )
 
-const CacheTTL = 30 * 24 * time.Hour
+const (
+	CacheTTL     = 30 * 24 * time.Hour
+	cacheVersion = "v2" // concise, memorization-ready meaning contract
+)
 
 type Request struct {
 	ArticleID string `json:"articleId"`
@@ -30,7 +34,7 @@ type Request struct {
 func Key(r Request) string {
 	b, _ := json.Marshal(r)
 	h := sha256.Sum256(b)
-	return "buddy:word-lookup:" + hex.EncodeToString(h[:])
+	return "buddy:word-lookup:" + cacheVersion + ":" + hex.EncodeToString(h[:])
 }
 
 func Get(ctx context.Context, rdb redis.UniversalClient, key string) (protocol.WordSuggestion, bool, error) {

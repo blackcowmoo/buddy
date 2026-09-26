@@ -116,6 +116,22 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 				return err
 			}, mysqlerr.DupFieldName)
 		}},
+		{Version: 8, Name: "word_reviews.dictionary_meaning", Up: func(ctx context.Context, db *sql.DB) error {
+			for _, column := range []string{
+				"meaning_version INT NOT NULL DEFAULT 0",
+				"meaning_status VARCHAR(16) NOT NULL DEFAULT ''",
+				"meaning_error VARCHAR(255) NOT NULL DEFAULT ''",
+				"previous_meaning TEXT NULL",
+			} {
+				if err := mysqlerr.ApplyAdditive(func() error {
+					_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN `+column)
+					return err
+				}, mysqlerr.DupFieldName); err != nil {
+					return err
+				}
+			}
+			return nil
+		}},
 	}
 	if err := migration.ApplyLegacy(ctx, rw, "wordreview", steps); err != nil {
 		return nil, fmt.Errorf("wordreview: migrations: %w", err)
@@ -188,6 +204,7 @@ func scanWord(row scanner, userID string) (Word, error) {
 		&w.Stage, &w.ReviewCount, &w.CorrectStreak,
 		&nextReviewAt, &lastReviewedAt, &w.Status, &w.VerifyReason, &w.ResearchStatus, &researchResults,
 		&w.ReviewQuestion.Version, &w.ReviewQuestion.Prompt, &w.ReviewQuestion.Answer, &reviewAnswers, &createdAt,
+		&w.MeaningVersion, &w.MeaningStatus, &w.MeaningError, &w.PreviousMeaning,
 	); err != nil {
 		return Word{}, err
 	}
@@ -208,7 +225,7 @@ func scanWord(row scanner, userID string) (Word, error) {
 	return w, nil
 }
 
-const wordColumns = `id, word, original_word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, research_status, research_results, review_question_version, review_prompt, review_answer, review_answers, created_at`
+const wordColumns = `id, word, original_word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, research_status, research_results, review_question_version, review_prompt, review_answer, review_answers, created_at, meaning_version, meaning_status, meaning_error, COALESCE(previous_meaning, '')`
 
 func (s *MySQLStore) Save(ctx context.Context, userID, word, meaning, example string) (Word, error) {
 	return s.SaveOriginal(ctx, userID, word, meaning, example, word)
@@ -250,7 +267,10 @@ func (s *MySQLStore) Get(ctx context.Context, userID, id string) (Word, error) {
 }
 
 func (s *MySQLStore) List(ctx context.Context, userID string) ([]Word, error) {
-	rows, err := s.ro.QueryContext(ctx, `SELECT `+wordColumns+` FROM `+table+` WHERE user_id = ? ORDER BY created_at DESC`, userID)
+	// The list drives cleanup polling and recovery immediately after a start
+	// request. Replica lag must not hide pending intent or rewind completion,
+	// since either can make the browser stop watching a still-running cleanup.
+	rows, err := s.rw.QueryContext(ctx, `SELECT `+wordColumns+` FROM `+table+` WHERE user_id = ? ORDER BY created_at DESC`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("wordreview: list: %w", err)
 	}
