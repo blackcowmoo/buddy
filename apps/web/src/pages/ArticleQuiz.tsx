@@ -25,6 +25,7 @@ import { useDismiss } from "../hooks/useDismiss";
 import { LoadingHint } from "../components/LoadingHint";
 import type { LoadState } from "../lib/loadState";
 import { readStored, writeStored } from "../lib/storedValue";
+import { newestFirst, useViewScrollTop } from "../lib/listView";
 
 // How often to re-check a draw that's still generating in the background
 // (see asyncjob.KindArticleStudy) — a poll, not a push, since nothing on the
@@ -111,7 +112,7 @@ export function ArticleQuiz() {
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<ArticleAnswerResult | null>(null);
   const [tts, setTts] = useState<TtsState>("idle");
-  const articlePageRef = useRef<HTMLElement | null>(null);
+  const articlePageRef = useViewScrollTop<HTMLElement>(view ?? "list");
   const audioRef = useRef<HTMLAudioElement | null>(null);
   // Invalidates a pending play() rejection when the learner cancels before
   // the browser has finished starting playback.
@@ -222,7 +223,7 @@ export function ArticleQuiz() {
 
   const loadInstances = useCallback(() => {
     fetchArticleInstances().then((list) => {
-      setInstances(list.slice().sort((a, b) => b.createdAt - a.createdAt));
+      setInstances(newestFirst(list, (item) => item.createdAt));
       setVisibleInstanceCount(articleListPageSize);
       setState("ready");
     });
@@ -255,13 +256,6 @@ export function ArticleQuiz() {
       return next;
     });
   }, []);
-
-  // List and detail share a scroll container. Start each view at its heading
-  // instead of carrying a long history's scroll position into the article.
-  useLayoutEffect(() => {
-    const page = articlePageRef.current;
-    if (page) page.scrollTop = 0;
-  }, [view]);
 
   const loadOlderInstances = useCallback(() => {
     if (visibleInstanceCount >= instances.length) return;

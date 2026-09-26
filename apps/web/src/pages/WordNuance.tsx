@@ -4,6 +4,7 @@ import { LoadingHint } from "../components/LoadingHint";
 import { NuanceQuestionCard } from "../components/NuanceQuestionCard";
 import { deleteNuanceLesson, drawNuanceLesson, dueQuestions, fetchNuanceLesson, fetchNuanceLessons, lessonTitle, nextReview, practiceNuance, retryNuanceLesson, type NuanceAction, type NuanceLesson } from "../lib/nuance";
 import { formatAbsoluteDateTime, formatDateDivider, formatMessageTime, shouldShowDateDivider } from "../lib/time";
+import { newestFirst, useViewScrollTop } from "../lib/listView";
 
 const selectedID = () => new URLSearchParams(window.location.search).get("lesson");
 function navigate(id: string | null) {
@@ -22,16 +23,20 @@ export function WordNuance() {
   const [error, setError] = useState<string | null>(null);
   const busyRef = useRef(false);
   const navigation = useRef(0);
+  const pageRef = useViewScrollTop<HTMLElement>(selected?.id ?? "list");
 
   const remember = useCallback((lesson: NuanceLesson) => {
-    setLessons((items) => items.some((l) => l.id === lesson.id) ? items.map((l) => l.id === lesson.id && l.revision <= lesson.revision ? lesson : l) : [...items, lesson]);
+    setLessons((items) => newestFirst(
+      items.some((l) => l.id === lesson.id) ? items.map((l) => l.id === lesson.id && l.revision <= lesson.revision ? lesson : l) : [...items, lesson],
+      (item) => item.createdAt,
+    ));
     setSelected((old) => old?.id === lesson.id && old.revision <= lesson.revision ? lesson : old);
   }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
     const items = await fetchNuanceLessons();
-    if (items) { setLessons(items); setError(null); }
+    if (items) { setLessons(newestFirst(items, (item) => item.createdAt)); setError(null); }
     else setError("학습 목록을 불러오지 못했어요. 다시 시도해 주세요.");
     setLoading(false);
   }, []);
@@ -68,7 +73,7 @@ export function WordNuance() {
     const timer = window.setTimeout(async () => {
       const items = await fetchNuanceLessons();
       if (cancelled) return;
-      if (items) { setLessons(items); setSelected((old) => old ? items.find((l) => l.id === old.id && l.revision >= old.revision) ?? old : null); }
+      if (items) { setLessons(newestFirst(items, (item) => item.createdAt)); setSelected((old) => old ? items.find((l) => l.id === old.id && l.revision >= old.revision) ?? old : null); }
       else setLessons((current) => [...current]);
     }, 2500);
     return () => { cancelled = true; window.clearTimeout(timer); };
@@ -121,7 +126,7 @@ export function WordNuance() {
 
   return <div className="app">
     <SubPageHeader title="단어 뉘앙스" />
-    <main className="convo nuance-page">
+    <main ref={pageRef} className="convo nuance-page">
       {error && <p role="alert">{error}</p>}
       {loading && <LoadingHint />}
       {!selected ? <>

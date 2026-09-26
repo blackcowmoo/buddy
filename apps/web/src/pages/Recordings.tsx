@@ -6,10 +6,12 @@ import { formatAbsoluteDateTime } from "../lib/time";
 import { SubPageHeader } from "../components/SubPageHeader";
 import { LoadingHint } from "../components/LoadingHint";
 import type { LoadState } from "../lib/loadState";
+import { newestFirst, useViewScrollTop } from "../lib/listView";
 
 export function Recordings() {
   const [state, setState] = useState<LoadState>("loading");
   const [recordings, setRecordings] = useState<Recording[]>([]);
+  const pageRef = useViewScrollTop<HTMLElement>("list");
 
   useEffect(() => {
     fetchRecordings().then((list) => {
@@ -17,7 +19,7 @@ export function Recordings() {
         setState("error");
         return;
       }
-      setRecordings(list);
+      setRecordings(newestFirst(list, (recording) => recording.createdAt));
       setState("ready");
     });
   }, []);
@@ -28,7 +30,7 @@ export function Recordings() {
     <div className="app">
       <SubPageHeader title="녹음 목록" />
 
-      <main className="convo recordings-list">
+      <main ref={pageRef} className="convo recordings-list">
         <LearningIntro eyebrow="내 목소리로 돌아보는 영어" title="말했던 영어를 다시 들어요" description="저장된 녹음을 들으며 발음과 말하는 리듬을 살펴보세요. 조금씩 편해지는 내 영어를 발견할 수 있어요." />
         {state === "loading" && <LoadingHint />}
         {state === "error" && (

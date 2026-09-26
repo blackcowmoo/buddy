@@ -56,4 +56,16 @@ describe("guided home", () => {
     await user.click(screen.getByRole("button", { name: /My day/ }));
     expect(actions.onOpen).toHaveBeenCalledWith("s1");
   });
+
+  it("shows the most recently active conversation first and starts at the top", () => {
+    render(<SessionList {...props()} sessions={[
+      { id: "old", title: "Older chat", createdAt: 1, updatedAt: 10 },
+      { id: "new", title: "Newest chat", createdAt: 2, updatedAt: 30 },
+    ]} />);
+
+    const oldRow = screen.getByText("Older chat").closest("li")!;
+    const newRow = screen.getByText("Newest chat").closest("li")!;
+    expect(newRow.compareDocumentPosition(oldRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("main").scrollTop).toBe(0);
+  });
 });

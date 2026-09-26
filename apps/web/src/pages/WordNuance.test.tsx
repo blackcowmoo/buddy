@@ -51,6 +51,23 @@ it("uses a dedicated stacked card layout for long history titles", async () => {
   expect(historyItem).toHaveClass("nuance-list-item");
   expect(within(historyItem).getByText("cheap / inexpensive")).toHaveClass("title");
 });
+it("normalizes an unordered response to the newest lesson first and starts at the top", async () => {
+  const older = structuredClone(lesson);
+  older.id = "lesson-old";
+  older.createdAt = 1700000000;
+  const newer = structuredClone(lesson);
+  newer.id = "lesson-new";
+  newer.createdAt = 1700000100;
+  newer.content!.words[0].word = "affordable";
+  vi.mocked(api.fetchNuanceLessons).mockResolvedValueOnce([older, newer]);
+
+  render(<WordNuance />);
+
+  const oldRow = (await screen.findByRole("button", { name: "cheap / inexpensive 열기" })).closest(".session-row")!;
+  const newRow = screen.getByRole("button", { name: "affordable / inexpensive 열기" }).closest(".session-row")!;
+  expect(newRow.compareDocumentPosition(oldRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(screen.getByRole("main").scrollTop).toBe(0);
+});
 it("lists generated history, omits search and dictionary links, and opens the comparison", async () => {
   await open();
   expect(screen.queryByRole("searchbox")).not.toBeInTheDocument();

@@ -6,6 +6,7 @@ import { SubPageHeader } from "../components/SubPageHeader";
 import { WordSearchControl } from "../components/WordSearchControl";
 import { formatDateDivider, formatMessageTime, shouldShowDateDivider } from "../lib/time";
 import { checkWriting, deleteWritingPrompt, drawWritingPrompt, fetchWritingPrompt, fetchWritingPrompts, type WritingPrompt } from "../lib/writing";
+import { newestFirst, useViewScrollTop } from "../lib/listView";
 
 type LoadState = "loading" | "ready";
 
@@ -23,11 +24,12 @@ export function Writing() {
   const [creating, setCreating] = useState(false);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState(false);
+  const pageRef = useViewScrollTop<HTMLElement>(prompt?.id ?? "list");
 
   const loadPrompts = useCallback(async () => {
     setState("loading");
     const list = await fetchWritingPrompts();
-    setPrompts(list.slice().sort((a, b) => a.createdAt - b.createdAt));
+    setPrompts(newestFirst(list, (item) => item.createdAt));
     setState("ready");
   }, []);
 
@@ -62,7 +64,7 @@ export function Writing() {
     setAnswer("");
     const next = await drawWritingPrompt();
     if (next) {
-      setPrompts((items) => [...items, next].sort((a, b) => a.createdAt - b.createdAt));
+      setPrompts((items) => newestFirst([...items, next], (item) => item.createdAt));
       setPrompt(next);
     } else setError(true);
     setCreating(false);
@@ -93,7 +95,7 @@ export function Writing() {
 
   return <div className="app">
     <SubPageHeader title="오늘의 작문" />
-    <main className="convo writing-page">
+    <main ref={pageRef} className="convo writing-page">
       {!prompt && (
         <>
           <LearningIntro eyebrow="생각을 영어로 옮기는 연습" title="한 문장부터 써 볼까요?" description="한국어 문장을 나만의 영어로 표현해 보세요. 답안을 확인하며 더 자연스러운 표현을 익혀요." steps={["문제 만들기", "영어로 쓰기", "피드백 살펴보기"]} />
