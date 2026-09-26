@@ -3,6 +3,7 @@ package httpserver
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 
 	"buddy/server/internal/asyncjob"
@@ -39,6 +40,14 @@ func registerNuance(mux *http.ServeMux, ident identity.Identifier, st nuance.Sto
 		if l.Status == nuance.StatusPending || l.Status == nuance.StatusProcessing {
 			if enqueue(ctx, l) != nil {
 				l.Status = nuance.StatusFailed
+			}
+		} else if l.Status == nuance.StatusDone && l.Content != nil && len(l.Content.MissingAnswers()) > 0 {
+			if err := transport.EnqueueNuanceSupplement(ctx, q, pipe, st, profile, l.UserID, l.ID); err != nil {
+				log.Printf("nuance: enqueue question supplement %s: %v", l.ID, err)
+			} else {
+				// This response-only state makes the existing client poll until the
+				// supplement lands without hiding or rewriting the saved lesson.
+				l.Status = nuance.StatusProcessing
 			}
 		}
 		return l

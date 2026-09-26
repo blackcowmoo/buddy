@@ -135,6 +135,51 @@ func TestMySQLPersistsResumeHistoryOwnershipAndDeletion(t *testing.T) {
 	}
 }
 
+func TestMySQLAddsMissingAnswerQuestionsWithoutResettingProgress(t *testing.T) {
+	st := requireDB(t)
+	ctx := context.Background()
+	l := pendingLesson(t, st, t.Name())
+	c := testContent()
+	for i := range c.Questions {
+		c.Questions[i].Answer = "cheap"
+	}
+	state := State{Progress: map[string]Progress{"q0": {Stage: 2, Attempts: 3, Correct: 2}}, Queue: []string{"q2", "q0"}}
+	contentJSON, _ := json.Marshal(c)
+	stateJSON, _ := json.Marshal(state)
+	if _, err := st.db.ExecContext(ctx, `UPDATE buddy_nuance_lessons SET content_json=?,state_json=?,status=?,revision=? WHERE id=?`, string(contentJSON), string(stateJSON), StatusDone, 7, l.ID); err != nil {
+		t.Fatal(err)
+	}
+	question := Question{
+		Context: "중립적인 가격 안내", Sentence: "This option is ____.", Translation: "이 선택지는 저렴합니다.",
+		Answer: "inexpensive", Explanation: "inexpensive는 중립적이고 cheap은 품질이 낮다는 인상을 줄 수 있어요.",
+	}
+	if err := st.AddQuestions(ctx, l.UserID, l.ID, []Question{question}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.Get(ctx, l.UserID, l.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Content.Questions) != 6 || got.Content.Questions[5].ID != "q5" || len(got.Content.MissingAnswers()) != 0 || got.Revision != 7 {
+		t.Fatalf("supplemented lesson = %+v", got)
+	}
+	beforeState, _ := json.Marshal(state)
+	afterState, _ := json.Marshal(got.State)
+	if string(beforeState) != string(afterState) {
+		t.Fatalf("progress changed: before=%s after=%s", beforeState, afterState)
+	}
+	if err := st.AddQuestions(ctx, l.UserID, l.ID, []Question{question}); err != nil {
+		t.Fatal(err)
+	}
+	again, err := st.Get(ctx, l.UserID, l.ID)
+	if err != nil || again.Revision != got.Revision || len(again.Content.Questions) != 6 {
+		t.Fatalf("repeated supplement changed lesson: %+v %v", again, err)
+	}
+	if err := st.AddQuestions(ctx, "someone-else", l.ID, []Question{question}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ownership error = %v", err)
+	}
+}
+
 func TestMySQLStartsOneRandomReviewBatchAcrossLessons(t *testing.T) {
 	st := requireDB(t)
 	ctx := context.Background()

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
 	"time"
 
@@ -109,6 +110,52 @@ func (s *MySQLStore) Complete(ctx context.Context, id string, c Content) error {
 	}
 	content, _ := json.Marshal(c)
 	if _, err = tx.ExecContext(ctx, `UPDATE buddy_nuance_lessons SET content_json=?,status=?,revision=revision+1 WHERE id=?`, string(content), StatusDone, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// AddQuestions fills only missing answer coverage on a completed legacy
+// lesson. Rechecking under the row lock makes repeated or concurrent
+// backfills idempotent and preserves all existing progress and attempts.
+func (s *MySQLStore) AddQuestions(ctx context.Context, userID, id string, questions []Question) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	l, err := scan(tx.QueryRowContext(ctx, `SELECT `+columns+` FROM buddy_nuance_lessons WHERE user_id=? AND id=? FOR UPDATE`, userID, id))
+	if err != nil {
+		return err
+	}
+	if l.Status != StatusDone || l.Content == nil {
+		return ErrInvalid
+	}
+	if len(l.Content.MissingAnswers()) == 0 {
+		return nil
+	}
+	if err := l.Content.ValidateSupplement(questions); err != nil {
+		return err
+	}
+	used := make(map[string]bool, len(l.Content.Questions))
+	for _, q := range l.Content.Questions {
+		used[q.ID] = true
+	}
+	nextID := 1
+	for i := range questions {
+		for used[fmt.Sprintf("q%d", nextID)] {
+			nextID++
+		}
+		questions[i].ID = fmt.Sprintf("q%d", nextID)
+		used[questions[i].ID] = true
+		nextID++
+	}
+	l.Content.Questions = append(l.Content.Questions, questions...)
+	content, _ := json.Marshal(l.Content)
+	// The additions do not alter an active queue or progress, so keep the
+	// practice revision stable; an in-flight answer remains valid.
+	_, err = tx.ExecContext(ctx, `UPDATE buddy_nuance_lessons SET content_json=? WHERE user_id=? AND id=?`, string(content), userID, id)
+	if err != nil {
 		return err
 	}
 	return tx.Commit()

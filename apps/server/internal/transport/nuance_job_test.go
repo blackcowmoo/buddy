@@ -63,6 +63,21 @@ func (s *nuanceJobStore) Complete(_ context.Context, _ string, c nuance.Content)
 	}
 	return nil
 }
+func (s *nuanceJobStore) AddQuestions(_ context.Context, _, _ string, questions []nuance.Question) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lesson.Content == nil {
+		return nuance.ErrInvalid
+	}
+	if err := s.lesson.Content.ValidateSupplement(questions); err != nil {
+		return err
+	}
+	for i := range questions {
+		questions[i].ID = fmt.Sprintf("q%d", len(s.lesson.Content.Questions)+i)
+	}
+	s.lesson.Content.Questions = append(s.lesson.Content.Questions, questions...)
+	return nil
+}
 
 type nuanceLLM struct {
 	complete func(context.Context) (string, error)
@@ -124,7 +139,7 @@ func TestNuanceWorkerRetriesFailedAndProcessingButSkipsDoneOrDeleted(t *testing.
 				st.lesson.ID = ""
 			}
 			pipe := &pipeline.Pipeline{Analysis: []pipeline.Candidate{{LLM: nuanceLLM{complete: func(context.Context) (string, error) { calls++; return string(data), nil }}}}}
-			payload, _ := json.Marshal(nuanceJobPayload{"user", "lesson"})
+			payload, _ := json.Marshal(nuanceJobPayload{UserID: "user", LessonID: "lesson"})
 			err := NuanceJobHandler(pipe, st, func(context.Context, string) (string, error) { return "", nil })(context.Background(), asyncjob.Job{Payload: payload})
 			if err != nil {
 				t.Fatal(err)
@@ -141,10 +156,38 @@ func TestNuanceWorkerRetriesFailedAndProcessingButSkipsDoneOrDeleted(t *testing.
 }
 func TestNuanceWorkerPersistsFailure(t *testing.T) {
 	st := &nuanceJobStore{lesson: nuance.Lesson{ID: "lesson", Status: nuance.StatusPending}}
-	payload, _ := json.Marshal(nuanceJobPayload{"user", "lesson"})
+	payload, _ := json.Marshal(nuanceJobPayload{UserID: "user", LessonID: "lesson"})
 	err := NuanceJobHandler(nil, st, func(context.Context, string) (string, error) { return "", errors.New("profile unavailable") })(context.Background(), asyncjob.Job{Payload: payload})
 	if err == nil || st.lesson.Status != nuance.StatusFailed {
 		t.Fatalf("failure lost: %v %+v", err, st.lesson)
+	}
+}
+
+func TestNuanceWorkerSupplementsMissingLegacyAnswers(t *testing.T) {
+	data, err := os.ReadFile("../nuance/testdata/lesson.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var content nuance.Content
+	if err := json.Unmarshal(data, &content); err != nil {
+		t.Fatal(err)
+	}
+	for i := range content.Questions {
+		content.Questions[i].Answer = "cheap"
+	}
+	st := &nuanceJobStore{lesson: nuance.Lesson{ID: "lesson", UserID: "user", Status: nuance.StatusDone, Content: &content}}
+	model := nuanceLLM{complete: func(context.Context) (string, error) {
+		return `{"questions":[{"context":"중립적인 가격표","sentence":"This option is ____.","translation":"이 선택지는 저렴합니다.","answer":"inexpensive","explanation":"inexpensive는 중립적이고 cheap은 품질이 낮다는 인상을 더할 수 있어요."}]}`, nil
+	}}
+	pipe := &pipeline.Pipeline{Analysis: []pipeline.Candidate{{LLM: model}}}
+	job := asyncjob.Job{Payload: mustPayload(nuanceJobPayload{
+		UserID: "user", LessonID: "lesson", Operation: nuanceSupplementOperation, RequestID: "supplement-1",
+	})}
+	if err := NuanceJobHandler(pipe, st, nil)(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.lesson.Content.Questions) != 6 || len(st.lesson.Content.MissingAnswers()) != 0 || st.lesson.Status != nuance.StatusDone {
+		t.Fatalf("supplemented lesson = %+v", st.lesson)
 	}
 }
 
@@ -166,7 +209,7 @@ func TestNuanceInvalidGenerationIsTerminalAndExplicitRetryGetsFreshInput(t *test
 	}
 	pipe := &pipeline.Pipeline{Analysis: []pipeline.Candidate{{LLM: model}}}
 	handler := NuanceJobHandler(pipe, st, func(context.Context, string) (string, error) { return "", nil })
-	payload := asyncjob.Job{Payload: mustPayload(nuanceJobPayload{"user", "lesson"})}
+	payload := asyncjob.Job{Payload: mustPayload(nuanceJobPayload{UserID: "user", LessonID: "lesson"})}
 	if err := handler(context.Background(), payload); err != nil {
 		t.Fatalf("terminal model output error must not trigger an automatic job retry: %v", err)
 	}
@@ -220,7 +263,7 @@ func TestNuanceDuplicateRegeneratesWithRejectedPairAndFreshRequest(t *testing.T)
 		},
 	}
 	pipe := &pipeline.Pipeline{Analysis: []pipeline.Candidate{{LLM: model}}}
-	job := asyncjob.Job{Payload: mustPayload(nuanceJobPayload{"user", "lesson"})}
+	job := asyncjob.Job{Payload: mustPayload(nuanceJobPayload{UserID: "user", LessonID: "lesson"})}
 	if err := NuanceJobHandler(pipe, st, func(context.Context, string) (string, error) { return "", nil })(context.Background(), job); err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +300,7 @@ func TestNuanceDuplicateAttemptsAreBoundedAndOtherErrorsStop(t *testing.T) {
 			calls := 0
 			model := nuanceLLM{complete: func(context.Context) (string, error) { calls++; return string(data), nil }}
 			pipe := &pipeline.Pipeline{Analysis: []pipeline.Candidate{{LLM: model}}}
-			job := asyncjob.Job{Payload: mustPayload(nuanceJobPayload{"user", "lesson"})}
+			job := asyncjob.Job{Payload: mustPayload(nuanceJobPayload{UserID: "user", LessonID: "lesson"})}
 			err := NuanceJobHandler(pipe, st, func(context.Context, string) (string, error) { return "", nil })(context.Background(), job)
 			if !errors.Is(err, tc.want) || calls != tc.calls || st.lesson.Status != nuance.StatusFailed || st.lesson.Content != nil {
 				t.Fatalf("error=%v calls=%d lesson=%+v", err, calls, st.lesson)

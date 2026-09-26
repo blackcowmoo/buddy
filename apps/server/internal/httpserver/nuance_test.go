@@ -10,12 +10,15 @@ import (
 	"testing"
 	"time"
 
+	"buddy/server/internal/llm"
 	"buddy/server/internal/nuance"
+	"buddy/server/internal/pipeline"
 )
 
 type nuanceHTTPStore struct {
 	nuance.Store
-	lesson nuance.Lesson
+	lesson       nuance.Lesson
+	supplemented chan struct{}
 }
 
 func (s *nuanceHTTPStore) List(_ context.Context, user string) ([]nuance.Lesson, error) {
@@ -56,6 +59,32 @@ func (s *nuanceHTTPStore) Delete(_ context.Context, user, id string) error {
 	}
 	return nil
 }
+func (s *nuanceHTTPStore) AddQuestions(_ context.Context, user, id string, questions []nuance.Question) error {
+	if user != s.lesson.UserID || id != s.lesson.ID {
+		return nuance.ErrNotFound
+	}
+	if err := s.lesson.Content.ValidateSupplement(questions); err != nil {
+		return err
+	}
+	s.lesson.Content.Questions = append(s.lesson.Content.Questions, questions...)
+	if s.supplemented != nil {
+		close(s.supplemented)
+	}
+	return nil
+}
+
+type nuanceHTTPModel struct {
+	release <-chan struct{}
+}
+
+func (m nuanceHTTPModel) Complete(context.Context, string, []llm.Message, bool) (string, error) {
+	<-m.release
+	return `{"questions":[{"context":"중립적인 가격표","sentence":"This option is ____.","translation":"이 선택지는 저렴합니다.","answer":"inexpensive","explanation":"inexpensive는 중립적이고 cheap은 품질이 낮다는 인상을 더할 수 있어요."}]}`, nil
+}
+func (nuanceHTTPModel) ChatStream(context.Context, string, []llm.Message, func(string)) (string, error) {
+	panic("unused")
+}
+
 func TestNuanceRoutesGradeOnServerAndProtectOwnership(t *testing.T) {
 	data, err := os.ReadFile("../nuance/testdata/lesson.json")
 	if err != nil {
@@ -105,5 +134,41 @@ func TestNuanceRoutesGradeOnServerAndProtectOwnership(t *testing.T) {
 				t.Fatal("leaked account metadata")
 			}
 		})
+	}
+}
+
+func TestNuanceListBackfillsMissingAnswerCoverageAndReportsProcessing(t *testing.T) {
+	data, err := os.ReadFile("../nuance/testdata/lesson.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c nuance.Content
+	if err := json.Unmarshal(data, &c); err != nil {
+		t.Fatal(err)
+	}
+	for i := range c.Questions {
+		c.Questions[i].Answer = "cheap"
+	}
+	release := make(chan struct{})
+	st := &nuanceHTTPStore{
+		lesson:       nuance.Lesson{ID: "lesson", UserID: "alex", Status: nuance.StatusDone, Content: &c, State: nuance.State{Progress: map[string]nuance.Progress{}}},
+		supplemented: make(chan struct{}),
+	}
+	pipe := &pipeline.Pipeline{Analysis: []pipeline.Candidate{{LLM: nuanceHTTPModel{release: release}}}}
+	mux := http.NewServeMux()
+	registerNuance(mux, fakeIdentifier{id: "alex", ok: true}, st, pipe, nil, nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/nuance", nil))
+	var lessons []nuance.Lesson
+	if err := json.Unmarshal(rec.Body.Bytes(), &lessons); err != nil {
+		t.Fatal(err)
+	}
+	if len(lessons) != 1 || lessons[0].Status != nuance.StatusProcessing {
+		t.Fatalf("list response = %+v", lessons)
+	}
+	close(release)
+	<-st.supplemented
+	if len(st.lesson.Content.MissingAnswers()) != 0 || st.lesson.Status != nuance.StatusDone {
+		t.Fatalf("saved lesson = %+v", st.lesson)
 	}
 }
