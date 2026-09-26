@@ -58,12 +58,11 @@ func TestPracticeRepeatsMistakesAndResumesFeedback(t *testing.T) {
 		t.Fatalf("bad schedule: %+v", p)
 	}
 	apply(t, &l, now, Action{Kind: "start"})
-	if len(l.State.Queue) != 0 {
-		t.Fatal("early reviews inflate progress")
+	if got := fmt.Sprint(l.State.Queue); got != "[q0 q1 q2 q3 q4]" {
+		t.Fatalf("individual practice did not restore every question: %s", got)
 	}
-	apply(t, &l, now.Add(24*time.Hour), Action{Kind: "start"})
-	if len(l.State.Queue) != 5 {
-		t.Fatal("due questions not restored")
+	if got := l.State.Progress["q0"]; got != p {
+		t.Fatalf("restarting individual practice changed schedule: before=%+v after=%+v", p, got)
 	}
 }
 
@@ -138,6 +137,35 @@ func TestValidateModelContent(t *testing.T) {
 			mutate(&c)
 			if err := c.Validate(); err == nil {
 				t.Fatal("invalid generated lesson accepted")
+			}
+		})
+	}
+}
+
+func TestMissingAnswersAndSupplementValidation(t *testing.T) {
+	c := testContent()
+	for i := range c.Questions {
+		c.Questions[i].Answer = "cheap"
+	}
+	if got := fmt.Sprint(c.MissingAnswers()); got != "[inexpensive]" {
+		t.Fatalf("MissingAnswers() = %s", got)
+	}
+	valid := Question{
+		Context: "격식을 갖춘 가격 안내문", Sentence: "This option is ____.",
+		Translation: "이 선택지는 저렴합니다.", Answer: "inexpensive",
+		Explanation: "inexpensive는 중립적이고 cheap은 품질이 낮다는 인상을 줄 수 있어요.",
+	}
+	if err := c.ValidateSupplement([]Question{valid}); err != nil {
+		t.Fatal(err)
+	}
+	for name, questions := range map[string][]Question{
+		"missing question":   nil,
+		"wrong answer":       {{Context: valid.Context, Sentence: valid.Sentence, Translation: valid.Translation, Answer: "cheap", Explanation: valid.Explanation}},
+		"duplicate sentence": {{Context: valid.Context, Sentence: c.Questions[0].Sentence, Translation: valid.Translation, Answer: valid.Answer, Explanation: valid.Explanation}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := c.ValidateSupplement(questions); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("ValidateSupplement() error = %v", err)
 			}
 		})
 	}

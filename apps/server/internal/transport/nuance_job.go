@@ -13,6 +13,7 @@ import (
 	"buddy/server/internal/nuance"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/workguard"
+	"github.com/google/uuid"
 )
 
 // asyncjob renews this lease during slow inference; it bounds crash recovery,
@@ -21,7 +22,14 @@ const NuanceClaimTTL = 15 * time.Minute
 
 const nuanceGenerationAttempts = 3
 
-type nuanceJobPayload struct{ UserID, LessonID string }
+const nuanceSupplementOperation = "supplement"
+
+type nuanceJobPayload struct {
+	UserID    string
+	LessonID  string
+	Operation string
+	RequestID string
+}
 
 var nuanceInlineJobs sync.Map
 
@@ -30,6 +38,9 @@ func NuanceJobHandler(pipe *pipeline.Pipeline, st nuance.Store, profile func(con
 		ctx = workguard.BindStore(ctx, st, p.UserID, p.LessonID)
 		if err := workguard.Check(ctx); err != nil {
 			return err
+		}
+		if p.Operation == nuanceSupplementOperation {
+			return supplementNuance(ctx, pipe, st, p)
 		}
 		l, err := st.Get(ctx, p.UserID, p.LessonID)
 		if errors.Is(err, nuance.ErrNotFound) || (err == nil && l.Status == nuance.StatusDone) {
@@ -93,6 +104,35 @@ func NuanceJobHandler(pipe *pipeline.Pipeline, st nuance.Store, profile func(con
 	})
 }
 
+func supplementNuance(ctx context.Context, pipe *pipeline.Pipeline, st nuance.Store, p nuanceJobPayload) error {
+	l, err := st.Get(ctx, p.UserID, p.LessonID)
+	if errors.Is(err, nuance.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if l.Status != nuance.StatusDone || l.Content == nil || len(l.Content.MissingAnswers()) == 0 {
+		return nil
+	}
+	questions, err := pipe.SupplementNuance(ctx, *l.Content, p.RequestID)
+	if errors.Is(err, nuance.ErrInvalid) {
+		// A focused repair already failed for this request. Finish this job so a
+		// later page load can enqueue a fresh request ID instead of replaying a
+		// deterministic cached response through the durable retry loop.
+		log.Printf("nuance: invalid question supplement %s: %v", p.LessonID, err)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	err = st.AddQuestions(ctx, p.UserID, p.LessonID, questions)
+	if errors.Is(err, nuance.ErrNotFound) {
+		return nil
+	}
+	return err
+}
+
 func nuanceComparison(c nuance.Content) string {
 	words := make([]string, len(c.Words))
 	for i, w := range c.Words {
@@ -102,7 +142,7 @@ func nuanceComparison(c nuance.Content) string {
 }
 
 func EnqueueNuance(ctx context.Context, q *asyncjob.Queue, pipe *pipeline.Pipeline, st nuance.Store, profile func(context.Context, string) (string, error), userID, id string) error {
-	payload := nuanceJobPayload{userID, id}
+	payload := nuanceJobPayload{UserID: userID, LessonID: id}
 	handler := NuanceJobHandler(pipe, st, profile)
 	if q != nil {
 		return q.EnqueueAndRunInBackground(ctx, asyncjob.KindNuance, id, id, payload, NuanceClaimTTL, handler)
@@ -115,6 +155,28 @@ func EnqueueNuance(ctx context.Context, q *asyncjob.Queue, pipe *pipeline.Pipeli
 		defer nuanceInlineJobs.Delete(id)
 		if err := handler(context.Background(), asyncjob.Job{Payload: mustPayload(payload)}); err != nil {
 			log.Printf("nuance: generate %s: %v", id, err)
+		}
+	}()
+	return nil
+}
+
+// EnqueueNuanceSupplement lazily repairs an existing lesson without changing
+// its visible status or discarding practice history. Redis deduplicates across
+// replicas; nuanceInlineJobs does the same inside a no-Redis process.
+func EnqueueNuanceSupplement(ctx context.Context, q *asyncjob.Queue, pipe *pipeline.Pipeline, st nuance.Store, profile func(context.Context, string) (string, error), userID, id string) error {
+	key := "supplement:" + id
+	payload := nuanceJobPayload{UserID: userID, LessonID: id, Operation: nuanceSupplementOperation, RequestID: uuid.NewString()}
+	handler := NuanceJobHandler(pipe, st, profile)
+	if q != nil {
+		return q.EnqueueAndRunInBackground(ctx, asyncjob.KindNuance, key, key, payload, NuanceClaimTTL, handler)
+	}
+	if _, loaded := nuanceInlineJobs.LoadOrStore(key, struct{}{}); loaded {
+		return nil
+	}
+	go func() {
+		defer nuanceInlineJobs.Delete(key)
+		if err := handler(context.Background(), asyncjob.Job{Payload: mustPayload(payload)}); err != nil {
+			log.Printf("nuance: supplement %s: %v", id, err)
 		}
 	}()
 	return nil

@@ -97,6 +97,62 @@ func (c Content) Validate() error {
 	return nil
 }
 
+// MissingAnswers returns words that never appear as the preferred answer.
+// The original word order is preserved so a supplement prompt is stable.
+func (c Content) MissingAnswers() []string {
+	answered := make(map[string]bool, len(c.Questions))
+	for _, q := range c.Questions {
+		answered[q.Answer] = true
+	}
+	missing := make([]string, 0, len(c.Words))
+	for _, w := range c.Words {
+		if !answered[w.Word] {
+			missing = append(missing, w.Word)
+		}
+	}
+	return missing
+}
+
+// ValidateSupplement accepts exactly one new question for every currently
+// uncovered word. Existing legacy questions are left untouched, while each
+// addition still has to satisfy the current question contract.
+func (c Content) ValidateSupplement(questions []Question) error {
+	missing := c.MissingAnswers()
+	if len(missing) == 0 && len(questions) == 0 {
+		return nil
+	}
+	if len(questions) != len(missing) {
+		return fmt.Errorf("%w: supplement must cover each missing word once", ErrInvalid)
+	}
+	words, required := map[string]bool{}, map[string]bool{}
+	for _, w := range c.Words {
+		words[w.Word] = true
+	}
+	for _, word := range missing {
+		required[word] = true
+	}
+	sentences, covered := map[string]bool{}, map[string]bool{}
+	for _, q := range c.Questions {
+		sentences[q.Sentence] = true
+	}
+	for _, q := range questions {
+		if !nonemptyQuestion(q) || !words[q.Answer] || !required[q.Answer] || covered[q.Answer] || sentences[q.Sentence] || strings.Count(q.Sentence, "____") != 1 || strings.Contains(strings.Replace(q.Sentence, "____", "", 1), "_") {
+			return fmt.Errorf("%w: invalid supplement question", ErrInvalid)
+		}
+		covered[q.Answer], sentences[q.Sentence] = true, true
+	}
+	return nil
+}
+
+func nonemptyQuestion(q Question) bool {
+	for _, value := range []string{q.Context, q.Sentence, q.Translation, q.Answer, q.Explanation} {
+		if strings.TrimSpace(value) == "" {
+			return false
+		}
+	}
+	return true
+}
+
 func exactAnswer(words []Word, answer string) bool {
 	for _, w := range words {
 		if w.Word == answer {
@@ -164,10 +220,11 @@ func (l *Lesson) Apply(a Action, now time.Time) error {
 		if len(l.State.Queue) != 0 {
 			return nil
 		}
+		// Opening one comparison is deliberate practice, not the scheduled
+		// cross-lesson review. Include every saved context here; StartReview
+		// separately applies due dates and the five-question batch limit.
 		for _, q := range l.Content.Questions {
-			if l.State.Progress[q.ID].NextReviewAt <= now.Unix() {
-				l.State.Queue = append(l.State.Queue, q.ID)
-			}
+			l.State.Queue = append(l.State.Queue, q.ID)
 		}
 	case "answer":
 		if len(l.State.Queue) == 0 || l.State.Queue[0] != a.QuestionID || l.State.Feedback != nil {
@@ -235,6 +292,7 @@ type Store interface {
 	Delete(context.Context, string, string) error
 	SetStatus(context.Context, string, string) error
 	Complete(context.Context, string, Content) error
+	AddQuestions(context.Context, string, string, []Question) error
 	StartReview(context.Context, string) (ReviewBatch, error)
 	Act(context.Context, string, string, Action) (Lesson, error)
 }

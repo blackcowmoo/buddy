@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -185,5 +186,41 @@ func TestGenerateNuanceKeepsRepairTransportFailureRetryable(t *testing.T) {
 	_, err := p.GenerateNuance(context.Background(), "", nil, "id")
 	if err == nil || errors.Is(err, nuance.ErrInvalid) {
 		t.Fatalf("GenerateNuance() error = %v, want a retryable transport error", err)
+	}
+}
+
+func TestSupplementNuanceGeneratesOneQuestionForEachMissingAnswer(t *testing.T) {
+	data, err := os.ReadFile("../nuance/testdata/lesson.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lesson nuance.Content
+	if err := json.Unmarshal(data, &lesson); err != nil {
+		t.Fatal(err)
+	}
+	for i := range lesson.Questions {
+		lesson.Questions[i].Answer = "cheap"
+	}
+	var system, input string
+	p := &Pipeline{Analysis: []Candidate{{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		system, input = msgs[0].Content, msgs[1].Content
+		return `{"questions":[{"id":"model-owned","context":"가격표에 객관적으로 안내하는 상황","sentence":"This option is ____.","translation":"이 선택지는 저렴합니다.","answer":" INEXPENSIVE ","explanation":"inexpensive는 중립적이고 cheap은 품질에 부정적인 인상을 더할 수 있어요."}]}`, nil
+	}}}}}
+	questions, err := p.SupplementNuance(context.Background(), lesson, "supplement-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(questions) != 1 || questions[0].Answer != "inexpensive" || questions[0].ID != "" {
+		t.Fatalf("questions = %+v", questions)
+	}
+	for _, want := range []string{"exactly one distinct question", "Every word in the existing lesson", "Do not repeat an existing sentence"} {
+		if !strings.Contains(system, want) {
+			t.Errorf("supplement prompt missing %q", want)
+		}
+	}
+	for _, want := range []string{"requiredAnswers", "inexpensive", "supplement-1"} {
+		if !strings.Contains(input, want) {
+			t.Errorf("supplement input missing %q", want)
+		}
 	}
 }

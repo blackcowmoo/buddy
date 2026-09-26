@@ -114,7 +114,7 @@ func TestItemJobsDiscardDeletionDuringModelCall(t *testing.T) {
 				}
 			case "nuance":
 				lessons := &guardedNuanceStore{&nuanceJobStore{lesson: nuance.Lesson{ID: "item", Status: nuance.StatusPending}}, owner}
-				err = NuanceJobHandler(pipe, lessons, func(context.Context, string) (string, error) { return "", nil })(ctx, asyncjob.Job{Payload: mustPayload(nuanceJobPayload{"alex", "item"})})
+				err = NuanceJobHandler(pipe, lessons, func(context.Context, string) (string, error) { return "", nil })(ctx, asyncjob.Job{Payload: mustPayload(nuanceJobPayload{UserID: "alex", LessonID: "item"})})
 				if lessons.completionCalls != 0 || lessons.lesson.Status == nuance.StatusFailed {
 					t.Fatal("deleted lesson completed/failed")
 				}
