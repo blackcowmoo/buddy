@@ -35,8 +35,8 @@ const (
 // vocabulary list. Each qualifying issue maps onto wordreview.Store.Save's
 // (word, meaning, example) shape the same way pipeline.SuggestWords'
 // WordSuggestion does: Issue.Suggestion (the corrected expression) as the
-// word, Issue.ExplanationTranslation (already a native-language gloss, same
-// role as WordSuggestion.Meaning) as the meaning, and the full
+// word, Issue.StudyMeaning (a dictionary gloss kept separate from the
+// correction explanation) as the meaning, and the full
 // Correction.Corrected sentence — already a natural sentence using the
 // fixed expression — as the example.
 //
@@ -65,7 +65,12 @@ func captureCorrectionWords(ctx context.Context, pipe *pipeline.Pipeline, words 
 		if word == "" || strings.EqualFold(word, strings.TrimSpace(issue.Span)) {
 			continue // nothing actually corrected here
 		}
-		meaning := strings.TrimSpace(issue.ExplanationTranslation)
+		meaning := strings.TrimSpace(issue.StudyMeaning)
+		if meaning == "" {
+			// Older queued corrections lack the gloss field. Preserve their
+			// capture behavior; existing entries can use the meaning cleanup.
+			meaning = strings.TrimSpace(issue.ExplanationTranslation)
+		}
 		if utf8.RuneCountInString(word) > maxCapturedWordLen ||
 			utf8.RuneCountInString(meaning) > maxCapturedFieldLen ||
 			utf8.RuneCountInString(example) > maxCapturedFieldLen {

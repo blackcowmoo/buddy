@@ -35,6 +35,14 @@ export interface WordReviewItem {
   researchStatus?: "pending" | "done" | "confirmed";
   researchResults?: WordSuggestion[];
   reviewQuestion?: WordReviewQuestion;
+  meaningStatus?: "pending" | "done" | "failed";
+  meaningError?: string;
+  previousMeaning?: string;
+}
+
+export async function startMeaningCleanup(): Promise<boolean> {
+  const result = await postJSON<{ started: boolean } | null>("api/words/meanings/cleanup", {}, null);
+  return result?.started === true;
 }
 
 // Adds one word-search suggestion the learner explicitly chose to study (the

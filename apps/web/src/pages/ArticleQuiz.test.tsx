@@ -887,6 +887,7 @@ describe("ArticleQuiz page — word lookup while reading", () => {
       key: 9,
       word: "discovery",
       result: { word: "discovery", meaning: "발견", example: "A discovery." },
+      definitionVersion: 2,
     }]));
     const user = userEvent.setup();
     render(<ArticleQuiz />);
@@ -928,6 +929,7 @@ describe("ArticleQuiz page — word lookup while reading", () => {
       key: 9,
       word: "discovery",
       result: { word: "Discovery", meaning: "발견", example: "A discovery." },
+      definitionVersion: 2,
     }]));
     const user = userEvent.setup();
     render(<ArticleQuiz />);
@@ -969,6 +971,29 @@ describe("ArticleQuiz page — word lookup while reading", () => {
     await user.click(screen.getByRole("button", { name: /검색한 단어 1/ }));
 
     expect(within(screen.getByRole("dialog", { name: "검색한 단어 목록" })).getByText("발견")).toBeInTheDocument();
+  });
+
+  it("refreshes legacy definitions without losing the article's search history", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([{
+      id: "i1", source: "BBC", title: sampleDraw.title, summary: sampleDraw.summary,
+      answered: false, correct: false, createdAt: 1710494400,
+      publishedAt: sampleDraw.publishedAt, status: "done",
+    }]);
+    vi.mocked(fetchArticleInstance).mockResolvedValue(sampleDraw);
+    vi.mocked(defineWord).mockResolvedValue({ word: "discovery", meaning: "발견", example: "A discovery." });
+    localStorage.setItem("buddy.article.searched-words.i1", JSON.stringify([{
+      key: 9, word: "discovery", result: { word: "discovery", meaning: "맥락상 발견을 의미함", example: "A discovery." },
+    }]));
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+    await user.click(await screen.findByText("[BBC] Scientists make discovery"));
+    await vi.waitFor(() => expect(defineWord).toHaveBeenCalledWith(sampleDraw.id, "discovery", 9));
+    await user.click(screen.getByRole("button", { name: /검색한 단어 1/ }));
+    const panel = screen.getByRole("dialog", { name: "검색한 단어 목록" });
+    expect(await within(panel).findByText("발견")).toBeInTheDocument();
+    expect(within(panel).queryByText("맥락상 발견을 의미함")).not.toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("buddy.article.searched-words.i1") ?? "[]"))
+      .toEqual([expect.objectContaining({ key: 9, word: "discovery", definitionVersion: 2, result: expect.objectContaining({ meaning: "발견" }) })]);
   });
 
   it("shows a failure message when the lookup fails", async () => {

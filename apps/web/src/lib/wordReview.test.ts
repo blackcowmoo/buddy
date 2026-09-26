@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { confirmResearchWord, deleteWord, fetchAutoAddStatus, fetchWords, reviewWord, saveWord, startAutoAddWords, startResearchWord } from "./wordReview";
+import { confirmResearchWord, deleteWord, fetchAutoAddStatus, fetchWords, reviewWord, saveWord, startAutoAddWords, startResearchWord, startMeaningCleanup } from "./wordReview";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -7,6 +7,14 @@ afterEach(() => {
 
 const suggestion = { word: "ecstatic", meaning: "매우 행복한", example: "She was ecstatic." };
 const item = { id: "w1", ...suggestion, stage: 0, reviewCount: 0, nextReviewAt: 1700000000 };
+
+it("starts meaning cleanup and reports a failed request", async () => {
+  const request = vi.fn().mockResolvedValueOnce({ ok: true, json: async () => ({ started: true }) }).mockResolvedValueOnce({ ok: false });
+  vi.stubGlobal("fetch", request);
+  await expect(startMeaningCleanup()).resolves.toBe(true);
+  expect(request).toHaveBeenCalledWith("api/words/meanings/cleanup", expect.objectContaining({ method: "POST", body: "{}" }));
+  await expect(startMeaningCleanup()).resolves.toBe(false);
+});
 
 describe("saveWord", () => {
   it("posts the suggestion and returns the saved item", async () => {

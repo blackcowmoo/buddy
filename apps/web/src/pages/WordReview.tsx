@@ -13,6 +13,7 @@ import {
   startResearchWord,
   confirmResearchWord,
   saveWord,
+  startMeaningCleanup,
 } from "../lib/wordReview";
 import type { WordSuggestion } from "../lib/protocol";
 import { formatAbsoluteDateTime } from "../lib/time";
@@ -93,6 +94,8 @@ function formatReviewAge(unixSeconds: number | undefined): string {
 const minRecognitionDistractors = 7;
 
 export function WordReview() {
+  const [startingMeaningCleanup, setStartingMeaningCleanup] = useState(false);
+  const [meaningCleanupError, setMeaningCleanupError] = useState(false);
   const [state, setState] = useState<LoadState>("loading");
   const [words, setWords] = useState<WordReviewItem[]>([]);
   const [dueCount, setDueCount] = useState(0);
@@ -194,6 +197,7 @@ export function WordReview() {
     const timer = window.setInterval(() => {
       const hasPendingWork = words.some((w) =>
         w.status === "pending" ||
+        w.meaningStatus === "pending" ||
         w.researchStatus === "pending" ||
         (w.status === "verified" && currentQuestion(w) === null),
       );
@@ -204,6 +208,16 @@ export function WordReview() {
   }, [words]);
 
   const handleDelete = (id: string) => confirmThenDelete("이 단어를 삭제할까요?", deleteWord, id, setWords);
+
+  const handleMeaningCleanup = async () => {
+    setStartingMeaningCleanup(true);
+    setMeaningCleanupError(false);
+    const started = await startMeaningCleanup();
+    const result = started ? await fetchWords() : null;
+    if (result) { setWords(result.words); setDueCount(result.dueCount); }
+    setMeaningCleanupError(!started || !result);
+    setStartingMeaningCleanup(false);
+  };
 
   const handleResearch = useCallback(async (word: WordReviewItem) => {
     setResearching((prev) => new Set(prev).add(word.id));
@@ -542,6 +556,20 @@ export function WordReview() {
             )}
             {autoAddError && <p className="hint">{autoAddError}</p>}
 
+            {words.some((w) => w.status === "verified") && (
+              <div>
+                <button type="button" className="ghost" onClick={() => void handleMeaningCleanup()}
+                  disabled={startingMeaningCleanup || words.some((w) => w.meaningStatus === "pending") ||
+                    !words.some((w) => w.status === "verified" && w.meaningStatus !== "done")}>
+                  {startingMeaningCleanup || words.some((w) => w.meaningStatus === "pending") ? "단어 뜻 정리 중…" : "단어 뜻 정리"}
+                </button>
+                <p className="hint">기존 뜻과 예문을 바탕으로 사전식 뜻으로 다듬어요. 복습 진도는 유지돼요.</p>
+                {words.some((w) => w.meaningStatus === "pending") && <p className="hint" role="status">뜻 {words.filter((w) => w.meaningStatus === "pending").length}개 정리 중이에요. 화면을 나가도 계속 진행돼요.</p>}
+                {words.some((w) => w.meaningStatus === "done") && <p className="hint" role="status">뜻 {words.filter((w) => w.meaningStatus === "done").length}개를 정리했어요.</p>}
+                {meaningCleanupError && <p className="hint" role="alert">뜻 정리 상태를 확인하지 못했어요. 다시 시도해 주세요.</p>}
+              </div>
+            )}
+
             {words.length === 0 && (
               <EmptyState title="아직 학습 중인 단어가 없어요." description="‘새 단어 추가로 학습하기’로 시작하거나, 대화에서 단어를 검색한 뒤 ‘학습하기’를 눌러 모아 보세요." />
             )}
@@ -728,6 +756,10 @@ function WordListSection({ title, words, count = words.length, rowClassName, ren
             <div className={`session-item word-list-item${rowClassName ? ` ${rowClassName}` : ""}`}>
               <span className="title" lang="en">{w.word}</span>
               <span className="word-list-meaning">{w.meaning}</span>
+              {w.meaningStatus === "failed" && <span className="hint">{w.meaningError}</span>}
+              {w.meaningStatus === "done" && w.previousMeaning && w.previousMeaning !== w.meaning && (
+                <details><summary>정리 전 뜻</summary><span className="hint">{w.previousMeaning}</span></details>
+              )}
               {renderMeta(w)}
             </div>
             <button

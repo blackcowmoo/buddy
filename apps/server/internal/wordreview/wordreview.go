@@ -212,6 +212,22 @@ type Word struct {
 	ResearchStatus  string
 	ResearchResults []ResearchSuggestion
 	ReviewQuestion  Question
+	MeaningVersion  int
+	MeaningStatus   string
+	MeaningError    string
+	PreviousMeaning string
+}
+
+const CurrentMeaningVersion = 1
+
+// MeaningStore updates glosses in place, preserving identity and review history.
+// Pending rows are durable work intent; a list refresh can resume an interrupted
+// enqueue. Completed rows are processed once per dictionary-gloss contract.
+type MeaningStore interface {
+	StartMeaningCleanup(context.Context, string) error
+	PendingMeanings(context.Context, string) ([]Word, error)
+	SaveMeaning(context.Context, Word, string) error
+	FailMeaning(context.Context, Word, string) error
 }
 
 type ResearchSuggestion struct {

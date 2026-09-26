@@ -59,7 +59,12 @@ type SearchedWord = {
   result: WordSuggestion | null;
   loading: boolean;
   saving: boolean;
+  definitionVersion?: number;
 };
+
+// Mirrors wordlookup's v2 namespace: preserve lookup history while refreshing
+// definitions created before the dictionary-gloss prompt contract.
+const definitionVersion = 2;
 
 function trackedWordKey(word: Pick<WordReviewItem, "word" | "meaning"> | WordSuggestion) {
   return `${word.word.trim().replace(/\s+/g, " ").toLocaleLowerCase()}\u0000${word.meaning.trim().toLocaleLowerCase()}`;
@@ -86,7 +91,10 @@ function loadSearchedWords(articleID: string): SearchedWord[] {
       if (!item || typeof item !== "object") return false;
       const value = item as Partial<SearchedWord>;
       return typeof value.key === "number" && typeof value.word === "string" && (value.result === null || typeof value.result === "object");
-    }).map((item) => ({ ...item, loading: item.result === null, saving: false }));
+    }).map((item) => {
+      const result = item.definitionVersion === definitionVersion ? item.result : null;
+      return { ...item, result, loading: result === null, saving: false };
+    });
   }, []);
 }
 
@@ -159,13 +167,14 @@ export function ArticleQuiz() {
   useDismiss(wordLookup !== null, wordLookupRef, () => setWordLookup(null));
 
   const updateSearchedWord = useCallback((key: number, word: string, update: Partial<SearchedWord>) => {
+    if (update.result) update = { ...update, definitionVersion };
     setSearchedWords((prev) => {
       const existing = prev.find((item) => item.key === key);
       const next = existing
         ? prev.map((item) => (item.key === key ? { ...item, ...update } : item))
         : [...prev, { key, word, result: null, loading: false, saving: false, ...update }];
       if (draw) {
-        writeStored(searchedWordsStorageKey(draw.id), JSON.stringify(next.map(({ key: itemKey, word: itemWord, result }) => ({ key: itemKey, word: itemWord, result }))));
+        writeStored(searchedWordsStorageKey(draw.id), JSON.stringify(next.map(({ key: itemKey, word: itemWord, result, definitionVersion }) => ({ key: itemKey, word: itemWord, result, definitionVersion }))));
       }
       return next;
     });

@@ -218,8 +218,8 @@ func renderCorrectionInput(contextMsg, text string) string {
 
 // correctionSystemPrompt builds the grammar-coach prompt. The corrected
 // sentence, span, suggestion, and explanation stay in English (the language
-// being learned); "translation" and "explanationTranslation" are the only
-// fields written in the learner's native language, so the reasoning behind
+// being learned); "translation", "explanationTranslation", and the separate
+// study gloss are written in the learner's native language. The reasoning behind
 // each fix is taught in English first and then made easy to understand via
 // its translation, rather than being authored directly in the native language.
 //
@@ -255,14 +255,20 @@ intermediate steps:
 Return STRICT JSON only, no prose, in exactly this shape:
 {"corrected":"<the sentence rewritten in correct, natural English>",
  "translation":"<natural, colloquial %[1]s translation of the ORIGINAL sentence under correction, so the learner can check it against what they meant to say>",
- "issues":[{"type":"grammar|vocabulary|phrasing|context","span":"<the exact original words this issue changes>","suggestion":"<the exact replacement words, as they appear in corrected>","explanation":"<the specific before -> after change and why, written in English, short and kind>","explanationTranslation":"<natural %[1]s translation of explanation, so the reasoning is easy to understand>"}]}
+ "issues":[{"type":"grammar|vocabulary|phrasing|context","span":"<the exact original words this issue changes>","suggestion":"<the exact replacement words, as they appear in corrected>","studyMeaning":"<for vocabulary/phrasing: short %[1]s dictionary gloss of suggestion; otherwise empty>","explanation":"<the specific before -> after change and why, written in English, short and kind>","explanationTranslation":"<natural %[1]s translation of explanation, so the reasoning is easy to understand>"}]}
 Rules:
 - "corrected", "span", "suggestion", and "explanation" MUST stay in English.
 - "translation" and "explanationTranslation" MUST be written in %[1]s.
 - "translation" MUST translate the ORIGINAL sentence, not the corrected one.
 - "explanationTranslation" MUST be a translation of "explanation", not a new or different explanation.
+- For vocabulary and phrasing issues, also include "studyMeaning": a short
+  dictionary gloss of "suggestion" in its intended sense. Keep the correction
+  reasoning in "explanation"/"explanationTranslation". Omit "studyMeaning"
+  for grammar and context issues. Apply the following dictionary rules with
+  "meaning" referring to "studyMeaning" and "word" to "suggestion":
+%[2]s
 - "span" MUST be verbatim text from the original sentence, and "suggestion" MUST be verbatim text from "corrected" — if you can't point to both, it isn't a real issue. The one exception is the "context" type below, where the fix isn't a simple word swap.
 - Use "context" as the issue type only when the sentence is fine in isolation but doesn't fit the conversation (wrong pronoun/tense given earlier turns, doesn't answer what was actually asked, etc.) — "span"/"suggestion" may describe the mismatch in that case instead of quoting exact words.
 - "Already correct" means natural, idiomatic English, not merely grammatically parseable. A sentence with no outright grammar error can still need a "phrasing" or "vocabulary" issue if a native speaker would not say it that way — e.g. an unnatural collocation ("using AI in working" instead of "using AI in our work"), a redundant or missing article ("the AI" for a general concept instead of "AI"), or a stiff/awkward word choice. Flag these too.
-- If the sentence is already correct, "corrected" equals the original and "issues" is empty — still fill in "translation".`, native)
+- If the sentence is already correct, "corrected" equals the original and "issues" is empty — still fill in "translation".`, native, dictionaryMeaningRules(native))
 }

@@ -15,10 +15,16 @@ const (
 	WordResearchWorkerConcurrency = 4
 )
 
-type wordResearchJobPayload struct{ UserID, WordID string }
+type wordResearchJobPayload struct {
+	UserID, WordID  string
+	CleanupMeanings bool
+}
 
 func WordResearchJobHandler(pipe *pipeline.Pipeline, words wordreview.Store) asyncjob.Handler {
 	return asyncjob.DecodePayloadHandler(asyncjob.KindWordResearch, func(ctx context.Context, p wordResearchJobPayload) error {
+		if p.CleanupMeanings {
+			return runWordMeaningCleanup(ctx, pipe, words, p.UserID)
+		}
 		ctx = workguard.BindStore(ctx, words, p.UserID, p.WordID)
 		if err := workguard.Check(ctx); err != nil {
 			return err
