@@ -5,6 +5,7 @@ import { deleteSession, fetchInstantSessions, type SessionSummary } from "../lib
 import { formatDateDivider, formatMessageTime, shouldShowDateDivider } from "../lib/time";
 import { LoadingHint } from "../components/LoadingHint";
 import { SubPageHeader } from "../components/SubPageHeader";
+import { newestFirst, useViewScrollTop } from "../lib/listView";
 
 // Every "인스턴트 대화" room (see App.tsx's markInstant) lives here instead of
 // the main room list — one exchange each, so this page lets learners start
@@ -24,10 +25,11 @@ import { SubPageHeader } from "../components/SubPageHeader";
 export function InstantSessions() {
   const [loaded, setLoaded] = useState(false);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const pageRef = useViewScrollTop<HTMLElement>("list");
 
   useEffect(() => {
     fetchInstantSessions().then((list) => {
-      setSessions(list);
+      setSessions(newestFirst(list, (session) => session.updatedAt));
       setLoaded(true);
     });
   }, []);
@@ -39,7 +41,7 @@ export function InstantSessions() {
     <div className="app">
       <SubPageHeader title="인스턴트 대화" />
 
-      <main className="convo instant-sessions-list">
+      <main ref={pageRef} className="convo instant-sessions-list">
         <LearningIntro eyebrow="짧게 연습하고, 차근차근 돌아보기" title="한 문장도 좋은 연습이에요" description="한 번씩 나눈 짧은 대화를 모았어요. 대화를 열어 답변과 피드백을 다시 살펴보세요." />
         <div>
           <button

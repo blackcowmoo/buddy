@@ -39,7 +39,7 @@ afterEach(() => {
 });
 
 describe("Writing page list/detail flow", () => {
-  it("groups prompts by calendar day with the same date dividers as articles", async () => {
+  it("groups prompts by calendar day and shows the newest day first", async () => {
     const firstDay = new Date(2024, 0, 1, 12).getTime() / 1000;
     const secondDay = new Date(2024, 0, 2, 12).getTime() / 1000;
     vi.mocked(fetchWritingPrompts).mockResolvedValue([
@@ -51,7 +51,17 @@ describe("Writing page list/detail flow", () => {
     expect(await screen.findByRole("button", { name: /어제 영화를 봤어요/ })).toBeInTheDocument();
     expect(screen.getAllByText(formatDateDivider(firstDay))).toHaveLength(1);
     expect(screen.getAllByText(formatDateDivider(secondDay))).toHaveLength(1);
-    expect(screen.getByText(formatDateDivider(firstDay)).compareDocumentPosition(screen.getByText(formatDateDivider(secondDay))) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByText(formatDateDivider(secondDay)).compareDocumentPosition(screen.getByText(formatDateDivider(firstDay))) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("starts the list at the top and orders prompts from newest to oldest", async () => {
+    vi.mocked(fetchWritingPrompts).mockResolvedValue([oldPrompt, newPrompt]);
+    render(<Writing />);
+
+    const oldRow = (await screen.findByText(oldPrompt.korean)).closest(".session-row")!;
+    const newRow = screen.getByText(newPrompt.korean).closest(".session-row")!;
+    expect(newRow.compareDocumentPosition(oldRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("main").scrollTop).toBe(0);
   });
 
   it("starts on a list and opens the selected problem as a detail view", async () => {

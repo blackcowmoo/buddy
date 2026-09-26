@@ -151,6 +151,19 @@ describe("InstantSessions page", () => {
     expect(screen.getByText(formatDateDivider(day1))).toBeInTheDocument();
   });
 
+  it("normalizes an unordered response to the most recently active session first", async () => {
+    vi.mocked(fetchInstantSessions).mockResolvedValue([
+      { id: "old", title: "Older instant", createdAt: 10, updatedAt: 10 },
+      { id: "new", title: "Newest instant", createdAt: 20, updatedAt: 30 },
+    ]);
+    render(<InstantSessions />);
+
+    const oldRow = (await screen.findByText("Older instant")).closest(".session-row")!;
+    const newRow = screen.getByText("Newest instant").closest(".session-row")!;
+    expect(newRow.compareDocumentPosition(oldRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("main").scrollTop).toBe(0);
+  });
+
   it("asks for confirmation, deletes, and removes the row on confirmed success", async () => {
     vi.mocked(fetchInstantSessions).mockResolvedValue([
       { id: "i1", title: "hi", createdAt: 1700000000, updatedAt: 1700000000 },

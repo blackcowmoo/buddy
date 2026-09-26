@@ -2,6 +2,7 @@ import type { SessionSummary } from "../lib/sessions";
 import { formatRelativeTime } from "../lib/time";
 import { EmptyState, LearningIntro } from "./LearningIntro";
 import { LearningPaths } from "./LearningPaths";
+import { newestFirst, useViewScrollTop } from "../lib/listView";
 
 interface SessionListProps {
   sessions: SessionSummary[];
@@ -31,8 +32,10 @@ export function SessionList({
   onRetry,
   onDismissError,
 }: SessionListProps) {
+  const pageRef = useViewScrollTop<HTMLElement>("list");
+  const sortedSessions = newestFirst(sessions, (session) => session.updatedAt);
   return (
-    <main className="session-list">
+    <main ref={pageRef} className="session-list">
       <LearningIntro eyebrow="조금씩, 나만의 속도로" title="오늘도 영어와 가까워져요" description="완벽한 문장이 아니어도 괜찮아요. 하고 싶은 이야기부터 시작해 보세요." />
       <div className="conversation-starts">
         <div>
@@ -85,9 +88,9 @@ export function SessionList({
       {!loading && !loadError && sessions.length === 0 && (
         <EmptyState title="아직 대화 기록이 없어요" description="위의 ‘새 대화’를 눌러 첫 이야기를 나눠 보세요. 나눈 대화와 피드백은 여기에서 다시 볼 수 있어요." />
       )}
-      {sessions.length > 0 && (
+      {sortedSessions.length > 0 && (
         <ul>
-          {sessions.map((session) => {
+          {sortedSessions.map((session) => {
             const opening = openingId === session.id;
             const deleting = deletingId === session.id;
             return (

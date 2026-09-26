@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { Fragment, useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { QuizChoices } from "../components/QuizChoices";
 import { EmptyState, LearningIntro } from "../components/LearningIntro";
 import { confirmThenDelete } from "../lib/confirmDelete";
@@ -22,6 +22,7 @@ import { SubPageHeader } from "../components/SubPageHeader";
 import { usePollScaffold } from "../hooks/usePollScaffold";
 import { LoadingHint } from "../components/LoadingHint";
 import type { LoadState } from "../lib/loadState";
+import { newestFirst, useViewScrollTop } from "../lib/listView";
 
 // How often to re-check an auto-add job that's still generating in the
 // background (see asyncjob.KindWordAutoAdd) — a poll, not a push, same
@@ -98,12 +99,12 @@ export function WordReview() {
   // Match the article history: recent reviews first, older entries below.
   // The page owns scrolling so nested lists do not trap touch gestures.
   const [reviewOlderCount, setReviewOlderCount] = useState(0);
-  const reviewPageRef = useRef<HTMLElement>(null);
 
   // null = list view; an array (possibly empty) = quiz in progress, built
   // once from the due words at the moment "복습 시작" was pressed so the
   // question order/mode stays stable even as reviews update `words` below.
   const [quizQueue, setQuizQueue] = useState<QuizItem[] | null>(null);
+  const reviewPageRef = useViewScrollTop<HTMLElement>(quizQueue === null ? "list" : "quiz");
   const [index, setIndex] = useState(0);
   // Current recall answers, typed directly into the generated sentence's
   // lexical blanks rather than a separate free-text box. There can be more
@@ -486,22 +487,13 @@ export function WordReview() {
   );
   const rejectedWords = words.filter((w) => w.status === "rejected");
 
-  const sortedVerifiedWords = [...verifiedWords].sort((a, b) => {
-    const lastReviewedDifference = (b.lastReviewedAt ?? 0) - (a.lastReviewedAt ?? 0);
-    return lastReviewedDifference !== 0 ? lastReviewedDifference : a.id.localeCompare(b.id);
-  });
+  const sortedVerifiedWords = newestFirst(verifiedWords, (word) => word.lastReviewedAt ?? 0);
   const visibleVerifiedWords = sortedVerifiedWords.slice(0, reviewWordsPageSize * (reviewOlderCount + 1));
   const hasOlderReviewWords = visibleVerifiedWords.length < sortedVerifiedWords.length;
   const loadOlderReviewWords = () => {
     if (hasOlderReviewWords) setReviewOlderCount((count) => count + 1);
   };
   const isListView = quizQueue === null;
-
-  // Start each view at its heading and primary action. Background polling
-  // must not move the page or collapse words the learner already loaded.
-  useLayoutEffect(() => {
-    if (state === "ready" && reviewPageRef.current) reviewPageRef.current.scrollTop = 0;
-  }, [state, isListView]);
 
   return (
     <div className="app">

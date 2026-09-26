@@ -68,6 +68,19 @@ describe("Recordings page", () => {
     expect(await screen.findByText(formatAbsoluteDateTime(1700000000))).toBeInTheDocument();
   });
 
+  it("normalizes an unordered response to the newest recording first", async () => {
+    vi.mocked(fetchRecordings).mockResolvedValue([
+      { id: "old", createdAt: 1700000000, durationMs: 1000, sizeBytes: 100 },
+      { id: "new", createdAt: 1700000100, durationMs: 2000, sizeBytes: 200 },
+    ]);
+    render(<Recordings />);
+
+    const oldTime = await screen.findByText(formatAbsoluteDateTime(1700000000));
+    const newTime = screen.getByText(formatAbsoluteDateTime(1700000100));
+    expect(newTime.compareDocumentPosition(oldTime) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("main").scrollTop).toBe(0);
+  });
+
   it("links the audio source to the recording's audio endpoint", async () => {
     vi.mocked(fetchRecordings).mockResolvedValue([
       { id: "rec-1", createdAt: 1700000000, durationMs: 1000, sizeBytes: 100 },
