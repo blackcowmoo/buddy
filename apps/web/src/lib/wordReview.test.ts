@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { confirmResearchWord, deleteWord, fetchAutoAddStatus, fetchWords, reviewWord, saveWord, selectWordMeaning, startAutoAddWords, startResearchWord, startMeaningCleanup, type WordReviewItem } from "./wordReview";
+import { confirmResearchWord, deleteWord, fetchAutoAddStatus, fetchWords, findSameWordEntries, reviewWord, saveWord, selectWordMeaning, startAutoAddWords, startResearchWord, startMeaningCleanup, type WordReviewItem } from "./wordReview";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -7,6 +7,42 @@ afterEach(() => {
 
 const suggestion = { word: "ecstatic", meaning: "매우 행복한", example: "She was ecstatic." };
 const item = { id: "w1", ...suggestion, stage: 0, reviewCount: 0, nextReviewAt: 1700000000 };
+
+describe("findSameWordEntries", () => {
+  const learning: WordReviewItem = { ...item, status: "verified", researchStatus: "confirmed" };
+
+  it("matches English phrases across casing and whitespace regardless of meaning", () => {
+    const first = { ...learning, word: " Set  UP\t", meaning: "설치하다" };
+    const second = { ...learning, id: "w2", word: "set up", meaning: "준비하다" };
+    const joined = { ...learning, id: "w3", word: "setup" };
+    const inflected = { ...learning, id: "w4", word: "sets up" };
+    expect(findSameWordEntries([first, second, joined, inflected])).toEqual(new Map([
+      [first.id, [second]],
+      [second.id, [first]],
+    ]));
+  });
+
+  it("includes pending entries and matching meanings without matching an item to itself", () => {
+    const pending: WordReviewItem = { ...learning, id: "w2", status: "pending", researchStatus: undefined };
+    const unconfirmed = { ...learning, id: "w3", meaning: "황홀한", researchStatus: undefined };
+    expect(findSameWordEntries([learning])).toEqual(new Map());
+    expect(findSameWordEntries([learning, pending, unconfirmed])).toEqual(new Map([
+      [learning.id, [pending, unconfirmed]],
+      [pending.id, [learning, unconfirmed]],
+      [unconfirmed.id, [learning, pending]],
+    ]));
+  });
+
+  it("shows existing study entries on rejected items without counting rejected items as matches", () => {
+    const rejected: WordReviewItem = { ...learning, id: "w2", status: "rejected", meaning: "잘못된 뜻" };
+    expect(findSameWordEntries([learning, rejected])).toEqual(new Map([[rejected.id, [learning]]]));
+    expect(findSameWordEntries([rejected, { ...rejected, id: "w3" }])).toEqual(new Map());
+  });
+
+  it("does not group missing English text", () => {
+    expect(findSameWordEntries([{ ...learning, word: "" }, { ...learning, id: "w2", word: " \t " }])).toEqual(new Map());
+  });
+});
 
 it("starts meaning cleanup and reports a failed request", async () => {
   const request = vi.fn().mockResolvedValueOnce({ ok: true, json: async () => ({ started: true }) }).mockResolvedValueOnce({ ok: false });

@@ -1,6 +1,7 @@
-import { Fragment, useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { QuizChoices } from "../components/QuizChoices";
 import { WordMeaningReview } from "../components/WordMeaningReview";
+import { WordDuplicateNotice } from "../components/WordDuplicateNotice";
 import { EmptyState, LearningIntro } from "../components/LearningIntro";
 import { confirmThenDelete } from "../lib/confirmDelete";
 import {
@@ -16,6 +17,7 @@ import {
   startMeaningCleanup,
   selectWordMeaning,
   meaningNeedsReview,
+  findSameWordEntries,
   type MeaningChoice,
 } from "../lib/wordReview";
 import type { WordSuggestion } from "../lib/protocol";
@@ -48,6 +50,7 @@ export function WordReview() {
   const meaningSelections = useRef(new Set<string>());
   const [state, setState] = useState<LoadState>("loading");
   const [words, setWords] = useState<WordReviewItem[]>([]);
+  const sameWordEntries = useMemo(() => findSameWordEntries(words), [words]);
   const [dueCount, setDueCount] = useState(0);
   // Match the article history: recent reviews first, older entries below.
   // The page owns scrolling so nested lists do not trap touch gestures.
@@ -192,8 +195,11 @@ export function WordReview() {
   };
 
   const renderMeaning = (word: WordReviewItem) => (
-    <WordMeaningReview word={word} selecting={selectingMeanings.has(word.id)} error={meaningSelectionErrors[word.id]}
-      onSelect={(choice) => void handleSelectMeaning(word, choice)} />
+    <>
+      <WordMeaningReview word={word} selecting={selectingMeanings.has(word.id)} error={meaningSelectionErrors[word.id]}
+        onSelect={(choice) => void handleSelectMeaning(word, choice)} />
+      <WordDuplicateNotice words={sameWordEntries.get(word.id) ?? []} />
+    </>
   );
 
   const handleResearch = useCallback(async (word: WordReviewItem) => {

@@ -47,6 +47,27 @@ export function meaningNeedsReview(word: WordReviewItem): boolean {
   return word.meaningStatus === "pending" || word.meaningStatus === "done" || word.meaningStatus === "failed";
 }
 
+export function findSameWordEntries(words: WordReviewItem[]): Map<string, WordReviewItem[]> {
+  const wordKey = (word: string) => word.trim().replace(/\s+/g, " ").toLowerCase();
+  const byWord = new Map<string, WordReviewItem[]>();
+  for (const word of words) {
+    const key = wordKey(word.word);
+    if (!key || word.status === "rejected") continue;
+    const group = byWord.get(key) ?? [];
+    group.push(word);
+    byWord.set(key, group);
+  }
+
+  // Compare the full list, including entries outside the visible history
+  // page. Rejected entries can show a match without counting as study items.
+  const matches = new Map<string, WordReviewItem[]>();
+  for (const word of words) {
+    const others = byWord.get(wordKey(word.word))?.filter((other) => other.id !== word.id);
+    if (others?.length) matches.set(word.id, others);
+  }
+  return matches;
+}
+
 export async function selectWordMeaning(word: WordReviewItem, choice: MeaningChoice): Promise<WordReviewItem | null> {
   return postJSON<WordReviewItem | null>(`api/words/${encodeURIComponent(word.id)}/meaning`, { choice, revision: word.meaningRevision ?? 0 }, null);
 }
