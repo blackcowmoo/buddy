@@ -473,57 +473,62 @@ func TestArticleDrawHandlerRegeneratesAPreMigrationDoneArticleWithNoSubQuestions
 	}
 }
 
-// TestArticleDrawHandlerPicksTheMostRecentCandidate guards the ordering
-// contract with newsfeed.FetchCandidates (which sorts newest-first): the
-// handler must take fetchCandidates' first not-yet-drawn entry as-is rather
-// than picking randomly among them.
-func TestArticleDrawHandlerPicksTheMostRecentCandidate(t *testing.T) {
-	st := &fakeArticleStore{}
-	pipe := fakeArticlePipeline(fakeStudyJSON)
-	fetch := func(context.Context) ([]newsfeed.Candidate, error) {
-		return []newsfeed.Candidate{
-			{Source: "BBC", Title: "Newest", URL: "https://example.com/newest", Description: "d"},
-			{Source: "NPR", Title: "Older", URL: "https://example.com/older", Description: "d"},
-		}, nil
+// FetchCandidates orders newest-first; a draw keeps that order while excluding
+// only this learner's previously drawn URLs.
+func TestArticleDrawHandlerPicksFirstUnusedCandidate(t *testing.T) {
+	candidates := []newsfeed.Candidate{
+		{Source: "BBC", Title: "Newest", URL: "https://example.com/newest"},
+		{Source: "NPR", Title: "Older", URL: "https://example.com/older"},
+		{Source: "BBC", Title: "Oldest", URL: "https://example.com/oldest"},
 	}
-	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil, nil)
+	for _, tc := range []struct {
+		name           string
+		candidateCount int
+		usedCount      int
+		usedBy         string
+		wantTitle      string
+	}{
+		{name: "newest", candidateCount: 3, wantTitle: "Newest"},
+		{name: "skip newest", candidateCount: 3, usedCount: 1, usedBy: "alex", wantTitle: "Older"},
+		{name: "last unused", candidateCount: 3, usedCount: 2, usedBy: "alex", wantTitle: "Oldest"},
+		{name: "all used", candidateCount: 3, usedCount: 3, usedBy: "alex"},
+		{name: "empty feed"},
+		{name: "another learner's draws", candidateCount: 3, usedCount: 3, usedBy: "bob", wantTitle: "Newest"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &fakeArticleStore{byURL: map[string]newsarticle.Article{}, byUser: map[string][]newsarticle.Instance{}}
+			for i, c := range candidates[:tc.candidateCount] {
+				a := newsarticle.Article{
+					ID: c.Title, Source: c.Source, Title: c.Title, URL: c.URL, Status: newsarticle.StatusDone,
+					SubQuestions: []newsarticle.SubQuestion{{Prompt: "Meaning?", Options: []string{"one", "two"}}},
+				}
+				st.byURL[c.URL] = a
+				if i < tc.usedCount {
+					st.byUser[tc.usedBy] = append(st.byUser[tc.usedBy], newsarticle.Instance{ID: "used-" + a.ID, UserID: tc.usedBy, Article: a})
+				}
+			}
+			before := len(st.byUser["alex"])
+			fetch := func(context.Context) ([]newsfeed.Candidate, error) { return candidates[:tc.candidateCount], nil }
+			h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, fetch, nil, nil)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
 
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
-
-	requireStatus(t, rec, http.StatusOK)
-	var got articleDraw
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if got.Title != "Newest" {
-		t.Fatalf("draw picked %q, want the first (most recent) candidate", got.Title)
-	}
-}
-
-// TestArticleDrawHandlerExcludesAlreadyUsedArticles guards the core
-// requirement: an article this learner already drew must never be offered
-// again.
-func TestArticleDrawHandlerExcludesAlreadyUsedArticles(t *testing.T) {
-	st := &fakeArticleStore{
-		byURL: map[string]newsarticle.Article{
-			"https://example.com/used": {ID: "used", URL: "https://example.com/used", Status: newsarticle.StatusDone},
-		},
-		byUser: map[string][]newsarticle.Instance{
-			"alex": {{ID: "i1", UserID: "alex", Article: newsarticle.Article{ID: "used", URL: "https://example.com/used"}}},
-		},
-	}
-	pipe := fakeArticlePipeline(fakeStudyJSON)
-	fetch := func(context.Context) ([]newsfeed.Candidate, error) {
-		return []newsfeed.Candidate{{Source: "BBC", Title: "Old", URL: "https://example.com/used", Description: "d"}}, nil
-	}
-	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil, nil)
-
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
-
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204 when every candidate was already drawn", rec.Code)
+			if tc.wantTitle == "" {
+				requireStatus(t, rec, http.StatusNoContent)
+				if rec.Body.Len() != 0 || len(st.byUser["alex"]) != before {
+					t.Fatal("exhausted feed returned content or created an instance")
+				}
+				return
+			}
+			requireStatus(t, rec, http.StatusOK)
+			var got articleDraw
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if got.Title != tc.wantTitle || len(st.byUser["alex"]) != before+1 {
+				t.Fatalf("draw = %+v, instances = %d; want %q and one new instance", got, len(st.byUser["alex"]), tc.wantTitle)
+			}
+		})
 	}
 }
 

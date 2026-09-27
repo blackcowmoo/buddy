@@ -70,10 +70,8 @@ func TestTranslateAssistantSkipsEmptyResult(t *testing.T) {
 	}
 }
 
-// TestTranslateAssistantTrimsWhitespace guards the trim itself: analyze() can
-// still return a non-empty candidate with leading/trailing whitespace (e.g.
-// a model wrapping its answer in a newline), and the emitted event's Text
-// must be trimmed before it reaches the client.
+// Models may wrap translations in whitespace; the cascade trims it before
+// the emitted event reaches the client.
 func TestTranslateAssistantTrimsWhitespace(t *testing.T) {
 	fixture := func(msgs []llm.Message) (string, error) {
 		return "  안녕하세요  \n", nil
@@ -143,6 +141,50 @@ func TestTranslateAssistantFastFailureFallsBackToRefineOnly(t *testing.T) {
 
 	if len(got) != 1 || got[0].Text != "정제된 번역" {
 		t.Fatalf("expected exactly one event carrying the ensemble's translation, got %+v", got)
+	}
+}
+
+func TestTranslationEntryPointsReturnTrimmedNonBlankText(t *testing.T) {
+	modelErr := errors.New("translation unavailable")
+	for _, entry := range []struct {
+		name string
+		run  func(*Pipeline) (string, error)
+	}{
+		{name: "analyze", run: func(p *Pipeline) (string, error) {
+			return p.AnalyzeTranslation(context.Background(), "hello")
+		}},
+		{name: "from draft", run: func(p *Pipeline) (string, error) {
+			return p.AnalyzeTranslationFromDraft(context.Background(), "hello", "")
+		}},
+		{name: "fast", run: func(p *Pipeline) (string, error) {
+			return p.AnalyzeTranslationFast(context.Background(), "hello")
+		}},
+		{name: "with context", run: func(p *Pipeline) (string, error) {
+			return p.TranslateWithContext(context.Background(), []llm.Message{{Role: llm.RoleUser, Content: "Good morning."}}, "hello")
+		}},
+	} {
+		for _, result := range []struct {
+			name string
+			text string
+			err  error
+			want string
+		}{
+			{name: "padded", text: " \t안녕하세요\n", want: "안녕하세요"},
+			{name: "blank", text: " \t\n"},
+			{name: "failure", text: "partial translation", err: modelErr},
+		} {
+			t.Run(entry.name+"/"+result.name, func(t *testing.T) {
+				client := &fakeLLM{complete: func([]llm.Message) (string, error) { return result.text, result.err }}
+				p := &Pipeline{LLM: client, ChatModel: "chat", Judge: client, JudgeModel: "judge"}
+				got, err := entry.run(p)
+				if got != result.want || (err != nil) != (result.want == "") {
+					t.Fatalf("translation = (%q, %v), want %q with error=%v", got, err, result.want, result.want == "")
+				}
+				if result.err != nil && !errors.Is(err, result.err) {
+					t.Fatalf("error %v does not wrap the model failure", err)
+				}
+			})
+		}
 	}
 }
 

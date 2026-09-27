@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"slices"
 
 	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/concurrent"
@@ -297,20 +298,13 @@ func articleDrawHandler(ident identity.Identifier, articles newsarticle.Store, p
 			serverError(w, "articles: fetch candidates", candErr)
 			return
 		}
-		// candidates is already sorted newest-first (see
-		// newsfeed.FetchCandidates), and filtering here preserves that order,
-		// so fresh[0] is the most recent story this learner hasn't drawn yet.
-		fresh := make([]newsfeed.Candidate, 0, len(candidates))
-		for _, c := range candidates {
-			if !used[c.URL] {
-				fresh = append(fresh, c)
-			}
-		}
-		if len(fresh) == 0 {
+		// The feed is already newest-first, so the first unused entry wins.
+		index := slices.IndexFunc(candidates, func(c newsfeed.Candidate) bool { return !used[c.URL] })
+		if index < 0 {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		pick := fresh[0]
+		pick := candidates[index]
 
 		article, err := articles.ReserveArticle(r.Context(), pick.Source, pick.Title, pick.URL, pick.Description, pick.PublishedAt)
 		if err != nil {

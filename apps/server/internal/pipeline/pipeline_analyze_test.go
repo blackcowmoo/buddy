@@ -192,12 +192,15 @@ func TestAnalyzeMultipleCandidatesAreAdvisoryToJudge(t *testing.T) {
 }
 
 func TestAnalyzeFallsBackToFirstCandidateOnJudgeError(t *testing.T) {
+	secondFinished := make(chan struct{})
 	p := &Pipeline{
 		Analysis: []Candidate{
 			{Model: "first", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+				<-secondFinished
 				return "first candidate answer", nil
 			}}},
 			{Model: "second", LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+				close(secondFinished)
 				return "second candidate answer", nil
 			}}},
 		},
@@ -212,6 +215,84 @@ func TestAnalyzeFallsBackToFirstCandidateOnJudgeError(t *testing.T) {
 	}
 	if got != "first candidate answer" {
 		t.Fatalf("analyze() = %q, want the first configured candidate's answer", got)
+	}
+}
+
+func TestAnalyzeFromDraftResultPriority(t *testing.T) {
+	modelErr := errors.New("model unavailable")
+	for _, source := range []struct {
+		name     string
+		draft    string
+		analysis bool
+		fallback string
+	}{
+		{name: "analysis before chat", draft: " \tchat draft\n", analysis: true, fallback: "first refinement"},
+		{name: "chat after unusable analysis", draft: " \tchat draft\n", fallback: "chat draft"},
+		{name: "no usable result", draft: " \t\n"},
+	} {
+		for _, judge := range []struct {
+			name    string
+			missing bool
+			text    string
+			err     error
+			wantErr string
+		}{
+			{name: "missing", missing: true, wantErr: "analyze: every candidate failed"},
+			{name: "success", text: " \tjudge final\n"},
+			{name: "blank", text: " \t\n", wantErr: "analyze: judge returned an empty result and no candidate succeeded"},
+			{name: "failure", text: "partial judge result", err: modelErr, wantErr: "analyze: judge failed and no candidate succeeded: model unavailable"},
+		} {
+			t.Run(source.name+"/"+judge.name, func(t *testing.T) {
+				p := &Pipeline{
+					Analysis: []Candidate{
+						{Model: "failed", LLM: &fakeLLM{complete: func([]llm.Message) (string, error) { return "partial analysis result", modelErr }}},
+						{Model: "blank", LLM: &fakeLLM{complete: func([]llm.Message) (string, error) { return " \t\n", nil }}},
+					},
+				}
+				if source.analysis {
+					p.Analysis = append(p.Analysis,
+						Candidate{Model: "first", LLM: &fakeLLM{complete: func([]llm.Message) (string, error) { return " \tfirst refinement\n", nil }}},
+						Candidate{Model: "second", LLM: &fakeLLM{complete: func([]llm.Message) (string, error) { return "second refinement", nil }}},
+					)
+				}
+				judgeCalls := 0
+				if !judge.missing {
+					p.JudgeModel = "judge"
+					p.Judge = &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+						judgeCalls++
+						input := msgs[len(msgs)-1].Content
+						if strings.Contains(input, "partial analysis result") || strings.Contains(input, "refinement (blank)") {
+							t.Errorf("Judge received an unusable refinement: %q", input)
+						}
+						if source.fallback != "" && !strings.Contains(input, "Chat draft:\n"+source.draft+"\n") {
+							t.Errorf("Judge did not receive the exact Chat draft: %q", input)
+						}
+						return judge.text, judge.err
+					}}
+				}
+
+				got, err := p.analyzeFromDraft(context.Background(), "task", "input", false, source.draft)
+				want := source.fallback
+				if judge.name == "success" {
+					want = "judge final"
+				}
+				if got != want {
+					t.Fatalf("result = %q, want %q", got, want)
+				}
+				if want != "" {
+					if err != nil {
+						t.Fatalf("usable result returned an error: %v", err)
+					}
+				} else if err == nil || err.Error() != judge.wantErr {
+					t.Fatalf("error = %v, want %q", err, judge.wantErr)
+				} else if judge.err != nil && !errors.Is(err, judge.err) {
+					t.Fatalf("error %v does not wrap the Judge failure", err)
+				}
+				if !judge.missing && judgeCalls != 1 {
+					t.Fatalf("Judge calls = %d, want 1", judgeCalls)
+				}
+			})
+		}
 	}
 }
 
