@@ -35,9 +35,20 @@ export interface WordReviewItem {
   researchStatus?: "pending" | "done" | "confirmed";
   researchResults?: WordSuggestion[];
   reviewQuestion?: WordReviewQuestion;
-  meaningStatus?: "pending" | "done" | "failed";
+  meaningStatus?: "pending" | "done" | "failed" | "confirmed";
+  meaningRevision?: number;
   meaningError?: string;
   previousMeaning?: string;
+}
+
+export type MeaningChoice = "cleaned" | "original";
+
+export function meaningNeedsReview(word: WordReviewItem): boolean {
+  return word.meaningStatus === "pending" || word.meaningStatus === "done" || word.meaningStatus === "failed";
+}
+
+export async function selectWordMeaning(word: WordReviewItem, choice: MeaningChoice): Promise<WordReviewItem | null> {
+  return postJSON<WordReviewItem | null>(`api/words/${encodeURIComponent(word.id)}/meaning`, { choice, revision: word.meaningRevision ?? 0 }, null);
 }
 
 export async function startMeaningCleanup(): Promise<boolean> {

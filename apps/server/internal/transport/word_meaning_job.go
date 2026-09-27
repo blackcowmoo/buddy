@@ -20,40 +20,55 @@ func runWordMeaningCleanup(ctx context.Context, pipe *pipeline.Pipeline, words w
 	if !ok {
 		return fmt.Errorf("word meanings: unsupported store")
 	}
-	list, err := store.PendingMeanings(ctx, userID)
-	if err != nil {
-		return err
+	type attempt struct {
+		id       string
+		revision int
 	}
-	for _, word := range list {
+	visited := make(map[attempt]bool)
+	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if word.Status != wordreview.StatusVerified || word.MeaningStatus != "pending" || word.MeaningVersion >= wordreview.CurrentMeaningVersion {
-			continue
-		}
-		wordCtx := workguard.BindStore(ctx, words, userID, word.ID)
-		meaning, err := pipe.NormalizeWordMeaning(wordCtx, word.Word, word.Meaning, word.Example)
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if checkErr := workguard.Check(wordCtx); checkErr != nil {
-			if errors.Is(checkErr, workguard.ErrDeleted) {
-				continue
-			}
-			return checkErr
-		}
+		list, err := store.PendingMeanings(ctx, userID)
 		if err != nil {
-			log.Printf("word meaning cleanup %s/%s: %v", userID, word.ID, err)
-			if err := store.FailMeaning(wordCtx, word, "뜻을 확실하게 정리하지 못했어요. 기존 뜻을 유지했어요."); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := store.SaveMeaning(wordCtx, word, meaning); err != nil {
 			return err
 		}
+		processed := false
+		for _, word := range list {
+			key := attempt{word.ID, word.MeaningRevision}
+			if visited[key] || word.Status != wordreview.StatusVerified || word.MeaningStatus != wordreview.MeaningPending || word.MeaningVersion >= wordreview.CurrentMeaningVersion {
+				continue
+			}
+			visited[key], processed = true, true
+			wordCtx := workguard.BindStore(ctx, words, userID, word.ID)
+			meaning, err := pipe.NormalizeWordMeaning(wordCtx, word.Word, word.Meaning, word.Example)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if checkErr := workguard.Check(wordCtx); checkErr != nil {
+				if errors.Is(checkErr, workguard.ErrDeleted) {
+					continue
+				}
+				return checkErr
+			}
+			if err != nil {
+				log.Printf("word meaning cleanup %s/%s: %v", userID, word.ID, err)
+				if err := store.FailMeaning(wordCtx, word, "뜻을 확실하게 정리하지 못했어요. 기존 뜻을 유지했어요."); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := store.SaveMeaning(wordCtx, word, meaning); err != nil {
+				return err
+			}
+		}
+		// A learner can reject an earlier result while the rest of this batch
+		// is still running. Drain those new revisions before releasing the job;
+		// enqueueing the retry alone would deduplicate against this active run.
+		if !processed {
+			return nil
+		}
 	}
-	return nil
 }
 
 func EnqueueWordMeaningCleanup(ctx context.Context, queue *asyncjob.Queue, pipe *pipeline.Pipeline, words wordreview.Store, userID string) error {

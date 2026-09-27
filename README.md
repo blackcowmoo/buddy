@@ -30,16 +30,21 @@ vocabulary has a separate study gloss from the correction explanation.
 
 In **단어 복습**, **단어 뜻 정리** polishes existing verified entries using their
 old meaning and example. It preserves the entry ID, original spelling, example,
-review question, confirmation state, schedule, and review counts. The old gloss
-is retained as **정리 전 뜻**. Ambiguous results and duplicate word/meaning pairs
+review question, schedule, and review counts. Entries being cleaned or awaiting
+a meaning choice appear in **확정 전 단어**, above review history, and stay out of
+quizzes until confirmed. Choose **정리 후 뜻 → 이 뜻으로 확정** to keep just the
+cleaned gloss and exclude it from future cleanup. Choose **정리 전 뜻 → 이 뜻으로
+다시 정리** to restore the original gloss and queue another cleanup for that
+entry. Ambiguous results and duplicate word/meaning pairs
 keep their original gloss and show a retryable failure; entries are never merged
 or deleted by cleanup. Semantic preservation is checked by the model cascade,
 while the server validates the response and protects concurrent writes.
 
-Cleanup persists per-word `pending` / `done` / `failed` state in MySQL and reuses
-the durable word-research queue, processing words sequentially. Without Redis
+Cleanup persists per-word `pending` / `done` / `failed` / `confirmed` state in
+MySQL and reuses the durable word-research queue, processing words sequentially. Without Redis
 it uses detached execution; reopening the list resumes pending work. Completed
-entries are processed once per meaning-contract version. Article lookup caches
+entries await the learner's choice; revisions keep older workers or browser
+requests from overwriting a retry or confirmation. Article lookup caches
 are versioned on both the server and browser so old results are refreshed while
 preserving the browser's search history. Previously saved study cards change
 only when cleanup is requested.
