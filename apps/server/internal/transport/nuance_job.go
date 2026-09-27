@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"sync"
 	"time"
 
 	"buddy/server/internal/asyncjob"
@@ -31,7 +30,7 @@ type nuanceJobPayload struct {
 	RequestID string
 }
 
-var nuanceInlineJobs sync.Map
+var nuanceInlineJobs asyncjob.InlineRunner
 
 func NuanceJobHandler(pipe *pipeline.Pipeline, st nuance.Store, profile func(context.Context, string) (string, error)) asyncjob.Handler {
 	return asyncjob.DecodePayloadHandler(asyncjob.KindNuance, func(ctx context.Context, p nuanceJobPayload) (err error) {
@@ -148,15 +147,9 @@ func EnqueueNuance(ctx context.Context, q *asyncjob.Queue, pipe *pipeline.Pipeli
 		return q.EnqueueAndRunInBackground(ctx, asyncjob.KindNuance, id, id, payload, NuanceClaimTTL, handler)
 	}
 	// Read-triggered recovery must not start another inline call on every poll.
-	if _, loaded := nuanceInlineJobs.LoadOrStore(id, struct{}{}); loaded {
-		return nil
-	}
-	go func() {
-		defer nuanceInlineJobs.Delete(id)
-		if err := handler(context.Background(), asyncjob.Job{Payload: mustPayload(payload)}); err != nil {
-			log.Printf("nuance: generate %s: %v", id, err)
-		}
-	}()
+	nuanceInlineJobs.Start(id, "nuance: generate "+id, func(ctx context.Context) error {
+		return handler(ctx, asyncjob.Job{Payload: mustPayload(payload)})
+	})
 	return nil
 }
 
@@ -170,14 +163,8 @@ func EnqueueNuanceSupplement(ctx context.Context, q *asyncjob.Queue, pipe *pipel
 	if q != nil {
 		return q.EnqueueAndRunInBackground(ctx, asyncjob.KindNuance, key, key, payload, NuanceClaimTTL, handler)
 	}
-	if _, loaded := nuanceInlineJobs.LoadOrStore(key, struct{}{}); loaded {
-		return nil
-	}
-	go func() {
-		defer nuanceInlineJobs.Delete(key)
-		if err := handler(context.Background(), asyncjob.Job{Payload: mustPayload(payload)}); err != nil {
-			log.Printf("nuance: supplement %s: %v", id, err)
-		}
-	}()
+	nuanceInlineJobs.Start(key, "nuance: supplement "+id, func(ctx context.Context) error {
+		return handler(ctx, asyncjob.Job{Payload: mustPayload(payload)})
+	})
 	return nil
 }

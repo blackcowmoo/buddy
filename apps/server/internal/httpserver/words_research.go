@@ -2,7 +2,6 @@ package httpserver
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 
 	"buddy/server/internal/asyncjob"
@@ -40,15 +39,10 @@ func wordResearchHandler(ident identity.Identifier, words wordreview.Store, pipe
 		asyncjob.EnqueueOrRunInline(queue, r.Context(), "words: enqueue research", func(ctx context.Context) error {
 			return transport.EnqueueWordResearchJob(ctx, queue, pipe, words, userID, target.ID)
 		}, "words: research", func(ctx context.Context) error {
-			return transport.WordResearchJobHandler(pipe, words)(ctx, asyncjob.Job{Kind: asyncjob.KindWordResearch, Payload: mustResearchPayload(userID, target.ID)})
+			return transport.RunWordResearchInline(ctx, pipe, words, userID, target.ID)
 		})
 		writeJSON(w, toWordItem(updated))
 	}
-}
-
-func mustResearchPayload(userID, wordID string) json.RawMessage {
-	payload, _ := json.Marshal(map[string]string{"UserID": userID, "WordID": wordID})
-	return payload
 }
 
 func wordResearchConfirmHandler(ident identity.Identifier, words wordreview.Store) http.HandlerFunc {

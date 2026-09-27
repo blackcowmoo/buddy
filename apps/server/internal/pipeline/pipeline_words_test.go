@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -11,6 +12,37 @@ import (
 	"buddy/server/internal/protocol"
 	"buddy/server/internal/wordreview"
 )
+
+func TestWordSuggestionSourcesRejectPartiallyDecodedResults(t *testing.T) {
+	for _, tc := range []struct {
+		label string
+		call  func(*Pipeline) ([]protocol.WordSuggestion, error)
+	}{
+		{"word suggestion", func(p *Pipeline) ([]protocol.WordSuggestion, error) {
+			return p.SuggestWords(context.Background(), "설명")
+		}},
+		{"word meanings", func(p *Pipeline) ([]protocol.WordSuggestion, error) {
+			return p.DefineWordMeanings(context.Background(), "learn", "I learn English.")
+		}},
+		{"word auto-suggestion", func(p *Pipeline) ([]protocol.WordSuggestion, error) {
+			return p.SuggestNewWords(context.Background(), "", nil)
+		}},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			p := &Pipeline{LLM: &fakeLLM{complete: func([]llm.Message) (string, error) {
+				return `{"suggestions":[{"word":"learn","meaning":"배우다"},{"word":42}]}`, nil
+			}}, ChatModel: "m"}
+			got, err := tc.call(p)
+			if got != nil || err == nil || !strings.HasPrefix(err.Error(), tc.label+": bad json: ") {
+				t.Fatalf("result = %+v, error = %v; want no partial result and labeled error", got, err)
+			}
+			var typeErr *json.UnmarshalTypeError
+			if !errors.As(err, &typeErr) {
+				t.Fatalf("error lost its JSON cause: %v", err)
+			}
+		})
+	}
+}
 
 func TestSuggestWordsParsesSuggestions(t *testing.T) {
 	var gotInput string

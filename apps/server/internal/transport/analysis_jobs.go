@@ -91,11 +91,7 @@ type correctionJobPayload struct {
 // still around, so it's where an instant/"오늘의 한 문장" room's auto-end has
 // to live to never depend on a live browser tab.
 func CorrectionJobHandler(pipe *pipeline.Pipeline, st store.Store, words wordreview.Store, wordVerifyQueue *asyncjob.Queue, studySummaryQueue, studyQuizQueue *asyncjob.Queue, onResult func(corrected string, issues []protocol.Issue, translation string)) asyncjob.Handler {
-	return func(ctx context.Context, job asyncjob.Job) error {
-		var payload correctionJobPayload
-		if err := json.Unmarshal(job.Payload, &payload); err != nil {
-			return fmt.Errorf("correction job: bad payload: %w", err)
-		}
+	return asyncjob.DecodePayloadHandler(asyncjob.KindCorrection, func(ctx context.Context, payload correctionJobPayload) error {
 		ctx = workguard.BindStore(ctx, st, payload.UserID, payload.SessionID)
 		corrected, issues, translation, err := pipe.AnalyzeCorrectionFromDraft(ctx, payload.Text, payload.ContextMsg, payload.ChatDraft)
 		if err != nil {
@@ -123,7 +119,7 @@ func CorrectionJobHandler(pipe *pipeline.Pipeline, st store.Store, words wordrev
 			onResult(corrected, issues, translation)
 		}
 		return nil
-	}
+	})
 }
 
 // correctionChangedFromChatDraft derives unread state from the durable Chat
@@ -203,11 +199,7 @@ func liveTranslationDedupeKey(userID, sessionID string, turn int, role string) s
 // shared idempotency/durability reasoning (store.SaveTranslation is also a
 // plain UPDATE).
 func TranslationJobHandler(pipe *pipeline.Pipeline, st store.Store, onResult func(translation string)) asyncjob.Handler {
-	return func(ctx context.Context, job asyncjob.Job) error {
-		var payload liveTranslationJobPayload
-		if err := json.Unmarshal(job.Payload, &payload); err != nil {
-			return fmt.Errorf("translation job: bad payload: %w", err)
-		}
+	return asyncjob.DecodePayloadHandler("translation", func(ctx context.Context, payload liveTranslationJobPayload) error {
 		ctx = workguard.BindStore(ctx, st, payload.UserID, payload.SessionID)
 		translation, err := pipe.AnalyzeTranslationFromDraft(ctx, payload.Text, payload.ChatDraft)
 		if err != nil {
@@ -223,7 +215,7 @@ func TranslationJobHandler(pipe *pipeline.Pipeline, st store.Store, onResult fun
 			onResult(translation)
 		}
 		return nil
-	}
+	})
 }
 
 // NewTranslateHook builds the pipeline.TranslateHook that makes live
@@ -255,11 +247,7 @@ type titleJobPayload struct {
 // a reap-retry — just regenerates an equivalent title rather than being a
 // no-op; that's fine, same idempotency reasoning as CorrectionJobHandler.
 func TitleJobHandler(pipe *pipeline.Pipeline, st store.Store) asyncjob.Handler {
-	return func(ctx context.Context, job asyncjob.Job) error {
-		var payload titleJobPayload
-		if err := json.Unmarshal(job.Payload, &payload); err != nil {
-			return fmt.Errorf("title job: bad payload: %w", err)
-		}
+	return asyncjob.DecodePayloadHandler(asyncjob.KindTitle, func(ctx context.Context, payload titleJobPayload) error {
 		ctx = workguard.BindStore(ctx, st, payload.UserID, payload.SessionID)
 		title, err := pipe.GenerateTitle(ctx, payload.Transcript)
 		if err != nil {
@@ -272,7 +260,7 @@ func TitleJobHandler(pipe *pipeline.Pipeline, st store.Store) asyncjob.Handler {
 			return fmt.Errorf("title job: save: %w", err)
 		}
 		return nil
-	}
+	})
 }
 
 // NewTitleHook builds the pipeline.TitleHook that makes title generation

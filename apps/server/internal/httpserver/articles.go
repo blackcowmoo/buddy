@@ -355,13 +355,8 @@ func articleInstanceHandler(ident identity.Identifier, articles newsarticle.Stor
 		if !ok {
 			return
 		}
-		inst, err := articles.Get(r.Context(), userID, r.PathValue("id"))
-		if err != nil {
-			serverError(w, "articles: get "+userID, err)
-			return
-		}
-		if inst.ID == "" {
-			http.NotFound(w, r)
+		inst, ok := requireArticleInstance(w, r, articles, userID, "articles: get")
+		if !ok {
 			return
 		}
 		if healed, reopened := selfHealIncompleteArticle(r.Context(), articles, inst.Article); reopened {
@@ -407,17 +402,8 @@ func articleAnswerHandler(ident identity.Identifier, articles newsarticle.Store)
 			return
 		}
 		id := r.PathValue("id")
-		existing, err := articles.Get(r.Context(), userID, id)
-		if err != nil {
-			serverError(w, "articles: get "+userID, err)
-			return
-		}
-		if existing.ID == "" {
-			http.NotFound(w, r)
-			return
-		}
-		if existing.Article.Status != newsarticle.StatusDone {
-			http.Error(w, "article study still generating", http.StatusConflict)
+		existing, ok := requireReadyArticleInstance(w, r, articles, userID, "articles: get")
+		if !ok {
 			return
 		}
 		if len(body.SelectedOptions) != len(existing.Article.SubQuestions) {
@@ -460,17 +446,8 @@ func articleAudioHandler(ident identity.Identifier, articles newsarticle.Store, 
 		if !ok {
 			return
 		}
-		inst, err := articles.Get(r.Context(), userID, r.PathValue("id"))
-		if err != nil {
-			serverError(w, "articles: audio get "+userID, err)
-			return
-		}
-		if inst.ID == "" {
-			http.NotFound(w, r)
-			return
-		}
-		if inst.Article.Status != newsarticle.StatusDone {
-			http.Error(w, "article study still generating", http.StatusConflict)
+		inst, ok := requireReadyArticleInstance(w, r, articles, userID, "articles: audio get")
+		if !ok {
 			return
 		}
 

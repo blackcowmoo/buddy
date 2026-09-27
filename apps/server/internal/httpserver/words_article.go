@@ -53,17 +53,8 @@ func articleWordDefineHandler(ident identity.Identifier, articles newsarticle.St
 			http.Error(w, "invalid word position", http.StatusBadRequest)
 			return
 		}
-		inst, err := articles.Get(r.Context(), userID, r.PathValue("id"))
-		if err != nil {
-			serverError(w, "articles: get word context "+userID, err)
-			return
-		}
-		if inst.ID == "" {
-			http.NotFound(w, r)
-			return
-		}
-		if inst.Article.Status != newsarticle.StatusDone {
-			http.Error(w, "article study still generating", http.StatusConflict)
+		inst, ok := requireReadyArticleInstance(w, r, articles, userID, "articles: get word context")
+		if !ok {
 			return
 		}
 		lookup := wordlookup.Request{
