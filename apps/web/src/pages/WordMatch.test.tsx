@@ -23,6 +23,7 @@ const w3 = verifiedWord("w3", "jaded", "지친");
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.clearAllMocks();
   vi.restoreAllMocks();
 });
@@ -80,7 +81,13 @@ describe("WordMatch page", () => {
     render(<WordMatch />);
     const cards = await screen.findAllByRole("button", { name: "카드 뒤집기" });
     expect(cards).toHaveLength(6);
-    expect(screen.queryByText("ecstatic")).not.toBeInTheDocument();
+    for (const { word, meaning } of [w1, w2, w3]) {
+      for (const label of [word, meaning]) {
+        expect(screen.getByText(label)).not.toBeVisible();
+        expect(screen.getByText(label)).toHaveAttribute("aria-hidden", "true");
+        expect(screen.queryByRole("button", { name: label })).not.toBeInTheDocument();
+      }
+    }
   });
 
   it("matches a pair immediately when the two cards flipped share a word", async () => {
@@ -93,8 +100,8 @@ describe("WordMatch page", () => {
     fireEvent.click(cards[1]);
     fireEvent.click(cards[2]);
 
-    expect(screen.getByText("jaded")).toBeInTheDocument();
-    expect(screen.getByText("지친")).toBeInTheDocument();
+    expect(screen.getByText("jaded")).toBeVisible();
+    expect(screen.getByText("지친")).toBeVisible();
     expect(cards[1].className).toContain("word-match-card-matched");
     expect(cards[2].className).toContain("word-match-card-matched");
     expect(screen.getByText("시도 1번")).toBeInTheDocument();
@@ -114,12 +121,12 @@ describe("WordMatch page", () => {
       // Index 0 (gloomy's meaning) and index 1 (jaded's word) don't match.
       fireEvent.click(cards[0]);
       fireEvent.click(cards[1]);
-      expect(screen.getByText("우울한")).toBeInTheDocument();
-      expect(screen.getByText("jaded")).toBeInTheDocument();
+      expect(screen.getByText("우울한")).toBeVisible();
+      expect(screen.getByText("jaded")).toBeVisible();
 
       await act(() => vi.advanceTimersByTimeAsync(700));
-      expect(screen.queryByText("우울한")).not.toBeInTheDocument();
-      expect(screen.queryByText("jaded")).not.toBeInTheDocument();
+      expect(screen.getByText("우울한")).not.toBeVisible();
+      expect(screen.getByText("jaded")).not.toBeVisible();
       expect(screen.getAllByRole("button", { name: "카드 뒤집기" })).toHaveLength(6);
     } finally {
       vi.useRealTimers();
@@ -157,6 +164,67 @@ describe("WordMatch page", () => {
     expect(screen.queryByRole("button", { name: "카드 뒤집기" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "다시 섞기" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "다시 하기" })).toBeInTheDocument();
+  });
+
+  it("blocks a third flip during a mismatch and cancels the old delay when reshuffling", async () => {
+    vi.useFakeTimers();
+    vi.mocked(fetchWords).mockResolvedValue({ words: [w1, w2, w3], dueCount: 0 });
+    await act(async () => { render(<WordMatch />); });
+    const cards = cardButtons();
+    fireEvent.click(cards[0]);
+    fireEvent.click(cards[1]);
+    fireEvent.click(cards[3]);
+    expect(cards[3]).toHaveAccessibleName("카드 뒤집기");
+    expect(screen.getByText("시도 1번")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "다시 섞기" }));
+    const restartedCards = cardButtons();
+    fireEvent.click(restartedCards[1]);
+    expect(restartedCards[1]).toHaveAccessibleName("jaded");
+    await act(() => vi.advanceTimersByTimeAsync(700));
+    expect(restartedCards[1]).toHaveAccessibleName("jaded");
+    expect(screen.getByText("시도 0번")).toBeInTheDocument();
+
+    fireEvent.click(restartedCards[2]);
+    expect(restartedCards[1]).toBeDisabled();
+    expect(restartedCards[2]).toBeDisabled();
+    expect(screen.getByText("시도 1번")).toBeInTheDocument();
+  });
+
+  it("keeps long label elements in place while revealing and concealing their content", async () => {
+    const longWord = "pneumonoultramicroscopicsilicovolcanoconiosis".repeat(3);
+    const longMeaning = "공백없이아주긴설명".repeat(20);
+    const longPair = { ...w3, word: longWord, meaning: longMeaning };
+    vi.mocked(fetchWords).mockResolvedValue({ words: [w1, w2, longPair], dueCount: 0 });
+    render(<WordMatch />);
+    const cards = await screen.findAllByRole("button", { name: "카드 뒤집기" });
+    const label = screen.getByText(longWord);
+    expect(label).not.toBeVisible();
+    expect(screen.getByText(longMeaning)).not.toBeVisible();
+
+    fireEvent.click(cards[1]);
+    expect(screen.getByText(longWord)).toBe(label);
+    expect(label).toBeVisible();
+    expect(label).toHaveAttribute("aria-hidden", "false");
+    expect(cards[1]).toHaveAccessibleName(longWord);
+
+    fireEvent.click(screen.getByRole("button", { name: "다시 섞기" }));
+    expect(screen.getByText(longWord)).toBe(label);
+    expect(label).not.toBeVisible();
+    expect(label).toHaveAttribute("aria-hidden", "true");
+    expect(screen.queryByRole("button", { name: longWord })).not.toBeInTheDocument();
+  });
+
+  it("cleans up both the round clock and a pending mismatch when leaving the page", async () => {
+    vi.useFakeTimers();
+    vi.mocked(fetchWords).mockResolvedValue({ words: [w1, w2, w3], dueCount: 0 });
+    const view = await act(async () => render(<WordMatch />));
+    const cards = cardButtons();
+    fireEvent.click(cards[0]);
+    fireEvent.click(cards[1]);
+    expect(vi.getTimerCount()).toBe(2);
+    view.unmount();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("clears the completed board and result when starting another round", async () => {

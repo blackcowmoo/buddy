@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { EmptyState, LearningIntro } from "../components/LearningIntro";
 import { fetchWords, type WordReviewItem } from "../lib/wordReview";
 import { shuffled } from "../lib/shuffle";
-import { SubPageHeader } from "../components/SubPageHeader";
+import { LearningPage } from "../components/LearningPage";
 import { LoadingHint } from "../components/LoadingHint";
 import type { LoadState } from "../lib/loadState";
 
@@ -46,7 +46,7 @@ export function WordMatch() {
   // Guards clicks while a mismatched pair is still on-screen, waiting for its
   // flip-back timeout — without this a fast third click could join a pair
   // that's about to be judged.
-  const [checking, setChecking] = useState(false);
+  const checking = flipped.length === 2;
 
   const startedAtRef = useRef(0);
 
@@ -72,8 +72,16 @@ export function WordMatch() {
     });
   }, [deal]);
 
-  const pairCount = useMemo(() => cards.length / 2, [cards]);
+  const pairCount = cards.length / 2;
   const won = pairCount > 0 && matched.size === pairCount;
+
+  // Tie the delayed flip to this pair. Restarting or leaving the page must
+  // cancel it so an old round cannot turn over a newly selected card.
+  useEffect(() => {
+    if (flipped.length !== 2) return;
+    const timer = setTimeout(() => setFlipped([]), mismatchDelayMs);
+    return () => clearTimeout(timer);
+  }, [flipped]);
 
   // Ticks the elapsed-time readout once a second while a round is in
   // progress — purely cosmetic feedback (no score is ever saved), so it just
@@ -91,21 +99,13 @@ export function WordMatch() {
         setFlipped([card.cardId]);
         return;
       }
-      if (flipped.length === 1) {
-        const firstId = flipped[0];
-        const first = cards.find((c) => c.cardId === firstId)!;
-        setFlipped([firstId, card.cardId]);
-        setMoves((m) => m + 1);
-        if (first.wordId === card.wordId) {
-          setMatched((prev) => new Set(prev).add(card.wordId));
-          setFlipped([]);
-          return;
-        }
-        setChecking(true);
-        setTimeout(() => {
-          setFlipped([]);
-          setChecking(false);
-        }, mismatchDelayMs);
+      const first = cards.find((c) => c.cardId === flipped[0])!;
+      setMoves((m) => m + 1);
+      if (first.wordId === card.wordId) {
+        setMatched((prev) => new Set(prev).add(card.wordId));
+        setFlipped([]);
+      } else {
+        setFlipped([first.cardId, card.cardId]);
       }
     },
     [checking, matched, flipped, cards],
@@ -114,65 +114,65 @@ export function WordMatch() {
   const restart = useCallback(() => deal(verifiedWords), [deal, verifiedWords]);
 
   return (
-    <div className="app">
-      <SubPageHeader title="단어 매칭 게임" />
+    <LearningPage title="단어 매칭 게임">
+      <LearningIntro eyebrow="가볍게 즐기는 단어 복습" title="단어와 뜻의 짝을 찾아요" description="카드를 두 장씩 뒤집어 영어 단어와 우리말 뜻을 연결해 보세요. 서두르지 않아도 괜찮아요." />
+      {state === "loading" && <LoadingHint />}
+      {state === "error" && <p className="hint" role="alert">단어 목록을 불러오지 못했어요. 연결 상태를 확인한 뒤 다시 열어 주세요.</p>}
 
-      <main className="convo word-match-page">
-        <LearningIntro eyebrow="가볍게 즐기는 단어 복습" title="단어와 뜻의 짝을 찾아요" description="카드를 두 장씩 뒤집어 영어 단어와 우리말 뜻을 연결해 보세요. 서두르지 않아도 괜찮아요." />
-        {state === "loading" && <LoadingHint />}
-        {state === "error" && <p className="hint" role="alert">단어 목록을 불러오지 못했어요. 연결 상태를 확인한 뒤 다시 열어 주세요.</p>}
+      {state === "ready" && verifiedWords.length < minPairs && (
+        <EmptyState title="짝을 맞출 단어를 먼저 모아 볼까요?" description={`복습 중인 단어가 ${minPairs}개 이상 있어야 게임을 시작할 수 있어요. 지금은 ${verifiedWords.length}개가 준비되어 있어요.`} href="words" action="단어 모으러 가기" />
+      )}
 
-        {state === "ready" && verifiedWords.length < minPairs && (
-          <EmptyState title="짝을 맞출 단어를 먼저 모아 볼까요?" description={`복습 중인 단어가 ${minPairs}개 이상 있어야 게임을 시작할 수 있어요. 지금은 ${verifiedWords.length}개가 준비되어 있어요.`} href="words" action="단어 모으러 가기" />
-        )}
+      {state === "ready" && verifiedWords.length >= minPairs && (
+        <>
+          <div className="word-match-stats" role="status">
+            <span>시도 {moves}번</span>
+            <span>{elapsedSec}초</span>
+          </div>
 
-        {state === "ready" && verifiedWords.length >= minPairs && (
-          <>
-            <div className="word-match-stats" role="status">
-              <span>시도 {moves}번</span>
-              <span>{elapsedSec}초</span>
-            </div>
-
-            <div className="word-match-grid">
-              {cards.map((card) => {
-                const isMatched = matched.has(card.wordId);
-                const isFaceUp = isMatched || flipped.includes(card.cardId);
-                return (
-                  <button
-                    key={card.cardId}
-                    type="button"
-                    className={
-                      isMatched
-                        ? "word-match-card word-match-card-matched"
-                        : isFaceUp
-                          ? "word-match-card word-match-card-flipped"
-                          : "word-match-card"
-                    }
-                    onClick={() => flipCard(card)}
-                    disabled={isMatched}
-                    aria-label={isFaceUp ? card.label : "카드 뒤집기"}
-                  >
-                    {isFaceUp ? card.label : "?"}
-                  </button>
-                );
-              })}
-            </div>
-
-            {won ? (
-              <div className="word-match-won" role="status">
-                <p>{pairCount}쌍을 모두 맞혔어요! {moves}번 만에, {elapsedSec}초 걸렸어요.</p>
-                <button type="button" className="quiz-start-btn" onClick={restart}>
-                  다시 하기
+          <div className="word-match-grid">
+            {cards.map((card) => {
+              const isMatched = matched.has(card.wordId);
+              const isFaceUp = isMatched || flipped.includes(card.cardId);
+              return (
+                <button
+                  key={card.cardId}
+                  type="button"
+                  className={
+                    isMatched
+                      ? "word-match-card word-match-card-matched"
+                      : isFaceUp
+                        ? "word-match-card word-match-card-flipped"
+                        : "word-match-card"
+                  }
+                  onClick={() => flipCard(card)}
+                  disabled={isMatched}
+                  aria-label={isFaceUp ? card.label : "카드 뒤집기"}
+                >
+                  {/* Reserve the label's space while face-down so long
+                      words never resize the board during a turn. */}
+                  <span className="word-match-label" aria-hidden={!isFaceUp}
+                    style={{ visibility: isFaceUp ? "visible" : "hidden" }}>{card.label}</span>
+                  {!isFaceUp && <span className="word-match-back" aria-hidden="true">?</span>}
                 </button>
-              </div>
-            ) : (
-              <button type="button" className="ghost quiz-back-btn" onClick={restart}>
-                다시 섞기
+              );
+            })}
+          </div>
+
+          {won ? (
+            <div className="word-match-won" role="status">
+              <p>{pairCount}쌍을 모두 맞혔어요! {moves}번 만에, {elapsedSec}초 걸렸어요.</p>
+              <button type="button" className="quiz-start-btn" onClick={restart}>
+                다시 하기
               </button>
-            )}
-          </>
-        )}
-      </main>
-    </div>
+            </div>
+          ) : (
+            <button type="button" className="ghost quiz-back-btn" onClick={restart}>
+              다시 섞기
+            </button>
+          )}
+        </>
+      )}
+    </LearningPage>
   );
 }

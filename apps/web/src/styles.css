@@ -127,7 +127,11 @@ body {
   position: relative;
   isolation: isolate;
   background: var(--app-bg);
+  /* Include emergency word breaks in intrinsic sizing too: break-word alone
+     still lets an unspaced word widen a flex item or grid track. */
+  overflow-wrap: anywhere;
 }
+.app > * { min-width: 0; min-height: 0; }
 
 @media (min-width: 481px) {
   .app {
@@ -143,6 +147,7 @@ body {
    those single-class overrides — tied with this one on specificity — win by
    coming later in the file instead of silently losing to this rule. */
 .icon-btn {
+  flex-shrink: 0;
   width: 34px;
   height: 34px;
   min-height: 34px;
@@ -163,6 +168,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   min-height: 62px;
   padding: 13px var(--layout-inline-padding);
   padding-top: calc(13px + var(--sat));
@@ -174,6 +180,7 @@ body {
 }
 .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .brand-mark {
+  flex-shrink: 0;
   width: 31px;
   height: 31px;
   display: grid;
@@ -539,6 +546,7 @@ body {
 .article-word-anchor {
   position: relative;
   display: inline-block;
+  max-width: 100%;
 }
 /* Word-lookup result, opened by tapping a word in .article-summary. It is
    anchored to the selected word and overlays the paragraph, so its position
@@ -575,7 +583,7 @@ body {
   max-height: min(70vh, 320px);
 }
 .word-lookup-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.article-reading-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.article-reading-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
 .article-result-search-history { display: flex; justify-content: flex-end; }
 .article-searched-words-control { position: relative; z-index: 12; margin-top: 2px; }
 .article-searched-words-btn { min-height: 40px; padding: 8px 14px; border-radius: 999px; box-shadow: 0 8px 22px var(--accent-shadow); }
@@ -595,8 +603,8 @@ body {
   border-radius: var(--radius);
   box-shadow: var(--shadow-lg);
 }
-.searched-word-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-sm); }
-.searched-word-definition { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.searched-word-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 10px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.searched-word-definition { flex: 1 1 120px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .searched-word-definition strong { overflow-wrap: anywhere; }
 .searched-word-definition span { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
 .quiz-back-btn { align-self: flex-start; padding: 2px 4px; font-size: 12px; }
@@ -614,6 +622,7 @@ body {
    text; .quiz-prompt already sets the font. */
 .quiz-blank-sentence { line-height: 1.8; }
 .quiz-blank-input {
+  max-width: calc(100% - 4px);
   font: inherit;
   font-style: normal;
   font-size: 16px; /* iOS Safari zoom threshold, same as .composer input */
@@ -728,6 +737,8 @@ button {
   box-shadow: 0 8px 20px var(--accent-shadow);
   transition: transform 0.16s ease, box-shadow 0.18s ease, filter 0.18s ease, background-color 0.18s ease, border-color 0.18s ease;
   touch-action: manipulation;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 button.ghost {
   background: var(--panel-2);
@@ -815,7 +826,7 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
 }
 .list-loading { margin: 0; }
 .session-list ul { list-style: none; margin: 2px 0 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
-.session-row { display: flex; align-items: center; gap: 8px; }
+.session-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .session-item {
   /* flex: 1 (not width: 100%) so this button shares the row with its
      .session-delete sibling instead of claiming the row's full width and
@@ -855,7 +866,19 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
   font-weight: 620;
   letter-spacing: -0.018em;
 }
-.session-item .time { flex-shrink: 0; font-size: 12px; color: var(--muted); }
+.session-item .time { min-width: 0; font-size: 12px; color: var(--muted); }
+.history-item-content { display: flex; flex-direction: column; gap: 6px; width: 100%; min-width: 0; }
+.history-item-content .title {
+  flex: none;
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.history-item-description { font-size: 13px; color: var(--muted); line-height: 1.6; }
+.history-item-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.history-item-meta > * { min-width: 0; max-width: 100%; }
+.history-item-meta .time { margin-left: auto; }
 .session-item .ended-badge { flex-shrink: 0; font-size: 13px; }
 .session-item .study-summary-pending-badge {
   flex-shrink: 0;
@@ -880,10 +903,10 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
   font-weight: 750;
   line-height: 1.2;
 }
-.session-delete { width: 36px; height: 36px; min-height: 36px; font-size: 14px; flex-shrink: 0; background: transparent; box-shadow: none; }
+.session-delete, .recording-delete { width: 36px; height: 36px; min-height: 36px; font-size: 14px; background: transparent; box-shadow: none; }
 
 @media (hover: hover) {
-  .session-item:hover { border-color: var(--accent-border); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+  .session-item:is(button, a):hover { border-color: var(--accent-border); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
 }
 
 .convo {
@@ -967,14 +990,16 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
   min-height: 32px;
   font-size: 13px;
 }
-/* Learning screens share the same quiet introduction as word nuance. Keep
-   them top-aligned and non-shrinking so long lists remain scrollable. */
-:is(.recordings-list, .instant-sessions-list, .word-review-page, .word-match-page) {
+/* LearningPage owns the scroll layout for every learning screen. Lists and
+   detail cards must retain their height when their content exceeds a page. */
+.learning-page {
   justify-content: flex-start;
 }
-:is(.session-list, .recordings-list, .instant-sessions-list, .word-review-page, .word-match-page, .writing-page, .article-quiz-page) > * {
+:is(.session-list, .learning-page) > * {
   flex-shrink: 0;
+  min-width: 0;
 }
+.quiz-panel, .quiz-panel > *, .quiz-question, .nuance-comparison > * { min-width: 0; }
 .learning-intro {
   padding: 6px 0 18px;
   border-bottom: 1px solid var(--border-2);
@@ -1070,10 +1095,6 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
   .learning-path { padding: 12px; }
 }
 
-.article-quiz-page { justify-content: flex-start; }
-
-.writing-page { justify-content: flex-start; }
-.writing-list-meta { display: inline-flex; align-items: center; gap: 8px; }
 .writing-detail-card {
   /* Gives the word-search overlay a stable, centered reference frame on the
      writing page instead of the small search button. */
@@ -1135,27 +1156,19 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
 }
 .quick-mode-hint { color: var(--text); border-color: var(--accent-border) !important; background: var(--accent-soft) !important; }
 
-.recordings-list { gap: 10px; }
 .recording-row {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 14px;
-  box-shadow: var(--shadow-xs);
 }
 .recording-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.recording-meta { display: flex; flex-direction: column; gap: 2px; }
+.recording-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .recording-time { font-size: 14px; font-weight: 600; }
 .recording-sub { font-size: 12px; color: var(--muted); }
 .recording-row audio { width: 100%; height: 36px; }
-.recording-delete { width: 32px; height: 32px; min-height: 32px; font-size: 14px; flex-shrink: 0; background: transparent; box-shadow: none; }
 
 /* Word review uses the same history rows and quiz controls as the other
    learning pages. Keep all lists in the page's single scroll container. */
-.word-review-page { gap: 10px; }
 .word-review-due-hint { margin: 0; }
 .word-list-section { display: flex; flex-direction: column; gap: 12px; }
 .word-list { display: flex; flex-direction: column; gap: 10px; list-style: none; margin: 0; padding: 0; }
@@ -1196,15 +1209,8 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
 .article-sub-question { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; border-top: 1px solid var(--border-2); }
 .article-sub-question:first-of-type { border-top: none; padding-top: 0; }
 
-/* Word-matching mini-game (pages/WordMatch.tsx) — a face-down card grid,
-   pure play with no score persisted anywhere (see the page's doc comment on
-   why: reward-free, so the timer/move-count are just live feedback). */
-.word-match-page { gap: 10px; }
-
-.nuance-page { justify-content: flex-start; gap: 18px; }
-.nuance-intro { padding: 8px 0 12px; border-bottom: 1px solid var(--border-2); }
-.nuance-intro h2, .nuance-lesson-heading h2 { margin: 5px 0 10px; font-size: 23px; letter-spacing: -0.5px; }
-.nuance-intro p, .nuance-lesson-heading p { margin: 8px 0; line-height: 1.6; }
+.nuance-lesson-heading h2 { margin: 5px 0 10px; font-size: 23px; letter-spacing: -0.5px; }
+.nuance-lesson-heading p { margin: 8px 0; line-height: 1.6; }
 .nuance-eyebrow { color: var(--accent-strong); font-size: 12px; font-weight: 650; }
 .nuance-progress, .nuance-translation { color: var(--muted); font-size: 12px; }
 .nuance-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
@@ -1227,7 +1233,7 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
 .nuance-review-link[aria-disabled="true"] { opacity: .55; pointer-events: none; }
 .nuance-tabs button { flex: 1; }
 .nuance-tabs [aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent-strong); }
-.nuance-word, .nuance-question { padding: 20px; border: 1px solid var(--border-2); border-radius: var(--radius); background: var(--panel); min-width: 0; }
+.nuance-word, .nuance-question { min-width: 0; }
 .nuance-word h3 { margin: 0 0 10px; font-size: 23px; overflow-wrap: anywhere; }
 .nuance-word p, .nuance-question p { line-height: 1.7; font-size: 14px; }
 .nuance-tone { color: var(--accent-strong); font-size: 12px; }
@@ -1241,41 +1247,19 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
 .nuance-feedback p:last-child { margin-bottom: 0; }
 .nuance-review { align-items: center; }
 .nuance-review p { width: 100%; margin: 0; font-size: 13px; color: var(--muted); }
-.nuance-list-description { color: var(--muted); font-size: 13px; line-height: 1.6; }
-.nuance-list-item {
-  flex-direction: column;
-  align-items: stretch;
-  justify-content: flex-start;
-  gap: 4px;
-  white-space: normal;
-}
-.nuance-list-item .title {
-  flex: none;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-.nuance-list-item .time {
-  display: block;
-  flex-shrink: 1;
-  white-space: normal;
-  line-height: 1.5;
-}
-.nuance-page .quiz-panel { display: grid; gap: 12px; }
 @media (max-width: 520px) {
-  .nuance-comparison { grid-template-columns: 1fr; }
-  .nuance-word, .nuance-question { padding: 16px; }
+  .nuance-comparison { grid-template-columns: minmax(0, 1fr); }
 }
-.word-match-stats { display: flex; gap: 14px; font-size: 13px; color: var(--muted); }
+.word-match-stats { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; color: var(--muted); }
 .word-match-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 .word-match-card {
-  aspect-ratio: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  min-width: 0;
+  display: grid;
+  place-items: center;
   text-align: center;
   padding: 6px;
   font-size: 13px;
@@ -1285,6 +1269,11 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
   border-radius: var(--radius);
   box-shadow: var(--shadow-xs);
 }
+/* Start square, then let the whole row fit its longest label. The hidden
+   label reserves the same space before a flip, preventing layout jumps. */
+.word-match-card::before { content: ""; width: 100%; aspect-ratio: 1; }
+.word-match-card::before, .word-match-label, .word-match-back { grid-area: 1 / 1; }
+.word-match-label { min-width: 0; max-width: 100%; }
 .word-match-card-flipped { border-color: var(--accent); color: var(--accent-strong); background: var(--accent-soft); box-shadow: var(--focus-ring); }
 .word-match-card-matched { border-color: var(--ok); color: var(--ok); opacity: 0.6; }
 .word-match-won { display: flex; flex-direction: column; gap: 8px; text-align: center; }
@@ -1314,7 +1303,6 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
   border-radius: 19px;
   line-height: 1.55;
   white-space: pre-wrap;
-  word-wrap: break-word;
   font-size: 16px;
 }
 .row.user .bubble {
@@ -1651,16 +1639,17 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
 }
 .theme-option.active { background: var(--accent-soft); color: var(--accent-strong); border-color: var(--accent-border); }
 
-/* Page-level learning panels get a shared elevated surface. This keeps the
-   existing one-column layout while giving article, quiz, and review content
-   a clear visual home. */
-.convo > .quiz-panel,
-.convo > .word-match-won {
+/* History details, practice cards, and recordings share one surface. */
+.learning-page > .quiz-panel,
+.learning-page > .word-match-won,
+.nuance-word,
+.nuance-question,
+.recording-row {
   width: 100%;
   padding: 16px;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius);
   box-shadow: var(--shadow-sm);
 }
 
