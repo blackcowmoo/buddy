@@ -76,6 +76,93 @@ const dueWord: WordReviewItem = {
   reviewQuestion: { version: 2, prompt: "She was ___.", answers: ["ecstatic"] },
 };
 
+describe("same English word notices", () => {
+  const candidate: WordReviewItem = {
+    ...dueWord, id: "candidate", word: " ECSTATIC ", meaning: "황홀한", researchStatus: undefined,
+  };
+
+  it("shows the existing meaning before confirmation and updates the status when both meanings are kept", async () => {
+    vi.mocked(fetchWords).mockResolvedValue({ words: [dueWord, candidate], dueCount: 1 });
+    vi.mocked(confirmResearchWord).mockResolvedValue({ ...candidate, researchStatus: "confirmed" });
+    const user = userEvent.setup();
+    render(<WordReview />);
+
+    const decisions = await screen.findByRole("region", { name: "확정 전 단어" });
+    const notice = within(decisions).getByRole("note", { name: "같은 영어 단어 안내" });
+    expect(notice).toHaveTextContent(`학습 중 · ${dueWord.meaning}`);
+    expect(notice).not.toHaveTextContent(candidate.meaning);
+    expect(within(screen.getByRole("region", { name: "복습중인 단어" })).getByRole("note")).toHaveTextContent(`확정 전 · ${candidate.meaning}`);
+    expect(deleteWord).not.toHaveBeenCalled();
+
+    await user.click(within(decisions).getByRole("button", { name: "확정" }));
+
+    expect(confirmResearchWord).toHaveBeenCalledWith(candidate.id);
+    const reviews = screen.getByRole("region", { name: "복습중인 단어" });
+    expect(within(reviews).getAllByRole("listitem")).toHaveLength(2);
+    expect(within(reviews).getByText(`학습 중 · ${candidate.meaning}`)).toBeInTheDocument();
+    expect(screen.queryByText(`확정 전 · ${candidate.meaning}`)).not.toBeInTheDocument();
+    expect(deleteWord).not.toHaveBeenCalled();
+  });
+
+  it("compares all existing meanings even when their review rows are outside the visible page", async () => {
+    const recent = Array.from({ length: 20 }, (_, i) => ({
+      ...dueWord, id: `recent-${i}`, word: `word-${i}`, lastReviewedAt: testNow / 1000,
+    }));
+    const otherMeaning = { ...dueWord, id: "other-meaning", meaning: "무아지경인" };
+    vi.mocked(fetchWords).mockResolvedValue({ words: [...recent, dueWord, otherMeaning, candidate], dueCount: 22 });
+    render(<WordReview />);
+
+    const decisions = await screen.findByRole("region", { name: "확정 전 단어" });
+    const notice = within(decisions).getByRole("note");
+    expect(notice).toHaveTextContent(`학습 중 · ${dueWord.meaning}`);
+    expect(notice).toHaveTextContent(`학습 중 · ${otherMeaning.meaning}`);
+    const reviews = screen.getByRole("region", { name: "복습중인 단어" });
+    expect(within(reviews).getAllByRole("listitem")).toHaveLength(20);
+    expect(within(reviews).queryByText(dueWord.word)).not.toBeInTheDocument();
+  });
+
+  it.each([true, false])("removes the notice only after a successful deletion (success: %s)", async (success) => {
+    vi.mocked(fetchWords).mockResolvedValue({ words: [dueWord, candidate], dueCount: 1 });
+    vi.mocked(deleteWord).mockResolvedValue(success);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<WordReview />);
+    const decisions = await screen.findByRole("region", { name: "확정 전 단어" });
+    expect(screen.getAllByRole("note", { name: "같은 영어 단어 안내" })).toHaveLength(2);
+
+    await user.click(within(decisions).getByRole("button", { name: "단어 삭제" }));
+
+    expect(deleteWord).toHaveBeenCalledWith(candidate.id);
+    expect(screen.queryAllByRole("note", { name: "같은 영어 단어 안내" })).toHaveLength(success ? 0 : 2);
+    expect(within(screen.getByRole("region", { name: "복습중인 단어" })).getByText(dueWord.word)).toBeInTheDocument();
+  });
+
+  it("refreshes matches after polling and never labels rejected entries as being learned", async () => {
+    vi.useFakeTimers();
+    const pending: WordReviewItem = { ...candidate, status: "pending" };
+    const rejected: WordReviewItem = { ...candidate, status: "rejected" };
+    vi.mocked(fetchWords).mockResolvedValueOnce({ words: [dueWord, pending], dueCount: 1 })
+      .mockResolvedValue({ words: [dueWord, rejected], dueCount: 1 });
+    await act(async () => { render(<WordReview />); });
+    expect(within(screen.getByRole("region", { name: "복습중인 단어" })).getByRole("note")).toHaveTextContent(`확정 전 · ${pending.meaning}`);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+
+    expect(within(screen.getByRole("region", { name: "복습중인 단어" })).queryByRole("note")).not.toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "제외된 단어" })).getByRole("note")).toHaveTextContent(`학습 중 · ${dueWord.meaning}`);
+  });
+
+  it("labels a meaning awaiting cleanup confirmation as unconfirmed", async () => {
+    const cleaning: WordReviewItem = { ...dueWord, meaningStatus: "pending" };
+    vi.mocked(fetchWords).mockResolvedValue({ words: [cleaning, candidate], dueCount: 0 });
+    render(<WordReview />);
+
+    const decisions = await screen.findByRole("region", { name: "확정 전 단어" });
+    expect(within(decisions).getByText(`확정 전 · ${cleaning.meaning}`)).toBeInTheDocument();
+    expect(within(decisions).queryByText(`학습 중 · ${cleaning.meaning}`)).not.toBeInTheDocument();
+  });
+});
+
 describe("dictionary meaning cleanup", () => {
   it("starts cleanup and keeps pending and completed meanings in the decision section", async () => {
     vi.useFakeTimers();
