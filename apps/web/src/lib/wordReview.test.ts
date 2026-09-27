@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { confirmResearchWord, deleteWord, fetchAutoAddStatus, fetchWords, reviewWord, saveWord, startAutoAddWords, startResearchWord, startMeaningCleanup } from "./wordReview";
+import { confirmResearchWord, deleteWord, fetchAutoAddStatus, fetchWords, reviewWord, saveWord, selectWordMeaning, startAutoAddWords, startResearchWord, startMeaningCleanup, type WordReviewItem } from "./wordReview";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -14,6 +14,23 @@ it("starts meaning cleanup and reports a failed request", async () => {
   await expect(startMeaningCleanup()).resolves.toBe(true);
   expect(request).toHaveBeenCalledWith("api/words/meanings/cleanup", expect.objectContaining({ method: "POST", body: "{}" }));
   await expect(startMeaningCleanup()).resolves.toBe(false);
+});
+
+it.each(["cleaned", "original"] as const)("posts the %s meaning choice with its persisted revision", async (choice) => {
+  const word: WordReviewItem = { ...item, id: "w/a", status: "verified", meaningStatus: "done", meaningRevision: 4 };
+  const request = vi.fn().mockResolvedValue({ ok: true, json: async () => word });
+  vi.stubGlobal("fetch", request);
+  await expect(selectWordMeaning(word, choice)).resolves.toEqual(word);
+  expect(request).toHaveBeenCalledWith("api/words/w%2Fa/meaning", expect.objectContaining({ method: "POST", body: JSON.stringify({ choice, revision: 4 }) }));
+});
+
+it("reports a failed meaning selection without pretending it was saved", async () => {
+  const word: WordReviewItem = { ...item, status: "verified", meaningStatus: "done" };
+  const request = vi.fn().mockResolvedValueOnce({ ok: false }).mockRejectedValueOnce(new Error("network"));
+  vi.stubGlobal("fetch", request);
+  await expect(selectWordMeaning(word, "cleaned")).resolves.toBeNull();
+  expect(request).toHaveBeenCalledWith("api/words/w1/meaning", expect.objectContaining({ body: JSON.stringify({ choice: "cleaned", revision: 0 }) }));
+  await expect(selectWordMeaning(word, "original")).resolves.toBeNull();
 });
 
 describe("saveWord", () => {

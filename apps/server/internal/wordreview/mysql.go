@@ -132,6 +132,12 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 			}
 			return nil
 		}},
+		{Version: 9, Name: "word_reviews.meaning_revision", Up: func(ctx context.Context, db *sql.DB) error {
+			return mysqlerr.ApplyAdditive(func() error {
+				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN meaning_revision INT NOT NULL DEFAULT 0`)
+				return err
+			}, mysqlerr.DupFieldName)
+		}},
 	}
 	if err := migration.ApplyLegacy(ctx, rw, "wordreview", steps); err != nil {
 		return nil, fmt.Errorf("wordreview: migrations: %w", err)
@@ -204,7 +210,7 @@ func scanWord(row scanner, userID string) (Word, error) {
 		&w.Stage, &w.ReviewCount, &w.CorrectStreak,
 		&nextReviewAt, &lastReviewedAt, &w.Status, &w.VerifyReason, &w.ResearchStatus, &researchResults,
 		&w.ReviewQuestion.Version, &w.ReviewQuestion.Prompt, &w.ReviewQuestion.Answer, &reviewAnswers, &createdAt,
-		&w.MeaningVersion, &w.MeaningStatus, &w.MeaningError, &w.PreviousMeaning,
+		&w.MeaningVersion, &w.MeaningStatus, &w.MeaningError, &w.PreviousMeaning, &w.MeaningRevision,
 	); err != nil {
 		return Word{}, err
 	}
@@ -225,7 +231,7 @@ func scanWord(row scanner, userID string) (Word, error) {
 	return w, nil
 }
 
-const wordColumns = `id, word, original_word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, research_status, research_results, review_question_version, review_prompt, review_answer, review_answers, created_at, meaning_version, meaning_status, meaning_error, COALESCE(previous_meaning, '')`
+const wordColumns = `id, word, original_word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, research_status, research_results, review_question_version, review_prompt, review_answer, review_answers, created_at, meaning_version, meaning_status, meaning_error, COALESCE(previous_meaning, ''), meaning_revision`
 
 func (s *MySQLStore) Save(ctx context.Context, userID, word, meaning, example string) (Word, error) {
 	return s.SaveOriginal(ctx, userID, word, meaning, example, word)
@@ -288,8 +294,11 @@ func (s *MySQLStore) List(ctx context.Context, userID string) ([]Word, error) {
 
 func (s *MySQLStore) DueCount(ctx context.Context, userID string, now time.Time) (int, error) {
 	var n int
-	err := s.ro.QueryRowContext(ctx, `
+	// A meaning choice can immediately return a word to review. Read from the
+	// same primary as List so replica lag cannot hide that newly due word.
+	err := s.rw.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM `+table+` WHERE user_id = ? AND status = ? AND research_status = ?
+			AND meaning_status NOT IN ('pending', 'done', 'failed')
 			AND review_question_version >= ? AND review_prompt <> '' AND review_answers IS NOT NULL AND next_review_at <= ?
 	`, userID, StatusVerified, ResearchConfirmed, CurrentQuestionVersion, now.Unix()).Scan(&n)
 	if err != nil {
@@ -391,7 +400,7 @@ func (s *MySQLStore) ReviewVersioned(ctx context.Context, userID, id string, que
 	if err != nil {
 		return Word{}, fmt.Errorf("wordreview: versioned review: lookup: %w", err)
 	}
-	if w.Status != StatusVerified || w.ResearchStatus != ResearchConfirmed || !QuestionReady(w) || w.ReviewQuestion.Version != questionVersion {
+	if w.Status != StatusVerified || w.ResearchStatus != ResearchConfirmed || MeaningNeedsReview(w) || !QuestionReady(w) || w.ReviewQuestion.Version != questionVersion {
 		return Word{}, ErrQuestionVersion
 	}
 	return s.applyReview(ctx, w, questionVersion, true, correct, repeat, now)
@@ -411,6 +420,7 @@ func (s *MySQLStore) applyReview(ctx context.Context, w Word, questionVersion in
 	args := []any{newStage, streak, nextReviewAt.Unix(), now.Unix(), w.ID, w.UserID}
 	if enforceVersion {
 		query += ` AND status = ? AND research_status = ? AND review_question_version = ?`
+		query += ` AND meaning_status NOT IN ('pending', 'done', 'failed')`
 		args = append(args, StatusVerified, ResearchConfirmed, questionVersion)
 	}
 	res, err := s.rw.ExecContext(ctx, query, args...)

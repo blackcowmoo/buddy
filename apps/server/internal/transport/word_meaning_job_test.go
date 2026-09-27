@@ -16,6 +16,7 @@ type meaningJobStore struct {
 	*fakeWordReviewStore
 	*deletedOwner
 	saves, failures int
+	afterSave       func()
 }
 
 func (s *meaningJobStore) StartMeaningCleanup(context.Context, string) error { return nil }
@@ -28,6 +29,9 @@ func (s *meaningJobStore) SaveMeaning(_ context.Context, before wordreview.Word,
 	w.PreviousMeaning, w.Meaning = w.Meaning, meaning
 	w.MeaningStatus, w.MeaningVersion = "done", wordreview.CurrentMeaningVersion
 	s.words[w.ID] = w
+	if s.afterSave != nil {
+		s.afterSave()
+	}
 	return nil
 }
 func (s *meaningJobStore) FailMeaning(_ context.Context, before wordreview.Word, reason string) error {
@@ -90,5 +94,27 @@ func TestMeaningCleanupStopsAfterDeletionDuringModelCall(t *testing.T) {
 	}
 	if model.calls != 1 || st.saves != 0 || st.failures != 0 {
 		t.Fatalf("calls=%d saves=%d failures=%d", model.calls, st.saves, st.failures)
+	}
+}
+
+func TestMeaningCleanupDrainsRetryRequestedDuringActiveBatch(t *testing.T) {
+	w := wordreview.Word{ID: "w1", UserID: "alex", Word: "facility", Meaning: "맥락상 생산 시설을 의미함", Example: "The facility closed.", Status: wordreview.StatusVerified, MeaningStatus: wordreview.MeaningPending, MeaningRevision: 1}
+	st := &meaningJobStore{fakeWordReviewStore: newFakeWordReviewStore(w), deletedOwner: &deletedOwner{}}
+	st.afterSave = func() {
+		if st.saves == 1 {
+			// The selection arrives after the first result is persisted but
+			// before the active job has released its dedupe key.
+			retry := w
+			retry.MeaningRevision++
+			st.words[w.ID] = retry
+		}
+	}
+	pipe := &pipeline.Pipeline{LLM: fakeAnalysisLLM{complete: `{"sameSense":true,"meaning":"생산 시설"}`}, FeedbackLang: "ko"}
+	if err := RunWordMeaningCleanupInline(context.Background(), pipe, st, w.UserID); err != nil {
+		t.Fatal(err)
+	}
+	got := st.words[w.ID]
+	if st.saves != 2 || got.MeaningStatus != wordreview.MeaningDone || got.MeaningRevision != 2 || got.PreviousMeaning != w.Meaning {
+		t.Fatalf("retry stranded: saves=%d word=%+v", st.saves, got)
 	}
 }

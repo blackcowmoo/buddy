@@ -49,6 +49,9 @@ describe("review queue", () => {
   it("draws eight recognition options from confirmed vocabulary, including words not yet due", () => {
     const source = Array.from({ length: 8 }, (_, index) => word(`word-${index}`, { nextReviewAt: index ? 200 : 100 }));
     source.push(word("excluded", { researchStatus: "done" }));
+    for (const meaningStatus of ["pending", "done", "failed"] as const) {
+      source.push(word(meaningStatus, { meaningStatus }));
+    }
     const queue = buildReviewQueue(source, 100);
     expect(queue).toHaveLength(1);
     const item = queue[0];
@@ -56,6 +59,11 @@ describe("review queue", () => {
     if (item.mode !== "recognition") throw new Error("Expected recognition options");
     expect(item.choices).toHaveLength(8);
     expect([...item.choices].sort()).toEqual(source.slice(0, 8).map(({ meaning }) => meaning).sort());
+  });
+
+  it("withholds meanings under cleanup or awaiting a decision until explicitly confirmed", () => {
+    const source = ["pending", "done", "failed", "confirmed"].map((status) => word(status, { meaningStatus: status as WordReviewItem["meaningStatus"] }));
+    expect(buildReviewQueue(source, 100).map((item) => item.word.id)).toEqual(["confirmed"]);
   });
 
   it("can still choose recall when enough recognition options exist", () => {

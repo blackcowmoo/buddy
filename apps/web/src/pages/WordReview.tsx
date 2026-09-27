@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { QuizChoices } from "../components/QuizChoices";
+import { WordMeaningReview } from "../components/WordMeaningReview";
 import { EmptyState, LearningIntro } from "../components/LearningIntro";
 import { confirmThenDelete } from "../lib/confirmDelete";
 import {
@@ -13,6 +14,9 @@ import {
   confirmResearchWord,
   saveWord,
   startMeaningCleanup,
+  selectWordMeaning,
+  meaningNeedsReview,
+  type MeaningChoice,
 } from "../lib/wordReview";
 import type { WordSuggestion } from "../lib/protocol";
 import { formatAbsoluteDateTime } from "../lib/time";
@@ -39,6 +43,9 @@ function formatReviewAge(unixSeconds: number | undefined): string {
 export function WordReview() {
   const [startingMeaningCleanup, setStartingMeaningCleanup] = useState(false);
   const [meaningCleanupError, setMeaningCleanupError] = useState(false);
+  const [selectingMeanings, setSelectingMeanings] = useState<Set<string>>(new Set());
+  const [meaningSelectionErrors, setMeaningSelectionErrors] = useState<Record<string, string | undefined>>({});
+  const meaningSelections = useRef(new Set<string>());
   const [state, setState] = useState<LoadState>("loading");
   const [words, setWords] = useState<WordReviewItem[]>([]);
   const [dueCount, setDueCount] = useState(0);
@@ -65,6 +72,19 @@ export function WordReview() {
   const [autoAdding, setAutoAdding] = useState(false);
   const [autoAddError, setAutoAddError] = useState<string | null>(null);
   const [researching, setResearching] = useState<Set<string>>(new Set());
+  const wordsRequest = useRef(0);
+
+  const refreshWords = useCallback(async () => {
+    const request = ++wordsRequest.current;
+    const result = await fetchWords();
+    // A poll started before a choice was saved must not restore that old
+    // choice, even when its response arrives after the newer list.
+    if (result && request === wordsRequest.current) {
+      setWords(result.words);
+      setDueCount(result.dueCount);
+    }
+    return result;
+  }, []);
 
   // Poll scaffolding for an auto-add job still generating in the background
   // (see usePollScaffold's doc comment). Losing this component (navigating
@@ -100,24 +120,17 @@ export function WordReview() {
       if (status.count === 0) {
         setAutoAddError("추천할 새 단어를 찾지 못했어요. 잠시 후 다시 시도해주세요.");
       }
-      fetchWords().then((result) => {
-        if (result) {
-          setWords(result.words);
-          setDueCount(result.dueCount);
-        }
-      });
+      void refreshWords();
     };
     schedulePoll(tick, wordAutoAddPollIntervalMs);
-  }, [schedulePoll]);
+  }, [schedulePoll, refreshWords]);
 
   useEffect(() => {
-    fetchWords().then((result) => {
+    refreshWords().then((result) => {
       if (result === null) {
         setState("error");
         return;
       }
-      setWords(result.words);
-      setDueCount(result.dueCount);
       setState("ready");
     });
     // Resume watching an auto-add job that was already running when this
@@ -130,7 +143,7 @@ export function WordReview() {
       pollTokenRef.current = token;
       pollAutoAdd(token);
     });
-  }, [pollAutoAdd]);
+  }, [pollAutoAdd, refreshWords]);
 
   // Research jobs and review-question regeneration are persisted server-side.
   // Polling the normal word list makes either completion visible without a
@@ -144,10 +157,10 @@ export function WordReview() {
         (w.status === "verified" && currentQuestion(w) === null),
       );
       if (!hasPendingWork) return;
-      fetchWords().then((result) => { if (result) { setWords(result.words); setDueCount(result.dueCount); } });
+      void refreshWords();
     }, 2000);
     return () => window.clearInterval(timer);
-  }, [words]);
+  }, [words, refreshWords]);
 
   const handleDelete = (id: string) => confirmThenDelete("이 단어를 삭제할까요?", deleteWord, id, setWords);
 
@@ -155,11 +168,33 @@ export function WordReview() {
     setStartingMeaningCleanup(true);
     setMeaningCleanupError(false);
     const started = await startMeaningCleanup();
-    const result = started ? await fetchWords() : null;
-    if (result) { setWords(result.words); setDueCount(result.dueCount); }
+    const result = started ? await refreshWords() : null;
     setMeaningCleanupError(!started || !result);
     setStartingMeaningCleanup(false);
   };
+
+  const handleSelectMeaning = async (word: WordReviewItem, choice: MeaningChoice) => {
+    if (meaningSelections.current.has(word.id)) return;
+    meaningSelections.current.add(word.id);
+    setSelectingMeanings(new Set(meaningSelections.current));
+    setMeaningSelectionErrors((prev) => ({ ...prev, [word.id]: undefined }));
+    const updated = await selectWordMeaning(word, choice);
+    if (updated) {
+      wordsRequest.current++;
+      setWords((prev) => prev.map((w) => w.id === updated.id ? updated : w));
+      // Confirmation can make a previously withheld word due immediately.
+      await refreshWords();
+    } else {
+      setMeaningSelectionErrors((prev) => ({ ...prev, [word.id]: "선택을 저장하지 못했어요. 다시 시도해 주세요." }));
+    }
+    meaningSelections.current.delete(word.id);
+    setSelectingMeanings(new Set(meaningSelections.current));
+  };
+
+  const renderMeaning = (word: WordReviewItem) => (
+    <WordMeaningReview word={word} selecting={selectingMeanings.has(word.id)} error={meaningSelectionErrors[word.id]}
+      onSelect={(choice) => void handleSelectMeaning(word, choice)} />
+  );
 
   const handleResearch = useCallback(async (word: WordReviewItem) => {
     setResearching((prev) => new Set(prev).add(word.id));
@@ -194,7 +229,7 @@ export function WordReview() {
   }, []);
 
   const researchControls = (word: WordReviewItem) => {
-    if (word.researchStatus === "confirmed") return null;
+    if (word.researchStatus === "confirmed" || meaningNeedsReview(word)) return null;
     return (
       <>
         <button type="button" className="ghost word-research-btn" onClick={() => void handleResearch(word)} disabled={researching.has(word.id) || word.researchStatus === "pending"}>
@@ -415,7 +450,7 @@ export function WordReview() {
     [checked, next, checkRecall],
   );
 
-  const verifiedWords = words.filter((w) => w.status === "verified" && w.researchStatus === "confirmed");
+  const verifiedWords = words.filter((w) => w.status === "verified" && w.researchStatus === "confirmed" && !meaningNeedsReview(w));
   const nowSeconds = Date.now() / 1000;
   const readyDueCount = verifiedWords.filter((w) => w.nextReviewAt <= nowSeconds && currentQuestion(w) !== null).length;
   const dueQuestionBackfillCount = verifiedWords.filter((w) => w.nextReviewAt <= nowSeconds && currentQuestion(w) === null).length;
@@ -424,7 +459,7 @@ export function WordReview() {
   // verified rows created from a direct/article definition but not yet
   // confirmed. Rejected rows remain in their own exclusion section below.
   const unconfirmedWords = words.filter((w) =>
-    w.status !== "rejected" && (w.status === "pending" || w.researchStatus !== "confirmed"),
+    w.status !== "rejected" && (w.status === "pending" || w.researchStatus !== "confirmed" || meaningNeedsReview(w)),
   );
   const rejectedWords = words.filter((w) => w.status === "rejected");
 
@@ -484,12 +519,12 @@ export function WordReview() {
             <div>
               <button type="button" className="ghost" onClick={() => void handleMeaningCleanup()}
                 disabled={startingMeaningCleanup || words.some((w) => w.meaningStatus === "pending") ||
-                  !words.some((w) => w.status === "verified" && w.meaningStatus !== "done")}>
+                  !words.some((w) => w.status === "verified" && (!w.meaningStatus || w.meaningStatus === "failed"))}>
                 {startingMeaningCleanup || words.some((w) => w.meaningStatus === "pending") ? "단어 뜻 정리 중…" : "단어 뜻 정리"}
               </button>
               <p className="hint">기존 뜻과 예문을 바탕으로 사전식 뜻으로 다듬어요. 복습 진도는 유지돼요.</p>
               {words.some((w) => w.meaningStatus === "pending") && <p className="hint" role="status">뜻 {words.filter((w) => w.meaningStatus === "pending").length}개 정리 중이에요. 화면을 나가도 계속 진행돼요.</p>}
-              {words.some((w) => w.meaningStatus === "done") && <p className="hint" role="status">뜻 {words.filter((w) => w.meaningStatus === "done").length}개를 정리했어요.</p>}
+              {words.some((w) => w.meaningStatus === "done") && <p className="hint" role="status">정리한 뜻 {words.filter((w) => w.meaningStatus === "done").length}개를 확인하고 선택해 주세요.</p>}
               {meaningCleanupError && <p className="hint" role="alert">뜻 정리 상태를 확인하지 못했어요. 다시 시도해 주세요.</p>}
             </div>
           )}
@@ -505,12 +540,14 @@ export function WordReview() {
           <WordListSection
             title="확정 전 단어"
             words={unconfirmedWords}
+            renderMeaning={renderMeaning}
             onDelete={(id) => void handleDelete(id)}
             renderMeta={(w) => <><span className="word-list-next">확정 전</span>{researchControls(w)}</>}
           />
           <WordListSection
             title="제외된 단어"
             words={rejectedWords}
+            renderMeaning={renderMeaning}
             rowClassName="word-list-row-rejected"
             onDelete={(id) => void handleDelete(id)}
             renderMeta={(w) => (
@@ -524,6 +561,7 @@ export function WordReview() {
             title="복습중인 단어"
             count={verifiedWords.length}
             words={visibleVerifiedWords}
+            renderMeaning={renderMeaning}
             onLoadMore={hasOlderReviewWords ? loadOlderReviewWords : undefined}
             onDelete={(id) => void handleDelete(id)}
             renderMeta={(w) => <><span className="word-list-next">다음 복습: {formatAbsoluteDateTime(w.nextReviewAt)}</span>{researchControls(w)}</>}
@@ -656,11 +694,12 @@ export function WordReview() {
   );
 }
 
-function WordListSection({ title, words, count = words.length, rowClassName, renderMeta, onDelete, onLoadMore }: {
+function WordListSection({ title, words, count = words.length, rowClassName, renderMeaning, renderMeta, onDelete, onLoadMore }: {
   title: string;
   words: WordReviewItem[];
   count?: number;
   rowClassName?: string;
+  renderMeaning: (w: WordReviewItem) => React.ReactNode;
   renderMeta: (w: WordReviewItem) => React.ReactNode;
   onDelete: (id: string) => void;
   onLoadMore?: () => void;
@@ -678,11 +717,7 @@ function WordListSection({ title, words, count = words.length, rowClassName, ren
           <li key={w.id} className="session-row">
             <div className={`session-item word-list-item${rowClassName ? ` ${rowClassName}` : ""}`}>
               <span className="title" lang="en">{w.word}</span>
-              <span className="word-list-meaning">{w.meaning}</span>
-              {w.meaningStatus === "failed" && <span className="hint">{w.meaningError}</span>}
-              {w.meaningStatus === "done" && w.previousMeaning && w.previousMeaning !== w.meaning && (
-                <details><summary>정리 전 뜻</summary><span className="hint">{w.previousMeaning}</span></details>
-              )}
+              {renderMeaning(w)}
               {renderMeta(w)}
             </div>
             <button

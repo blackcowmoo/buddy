@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"sync"
@@ -53,5 +54,47 @@ func wordMeaningCleanupHandler(ident identity.Identifier, words wordreview.Store
 		}
 		schedule(r.Context(), userID)
 		writeJSON(w, map[string]bool{"started": true})
+	}
+}
+
+func wordMeaningSelectionHandler(ident identity.Identifier, words wordreview.Store, schedule func(context.Context, string)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := requireUser(w, r, ident)
+		if !ok {
+			return
+		}
+		store, ok := words.(wordreview.MeaningSelectionStore)
+		if !ok {
+			http.Error(w, "meaning selection unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		var body struct {
+			Choice   wordreview.MeaningChoice `json:"choice"`
+			Revision *int                     `json:"revision"`
+		}
+		if !decodeJSON(w, r, &body) {
+			return
+		}
+		if (body.Choice != wordreview.MeaningChoiceCleaned && body.Choice != wordreview.MeaningChoiceOriginal) || body.Revision == nil || *body.Revision < 0 {
+			http.Error(w, "choice and revision are required", http.StatusBadRequest)
+			return
+		}
+		updated, err := store.SelectMeaning(r.Context(), userID, r.PathValue("id"), body.Choice, *body.Revision)
+		if errors.Is(err, wordreview.ErrMeaningConflict) {
+			http.Error(w, "meaning selection is stale or conflicts with an existing word", http.StatusConflict)
+			return
+		}
+		if err != nil {
+			serverError(w, "words: select meaning", err)
+			return
+		}
+		if updated.ID == "" {
+			http.NotFound(w, r)
+			return
+		}
+		if updated.MeaningStatus == wordreview.MeaningPending {
+			schedule(r.Context(), userID)
+		}
+		writeJSON(w, toWordItem(updated))
 	}
 }

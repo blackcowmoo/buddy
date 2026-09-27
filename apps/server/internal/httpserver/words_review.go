@@ -41,6 +41,7 @@ type wordItem struct {
 	ResearchResults []wordreview.ResearchSuggestion `json:"researchResults,omitempty"`
 	ReviewQuestion  *wordreview.Question            `json:"reviewQuestion,omitempty"`
 	MeaningStatus   string                          `json:"meaningStatus,omitempty"`
+	MeaningRevision int                             `json:"meaningRevision"`
 	MeaningError    string                          `json:"meaningError,omitempty"`
 	PreviousMeaning string                          `json:"previousMeaning,omitempty"`
 }
@@ -65,6 +66,7 @@ func toWordItem(word wordreview.Word) wordItem {
 		ResearchStatus:  word.ResearchStatus,
 		ResearchResults: word.ResearchResults,
 		MeaningStatus:   word.MeaningStatus,
+		MeaningRevision: word.MeaningRevision,
 		MeaningError:    word.MeaningError,
 		PreviousMeaning: word.PreviousMeaning,
 	}

@@ -18,6 +18,7 @@ vi.mock("../lib/wordReview", async () => {
     startAutoAddWords: vi.fn(),
     fetchAutoAddStatus: vi.fn(),
     startMeaningCleanup: vi.fn(),
+    selectWordMeaning: vi.fn(),
   };
 });
 
@@ -36,6 +37,7 @@ import {
   confirmResearchWord,
   startAutoAddWords,
   startMeaningCleanup,
+  selectWordMeaning,
   type WordReviewItem,
 } from "../lib/wordReview";
 import { formatAbsoluteDateTime } from "../lib/time";
@@ -75,7 +77,7 @@ const dueWord: WordReviewItem = {
 };
 
 describe("dictionary meaning cleanup", () => {
-  it("starts cleanup, polls persisted progress, and shows the previous meaning", async () => {
+  it("starts cleanup and keeps pending and completed meanings in the decision section", async () => {
     vi.useFakeTimers();
     const oldMeaning = "맥락상 매우 행복하다는 뜻";
     const old = { ...dueWord, meaning: oldMeaning };
@@ -89,11 +91,15 @@ describe("dictionary meaning cleanup", () => {
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "단어 뜻 정리" })); });
     expect(startMeaningCleanup).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: "단어 뜻 정리 중…" })).toBeDisabled();
+    expect(within(screen.getByRole("region", { name: "확정 전 단어" })).getByText(/뜻 정리 중…/)).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "복습중인 단어" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "복습 시작" })).not.toBeInTheDocument();
     await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
-    expect(screen.getByText("뜻 1개를 정리했어요.")).toBeInTheDocument();
+    expect(screen.getByText("정리한 뜻 1개를 확인하고 선택해 주세요.")).toBeInTheDocument();
     expect(screen.getByText(dueWord.meaning)).toBeInTheDocument();
-    fireEvent.click(screen.getByText("정리 전 뜻"));
     expect(screen.getByText(oldMeaning)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /정리 후 뜻.*이 뜻으로 확정/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /정리 전 뜻.*이 뜻으로 다시 정리/ })).toBeEnabled();
     expect(reviewWord).not.toHaveBeenCalled();
     expect(deleteWord).not.toHaveBeenCalled();
   });
@@ -121,6 +127,127 @@ describe("dictionary meaning cleanup", () => {
     await user.click(await screen.findByRole("button", { name: "단어 뜻 정리" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("뜻 정리 상태를 확인하지 못했어요");
     expect(screen.getByText(dueWord.meaning)).toBeInTheDocument();
+  });
+
+  it("confirms the cleaned meaning, hides the old one, and restores the review entry after reopening", async () => {
+    const done: WordReviewItem = { ...dueWord, meaningStatus: "done", meaningRevision: 3, previousMeaning: "맥락상 매우 행복하다는 뜻" };
+    const confirmed: WordReviewItem = { ...done, meaningStatus: "confirmed", previousMeaning: undefined };
+    vi.mocked(fetchWords).mockResolvedValueOnce({ words: [done], dueCount: 0 })
+      .mockResolvedValue({ words: [confirmed], dueCount: 1 });
+    vi.mocked(selectWordMeaning).mockResolvedValue(confirmed);
+    const user = userEvent.setup();
+    const view = render(<WordReview />);
+    await user.click(await screen.findByRole("button", { name: /정리 후 뜻.*이 뜻으로 확정/ }));
+    expect(selectWordMeaning).toHaveBeenCalledWith(done, "cleaned");
+    expect(await screen.findByRole("button", { name: "복습 시작" })).toBeInTheDocument();
+    expect(screen.queryByText(done.previousMeaning!)).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "확정 전 단어" })).not.toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "복습중인 단어" })).getByText(done.meaning)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "단어 뜻 정리" })).toBeDisabled();
+    expect(reviewWord).not.toHaveBeenCalled();
+    expect(deleteWord).not.toHaveBeenCalled();
+    view.unmount();
+    render(<WordReview />);
+    await screen.findByRole("region", { name: "복습중인 단어" });
+    expect(screen.queryByText("정리 전 뜻")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "단어 뜻 정리" })).toBeDisabled();
+  });
+
+  it("restarts from the original meaning and polls for another choice without changing review progress", async () => {
+    vi.useFakeTimers();
+    const done: WordReviewItem = { ...dueWord, meaningStatus: "done", meaningRevision: 1, previousMeaning: "맥락상 매우 행복하다는 뜻" };
+    const pending: WordReviewItem = { ...done, meaning: done.previousMeaning!, previousMeaning: undefined, meaningStatus: "pending", meaningRevision: 2 };
+    const revised: WordReviewItem = { ...done, meaning: "황홀해하는", meaningRevision: 2 };
+    vi.mocked(fetchWords).mockResolvedValueOnce({ words: [done], dueCount: 0 })
+      .mockResolvedValueOnce({ words: [pending], dueCount: 0 })
+      .mockResolvedValue({ words: [revised], dueCount: 0 });
+    vi.mocked(selectWordMeaning).mockResolvedValue(pending);
+    await act(async () => { render(<WordReview />); });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /정리 전 뜻.*이 뜻으로 다시 정리/ })); });
+    expect(selectWordMeaning).toHaveBeenCalledWith(done, "original");
+    expect(screen.getByText(done.previousMeaning!)).toBeInTheDocument();
+    expect(screen.queryByText(done.meaning)).not.toBeInTheDocument();
+    expect(screen.getByText("뜻 정리 중… 완료되면 뜻을 선택해 주세요.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /이 뜻으로 확정/ })).not.toBeInTheDocument();
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(screen.getByRole("button", { name: /정리 후 뜻 황홀해하는 이 뜻으로 확정/ })).toBeEnabled();
+    expect(within(screen.getByRole("region", { name: "확정 전 단어" })).getByText(done.previousMeaning!)).toBeInTheDocument();
+    expect(reviewWord).not.toHaveBeenCalled();
+    expect(deleteWord).not.toHaveBeenCalled();
+    expect(startMeaningCleanup).not.toHaveBeenCalled();
+  });
+
+  it("keeps all meaning decisions above paginated history and out of the quiz", async () => {
+    const history = Array.from({ length: 25 }, (_, i) => ({ ...dueWord, id: `history-${i}`, word: `word-${i}` }));
+    const pending: WordReviewItem = { ...dueWord, id: "pending-meaning", word: "pending-word", meaningStatus: "pending" };
+    const done: WordReviewItem = { ...dueWord, id: "done-meaning", word: "done-word", meaningStatus: "done", previousMeaning: "원래 뜻" };
+    const failed: WordReviewItem = { ...dueWord, id: "failed-meaning", word: "failed-word", meaningStatus: "failed" };
+    vi.mocked(fetchWords).mockResolvedValue({ words: [...history, pending, done, failed], dueCount: 28 });
+    render(<WordReview />);
+    const decisions = await screen.findByRole("region", { name: "확정 전 단어" });
+    const reviews = screen.getByRole("region", { name: "복습중인 단어" });
+    expect(decisions.compareDocumentPosition(reviews) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    for (const word of [pending, done, failed]) {
+      expect(within(decisions).getByText(word.word)).toBeInTheDocument();
+      expect(within(reviews).queryByText(word.word)).not.toBeInTheDocument();
+    }
+    expect(within(decisions).getAllByRole("listitem")).toHaveLength(3);
+    expect(within(reviews).getAllByRole("listitem")).toHaveLength(20);
+    expect(screen.getByText("복습할 단어 25개가 있어요.")).toBeInTheDocument();
+  });
+
+  it("prevents repeated submissions and leaves both choices available after a failed save", async () => {
+    const done: WordReviewItem = { ...dueWord, meaningStatus: "done", previousMeaning: "원래 뜻" };
+    vi.mocked(fetchWords).mockResolvedValue({ words: [done], dueCount: 0 });
+    let finish!: (value: WordReviewItem | null) => void;
+    vi.mocked(selectWordMeaning).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const user = userEvent.setup();
+    render(<WordReview />);
+    const cleaned = await screen.findByRole("button", { name: /정리 후 뜻.*이 뜻으로 확정/ });
+    const original = screen.getByRole("button", { name: /정리 전 뜻.*이 뜻으로 다시 정리/ });
+    await user.dblClick(cleaned);
+    expect(selectWordMeaning).toHaveBeenCalledTimes(1);
+    expect(cleaned).toBeDisabled();
+    expect(original).toBeDisabled();
+    await act(async () => { finish(null); });
+    expect(screen.getByRole("alert")).toHaveTextContent("선택을 저장하지 못했어요");
+    expect(cleaned).toBeEnabled();
+    expect(original).toBeEnabled();
+    expect(screen.getByText(done.previousMeaning!)).toBeInTheDocument();
+  });
+
+  it("allows retrying one failed meaning", async () => {
+    const failed: WordReviewItem = { ...dueWord, meaningStatus: "failed", meaningRevision: 2, meaningError: "뜻을 정리하지 못했어요." };
+    const pending: WordReviewItem = { ...failed, meaningStatus: "pending", meaningRevision: 3, meaningError: undefined };
+    vi.mocked(fetchWords).mockResolvedValueOnce({ words: [failed], dueCount: 0 })
+      .mockResolvedValue({ words: [pending], dueCount: 0 });
+    vi.mocked(selectWordMeaning).mockResolvedValue(pending);
+    const user = userEvent.setup();
+    render(<WordReview />);
+    await user.click(await screen.findByRole("button", { name: "이 뜻으로 다시 정리" }));
+    expect(selectWordMeaning).toHaveBeenCalledWith(failed, "original");
+    expect(await screen.findByText("뜻 정리 중… 완료되면 뜻을 선택해 주세요.")).toBeInTheDocument();
+    expect(screen.queryByText(failed.meaningError!)).not.toBeInTheDocument();
+  });
+
+  it("ignores a delayed poll response after a meaning is confirmed", async () => {
+    vi.useFakeTimers();
+    const done: WordReviewItem = { ...dueWord, meaningStatus: "done", previousMeaning: "원래 뜻" };
+    const pending: WordReviewItem = { ...dueWord, id: "other", word: "other", meaningStatus: "pending" };
+    const confirmed: WordReviewItem = { ...done, meaningStatus: "confirmed", previousMeaning: undefined };
+    let finishPoll!: (value: { words: WordReviewItem[]; dueCount: number }) => void;
+    vi.mocked(fetchWords).mockResolvedValueOnce({ words: [done, pending], dueCount: 0 })
+      .mockReturnValueOnce(new Promise((resolve) => { finishPoll = resolve; }))
+      .mockResolvedValue({ words: [confirmed, pending], dueCount: 1 });
+    vi.mocked(selectWordMeaning).mockResolvedValue(confirmed);
+    await act(async () => { render(<WordReview />); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(fetchWords).toHaveBeenCalledTimes(2);
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /정리 후 뜻.*이 뜻으로 확정/ })); });
+    await act(async () => { finishPoll({ words: [done, pending], dueCount: 0 }); });
+    expect(screen.queryByText(done.previousMeaning!)).not.toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "복습중인 단어" })).getByText(done.word)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "복습 시작" })).toBeInTheDocument();
   });
 });
 
