@@ -61,22 +61,14 @@ func (p *Pipeline) translateAssistant(ctx context.Context, userID, sessionID str
 // Exported so transport's queue-backed TranslateHook implementation reuses
 // the exact same call translateAssistant() uses directly by default.
 func (p *Pipeline) AnalyzeTranslation(ctx context.Context, text string) (string, error) {
-	raw, err := p.analyze(ctx, translationSystemPrompt(p.FeedbackLang), text, false)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(raw), nil
+	return p.analyze(ctx, translationSystemPrompt(p.FeedbackLang), text, false)
 }
 
 // AnalyzeTranslationFromDraft continues the cascade from the hidden Chat
 // translation draft. It does not call Chat again; each remaining model call
 // uses that model's independent queue.
 func (p *Pipeline) AnalyzeTranslationFromDraft(ctx context.Context, text, chatDraft string) (string, error) {
-	raw, err := p.analyzeFromDraft(ctx, translationSystemPrompt(p.FeedbackLang), text, false, chatDraft)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(raw), nil
+	return p.analyzeFromDraft(ctx, translationSystemPrompt(p.FeedbackLang), text, false, chatDraft)
 }
 
 // AnalyzeTranslationFast is AnalyzeTranslation's FAST-track counterpart: one
@@ -84,16 +76,9 @@ func (p *Pipeline) AnalyzeTranslationFromDraft(ctx context.Context, text, chatDr
 // ensemble, mirroring AnalyzeCorrectionFast — see translateAssistant()'s
 // two-stage flow. The Chat model's own queue applies to this call. A blank
 // (whitespace-only) result is treated as an error, matching analyze()'s own
-// "no blank winners" contract.
+// "no blank winners" contract. chatDraft handles trimming and validation.
 func (p *Pipeline) AnalyzeTranslationFast(ctx context.Context, text string) (string, error) {
-	raw, err := p.chatDraft(ctx, translationSystemPrompt(p.FeedbackLang), text, false)
-	if err != nil {
-		return "", err
-	}
-	if trimmed := strings.TrimSpace(raw); trimmed != "" {
-		return trimmed, nil
-	}
-	return "", fmt.Errorf("translateFast: empty result")
+	return p.chatDraft(ctx, translationSystemPrompt(p.FeedbackLang), text, false)
 }
 
 // TranslateWithContext translates text into the learner's native language
@@ -106,11 +91,7 @@ func (p *Pipeline) AnalyzeTranslationFast(ctx context.Context, text string) (str
 // that never got one the first time, possibly long after the turns around
 // it were said.
 func (p *Pipeline) TranslateWithContext(ctx context.Context, priorTurns []llm.Message, text string) (string, error) {
-	raw, err := p.analyze(ctx, translationSystemPrompt(p.FeedbackLang), renderTranslationInput(renderTranslationContext(priorTurns), text), false)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(raw), nil
+	return p.analyze(ctx, translationSystemPrompt(p.FeedbackLang), renderTranslationInput(renderTranslationContext(priorTurns), text), false)
 }
 
 // renderTranslationContext formats prior turns as context for

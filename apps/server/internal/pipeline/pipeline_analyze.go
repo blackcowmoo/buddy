@@ -74,7 +74,6 @@ func (p *Pipeline) analyzeFromDraft(ctx context.Context, systemPrompt, input str
 	type candidateResult struct {
 		model string
 		text  string
-		ok    bool
 	}
 	refineMsgs := []llm.Message{
 		{Role: llm.RoleSystem, Content: refinementSystemPrompt + "\n\nORIGINAL TASK (authoritative):\n" + systemPrompt},
@@ -95,7 +94,7 @@ func (p *Pipeline) analyzeFromDraft(ctx context.Context, systemPrompt, input str
 		if text = strings.TrimSpace(text); text == "" {
 			return candidateResult{}
 		}
-		return candidateResult{model: c.Model, text: text, ok: true}
+		return candidateResult{model: c.Model, text: text}
 	})
 
 	if err := workguard.Check(ctx); err != nil {
@@ -103,17 +102,20 @@ func (p *Pipeline) analyzeFromDraft(ctx context.Context, systemPrompt, input str
 	}
 	var results []candidateResult
 	for _, r := range slots {
-		if r.ok {
+		if r.text != "" {
 			results = append(results, r)
 		}
 	}
 
+	// Missing, failed, and blank Judge responses use the same priority:
+	// the first successful configured refinement, then the Chat draft.
+	fallback, fallbackSource := strings.TrimSpace(draft), "chat draft"
+	if len(results) > 0 {
+		fallback, fallbackSource = results[0].text, "first candidate"
+	}
 	if p.Judge == nil {
-		if len(results) > 0 {
-			return results[0].text, nil
-		}
-		if draft = strings.TrimSpace(draft); draft != "" {
-			return draft, nil
+		if fallback != "" {
+			return fallback, nil
 		}
 		return "", fmt.Errorf("analyze: every candidate failed")
 	}
@@ -138,27 +140,19 @@ func (p *Pipeline) analyzeFromDraft(ctx context.Context, systemPrompt, input str
 		{Role: llm.RoleUser, Content: b.String()},
 	}
 	final, err := p.complete(ctx, p.Judge, p.JudgeModel, judgeMsgs, jsonMode)
+	if final = strings.TrimSpace(final); err == nil && final != "" {
+		return final, nil
+	}
+	if fallback != "" {
+		if err != nil {
+			log.Printf("analyze: judge: %v; falling back to %s", err, fallbackSource)
+		}
+		return fallback, nil
+	}
 	if err != nil {
-		if len(results) > 0 {
-			log.Printf("analyze: judge: %v; falling back to first candidate", err)
-			return results[0].text, nil
-		}
-		if draft = strings.TrimSpace(draft); draft != "" {
-			log.Printf("analyze: judge: %v; falling back to chat draft", err)
-			return draft, nil
-		}
 		return "", fmt.Errorf("analyze: judge failed and no candidate succeeded: %w", err)
 	}
-	if final = strings.TrimSpace(final); final == "" {
-		if len(results) > 0 {
-			return results[0].text, nil
-		}
-		if draft = strings.TrimSpace(draft); draft != "" {
-			return draft, nil
-		}
-		return "", fmt.Errorf("analyze: judge returned an empty result and no candidate succeeded")
-	}
-	return final, nil
+	return "", fmt.Errorf("analyze: judge returned an empty result and no candidate succeeded")
 }
 
 const refinementSystemPrompt = `You are the Analysis stage in a three-stage
