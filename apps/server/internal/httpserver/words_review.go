@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -123,9 +122,9 @@ func wordSaveHandler(ident identity.Identifier, words wordreview.Store, pipe *pi
 // wordsListHandler returns the study list and due count in one round trip. It
 // also lazily backfills review questions on verified legacy rows.
 func wordsListHandler(ident identity.Identifier, words wordreview.Store, pipe *pipeline.Pipeline, wordVerifyQueue *asyncjob.Queue, resumeMeanings ...func(context.Context, string)) http.HandlerFunc {
-	// Redis deduplicates across replicas. The map provides the same one-run-per-
-	// word property inside a no-Redis process while the page polls.
-	var inlineBackfills sync.Map
+	// Redis deduplicates across replicas; the inline runner suppresses repeated
+	// polling work inside a no-Redis process.
+	var inlineBackfills asyncjob.InlineRunner
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)
 		if !ok {
@@ -152,27 +151,14 @@ func wordsListHandler(ident identity.Identifier, words wordreview.Store, pipe *p
 				wordID := tracked.ID
 				if wordVerifyQueue == nil {
 					key := fmt.Sprintf("%s/%s:q%d", userID, wordID, wordreview.CurrentQuestionVersion)
-					if _, running := inlineBackfills.LoadOrStore(key, struct{}{}); running {
-						continue
-					}
-					go func() {
-						defer inlineBackfills.Delete(key)
-						if err := transport.RunWordVerifyInline(context.Background(), pipe, words, userID, wordID); err != nil {
-							log.Printf("words: review-question backfill %s/%s: %v", userID, wordID, err)
-						}
-					}()
+					inlineBackfills.Start(key, "words: review-question backfill "+userID+"/"+wordID, func(ctx context.Context) error {
+						return transport.RunWordVerifyInline(ctx, pipe, words, userID, wordID)
+					})
 					continue
 				}
-				asyncjob.EnqueueOrRunInline(wordVerifyQueue, r.Context(),
-					"words: enqueue review-question backfill "+userID+"/"+wordID,
-					func(ctx context.Context) error {
-						return transport.EnqueueWordVerifyJob(ctx, wordVerifyQueue, pipe, words, userID, wordID)
-					},
-					"words: review-question backfill "+userID+"/"+wordID,
-					func(ctx context.Context) error {
-						return transport.RunWordVerifyInline(ctx, pipe, words, userID, wordID)
-					},
-				)
+				if err := transport.EnqueueWordVerifyJob(r.Context(), wordVerifyQueue, pipe, words, userID, wordID); err != nil {
+					log.Printf("words: enqueue review-question backfill %s/%s: %v", userID, wordID, err)
+				}
 			}
 		}
 		out := make([]wordItem, len(list))

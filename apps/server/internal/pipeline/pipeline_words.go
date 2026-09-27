@@ -31,13 +31,7 @@ func (p *Pipeline) SuggestWords(ctx context.Context, description string) ([]prot
 	if err != nil {
 		return nil, err
 	}
-	parsed, err := parseJSON[struct {
-		Suggestions []protocol.WordSuggestion `json:"suggestions"`
-	}](raw, "word suggestion")
-	if err != nil {
-		return nil, err
-	}
-	return parsed.Suggestions, nil
+	return parseWordSuggestions(raw, "word suggestion")
 }
 
 // wordSuggestionSystemPrompt builds SuggestWords' prompt, reusing the same
@@ -286,13 +280,7 @@ func (p *Pipeline) defineWordMeanings(ctx context.Context, word, passage string)
 	if err != nil {
 		return nil, err
 	}
-	parsed, err := parseJSON[struct {
-		Suggestions []protocol.WordSuggestion `json:"suggestions"`
-	}](raw, "word meanings")
-	if err != nil {
-		return nil, err
-	}
-	return parsed.Suggestions, nil
+	return parseWordSuggestions(raw, "word meanings")
 }
 
 func (p *Pipeline) resolveWordForm(ctx context.Context, word, passage string) (string, error) {
@@ -392,13 +380,7 @@ func (p *Pipeline) SuggestNewWords(ctx context.Context, learnerProfile string, e
 	if err != nil {
 		return nil, err
 	}
-	parsed, err := parseJSON[struct {
-		Suggestions []protocol.WordSuggestion `json:"suggestions"`
-	}](raw, "word auto-suggestion")
-	if err != nil {
-		return nil, err
-	}
-	return parsed.Suggestions, nil
+	return parseWordSuggestions(raw, "word auto-suggestion")
 }
 
 // wordAutoSuggestSystemPrompt builds SuggestNewWords' prompt, reusing the
@@ -490,4 +472,14 @@ use it), judge ALL of the following:
   actually uses "word" the way "meaning" describes.
 Return STRICT JSON only, no prose, in exactly this shape:
 {"valid":true|false,"reason":"<one short %[1]s sentence explaining your verdict, especially if false>"}`, native)
+}
+
+func parseWordSuggestions(raw, label string) ([]protocol.WordSuggestion, error) {
+	parsed, err := parseJSON[struct {
+		Suggestions []protocol.WordSuggestion `json:"suggestions"`
+	}](raw, label)
+	if err != nil {
+		return nil, err
+	}
+	return parsed.Suggestions, nil
 }

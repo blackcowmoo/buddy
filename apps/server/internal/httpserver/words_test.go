@@ -7,9 +7,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"buddy/server/internal/llm"
@@ -263,7 +265,26 @@ func (f *fakeWordStore) List(ctx context.Context, userID string) ([]wordreview.W
 	if f.err != nil {
 		return nil, f.err
 	}
-	return f.byUser[userID], nil
+	// Match MySQL's snapshot semantics: background verification may update
+	// the stored row while the handler still renders the returned list.
+	return slices.Clone(f.byUser[userID]), nil
+}
+
+func TestFakeWordStoreListRetainsSnapshotAfterVerification(t *testing.T) {
+	st := &fakeWordStore{byUser: map[string][]wordreview.Word{
+		"alex": {{ID: "word", Status: wordreview.StatusPending}},
+	}}
+	list, err := st.List(context.Background(), "alex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := st.MarkVerified(context.Background(), "alex", "word", time.Unix(1700000000, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verified.Status != wordreview.StatusVerified || list[0].Status != wordreview.StatusPending {
+		t.Fatalf("verification changed an already-read snapshot: verified=%s snapshot=%s", verified.Status, list[0].Status)
+	}
 }
 
 func (f *fakeWordStore) DueCount(ctx context.Context, userID string, now time.Time) (int, error) {
@@ -651,74 +672,52 @@ func (s *questionBackfillStore) SaveQuestion(ctx context.Context, userID, id str
 	return wordreview.Word{}, false, nil
 }
 
-func TestWordsListHidesLegacyQuestionAndRegeneratesItInBackground(t *testing.T) {
-	now := time.Now()
-	base := &fakeWordStore{byUser: map[string][]wordreview.Word{
-		"alex": {{
-			ID: "w-old", UserID: "alex", Word: "organize", Meaning: "정리하다",
-			Example: "They organized the files.", Status: wordreview.StatusVerified,
-			ResearchStatus: wordreview.ResearchConfirmed, NextReviewAt: now.Add(-time.Hour),
-		}},
-	}}
-	words := &questionBackfillStore{fakeWordStore: base}
-	pipe := &pipeline.Pipeline{
-		LLM: &fakeWordSuggestLLM{complete: func([]llm.Message) (string, error) {
-			return `{"prompt":"They ___ the files yesterday.","answers":["organized"]}`, nil
-		}},
-		ChatModel: "m",
-	}
-	h := wordsListHandler(fakeIdentifier{id: "alex", ok: true}, words, pipe, nil)
-	req := httptest.NewRequest("GET", "/api/words", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+func TestWordsListRecoversReviewQuestionsInBackground(t *testing.T) {
+	for _, status := range []string{wordreview.StatusVerified, wordreview.StatusPending} {
+		t.Run(status, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				base := &fakeWordStore{byUser: map[string][]wordreview.Word{
+					"alex": {{
+						ID: "word", UserID: "alex", Word: "organize", Meaning: "정리하다",
+						Example: "They organized the files.", Status: status,
+						ResearchStatus: wordreview.ResearchConfirmed, NextReviewAt: time.Now().Add(-time.Hour),
+					}},
+				}}
+				words := &questionBackfillStore{fakeWordStore: base}
+				pipe := &pipeline.Pipeline{
+					LLM: &fakeWordSuggestLLM{complete: func(msgs []llm.Message) (string, error) {
+						if strings.Contains(msgs[0].Content, "strict fact-checker") {
+							return `{"valid":true,"reason":""}`, nil
+						}
+						return `{"prompt":"They ___ the files yesterday.","answers":["organized"]}`, nil
+					}},
+					ChatModel: "m",
+				}
+				h := wordsListHandler(fakeIdentifier{id: "alex", ok: true}, words, pipe, nil)
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/words", nil))
+				requireStatus(t, rec, http.StatusOK)
+				if strings.Contains(rec.Body.String(), "reviewQuestion") {
+					t.Fatalf("legacy question leaked in first response: %s", rec.Body.String())
+				}
 
-	requireStatus(t, rec, http.StatusOK)
-	if strings.Contains(rec.Body.String(), "reviewQuestion") {
-		t.Fatalf("legacy question leaked in first response: %s", rec.Body.String())
-	}
-	waitForCondition(t, 2*time.Second, func() bool {
-		base.mu.Lock()
-		defer base.mu.Unlock()
-		return wordreview.QuestionReady(base.byUser["alex"][0])
-	})
+				synctest.Wait()
+				word, err := base.Get(context.Background(), "alex", "word")
+				if err != nil || word.Status != wordreview.StatusVerified || !wordreview.QuestionReady(word) {
+					t.Fatalf("word was not recovered: %+v, err=%v", word, err)
+				}
 
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/words", nil))
-	if !strings.Contains(rec.Body.String(), `"answers":["organized"]`) ||
-		!strings.Contains(rec.Body.String(), `"answer":"organized"`) ||
-		!strings.Contains(rec.Body.String(), `"version":2`) {
-		t.Fatalf("regenerated current question missing from response: %s", rec.Body.String())
+				rec = httptest.NewRecorder()
+				h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/words", nil))
+				requireStatus(t, rec, http.StatusOK)
+				if !strings.Contains(rec.Body.String(), `"answers":["organized"]`) ||
+					!strings.Contains(rec.Body.String(), `"answer":"organized"`) ||
+					!strings.Contains(rec.Body.String(), `"version":2`) {
+					t.Fatalf("regenerated current question missing from response: %s", rec.Body.String())
+				}
+			})
+		})
 	}
-}
-
-func TestWordsListRestartsPendingVerificationInBackground(t *testing.T) {
-	base := &fakeWordStore{byUser: map[string][]wordreview.Word{
-		"alex": {{
-			ID: "w-pending", UserID: "alex", Word: "organize", Meaning: "정리하다",
-			Example: "They organized the files.", Status: wordreview.StatusPending,
-		}},
-	}}
-	words := &questionBackfillStore{fakeWordStore: base}
-	pipe := &pipeline.Pipeline{
-		LLM: &fakeWordSuggestLLM{complete: func(msgs []llm.Message) (string, error) {
-			if strings.Contains(msgs[0].Content, "strict fact-checker") {
-				return `{"valid":true,"reason":""}`, nil
-			}
-			return `{"prompt":"They ___ the files yesterday.","answers":["organized"]}`, nil
-		}},
-		ChatModel: "m",
-	}
-	h := wordsListHandler(fakeIdentifier{id: "alex", ok: true}, words, pipe, nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/words", nil))
-	requireStatus(t, rec, http.StatusOK)
-
-	waitForCondition(t, 2*time.Second, func() bool {
-		base.mu.Lock()
-		defer base.mu.Unlock()
-		word := base.byUser["alex"][0]
-		return word.Status == wordreview.StatusVerified && wordreview.QuestionReady(word)
-	})
 }
 
 func TestWordReviewUpdatesAndReturnsWord(t *testing.T) {

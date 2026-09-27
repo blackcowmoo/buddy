@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"sync"
 
 	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/identity"
@@ -15,7 +14,7 @@ import (
 )
 
 func wordMeaningCleanupScheduler(words wordreview.Store, pipe *pipeline.Pipeline, queue *asyncjob.Queue) func(context.Context, string) {
-	var running sync.Map
+	var running asyncjob.InlineRunner
 	return func(ctx context.Context, userID string) {
 		if queue != nil {
 			if err := transport.EnqueueWordMeaningCleanup(ctx, queue, pipe, words, userID); err != nil {
@@ -25,15 +24,9 @@ func wordMeaningCleanupScheduler(words wordreview.Store, pipe *pipeline.Pipeline
 			}
 			return
 		}
-		if _, loaded := running.LoadOrStore(userID, struct{}{}); loaded {
-			return
-		}
-		go func() {
-			defer running.Delete(userID)
-			if err := transport.RunWordMeaningCleanupInline(context.Background(), pipe, words, userID); err != nil {
-				log.Printf("words: meaning cleanup: %v", err)
-			}
-		}()
+		running.Start(userID, "words: meaning cleanup", func(ctx context.Context) error {
+			return transport.RunWordMeaningCleanupInline(ctx, pipe, words, userID)
+		})
 	}
 }
 

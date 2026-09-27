@@ -53,14 +53,7 @@ func encodeJSONSlice[T any](items []T) (string, error) {
 // this still falls back to nil defensively rather than surfacing a decode
 // error to the caller, since a missing wrap-up on old data is harmless.
 func decodeStudySummary(raw string) []protocol.StudySummarySentence {
-	if raw == "" {
-		return nil
-	}
-	var sentences []protocol.StudySummarySentence
-	if err := json.Unmarshal([]byte(raw), &sentences); err != nil {
-		return nil
-	}
-	return sentences
+	return decodeJSONSlice[protocol.StudySummarySentence](raw)
 }
 
 // FailStudySummary records that an asyncjob.KindStudySummary job's LLM call
@@ -106,14 +99,20 @@ func (s *MySQLStore) CompleteStudyQuiz(ctx context.Context, userID, sessionID st
 // mirrors decodeStudySummary. "" (never completed, or no issues were
 // flagged) decodes to nil.
 func decodeQuiz(raw string) []protocol.QuizQuestion {
+	return decodeJSONSlice[protocol.QuizQuestion](raw)
+}
+
+// Legacy text and malformed arrays both mean "no saved result". Discard the
+// entire slice on decode failure, including any partially decoded elements.
+func decodeJSONSlice[T any](raw string) []T {
 	if raw == "" {
 		return nil
 	}
-	var questions []protocol.QuizQuestion
-	if err := json.Unmarshal([]byte(raw), &questions); err != nil {
+	var items []T
+	if err := json.Unmarshal([]byte(raw), &items); err != nil {
 		return nil
 	}
-	return questions
+	return items
 }
 
 // FailStudyQuiz records that an asyncjob.KindStudyQuiz job's LLM call

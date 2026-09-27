@@ -226,9 +226,9 @@ func TestParseModelURLPair(t *testing.T) {
 }
 
 func TestParseModelURLPairs(t *testing.T) {
-	models, urls := parseModelURLPairs("gemma-4-e4b@http://a:8081/v1,http://b:8081/v1, qwen3@http://c:8081/v1 ")
-	wantModels := []string{"gemma-4-e4b", "", "qwen3"}
-	wantURLs := []string{"http://a:8081/v1", "http://b:8081/v1", "http://c:8081/v1"}
+	models, urls := parseModelURLPairs(" , gemma-4-e4b @ http://a:8081/v1, ,http://b:8081/v1, qwen3@http://user@c:8081/v1, @http://d:8081/v1, ")
+	wantModels := []string{"gemma-4-e4b", "", "qwen3", ""}
+	wantURLs := []string{"http://a:8081/v1", "http://b:8081/v1", "http://user@c:8081/v1", "http://d:8081/v1"}
 	if !slices.Equal(models, wantModels) {
 		t.Fatalf("models = %v, want %v", models, wantModels)
 	}

@@ -2,7 +2,6 @@ package transport
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
@@ -85,11 +84,7 @@ func turnLogID(userID, sessionID string, turn int) string {
 // (the fast path in NewReplyHook); the background Worker pool (see
 // cmd/server/main.go) passes nil for both.
 func ReplyJobHandler(pipe *pipeline.Pipeline, st store.Store, onToken func(string), onDone func(string)) asyncjob.Handler {
-	return func(ctx context.Context, job asyncjob.Job) error {
-		var payload replyJobPayload
-		if err := json.Unmarshal(job.Payload, &payload); err != nil {
-			return fmt.Errorf("reply job: bad payload: %w", err)
-		}
+	return asyncjob.DecodePayloadHandler(asyncjob.KindReply, func(ctx context.Context, payload replyJobPayload) error {
 		ctx = workguard.BindStore(ctx, st, payload.UserID, payload.SessionID)
 		if err := workguard.Check(ctx); err != nil {
 			return err
@@ -126,7 +121,7 @@ func ReplyJobHandler(pipe *pipeline.Pipeline, st store.Store, onToken func(strin
 			onDone(full)
 		}
 		return nil
-	}
+	})
 }
 
 // NewReplyHook builds the pipeline.ReplyHook that makes turn replies

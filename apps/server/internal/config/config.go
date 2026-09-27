@@ -227,13 +227,9 @@ func splitCSV(s string) []string {
 // a separate *_URL/*_MODEL pair — "model@url" either way, list or not.
 func parseModelURLPairs(s string) (models, urls []string) {
 	for _, part := range splitCSV(s) {
-		if model, url, ok := strings.Cut(part, "@"); ok {
-			models = append(models, strings.TrimSpace(model))
-			urls = append(urls, strings.TrimSpace(url))
-			continue
-		}
-		models = append(models, "")
-		urls = append(urls, part)
+		model, url := parseModelURLPair(part)
+		models = append(models, model)
+		urls = append(urls, url)
 	}
 	return models, urls
 }
