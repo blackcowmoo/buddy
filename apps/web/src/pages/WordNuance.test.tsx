@@ -45,11 +45,20 @@ function answer(correct: boolean, questionId = "q0") {
   fireEvent.click(screen.getByRole("button", { name: next.state.feedback!.selected }));
   fireEvent.click(screen.getByRole("button", { name: "답안 확인" }));
 }
-it("uses a dedicated stacked card layout for long history titles", async () => {
+it("uses the shared history layout for long titles, descriptions, and review status", async () => {
+  const word = "pneumonoultramicroscopicsilicovolcanoconiosis".repeat(3);
+  lesson.content!.words[0].word = word;
   render(<WordNuance />);
-  const historyItem = await screen.findByRole("button", { name: "cheap / inexpensive 열기" });
-  expect(historyItem).toHaveClass("nuance-list-item");
-  expect(within(historyItem).getByText("cheap / inexpensive")).toHaveClass("title");
+  const historyItem = await screen.findByRole("button", { name: `${word} / inexpensive 열기` });
+  const title = within(historyItem).getByText(`${word} / inexpensive`);
+  const status = within(historyItem).getByText(/복습할 문맥/);
+  expect(historyItem).toHaveClass("session-item");
+  expect(title).toHaveClass("title");
+  expect(title.parentElement).toHaveClass("history-item-content");
+  expect(status.closest(".history-item-meta")).not.toContainElement(title);
+  expect(within(historyItem).getByText(lesson.content!.distinction)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: `${word} / inexpensive 삭제` })).toBeEnabled();
+  expect(screen.getByRole("region", { name: "상황에 맞는 단어를 익혀요" })).toHaveClass("learning-intro");
 });
 it("normalizes an unordered response to the newest lesson first and starts at the top", async () => {
   const older = structuredClone(lesson);

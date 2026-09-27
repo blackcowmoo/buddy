@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { EmptyState, LearningIntro } from "../components/LearningIntro";
 import { confirmThenDelete } from "../lib/confirmDelete";
 import {
@@ -12,9 +12,11 @@ import {
   type ArticleDraw,
   type ArticleInstance,
 } from "../lib/articles";
-import { formatAbsoluteDate, formatDateDivider, formatMessageTime, shouldShowDateDivider } from "../lib/time";
+import { formatAbsoluteDate, formatMessageTime } from "../lib/time";
 import { QuizChoices } from "../components/QuizChoices";
-import { SubPageHeader } from "../components/SubPageHeader";
+import { LearningPage } from "../components/LearningPage";
+import { DatedList } from "../components/DatedList";
+import { HistoryItemContent } from "../components/HistoryItemContent";
 import { usePollScaffold } from "../hooks/usePollScaffold";
 import { requestAmbientAudioSession } from "../lib/audioSession";
 import { loadPlaybackRate } from "../lib/ttsSettings";
@@ -25,7 +27,7 @@ import { useDismiss } from "../hooks/useDismiss";
 import { LoadingHint } from "../components/LoadingHint";
 import type { LoadState } from "../lib/loadState";
 import { readStored, writeStored } from "../lib/storedValue";
-import { newestFirst, useViewScrollTop } from "../lib/listView";
+import { newestFirst } from "../lib/listView";
 
 // How often to re-check a draw that's still generating in the background
 // (see asyncjob.KindArticleStudy) — a poll, not a push, since nothing on the
@@ -120,7 +122,6 @@ export function ArticleQuiz() {
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<ArticleAnswerResult | null>(null);
   const [tts, setTts] = useState<TtsState>("idle");
-  const articlePageRef = useViewScrollTop<HTMLElement>(view ?? "list");
   const audioRef = useRef<HTMLAudioElement | null>(null);
   // Invalidates a pending play() rejection when the learner cancels before
   // the browser has finished starting playback.
@@ -645,227 +646,212 @@ export function ArticleQuiz() {
   );
 
   return (
-    <div className="app">
-      <SubPageHeader title="오늘의 아티클" />
-
-      <main
-        ref={articlePageRef}
-        className="convo article-quiz-page"
-        onScroll={(event) => {
-          const page = event.currentTarget;
-          if (view === null && state === "ready" && page.scrollHeight - page.scrollTop - page.clientHeight <= articleListLoadThreshold) {
-            loadOlderInstances();
-          }
-        }}
-      >
-        {view === null && (
-          <>
-            <LearningIntro eyebrow="읽으며 넓어지는 영어" title="새로운 이야기를 읽어 봐요" description="아티클 속 단어를 눌러 뜻을 알아보고, 퀴즈로 읽은 내용을 되짚어 보세요." steps={["아티클 고르기", "읽고 단어 찾기", "퀴즈로 확인하기"]} />
-            <button type="button" className="quiz-start-btn" onClick={() => void handleDraw()} disabled={drawState === "drawing"}>
-              {drawState === "drawing" ? "가져오는 중…" : "새 아티클 뽑기"}
-            </button>
-            {drawFeedback}
-            <div className="section-heading history-heading">
-              <h2>나의 아티클 기록</h2>
-              {state === "ready" && <p>총 {instances.length}개 · 최근 기록부터</p>}
-            </div>
-            {state === "loading" && <LoadingHint />}
-            {state === "ready" && instances.length === 0 && (
-              <EmptyState title="아직 읽은 아티클이 없어요." description="‘새 아티클 뽑기’를 눌러 읽을거리를 만나 보세요. 읽던 글은 이 목록에서 다시 열 수 있어요." />
-            )}
-            {visibleInstances.map((inst, i) => {
-              const prev = visibleInstances[i - 1];
-              const showDivider = shouldShowDateDivider(prev?.createdAt, inst.createdAt);
-              return (
-                <Fragment key={inst.id}>
-                  {showDivider && (
-                    <div className="date-divider">
-                      <span>{formatDateDivider(inst.createdAt)}</span>
-                    </div>
+    <LearningPage
+      title="오늘의 아티클"
+      viewKey={view ?? "list"}
+      onScroll={(event) => {
+        const page = event.currentTarget;
+        if (view === null && state === "ready" && page.scrollHeight - page.scrollTop - page.clientHeight <= articleListLoadThreshold) {
+          loadOlderInstances();
+        }
+      }}
+    >
+      {view === null && (
+        <>
+          <LearningIntro eyebrow="읽으며 넓어지는 영어" title="새로운 이야기를 읽어 봐요" description="아티클 속 단어를 눌러 뜻을 알아보고, 퀴즈로 읽은 내용을 되짚어 보세요." steps={["아티클 고르기", "읽고 단어 찾기", "퀴즈로 확인하기"]} />
+          <button type="button" className="quiz-start-btn" onClick={() => void handleDraw()} disabled={drawState === "drawing"}>
+            {drawState === "drawing" ? "가져오는 중…" : "새 아티클 뽑기"}
+          </button>
+          {drawFeedback}
+          <div className="section-heading history-heading">
+            <h2>나의 아티클 기록</h2>
+            {state === "ready" && <p>총 {instances.length}개 · 최근 기록부터</p>}
+          </div>
+          {state === "loading" && <LoadingHint />}
+          {state === "ready" && instances.length === 0 && (
+            <EmptyState title="아직 읽은 아티클이 없어요." description="‘새 아티클 뽑기’를 눌러 읽을거리를 만나 보세요. 읽던 글은 이 목록에서 다시 열 수 있어요." />
+          )}
+          <DatedList items={visibleInstances}>{(inst) => (
+            <div className="session-row article-instance-row">
+              <button
+                type="button"
+                className="session-item article-instance-item"
+                onClick={() => void openInstance(inst.id)}
+              >
+                <HistoryItemContent
+                  title={`[${inst.source}] ${inst.title}`}
+                  badges={inst.status !== "done" && (
+                    <span className="study-summary-pending-badge" title="아티클을 만드는 중">
+                      <span className="spinning">⏳</span> 생성 중
+                    </span>
                   )}
-                  <div className="session-row article-instance-row">
-                    <button
-                      type="button"
-                      className="session-item article-instance-item"
-                      onClick={() => void openInstance(inst.id)}
-                    >
-                      {inst.status !== "done" && (
-                        <span className="study-summary-pending-badge" title="아티클을 만드는 중">
-                          <span className="spinning">⏳</span> 생성 중
-                        </span>
-                      )}
-                      <span className="title">
-                        [{inst.source}] {inst.title}
-                      </span>
-                      <span className="time">
-                        {formatMessageTime(inst.createdAt)}
-                        {inst.answered && (inst.correct ? " · 정답" : " · 오답")}
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost icon-btn session-delete"
-                      onClick={() => void handleDelete(inst.id)}
-                      aria-label="아티클 퀴즈 삭제"
-                      title="아티클 퀴즈 삭제"
-                    >
-                      🗑
-                    </button>
-                  </div>
-                </Fragment>
-              );
-            })}
-
-            {visibleInstances.length < instances.length && (
-              <button type="button" className="ghost" onClick={loadOlderInstances}>
-                이전 아티클 더 보기
+                  meta={<>
+                    {formatMessageTime(inst.createdAt)}
+                    {inst.answered && (inst.correct ? " · 정답" : " · 오답")}
+                  </>}
+                />
               </button>
-            )}
-          </>
-        )}
-
-        {view === "reading" && draw && (
-          <div className="quiz-panel article-reading-panel">
-            <div className="article-meta">
-              [{draw.source}] {draw.title}
-            </div>
-            {draw.publishedAt > 0 && (
-              <div className="article-date">{formatAbsoluteDate(new Date(draw.publishedAt * 1000))}</div>
-            )}
-            {draw.status === "done" ? (
-              <>
-                {/* This container includes the block-level lookup popover for
-                    the selected token. A <p> cannot legally contain that
-                    panel and browsers may re-parent it unpredictably. */}
-                {searchableSummary}
-                <audio
-                  ref={audioRef}
-                  style={{ display: "none" }}
-                  onPlaying={() => setTts("speaking")}
-                  onWaiting={() => setTts("loading")}
-                  onEnded={() => setTts("idle")}
-                  onError={() => {
-                    setTts("error");
-                    setTimeout(() => setTts("idle"), 2000);
-                  }}
-                />
-                <button
-                  type="button"
-                  className="ghost article-read-aloud-btn"
-                  onClick={handleRead}
-                  disabled={tts !== "idle"}
-                >
-                  {tts === "loading"
-                    ? "불러오는 중…"
-                    : tts === "speaking"
-                      ? "재생 중…"
-                      : tts === "error"
-                        ? "재생 실패, 다시 시도해주세요"
-                        : "🔊 읽어주기"}
-                </button>
-                {(tts === "loading" || tts === "speaking") && (
-                  <button type="button" className="ghost article-read-aloud-btn" onClick={cancelRead}>
-                    취소
-                  </button>
-                )}
-                <button type="button" className="quiz-start-btn" onClick={startQuiz}>
-                  문제풀기
-                </button>
-              </>
-            ) : (
-              // Still generating (see asyncjob.KindArticleStudy) — this view
-              // polls in the background (see pollDraw) whether the learner
-              // just drew this or reopened a pending row from the list; no
-              // action needed here beyond waiting or leaving.
-              <p className="hint">
-                <span className="spinning">⏳</span> 아티클을 요약하고 문제를 만드는 중이에요. 이 화면을 나갔다 와도
-                계속 진행돼요.
-              </p>
-            )}
-            <div className="article-reading-actions">
-              <button type="button" className="ghost quiz-back-btn" onClick={backToList}>
-                ← 목록으로
+              <button
+                type="button"
+                className="ghost icon-btn session-delete"
+                onClick={() => void handleDelete(inst.id)}
+                aria-label="아티클 퀴즈 삭제"
+                title="아티클 퀴즈 삭제"
+              >
+                🗑
               </button>
-              {searchedWordsControl}
             </div>
-          </div>
-        )}
+          )}</DatedList>
 
-        {view === "quiz" && draw && (
-          <div className="quiz-panel">
-            <div className="article-language-label">영어 원문</div>
-            <p className="article-summary">{draw.summary}</p>
-            <div className="quiz-prompt">이 문단의 내용과 일치하는 것을 각각 고르세요.</div>
-            {draw.subQuestions.map((sub, qi) => (
-              <div key={qi} className="article-sub-question">
-                <div className="quiz-prompt">{sub.prompt}</div>
-                <QuizChoices
-                  options={sub.options}
-                  selectedIndex={selections[qi] ?? null}
-                  disabled={submitting}
-                  label={sub.prompt}
-                  onSelect={(index) => pickOption(qi, index)}
-                />
-              </div>
-            ))}
-            <button
-              type="button"
-              className="quiz-start-btn"
-              onClick={() => void submitAnswers()}
-              disabled={!allAnswered || submitting}
-            >
-              {submitting ? "채점 중…" : "답안 확인"}
+          {visibleInstances.length < instances.length && (
+            <button type="button" className="ghost" onClick={loadOlderInstances}>
+              이전 아티클 더 보기
             </button>
-          </div>
-        )}
+          )}
+        </>
+      )}
 
-        {view === "result" && draw && result && (
-          <div className="quiz-panel">
-            <div className={`quiz-result ${result.correct ? "correct" : "incorrect"}`} role="status">
-              {result.correct ? "정답이에요!" : `아쉬워요, ${result.score}/${result.total} 정답이에요.`}
-            </div>
-            <div className="article-language-label">영어 원문</div>
-            {searchableSummary}
-            {(result.translation || draw.translation) && (
-              <>
-                <div className="article-language-label">한글 번역</div>
-                <p className="article-translation" lang="ko">
-                  {result.translation || draw.translation}
-                </p>
-              </>
-            )}
-            {searchedWordsControl && (
-              <div className="article-result-search-history">
-                {searchedWordsControl}
-              </div>
-            )}
-            {result.subQuestions.map((sub, qi) => (
-              <div key={qi} className="article-sub-question">
-                <div className="quiz-prompt">{sub.prompt}</div>
-                <QuizChoices
-                  options={sub.options}
-                  selectedIndex={sub.selectedOptionIndex}
-                  correctIndex={sub.correctOptionIndex}
-                  label={sub.prompt}
-                />
-                <div className="article-explanation">{sub.explanation}</div>
-              </div>
-            ))}
-            <button
-              type="button"
-              className="quiz-start-btn"
-              onClick={() => void handleDraw()}
-              disabled={drawState === "drawing"}
-            >
-              {drawState === "drawing" ? "가져오는 중…" : "다른 아티클 뽑기"}
-            </button>
-            {drawFeedback}
+      {view === "reading" && draw && (
+        <div className="quiz-panel article-reading-panel">
+          <div className="article-meta">
+            [{draw.source}] {draw.title}
+          </div>
+          {draw.publishedAt > 0 && (
+            <div className="article-date">{formatAbsoluteDate(new Date(draw.publishedAt * 1000))}</div>
+          )}
+          {draw.status === "done" ? (
+            <>
+              {/* This container includes the block-level lookup popover for
+                  the selected token. A <p> cannot legally contain that
+                  panel and browsers may re-parent it unpredictably. */}
+              {searchableSummary}
+              <audio
+                ref={audioRef}
+                style={{ display: "none" }}
+                onPlaying={() => setTts("speaking")}
+                onWaiting={() => setTts("loading")}
+                onEnded={() => setTts("idle")}
+                onError={() => {
+                  setTts("error");
+                  setTimeout(() => setTts("idle"), 2000);
+                }}
+              />
+              <button
+                type="button"
+                className="ghost article-read-aloud-btn"
+                onClick={handleRead}
+                disabled={tts !== "idle"}
+              >
+                {tts === "loading"
+                  ? "불러오는 중…"
+                  : tts === "speaking"
+                    ? "재생 중…"
+                    : tts === "error"
+                      ? "재생 실패, 다시 시도해주세요"
+                      : "🔊 읽어주기"}
+              </button>
+              {(tts === "loading" || tts === "speaking") && (
+                <button type="button" className="ghost article-read-aloud-btn" onClick={cancelRead}>
+                  취소
+                </button>
+              )}
+              <button type="button" className="quiz-start-btn" onClick={startQuiz}>
+                문제풀기
+              </button>
+            </>
+          ) : (
+            // Still generating (see asyncjob.KindArticleStudy) — this view
+            // polls in the background (see pollDraw) whether the learner
+            // just drew this or reopened a pending row from the list; no
+            // action needed here beyond waiting or leaving.
+            <p className="hint">
+              <span className="spinning">⏳</span> 아티클을 요약하고 문제를 만드는 중이에요. 이 화면을 나갔다 와도
+              계속 진행돼요.
+            </p>
+          )}
+          <div className="article-reading-actions">
             <button type="button" className="ghost quiz-back-btn" onClick={backToList}>
               ← 목록으로
             </button>
+            {searchedWordsControl}
           </div>
-        )}
-      </main>
-    </div>
+        </div>
+      )}
+
+      {view === "quiz" && draw && (
+        <div className="quiz-panel">
+          <div className="article-language-label">영어 원문</div>
+          <p className="article-summary">{draw.summary}</p>
+          <div className="quiz-prompt">이 문단의 내용과 일치하는 것을 각각 고르세요.</div>
+          {draw.subQuestions.map((sub, qi) => (
+            <div key={qi} className="article-sub-question">
+              <div className="quiz-prompt">{sub.prompt}</div>
+              <QuizChoices
+                options={sub.options}
+                selectedIndex={selections[qi] ?? null}
+                disabled={submitting}
+                label={sub.prompt}
+                onSelect={(index) => pickOption(qi, index)}
+              />
+            </div>
+          ))}
+          <button
+            type="button"
+            className="quiz-start-btn"
+            onClick={() => void submitAnswers()}
+            disabled={!allAnswered || submitting}
+          >
+            {submitting ? "채점 중…" : "답안 확인"}
+          </button>
+        </div>
+      )}
+
+      {view === "result" && draw && result && (
+        <div className="quiz-panel">
+          <div className={`quiz-result ${result.correct ? "correct" : "incorrect"}`} role="status">
+            {result.correct ? "정답이에요!" : `아쉬워요, ${result.score}/${result.total} 정답이에요.`}
+          </div>
+          <div className="article-language-label">영어 원문</div>
+          {searchableSummary}
+          {(result.translation || draw.translation) && (
+            <>
+              <div className="article-language-label">한글 번역</div>
+              <p className="article-translation" lang="ko">
+                {result.translation || draw.translation}
+              </p>
+            </>
+          )}
+          {searchedWordsControl && (
+            <div className="article-result-search-history">
+              {searchedWordsControl}
+            </div>
+          )}
+          {result.subQuestions.map((sub, qi) => (
+            <div key={qi} className="article-sub-question">
+              <div className="quiz-prompt">{sub.prompt}</div>
+              <QuizChoices
+                options={sub.options}
+                selectedIndex={sub.selectedOptionIndex}
+                correctIndex={sub.correctOptionIndex}
+                label={sub.prompt}
+              />
+              <div className="article-explanation">{sub.explanation}</div>
+            </div>
+          ))}
+          <button
+            type="button"
+            className="quiz-start-btn"
+            onClick={() => void handleDraw()}
+            disabled={drawState === "drawing"}
+          >
+            {drawState === "drawing" ? "가져오는 중…" : "다른 아티클 뽑기"}
+          </button>
+          {drawFeedback}
+          <button type="button" className="ghost quiz-back-btn" onClick={backToList}>
+            ← 목록으로
+          </button>
+        </div>
+      )}
+    </LearningPage>
   );
 }

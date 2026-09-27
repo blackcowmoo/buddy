@@ -9,7 +9,6 @@ import {
   reviewWord,
   startAutoAddWords,
   type WordReviewItem,
-  type WordReviewQuestion,
   startResearchWord,
   confirmResearchWord,
   saveWord,
@@ -17,81 +16,25 @@ import {
 } from "../lib/wordReview";
 import type { WordSuggestion } from "../lib/protocol";
 import { formatAbsoluteDateTime } from "../lib/time";
-import { shuffled } from "../lib/shuffle";
+import { buildReviewQueue, currentQuestion, reshuffleRecognitionChoices, type QuizItem } from "../lib/wordReviewQuiz";
 import { checkQuizAnswer, normalizeQuizAnswer as normalizeAnswer, quizBlankInputClass } from "../lib/quizCheck";
-import { SubPageHeader } from "../components/SubPageHeader";
+import { LearningPage } from "../components/LearningPage";
 import { usePollScaffold } from "../hooks/usePollScaffold";
 import { LoadingHint } from "../components/LoadingHint";
 import type { LoadState } from "../lib/loadState";
-import { newestFirst, useViewScrollTop } from "../lib/listView";
+import { newestFirst } from "../lib/listView";
 
 // How often to re-check an auto-add job that's still generating in the
 // background (see asyncjob.KindWordAutoAdd) — a poll, not a push, same
 // reasoning as ArticleQuiz.tsx's articleStudyPollIntervalMs.
 const wordAutoAddPollIntervalMs = 3000;
 const reviewWordsPageSize = 20;
-const currentReviewQuestionVersion = 2;
-
-// Recall questions are generated and persisted server-side. Unlike the old
-// client-side substring masking, the stored answers are the complete forms
-// the sentence requires ("organized", not dictionary-form "organize" plus a
-// visible trailing "d"). Multiple blanks let context-only grammar stay
-// visible: "do one's best" can test "do" and "best" around a visible "his".
-// The version check is a defensive rolling-deploy guard for responses served
-// by an older backend replica.
-function currentQuestion(word: WordReviewItem): WordReviewQuestion | null {
-  const question = word.reviewQuestion;
-  if (!question || question.version < currentReviewQuestionVersion) return null;
-  // A version-1 backend replica can briefly project a version-2 database row
-  // without the new array field. Treat that mixed-deploy response as pending
-  // instead of dereferencing an absent value in the browser.
-  if (!Array.isArray(question.answers)) return null;
-  if (question.answers.length === 0 || question.prompt.split("___").length !== question.answers.length + 1) return null;
-  if (question.answers.some((answer) => !answer.trim())) return null;
-  return question;
-}
-
-// A review session mixes two question shapes so a learner practices both
-// producing English (writing) and understanding it (reading), not just one:
-// - "recall": meaning + a generated sentence blank -> type the complete
-//   grammatical form required there.
-// - "recognition": word + example -> pick the correct meaning from 8
-//   choices, 7 of them pulled from the learner's own other verified words'
-//   meanings (see startQuiz) — no LLM call, built entirely from data already
-//   loaded, and no new asyncjob (this app assumes a slow local LLM — see
-//   wordreview's package doc — so a review session must never wait on one).
-type QuizMode = "recall" | "recognition";
-interface QuizItem {
-  word: WordReviewItem;
-  mode: QuizMode;
-  choices?: string[]; // recognition only: the 8 shuffled meaning options
-}
-
-// A missed recognition question is put back into the current session for an
-// immediate retry. Give that retry a fresh choice order so remembering the
-// previous button position cannot substitute for knowing the meaning. The
-// fallback swap matters when a mocked or unlucky shuffle returns the exact
-// same order; a retry should visibly move the choices whenever possible.
-function reshuffleRecognitionChoices(item: QuizItem): QuizItem {
-  if (item.mode !== "recognition" || !item.choices || item.choices.length < 2) return item;
-  const choices = shuffled(item.choices);
-  if (choices.every((choice, i) => choice === item.choices![i])) {
-    [choices[0], choices[1]] = [choices[1], choices[0]];
-  }
-  return { ...item, choices };
-}
 
 function formatReviewAge(unixSeconds: number | undefined): string {
   if (!unixSeconds) return "아직 복습한 적 없음";
   const days = Math.max(0, Math.floor((Date.now() / 1000 - unixSeconds) / (24 * 60 * 60)));
   return days === 0 ? "오늘 복습함" : `${days}일 전 복습함`;
 }
-
-// minRecognitionDistractors other verified words' meanings are needed to fill
-// out an 8-option multiple-choice question — below that, recognition mode
-// would either repeat an option or show fewer than 8, so that word gets
-// recall mode instead.
-const minRecognitionDistractors = 7;
 
 export function WordReview() {
   const [startingMeaningCleanup, setStartingMeaningCleanup] = useState(false);
@@ -107,7 +50,6 @@ export function WordReview() {
   // once from the due words at the moment "복습 시작" was pressed so the
   // question order/mode stays stable even as reviews update `words` below.
   const [quizQueue, setQuizQueue] = useState<QuizItem[] | null>(null);
-  const reviewPageRef = useViewScrollTop<HTMLElement>(quizQueue === null ? "list" : "quiz");
   const [index, setIndex] = useState(0);
   // Current recall answers, typed directly into the generated sentence's
   // lexical blanks rather than a separate free-text box. There can be more
@@ -278,22 +220,7 @@ export function WordReview() {
   };
 
   const startQuiz = useCallback(() => {
-    const now = Date.now() / 1000;
-    const verified = words.filter((w) => w.status === "verified" && w.researchStatus === "confirmed");
-    // A rolling deployment can briefly return a legacy row alongside a new
-    // dueCount. Do not construct any question until its current version and
-    // exact grammatical answers are all present.
-    const due = verified.filter((w) => w.nextReviewAt <= now && currentQuestion(w) !== null);
-    const queue: QuizItem[] = shuffled(due).map((w) => {
-      const otherMeanings = verified.filter((other) => other.id !== w.id).map((other) => other.meaning);
-      const useRecognition = otherMeanings.length >= minRecognitionDistractors && Math.random() < 0.5;
-      if (!useRecognition) {
-        return { word: w, mode: "recall" };
-      }
-      const distractors = shuffled(otherMeanings).slice(0, minRecognitionDistractors);
-      return { word: w, mode: "recognition", choices: shuffled([w.meaning, ...distractors]) };
-    });
-    setQuizQueue(queue);
+    setQuizQueue(buildReviewQueue(words, Date.now() / 1000));
     setIndex(0);
     setAnswers([]);
     setSelectedChoice(null);
@@ -435,7 +362,7 @@ export function WordReview() {
     setChecked(false);
     setCheckingSimilarity(false);
     setSimilarHint(false);
-  }, [index, quizQueue]);
+  }, [index]);
 
   // Sends the deferred correct-answer review call, then moves on. repeat
   // marks the learner flagging a technically-correct-but-forced guess (the
@@ -510,226 +437,222 @@ export function WordReview() {
   const isListView = quizQueue === null;
 
   return (
-    <div className="app">
-      <SubPageHeader title="단어 복습" />
+    <LearningPage
+      title="단어 복습"
+      viewKey={isListView ? "list" : "quiz"}
+      onScroll={(event) => {
+        const page = event.currentTarget;
+        if (isListView && state === "ready" && page.scrollHeight - page.scrollTop - page.clientHeight <= 80) {
+          loadOlderReviewWords();
+        }
+      }}
+    >
+      {quizQueue === null && <LearningIntro eyebrow="다시 만날수록 익숙해지는 단어" title="배운 표현을 내 것으로 만들어요" description="복습할 때가 된 단어를 문장 속에서 떠올려 보세요. 아직 낯선 표현은 다시 연습할 수 있어요." steps={["단어 모으기", "문장으로 복습", "다시 익히기"]} />}
+      {state === "loading" && <LoadingHint />}
+      {state === "error" && <p className="hint" role="alert">단어 목록을 불러오지 못했어요. 연결 상태를 확인한 뒤 다시 열어 주세요.</p>}
 
-      <main
-        className="convo word-review-page"
-        ref={reviewPageRef}
-        onScroll={(event) => {
-          const page = event.currentTarget;
-          if (isListView && state === "ready" && page.scrollHeight - page.scrollTop - page.clientHeight <= 80) {
-            loadOlderReviewWords();
-          }
-        }}
-      >
-        {quizQueue === null && <LearningIntro eyebrow="다시 만날수록 익숙해지는 단어" title="배운 표현을 내 것으로 만들어요" description="복습할 때가 된 단어를 문장 속에서 떠올려 보세요. 아직 낯선 표현은 다시 연습할 수 있어요." steps={["단어 모으기", "문장으로 복습", "다시 익히기"]} />}
-        {state === "loading" && <LoadingHint />}
-        {state === "error" && <p className="hint" role="alert">단어 목록을 불러오지 못했어요. 연결 상태를 확인한 뒤 다시 열어 주세요.</p>}
-
-        {state === "ready" && quizQueue === null && (
-          <>
-            <p className="hint word-review-due-hint" role="status">
-              {availableDueCount > 0
-                ? `복습할 단어 ${availableDueCount}개가 있어요.`
-                : dueQuestionBackfillCount > 0
-                  ? `복습 문제 ${dueQuestionBackfillCount}개를 새 버전으로 준비 중이에요.`
-                  : "지금 복습할 단어가 없어요."}
+      {state === "ready" && quizQueue === null && (
+        <>
+          <p className="hint word-review-due-hint" role="status">
+            {availableDueCount > 0
+              ? `복습할 단어 ${availableDueCount}개가 있어요.`
+              : dueQuestionBackfillCount > 0
+                ? `복습 문제 ${dueQuestionBackfillCount}개를 새 버전으로 준비 중이에요.`
+                : "지금 복습할 단어가 없어요."}
+          </p>
+          {availableDueCount > 0 ? (
+            <button type="button" className="quiz-start-btn" onClick={startQuiz}>
+              복습 시작
+            </button>
+          ) : dueQuestionBackfillCount > 0 ? (
+            <button type="button" className="quiz-start-btn" disabled>
+              복습 문제 준비 중…
+            </button>
+          ) : (
+            <button type="button" className="quiz-start-btn" onClick={() => void handleAutoAdd()} disabled={autoAdding}>
+              {autoAdding ? "새 단어 찾는 중…" : "새 단어 추가로 학습하기"}
+            </button>
+          )}
+          {autoAdding && (
+            <p className="hint">
+              <span className="spinning">⏳</span> 새 단어를 찾는 중이에요. 이 화면을 나갔다 와도 계속 진행돼요.
             </p>
-            {availableDueCount > 0 ? (
-              <button type="button" className="quiz-start-btn" onClick={startQuiz}>
-                복습 시작
-              </button>
-            ) : dueQuestionBackfillCount > 0 ? (
-              <button type="button" className="quiz-start-btn" disabled>
-                복습 문제 준비 중…
-              </button>
-            ) : (
-              <button type="button" className="quiz-start-btn" onClick={() => void handleAutoAdd()} disabled={autoAdding}>
-                {autoAdding ? "새 단어 찾는 중…" : "새 단어 추가로 학습하기"}
-              </button>
-            )}
-            {autoAdding && (
-              <p className="hint">
-                <span className="spinning">⏳</span> 새 단어를 찾는 중이에요. 이 화면을 나갔다 와도 계속 진행돼요.
-              </p>
-            )}
-            {autoAddError && <p className="hint">{autoAddError}</p>}
+          )}
+          {autoAddError && <p className="hint">{autoAddError}</p>}
 
-            {words.some((w) => w.status === "verified") && (
-              <div>
-                <button type="button" className="ghost" onClick={() => void handleMeaningCleanup()}
-                  disabled={startingMeaningCleanup || words.some((w) => w.meaningStatus === "pending") ||
-                    !words.some((w) => w.status === "verified" && w.meaningStatus !== "done")}>
-                  {startingMeaningCleanup || words.some((w) => w.meaningStatus === "pending") ? "단어 뜻 정리 중…" : "단어 뜻 정리"}
-                </button>
-                <p className="hint">기존 뜻과 예문을 바탕으로 사전식 뜻으로 다듬어요. 복습 진도는 유지돼요.</p>
-                {words.some((w) => w.meaningStatus === "pending") && <p className="hint" role="status">뜻 {words.filter((w) => w.meaningStatus === "pending").length}개 정리 중이에요. 화면을 나가도 계속 진행돼요.</p>}
-                {words.some((w) => w.meaningStatus === "done") && <p className="hint" role="status">뜻 {words.filter((w) => w.meaningStatus === "done").length}개를 정리했어요.</p>}
-                {meaningCleanupError && <p className="hint" role="alert">뜻 정리 상태를 확인하지 못했어요. 다시 시도해 주세요.</p>}
+          {words.some((w) => w.status === "verified") && (
+            <div>
+              <button type="button" className="ghost" onClick={() => void handleMeaningCleanup()}
+                disabled={startingMeaningCleanup || words.some((w) => w.meaningStatus === "pending") ||
+                  !words.some((w) => w.status === "verified" && w.meaningStatus !== "done")}>
+                {startingMeaningCleanup || words.some((w) => w.meaningStatus === "pending") ? "단어 뜻 정리 중…" : "단어 뜻 정리"}
+              </button>
+              <p className="hint">기존 뜻과 예문을 바탕으로 사전식 뜻으로 다듬어요. 복습 진도는 유지돼요.</p>
+              {words.some((w) => w.meaningStatus === "pending") && <p className="hint" role="status">뜻 {words.filter((w) => w.meaningStatus === "pending").length}개 정리 중이에요. 화면을 나가도 계속 진행돼요.</p>}
+              {words.some((w) => w.meaningStatus === "done") && <p className="hint" role="status">뜻 {words.filter((w) => w.meaningStatus === "done").length}개를 정리했어요.</p>}
+              {meaningCleanupError && <p className="hint" role="alert">뜻 정리 상태를 확인하지 못했어요. 다시 시도해 주세요.</p>}
+            </div>
+          )}
+
+          {words.length === 0 && (
+            <EmptyState title="아직 학습 중인 단어가 없어요." description="‘새 단어 추가로 학습하기’로 시작하거나, 대화에서 단어를 검색한 뒤 ‘학습하기’를 눌러 모아 보세요." />
+          )}
+
+          {/* Keep the two decision queues ahead of the paginated review
+              history. Otherwise every newly loaded history page pushes
+              pending/rejected words farther away, making them effectively
+              unreachable for learners with a large vocabulary. */}
+          <WordListSection
+            title="확정 전 단어"
+            words={unconfirmedWords}
+            onDelete={(id) => void handleDelete(id)}
+            renderMeta={(w) => <><span className="word-list-next">확정 전</span>{researchControls(w)}</>}
+          />
+          <WordListSection
+            title="제외된 단어"
+            words={rejectedWords}
+            rowClassName="word-list-row-rejected"
+            onDelete={(id) => void handleDelete(id)}
+            renderMeta={(w) => (
+              <>
+                {w.verifyReason && <span className="word-list-reject-reason">{w.verifyReason}</span>}
+                {researchControls(w)}
+              </>
+            )}
+          />
+          <WordListSection
+            title="복습중인 단어"
+            count={verifiedWords.length}
+            words={visibleVerifiedWords}
+            onLoadMore={hasOlderReviewWords ? loadOlderReviewWords : undefined}
+            onDelete={(id) => void handleDelete(id)}
+            renderMeta={(w) => <><span className="word-list-next">다음 복습: {formatAbsoluteDateTime(w.nextReviewAt)}</span>{researchControls(w)}</>}
+          />
+        </>
+      )}
+
+      {state === "ready" && quizQueue !== null && (
+        <section className="quiz-panel" aria-label="단어 복습 문제">
+          <button type="button" className="ghost quiz-back-btn" onClick={backToList}>
+            ← 목록으로
+          </button>
+          {current === null || currentItem === null ? (
+            <div className="quiz-question">
+              <div className="section-heading"><h2>복습 결과</h2></div>
+              <div className="quiz-score" role="status">
+                {quizQueue.length === 0
+                  ? "복습할 단어가 없어요."
+                  : `${quizQueue.length}개 중 ${correctCount}개 맞혔어요!`}
               </div>
-            )}
-
-            {words.length === 0 && (
-              <EmptyState title="아직 학습 중인 단어가 없어요." description="‘새 단어 추가로 학습하기’로 시작하거나, 대화에서 단어를 검색한 뒤 ‘학습하기’를 눌러 모아 보세요." />
-            )}
-
-            {/* Keep the two decision queues ahead of the paginated review
-                history. Otherwise every newly loaded history page pushes
-                pending/rejected words farther away, making them effectively
-                unreachable for learners with a large vocabulary. */}
-            <WordListSection
-              title="확정 전 단어"
-              words={unconfirmedWords}
-              onDelete={(id) => void handleDelete(id)}
-              renderMeta={(w) => <><span className="word-list-next">확정 전</span>{researchControls(w)}</>}
-            />
-            <WordListSection
-              title="제외된 단어"
-              words={rejectedWords}
-              rowClassName="word-list-row-rejected"
-              onDelete={(id) => void handleDelete(id)}
-              renderMeta={(w) => (
+              <button autoFocus type="button" className="quiz-next-btn" onClick={backToList}>
+                완료
+              </button>
+            </div>
+          ) : (
+            <div className="quiz-question">
+              <div className="section-heading history-heading">
+                <h2>{currentItem.mode === "recall" ? "문장 속 단어 떠올리기" : "단어의 뜻 고르기"}</h2>
+                <span className="quiz-progress" aria-label="문제 진행">{index + 1} / {quizQueue.length}</span>
+              </div>
+              <div className="quiz-progress" role="note">
+                마지막 복습: {formatReviewAge(current.lastReviewedAt)}
+              </div>
+              {currentItem.mode === "recall" ? (
                 <>
-                  {w.verifyReason && <span className="word-list-reject-reason">{w.verifyReason}</span>}
-                  {researchControls(w)}
+                  <p className="quiz-meaning-hint">{current.meaning}</p>
+                  {/* Answers are typed directly in place inside the
+                      sentence. Each width follows what has been typed, not
+                      the hidden answer's length, which would give it away. */}
+                  <div className="quiz-prompt quiz-blank-sentence" lang="en">
+                    {recallParts.map((part, blankIndex) => (
+                      <Fragment key={blankIndex}>
+                        <span>{part}</span>
+                        {blankIndex < recallQuestion!.answers.length && (
+                          <input
+                            autoFocus={blankIndex === 0}
+                            ref={(input) => { blankRefs.current[blankIndex] = input; }}
+                            type="text"
+                            className={quizBlankInputClass(
+                              checked,
+                              normalizeAnswer(recallAnswers[blankIndex]) === normalizeAnswer(recallQuestion!.answers[blankIndex]),
+                            )}
+                            style={{ width: `${Math.min(16, Math.max(3, recallAnswers[blankIndex].length + 1))}ch` }}
+                            maxLength={255}
+                            value={recallAnswers[blankIndex]}
+                            onChange={(e) => setAnswers((currentAnswers) => {
+                              const nextAnswers = [...currentAnswers];
+                              nextAnswers[blankIndex] = e.target.value;
+                              return nextAnswers;
+                            })}
+                            onKeyDown={(e) => handleBlankKeyDown(e, blankIndex)}
+                            disabled={checked || checkingSimilarity}
+                            aria-label={recallQuestion!.answers.length === 1 ? "정답 입력" : `정답 ${blankIndex + 1} 입력`}
+                          />
+                        )}
+                      </Fragment>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="quiz-prompt" lang="en"><strong>{current.word}</strong></div>
+                  <div className="quiz-prompt" lang="en">{current.example}</div>
+                  <QuizChoices
+                    options={currentItem.choices}
+                    selectedIndex={selectedChoice === null ? null : currentItem.choices.indexOf(selectedChoice)}
+                    correctIndex={checked ? currentItem.choices.indexOf(current.meaning) : undefined}
+                    label="단어의 뜻"
+                    onSelect={(index) => setSelectedChoice(currentItem.choices[index])}
+                  />
                 </>
               )}
-            />
-            <WordListSection
-              title="복습중인 단어"
-              count={verifiedWords.length}
-              words={visibleVerifiedWords}
-              onLoadMore={hasOlderReviewWords ? loadOlderReviewWords : undefined}
-              onDelete={(id) => void handleDelete(id)}
-              renderMeta={(w) => <><span className="word-list-next">다음 복습: {formatAbsoluteDateTime(w.nextReviewAt)}</span>{researchControls(w)}</>}
-            />
-          </>
-        )}
-
-        {state === "ready" && quizQueue !== null && (
-          <section className="quiz-panel" aria-label="단어 복습 문제">
-            <button type="button" className="ghost quiz-back-btn" onClick={backToList}>
-              ← 목록으로
-            </button>
-            {current === null || currentItem === null ? (
-              <div className="quiz-question">
-                <div className="section-heading"><h2>복습 결과</h2></div>
-                <div className="quiz-score" role="status">
-                  {quizQueue.length === 0
-                    ? "복습할 단어가 없어요."
-                    : `${quizQueue.length}개 중 ${correctCount}개 맞혔어요!`}
-                </div>
-                <button autoFocus type="button" className="quiz-next-btn" onClick={backToList}>
-                  완료
-                </button>
-              </div>
-            ) : (
-              <div className="quiz-question">
-                <div className="section-heading history-heading">
-                  <h2>{currentItem.mode === "recall" ? "문장 속 단어 떠올리기" : "단어의 뜻 고르기"}</h2>
-                  <span className="quiz-progress" aria-label="문제 진행">{index + 1} / {quizQueue.length}</span>
-                </div>
-                <div className="quiz-progress" role="note">
-                  마지막 복습: {formatReviewAge(current.lastReviewedAt)}
-                </div>
-                {currentItem.mode === "recall" ? (
-                  <>
-                    <p className="quiz-meaning-hint">{current.meaning}</p>
-                    {/* Answers are typed directly in place inside the
-                        sentence. Each width follows what has been typed, not
-                        the hidden answer's length, which would give it away. */}
-                    <div className="quiz-prompt quiz-blank-sentence" lang="en">
-                      {recallParts.map((part, blankIndex) => (
-                        <Fragment key={blankIndex}>
-                          <span>{part}</span>
-                          {blankIndex < recallQuestion!.answers.length && (
-                            <input
-                              autoFocus={blankIndex === 0}
-                              ref={(input) => { blankRefs.current[blankIndex] = input; }}
-                              type="text"
-                              className={quizBlankInputClass(
-                                checked,
-                                normalizeAnswer(recallAnswers[blankIndex]) === normalizeAnswer(recallQuestion!.answers[blankIndex]),
-                              )}
-                              style={{ width: `${Math.min(16, Math.max(3, recallAnswers[blankIndex].length + 1))}ch` }}
-                              maxLength={255}
-                              value={recallAnswers[blankIndex]}
-                              onChange={(e) => setAnswers((currentAnswers) => {
-                                const nextAnswers = [...currentAnswers];
-                                nextAnswers[blankIndex] = e.target.value;
-                                return nextAnswers;
-                              })}
-                              onKeyDown={(e) => handleBlankKeyDown(e, blankIndex)}
-                              disabled={checked || checkingSimilarity}
-                              aria-label={recallQuestion!.answers.length === 1 ? "정답 입력" : `정답 ${blankIndex + 1} 입력`}
-                            />
-                          )}
-                        </Fragment>
-                      ))}
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="quiz-prompt" lang="en"><strong>{current.word}</strong></div>
-                    <div className="quiz-prompt" lang="en">{current.example}</div>
-                    <QuizChoices
-                      options={currentItem.choices!}
-                      selectedIndex={selectedChoice === null ? null : currentItem.choices!.indexOf(selectedChoice)}
-                      correctIndex={checked ? currentItem.choices!.indexOf(current.meaning) : undefined}
-                      label="단어의 뜻"
-                      onSelect={(index) => setSelectedChoice(currentItem.choices![index])}
-                    />
-                  </>
-                )}
-                {!checked && (
-                  <>
-                    {similarHint && <p className="quiz-result similar" role="status">유사한 정답이에요! 다시 입력해보세요.</p>}
-                    <div className="quiz-next-actions">
+              {!checked && (
+                <>
+                  {similarHint && <p className="quiz-result similar" role="status">유사한 정답이에요! 다시 입력해보세요.</p>}
+                  <div className="quiz-next-actions">
+                    <button
+                      type="button"
+                      className="quiz-check-btn"
+                      onClick={() => currentItem.mode === "recall" ? void checkRecall() : checkRecognition()}
+                      disabled={checkingSimilarity || (currentItem.mode === "recall" ? !recallIsComplete : selectedChoice === null)}
+                    >
+                      {checkingSimilarity ? "채점 중…" : "답안 확인"}
+                    </button>
+                    <button type="button" className="ghost quiz-forced-btn" onClick={skipQuestion} disabled={checkingSimilarity}>
+                      잘 모르겠어요
+                    </button>
+                  </div>
+                </>
+              )}
+              {checked && (
+                <>
+                  <div className={`quiz-result ${isCorrect ? "correct" : "incorrect"}`} role="status">
+                    {isCorrect
+                      ? "정답이에요!"
+                      : `아쉬워요. 정답: ${currentItem.mode === "recall" ? recallQuestion!.answers.join(", ") : current.meaning}`}
+                  </div>
+                  <div className="quiz-next-actions">
+                    <button ref={nextButtonRef} type="button" className="quiz-next-btn" onClick={next}>
+                      {index + 1 < quizQueue.length ? "다음 단어" : "결과 보기"}
+                    </button>
+                    {isCorrect && current.stage > 0 && (
                       <button
                         type="button"
-                        className="quiz-check-btn"
-                        onClick={() => currentItem.mode === "recall" ? void checkRecall() : checkRecognition()}
-                        disabled={checkingSimilarity || (currentItem.mode === "recall" ? !recallIsComplete : selectedChoice === null)}
+                        className="ghost quiz-forced-btn"
+                        onClick={markForced}
+                        title="확신 없이 찍어서 맞춘 경우, 같은 간격으로 다시 복습해요"
                       >
-                        {checkingSimilarity ? "채점 중…" : "답안 확인"}
+                        😅 억지로 맞춘 것 같아요
                       </button>
-                      <button type="button" className="ghost quiz-forced-btn" onClick={skipQuestion} disabled={checkingSimilarity}>
-                        잘 모르겠어요
-                      </button>
-                    </div>
-                  </>
-                )}
-                {checked && (
-                  <>
-                    <div className={`quiz-result ${isCorrect ? "correct" : "incorrect"}`} role="status">
-                      {isCorrect
-                        ? "정답이에요!"
-                        : `아쉬워요. 정답: ${currentItem.mode === "recall" ? recallQuestion!.answers.join(", ") : current.meaning}`}
-                    </div>
-                    <div className="quiz-next-actions">
-                      <button ref={nextButtonRef} type="button" className="quiz-next-btn" onClick={next}>
-                        {index + 1 < quizQueue.length ? "다음 단어" : "결과 보기"}
-                      </button>
-                      {isCorrect && current.stage > 0 && (
-                        <button
-                          type="button"
-                          className="ghost quiz-forced-btn"
-                          onClick={markForced}
-                          title="확신 없이 찍어서 맞춘 경우, 같은 간격으로 다시 복습해요"
-                        >
-                          😅 억지로 맞춘 것 같아요
-                        </button>
-                      )}
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-          </section>
-        )}
-      </main>
-    </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </section>
+      )}
+    </LearningPage>
   );
 }
 

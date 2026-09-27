@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LoadingHint } from "../components/LoadingHint";
 import { NuanceQuestionCard } from "../components/NuanceQuestionCard";
-import { SubPageHeader } from "../components/SubPageHeader";
+import { LearningPage } from "../components/LearningPage";
 import { dueQuestions, fetchNuanceLesson, fetchNuanceLessons, practiceNuance, startNuanceReview, type NuanceAction, type NuanceLesson, type NuanceReviewItem } from "../lib/nuance";
 
 const reviewItemParam = "item";
@@ -105,32 +105,29 @@ export function WordNuanceReview() {
     }).finally(() => { busyRef.current = false; setBusy(false); });
   };
 
-  return <div className="app">
-    <SubPageHeader title="단어 뉘앙스 복습" />
-    <main className="convo nuance-page">
-      <a className="ghost-link nuance-list-back" href={nuanceListPath()}>← 학습 목록</a>
-      {error && <p role="alert">{error}</p>}
-      {loading && <LoadingHint />}
-      {!loading && current && <>
-        <p className="hint">이번 복습 {order.length}문제 · 남은 문제 {remaining}개</p>
-        <NuanceQuestionCard
-          key={`${current.lesson.id}-${current.question.id}-${current.lesson.state.progress[current.question.id]?.attempts ?? 0}`}
-          lesson={current.lesson}
-          question={current.question}
-          busy={busy}
-          onAnswer={(selected) => act("answer", { questionId: current.question.id, selected })}
-        />
-        {current.lesson.state.feedback && <div className="nuance-review">
-          <button type="button" disabled={busy} onClick={() => act("next")}>{busy ? "저장 중…" : "다음 문맥"}</button>
-          {current.lesson.state.feedback.correct && <button type="button" className="ghost" disabled={busy} onClick={() => act("next", { repeat: true })}>맞혔지만 다시 복습</button>}
-        </div>}
-      </>}
-      {!loading && !current && !error && <section className="quiz-panel" aria-live="polite">
-        <h2>{order.length ? `이번 ${order.length}문제 복습을 마쳤어요` : "지금 복습할 문제가 없어요"}</h2>
-        <p>모든 비교 묶음의 문맥을 섞어서 복습했어요.</p>
-        {due > 0 && <button type="button" disabled={busy} onClick={() => void begin()}>{busy ? "준비 중…" : "다음 5문제 복습"}</button>}
-        <a className="ghost-link" href={nuanceListPath()}>학습 목록 보기</a>
-      </section>}
-    </main>
-  </div>;
+  return <LearningPage title="단어 뉘앙스 복습">
+    <a className="ghost-link nuance-list-back" href={nuanceListPath()}>← 학습 목록</a>
+    {error && <p role="alert">{error}</p>}
+    {loading && <LoadingHint />}
+    {!loading && current && <>
+      <p className="hint">이번 복습 {order.length}문제 · 남은 문제 {remaining}개</p>
+      <NuanceQuestionCard
+        key={`${current.lesson.id}-${current.question.id}-${current.lesson.state.progress[current.question.id]?.attempts ?? 0}`}
+        lesson={current.lesson}
+        question={current.question}
+        busy={busy}
+        onAnswer={(selected) => act("answer", { questionId: current.question.id, selected })}
+      />
+      {current.lesson.state.feedback && <div className="nuance-review">
+        <button type="button" disabled={busy} onClick={() => act("next")}>{busy ? "저장 중…" : "다음 문맥"}</button>
+        {current.lesson.state.feedback.correct && <button type="button" className="ghost" disabled={busy} onClick={() => act("next", { repeat: true })}>맞혔지만 다시 복습</button>}
+      </div>}
+    </>}
+    {!loading && !current && !error && <section className="quiz-panel" aria-live="polite">
+      <h2>{order.length ? `이번 ${order.length}문제 복습을 마쳤어요` : "지금 복습할 문제가 없어요"}</h2>
+      <p>모든 비교 묶음의 문맥을 섞어서 복습했어요.</p>
+      {due > 0 && <button type="button" disabled={busy} onClick={() => void begin()}>{busy ? "준비 중…" : "다음 5문제 복습"}</button>}
+      <a className="ghost-link" href={nuanceListPath()}>학습 목록 보기</a>
+    </section>}
+  </LearningPage>;
 }

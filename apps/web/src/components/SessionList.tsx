@@ -2,6 +2,7 @@ import type { SessionSummary } from "../lib/sessions";
 import { formatRelativeTime } from "../lib/time";
 import { EmptyState, LearningIntro } from "./LearningIntro";
 import { LearningPaths } from "./LearningPaths";
+import { HistoryItemContent } from "./HistoryItemContent";
 import { newestFirst, useViewScrollTop } from "../lib/listView";
 
 interface SessionListProps {
@@ -101,31 +102,33 @@ export function SessionList({
                   disabled={openingId !== null || deletingId !== null}
                   aria-busy={opening}
                 >
-                  {session.ended && (
-                    <span className="ended-badge" title="종료된 대화 (읽기 전용)">🔒</span>
-                  )}
-                  {session.ended && session.studySummaryStatus === "pending" && (
-                    <span className="study-summary-pending-badge" title="학습 피드백을 정리하는 중">
-                      <span className="spinning">⏳</span> 정리 중
-                    </span>
-                  )}
-                  {session.ended && session.quizCompleted && (
-                    <span className="quiz-completed-badge" title="퀴즈까지 모두 완료했어요">
-                      ✅ 학습 완료
-                    </span>
-                  )}
-                  {!!session.unreadCorrections && (
-                    <span
-                      className="correction-unread-badge"
-                      title={`읽지 않은 정밀 피드백 ${session.unreadCorrections}개`}
-                    >
-                      새 피드백 {session.unreadCorrections}
-                    </span>
-                  )}
-                  <span className="title">{session.title}</span>
-                  <span className="time">
-                    {opening ? "불러오는 중…" : formatRelativeTime(session.updatedAt)}
-                  </span>
+                  <HistoryItemContent
+                    title={session.title}
+                    meta={opening ? "불러오는 중…" : formatRelativeTime(session.updatedAt)}
+                    badges={<>
+                      {session.ended && (
+                        <span className="ended-badge" title="종료된 대화 (읽기 전용)">🔒</span>
+                      )}
+                      {session.ended && session.studySummaryStatus === "pending" && (
+                        <span className="study-summary-pending-badge" title="학습 피드백을 정리하는 중">
+                          <span className="spinning">⏳</span> 정리 중
+                        </span>
+                      )}
+                      {session.ended && session.quizCompleted && (
+                        <span className="quiz-completed-badge" title="퀴즈까지 모두 완료했어요">
+                          ✅ 학습 완료
+                        </span>
+                      )}
+                      {!!session.unreadCorrections && (
+                        <span
+                          className="correction-unread-badge"
+                          title={`읽지 않은 정밀 피드백 ${session.unreadCorrections}개`}
+                        >
+                          새 피드백 {session.unreadCorrections}
+                        </span>
+                      )}
+                    </>}
+                  />
                 </button>
                 <button
                   type="button"

@@ -1,12 +1,14 @@
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { EmptyState, LearningIntro } from "../components/LearningIntro";
 import type { Correction } from "../lib/protocol";
 import { LoadingHint } from "../components/LoadingHint";
-import { SubPageHeader } from "../components/SubPageHeader";
+import { LearningPage } from "../components/LearningPage";
+import { DatedList } from "../components/DatedList";
+import { HistoryItemContent } from "../components/HistoryItemContent";
 import { WordSearchControl } from "../components/WordSearchControl";
-import { formatDateDivider, formatMessageTime, shouldShowDateDivider } from "../lib/time";
+import { formatMessageTime } from "../lib/time";
 import { checkWriting, deleteWritingPrompt, drawWritingPrompt, fetchWritingPrompt, fetchWritingPrompts, type WritingPrompt } from "../lib/writing";
-import { newestFirst, useViewScrollTop } from "../lib/listView";
+import { newestFirst } from "../lib/listView";
 
 type LoadState = "loading" | "ready";
 
@@ -24,7 +26,6 @@ export function Writing() {
   const [creating, setCreating] = useState(false);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState(false);
-  const pageRef = useViewScrollTop<HTMLElement>(prompt?.id ?? "list");
 
   const loadPrompts = useCallback(async () => {
     setState("loading");
@@ -93,80 +94,66 @@ export function Writing() {
     setChecking(false);
   };
 
-  return <div className="app">
-    <SubPageHeader title="오늘의 작문" />
-    <main ref={pageRef} className="convo writing-page">
-      {!prompt && (
-        <>
-          <LearningIntro eyebrow="생각을 영어로 옮기는 연습" title="한 문장부터 써 볼까요?" description="한국어 문장을 나만의 영어로 표현해 보세요. 답안을 확인하며 더 자연스러운 표현을 익혀요." steps={["문제 만들기", "영어로 쓰기", "피드백 살펴보기"]} />
-          <button type="button" className="quiz-start-btn" onClick={() => void createPrompt()} disabled={creating}>
-            {creating ? "만드는 중…" : "＋ 새 문제 만들기"}
-          </button>
-          {state === "loading" && <LoadingHint />}
-          {state === "ready" && prompts.length === 0 && <EmptyState title="아직 만든 작문 문제가 없어요." description="‘새 문제 만들기’로 시작해 보세요. 모르는 단어는 답안 옆에서 찾아볼 수 있어요." />}
-          {prompts.map((item, i) => {
-            const prev = prompts[i - 1];
-            const showDivider = shouldShowDateDivider(prev?.createdAt, item.createdAt);
-            return (
-              <Fragment key={item.id}>
-                {showDivider && (
-                  <div className="date-divider">
-                    <span>{formatDateDivider(item.createdAt)}</span>
-                  </div>
-                )}
-                <div className="session-row">
-                  <button type="button" className="session-item" onClick={() => void openPrompt(item)}>
-                    <span className="title">{item.korean || "문제를 만드는 중…"}</span>
-                    <span className="time writing-list-meta">
-                      {item.status !== "done" && <span className="study-summary-pending-badge"><span className="spinning">⏳</span> 생성 중</span>}
-                      {formatMessageTime(item.createdAt)}
-                    </span>
-                  </button>
-                  <button type="button" className="ghost icon-btn session-delete" onClick={() => void deletePrompt(item.id)} aria-label="작문 문제 삭제" title="작문 문제 삭제">🗑</button>
-                </div>
-              </Fragment>
-            );
-          })}
-        </>
-      )}
-
-      {prompt && (
-        <section className="quiz-panel writing-detail-card" aria-labelledby="writing-detail-title">
-          <button type="button" className="ghost quiz-back-btn" onClick={backToList}>← 목록으로</button>
-          <div className="writing-detail-header">
-            <p className="eyebrow">KOREAN → ENGLISH</p>
-            <h2 id="writing-detail-title">오늘의 한 문장</h2>
+  return <LearningPage title="오늘의 작문" viewKey={prompt?.id ?? "list"}>
+    {!prompt && (
+      <>
+        <LearningIntro eyebrow="생각을 영어로 옮기는 연습" title="한 문장부터 써 볼까요?" description="한국어 문장을 나만의 영어로 표현해 보세요. 답안을 확인하며 더 자연스러운 표현을 익혀요." steps={["문제 만들기", "영어로 쓰기", "피드백 살펴보기"]} />
+        <button type="button" className="quiz-start-btn" onClick={() => void createPrompt()} disabled={creating}>
+          {creating ? "만드는 중…" : "＋ 새 문제 만들기"}
+        </button>
+        {state === "loading" && <LoadingHint />}
+        {state === "ready" && prompts.length === 0 && <EmptyState title="아직 만든 작문 문제가 없어요." description="‘새 문제 만들기’로 시작해 보세요. 모르는 단어는 답안 옆에서 찾아볼 수 있어요." />}
+        <DatedList items={prompts}>{(item) => (
+          <div className="session-row">
+            <button type="button" className="session-item" onClick={() => void openPrompt(item)}>
+              <HistoryItemContent
+                title={item.korean || "문제를 만드는 중…"}
+                badges={item.status !== "done" && <span className="study-summary-pending-badge"><span className="spinning">⏳</span> 생성 중</span>}
+                meta={formatMessageTime(item.createdAt)}
+              />
+            </button>
+            <button type="button" className="ghost icon-btn session-delete" onClick={() => void deletePrompt(item.id)} aria-label="작문 문제 삭제" title="작문 문제 삭제">🗑</button>
           </div>
-          {loadingPrompt ? <p className="hint">문제를 불러오는 중이에요…</p> : error ? <>
-            <p className="hint">문제를 불러오지 못했어요.</p>
-            <button type="button" onClick={() => void openPrompt(prompt)}>다시 시도</button>
-          </> : <>
-            {prompt.status === "pending" && <p className="hint">문제를 만드는 중이에요…</p>}
-            {prompt.status === "failed" && <p className="hint">문제 생성에 실패했어요. 잠시 후 다시 확인해 주세요.</p>}
-            {prompt.status === "done" && <>
-              <p className="writing-prompt">{prompt.korean}</p>
-              {/* Keep the word search beside the answer form, not inside it:
-                  WordSearchControl owns its own search <form>, and nested
-                  forms make Enter in that field submit the writing answer in
-                  some browsers. */}
-              <div className="writing-answer-tools">
-                <span className="hint">모르는 단어가 있으면 검색해 보세요.</span>
-                <WordSearchControl placement="below" />
-              </div>
-              <form className="writing-answer-form" onSubmit={submit}>
-                <label className="writing-answer-label" htmlFor="writing-answer">영어 답안</label>
-                <textarea id="writing-answer" value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="영어로 한 문장을 써보세요" rows={4} disabled={checking} />
-                <button type="submit" disabled={checking || !answer.trim()}>{checking ? "검사 중…" : "답안 확인"}</button>
-              </form>
-            </>}
-            {result && <section className="writing-feedback" aria-live="polite">
-              <h3>{result.issues.length ? "조금 다듬어 볼까요?" : "아주 좋아요!"}</h3>
-              <p className="writing-corrected">{result.corrected}</p>
-              {result.issues.map((issue, i) => <div className="writing-issue" key={i}><strong>{issue.suggestion}</strong><p>{issue.explanationTranslation || issue.explanation}</p></div>)}
-            </section>}
+        )}</DatedList>
+      </>
+    )}
+
+    {prompt && (
+      <section className="quiz-panel writing-detail-card" aria-labelledby="writing-detail-title">
+        <button type="button" className="ghost quiz-back-btn" onClick={backToList}>← 목록으로</button>
+        <div className="writing-detail-header">
+          <p className="eyebrow">KOREAN → ENGLISH</p>
+          <h2 id="writing-detail-title">오늘의 한 문장</h2>
+        </div>
+        {loadingPrompt ? <p className="hint">문제를 불러오는 중이에요…</p> : error ? <>
+          <p className="hint">문제를 불러오지 못했어요.</p>
+          <button type="button" onClick={() => void openPrompt(prompt)}>다시 시도</button>
+        </> : <>
+          {prompt.status === "pending" && <p className="hint">문제를 만드는 중이에요…</p>}
+          {prompt.status === "failed" && <p className="hint">문제 생성에 실패했어요. 잠시 후 다시 확인해 주세요.</p>}
+          {prompt.status === "done" && <>
+            <p className="writing-prompt">{prompt.korean}</p>
+            {/* Keep the word search beside the answer form, not inside it:
+                WordSearchControl owns its own search <form>, and nested
+                forms make Enter in that field submit the writing answer in
+                some browsers. */}
+            <div className="writing-answer-tools">
+              <span className="hint">모르는 단어가 있으면 검색해 보세요.</span>
+              <WordSearchControl placement="below" />
+            </div>
+            <form className="writing-answer-form" onSubmit={submit}>
+              <label className="writing-answer-label" htmlFor="writing-answer">영어 답안</label>
+              <textarea id="writing-answer" value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="영어로 한 문장을 써보세요" rows={4} disabled={checking} />
+              <button type="submit" disabled={checking || !answer.trim()}>{checking ? "검사 중…" : "답안 확인"}</button>
+            </form>
           </>}
-        </section>
-      )}
-    </main>
-  </div>;
+          {result && <section className="writing-feedback" aria-live="polite">
+            <h3>{result.issues.length ? "조금 다듬어 볼까요?" : "아주 좋아요!"}</h3>
+            <p className="writing-corrected">{result.corrected}</p>
+            {result.issues.map((issue, i) => <div className="writing-issue" key={i}><strong>{issue.suggestion}</strong><p>{issue.explanationTranslation || issue.explanation}</p></div>)}
+          </section>}
+        </>}
+      </section>
+    )}
+  </LearningPage>;
 }
