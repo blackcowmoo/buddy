@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"buddy/server/internal/asyncjob"
+	"buddy/server/internal/checkpoint"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/workguard"
 	"buddy/server/internal/writing"
@@ -33,15 +34,21 @@ func generateWritingPrompt(ctx context.Context, pipe *pipeline.Pipeline, st writ
 	if p.ID == "" || (p.Status != writing.StatusPending && p.Status != writing.StatusFailed) {
 		return nil
 	}
-	previousPrompts, err := st.List(ctx, userID)
+	previous, err := checkpoint.JSON(ctx, "writing-previous:v1", func() ([]string, error) {
+		previousPrompts, err := st.List(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		previous := make([]string, 0, len(previousPrompts))
+		for _, old := range previousPrompts {
+			if old.Korean != "" {
+				previous = append(previous, old.Korean)
+			}
+		}
+		return previous, nil
+	})
 	if err != nil {
 		return err
-	}
-	previous := make([]string, 0, len(previousPrompts))
-	for _, old := range previousPrompts {
-		if old.Korean != "" {
-			previous = append(previous, old.Korean)
-		}
 	}
 	result, err := pipe.GenerateWritingPrompt(ctx, profile, previous, id)
 	if err != nil {
@@ -55,17 +62,18 @@ func generateWritingPrompt(ctx context.Context, pipe *pipeline.Pipeline, st writ
 
 func WritingJobHandler(pipe *pipeline.Pipeline, st writing.Store, profile func(context.Context, string) (string, error)) asyncjob.Handler {
 	return asyncjob.DecodePayloadHandler(asyncjob.KindWritingPrompt, func(ctx context.Context, p writingJobPayload) error {
-		profileText, err := profile(ctx, p.UserID)
-		if err != nil {
-			_ = st.Fail(context.Background(), p.PromptID)
-			return err
-		}
-		return generateWritingPrompt(ctx, pipe, st, p.PromptID, p.UserID, profileText)
+		return RunWritingPromptInline(ctx, pipe, st, profile, p.PromptID, p.UserID)
 	})
 }
 
 func RunWritingPromptInline(ctx context.Context, pipe *pipeline.Pipeline, st writing.Store, profile func(context.Context, string) (string, error), id, userID string) error {
-	profileText, err := profile(ctx, userID)
+	ctx = workguard.BindStore(ctx, st, userID, id)
+	if err := workguard.Check(ctx); err != nil {
+		return err
+	}
+	// A later profile edit or another completed draw must not change the
+	// prompt midway through a resumed Chat -> Analysis -> Judge cascade.
+	profileText, err := checkpoint.JSON(ctx, "writing-profile:v1", func() (string, error) { return profile(ctx, userID) })
 	if err != nil {
 		if workguard.Check(ctx) == nil {
 			_ = st.Fail(context.Background(), id)

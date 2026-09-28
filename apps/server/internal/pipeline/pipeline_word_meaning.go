@@ -38,10 +38,14 @@ Output: {"sameSense":false,"meaning":""}
 The last example has conflicting senses. Preserve the existing entry for
 review rather than silently replacing its meaning.`
 	}
-	raw, err := p.analyze(ctx, prompt, string(input), true)
+	raw, err := p.analyze(ctx, prompt, string(input), true, reusableOutput(parseNormalizedWordMeaning))
 	if err != nil {
 		return "", err
 	}
+	return parseNormalizedWordMeaning(raw)
+}
+
+func parseNormalizedWordMeaning(raw string) (string, error) {
 	result, err := parseJSON[struct {
 		SameSense *bool  `json:"sameSense"`
 		Meaning   string `json:"meaning"`

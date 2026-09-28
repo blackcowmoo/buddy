@@ -52,9 +52,8 @@ type profileRegenerateJobPayload struct {
 // Deliberately all-or-nothing: if any step in the chain errors, this
 // returns immediately without saving anything, leaving the existing
 // (stale, but not further corrupted) profile in place for the reaper to
-// retry from scratch — a partially-replayed profile would be a worse state
-// than a merely-stale one, and there's no meaningful way to resume a
-// half-finished chain of LLM folds.
+// retry. Completed model checkpoints replay unchanged folds without another
+// LLM call; changed source inputs regenerate the affected suffix of the chain.
 func runProfileRegenerate(ctx context.Context, pipe *pipeline.Pipeline, st store.Store, userID string) error {
 	for {
 		err := regenerateProfileSnapshot(ctx, pipe, st, userID)

@@ -31,15 +31,12 @@ const articleQuizMinSubQuestions = 2
 // learner practicing on their own; all drafts stay hidden until the terminal
 // result is ready.
 func (p *Pipeline) GenerateArticleStudy(ctx context.Context, source, title, description string) (protocol.ArticleStudy, error) {
-	raw, err := p.analyze(ctx, articleStudySystemPrompt(p.FeedbackLang), renderArticleStudyInput(source, title, description), true)
+	raw, err := p.analyze(ctx, articleStudySystemPrompt(p.FeedbackLang), renderArticleStudyInput(source, title, description), true, reusableOutput(parseArticleStudy))
 	if err != nil {
 		return protocol.ArticleStudy{}, err
 	}
-	study, err := parseJSON[protocol.ArticleStudy](raw, "article study")
+	study, err := parseArticleStudy(raw)
 	if err != nil {
-		return protocol.ArticleStudy{}, err
-	}
-	if err := validateArticleStudy(study); err != nil {
 		return protocol.ArticleStudy{}, err
 	}
 	// An LLM asked for "the accurate option" tends to place it at the same
@@ -49,6 +46,17 @@ func (p *Pipeline) GenerateArticleStudy(ctx context.Context, source, title, desc
 	// later learner who draws the same story (see newsarticle.Store.
 	// SaveArticle) sees the same already-shuffled order.
 	return shuffleSubQuestions(study), nil
+}
+
+func parseArticleStudy(raw string) (protocol.ArticleStudy, error) {
+	study, err := parseJSON[protocol.ArticleStudy](raw, "article study")
+	if err != nil {
+		return protocol.ArticleStudy{}, err
+	}
+	if err := validateArticleStudy(study); err != nil {
+		return protocol.ArticleStudy{}, err
+	}
+	return study, nil
 }
 
 // shuffleSubQuestions independently coin-flips each sub-question's two

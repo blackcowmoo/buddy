@@ -62,14 +62,14 @@ return 1
 `)
 
 // completeScript marks a job permanently done: drop it from processing,
-// release its claim, and clear its dedupe entry so the same dedupeKey can
-// be enqueued again in the future.
+// release its claim and checkpoints, and clear its dedupe entry so the same
+// dedupeKey can be enqueued again in the future.
 var completeScript = redis.NewScript(`
 if redis.call('GET', KEYS[2]) ~= ARGV[3] then
 	return 0
 end
 redis.call('LREM', KEYS[1], 1, ARGV[1])
-redis.call('DEL', KEYS[2])
+redis.call('DEL', KEYS[2], KEYS[4])
 redis.call('SREM', KEYS[3], ARGV[2])
 return 1
 `)
@@ -220,7 +220,7 @@ func (q *Queue) TryClaimByID(ctx context.Context, job Job, claimTTL time.Duratio
 // completion/leave-for-reap semantics as a pooled Worker (see
 // Worker.run): on success, job is marked done (removed from processing,
 // claim released, dedupe entry cleared); on error, its claim is shortened
-// to FailureRetryBackoff so the stale-claim reaper retries it from scratch
+// to FailureRetryBackoff so the stale-claim reaper retries its unfinished work
 // soon, exactly as if a Worker's own handler had failed. This is what lets a
 // caller run a job inline (e.g. transport's fast path, streaming tokens
 // straight to a connection that's still open) with the same durability
@@ -374,15 +374,15 @@ func EnqueueOrRunInline(queue *Queue, ctx context.Context, enqueueErrLabel strin
 }
 
 // completeJob marks a claimed job done: removed from processing, its claim
-// released, and its dedupe entry cleared, so a later Enqueue with the same
-// dedupe key is treated as a fresh job rather than a duplicate of one
+// and checkpoints released, and its dedupe entry cleared, so a later Enqueue
+// with the same dedupe key is treated as a fresh job rather than a duplicate of one
 // that's already finished. raw is the job's still-queued list entry
 // (whatever bytes/string form the caller already has on hand — Execute's
 // freshly marshaled JSON, or Worker.run's raw BLMove result) that
 // completeScript needs to LREM out of processingKey.
 func completeJob(ctx context.Context, rdb redis.UniversalClient, kind Kind, id string, raw any, dedupeKey, token string) error {
 	n, err := completeScript.Run(ctx, rdb,
-		[]string{processingKey(kind), claimKey(kind, id), dedupeSetKey(kind)}, raw, dedupeKey, token,
+		[]string{processingKey(kind), claimKey(kind, id), dedupeSetKey(kind), checkpointKey(kind, id)}, raw, dedupeKey, token,
 	).Int()
 	if err != nil {
 		return err

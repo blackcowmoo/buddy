@@ -9,6 +9,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"buddy/server/internal/checkpoint"
 	"buddy/server/internal/workguard"
 )
 
@@ -56,8 +57,19 @@ func runWithLease(ctx context.Context, rdb redis.UniversalClient, kind Kind, id,
 			result = nil
 		}
 	}()
+	ctx = checkpoint.Bind(ctx, redisCheckpointStore{rdb: rdb, kind: kind, id: id, token: token})
+	run := func(ctx context.Context) error {
+		err := handler(ctx)
+		// Some handlers tolerate failed optional model stages. Checkpoint
+		// storage failures must still retry the durable job instead of
+		// committing success and discarding its recoverable intermediate work.
+		if checkErr := workguard.Check(ctx); checkErr != nil {
+			return checkErr
+		}
+		return err
+	}
 	if ttl <= 0 {
-		return handler(ctx)
+		return run(ctx)
 	}
 	ttl = claimLeaseTTL(ttl)
 	owned, err := renewClaim(ctx, rdb, kind, id, token, ttl)
@@ -101,7 +113,7 @@ func runWithLease(ctx context.Context, rdb redis.UniversalClient, kind Kind, id,
 			}
 		}
 	}()
-	err = handler(handlerCtx)
+	err = run(handlerCtx)
 	stop()
 	<-done
 	select {

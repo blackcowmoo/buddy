@@ -71,8 +71,8 @@ type correctionJobPayload struct {
 // needed for idempotency here.
 //
 // An analyze() error is recorded via st.FailJob before the error is
-// returned — the reaper still retries the job from scratch regardless (see
-// asyncjob.Queue.Execute), but this way a poller (or a page reload) sees
+// returned — the reaper retries using completed model checkpoints (see
+// asyncjob.Queue.Execute), while a poller (or a page reload) sees
 // CorrectionStatus == JobStatusFailed in the meantime instead of a job that
 // looks like it's simply still pending forever.
 //
@@ -243,9 +243,8 @@ type titleJobPayload struct {
 
 // TitleJobHandler builds the asyncjob.Handler that runs one queued
 // title-generation job. store.SaveGeneratedTitle now overwrites on every
-// call (see its doc comment), so a repeat call for the same turn — e.g. from
-// a reap-retry — just regenerates an equivalent title rather than being a
-// no-op; that's fine, same idempotency reasoning as CorrectionJobHandler.
+// call (see its doc comment), so replaying a completed model checkpoint on
+// a reap-retry can safely repeat the title write.
 func TitleJobHandler(pipe *pipeline.Pipeline, st store.Store) asyncjob.Handler {
 	return asyncjob.DecodePayloadHandler(asyncjob.KindTitle, func(ctx context.Context, payload titleJobPayload) error {
 		ctx = workguard.BindStore(ctx, st, payload.UserID, payload.SessionID)

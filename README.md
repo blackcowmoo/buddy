@@ -532,6 +532,37 @@ without touching the pipeline:
   which is pure Go — no cgo, so it doesn't affect the static/scratch export
   build (`docker build --target export`).
 
+### Resuming model work after redeployment
+
+Redis-backed jobs retain completed LLM responses in a checkpoint hash scoped to
+the durable job ID. A replacement worker replays completed Chat, Analysis, and
+Judge calls, including fully completed chat streams, and executes only missing
+calls. An interrupted stream is regenerated from its beginning. Checkpoints
+include the endpoint, model, exact messages, JSON mode, and streaming mode;
+changed inputs therefore trigger new work instead of reusing stale output.
+Responses that fail the feature's existing parsing or validation checks are
+not retained as successful stages. A retry can regenerate those responses
+while preserving valid predecessors.
+
+Checkpoints do not expire while the job is pending. Completion, deletion-driven
+cancellation, or exhaustion of automatic retries removes them atomically with
+the job. A fresh user request gets a new job ID. Reads and writes check the
+current claim token, so an old container cannot overwrite a replacement's work.
+Checkpoint storage errors stop the attempt rather than silently continuing with
+an unrecorded result. Redis data must survive application redeployments, as it
+already must for the durable queue; the no-Redis inline fallback remains best
+effort.
+
+Writing and nuance jobs snapshot their generation inputs before model work.
+Automatic vocabulary additions also retain the selected batch before saving
+individual words, so recovery continues that batch after a partial save.
+Work that intentionally reads changing source data, such as corrected turns or
+profile rebuild sources, still checks current data and reuses only matching
+model calls. Final database writes remain idempotent and guarded by owner
+existence and revisions. The article recovery sweep uses the same durable
+queue when Redis is configured: it respects active leases, requeues expired
+jobs with their checkpoints, and enqueues database orphans that have no job.
+
 ### Deleting items during generation
 
 Background jobs survive navigation, disconnects, and ended conversations. Explicit

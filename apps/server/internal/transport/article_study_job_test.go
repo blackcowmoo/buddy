@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 
 	"buddy/server/internal/asyncjob"
+	"buddy/server/internal/checkpoint"
 	"buddy/server/internal/newsarticle"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/ttsstore"
@@ -496,8 +498,7 @@ func TestRunArticleStudyIsNoopForMissingArticle(t *testing.T) {
 // orphan-recovery flow: a StatusPending article the fake reports stale (see
 // markStale) gets claimed and regenerated, ending up StatusDone — this is
 // what makes a redeploy- or crash-abandoned "오늘의 아티클" draw resume
-// automatically without the learner doing anything. Recovery depends only on
-// the database claim, so a stale Redis dedupe key cannot block it.
+// automatically without the learner doing anything when Redis is absent.
 func TestSweepStaleArticleStudiesResumesAbandonedGeneration(t *testing.T) {
 	pipe := &pipeline.Pipeline{
 		Analysis: []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{complete: fakeArticleStudyJSON}}},
@@ -507,7 +508,7 @@ func TestSweepStaleArticleStudiesResumesAbandonedGeneration(t *testing.T) {
 	})
 	articles.markStale("a-stale")
 
-	if err := SweepStaleArticleStudies(context.Background(), pipe, articles, nil); err != nil {
+	if err := SweepStaleArticleStudies(context.Background(), nil, pipe, articles, nil); err != nil {
 		t.Fatalf("SweepStaleArticleStudies() error = %v", err)
 	}
 	// Recovery runs on a detached goroutine so the sweep loop is not blocked by
@@ -532,11 +533,166 @@ func TestSweepStaleArticleStudiesSkipsNonStalePending(t *testing.T) {
 		ID: "a-fresh", Source: "BBC", Title: "Headline", URL: "https://example.com/fresh", Status: newsarticle.StatusPending,
 	})
 
-	if err := SweepStaleArticleStudies(context.Background(), pipe, articles, nil); err != nil {
+	if err := SweepStaleArticleStudies(context.Background(), nil, pipe, articles, nil); err != nil {
 		t.Fatalf("SweepStaleArticleStudies() error = %v", err)
 	}
 	if calls != 0 {
 		t.Fatalf("expected no LLM call for a non-stale pending article, got %d calls", calls)
+	}
+}
+
+func TestSweepStaleArticleStudiesPreservesDurableJobs(t *testing.T) {
+	for _, state := range []string{"live", "expired", "orphan"} {
+		t.Run(state, func(t *testing.T) {
+			rdb := requireReplyRedis(t)
+			queue := asyncjob.NewQueue(rdb)
+			ctx := context.Background()
+			articleID := t.Name()
+			articles := newFakeNewsArticleStore(newsarticle.Article{
+				ID: articleID, Source: "BBC", Title: "Headline", Description: "snippet", Status: newsarticle.StatusPending,
+			})
+			articles.markStale(articleID)
+			const queuedKey = "buddy:job:{article-study}:queue"
+			const processingKey = "buddy:job:{article-study}:processing"
+			var job asyncjob.Job
+			t.Cleanup(func() {
+				for _, key := range []string{queuedKey, processingKey} {
+					raws, err := rdb.LRange(context.Background(), key, 0, -1).Result()
+					if err != nil {
+						t.Error(err)
+						continue
+					}
+					for _, raw := range raws {
+						var entry asyncjob.Job
+						if json.Unmarshal([]byte(raw), &entry) == nil && entry.DedupeKey == articleID {
+							if err := rdb.LRem(context.Background(), key, 1, raw).Err(); err != nil {
+								t.Error(err)
+							}
+						}
+					}
+				}
+				if err := rdb.SRem(context.Background(), "buddy:job:{article-study}:dedupe", articleID).Err(); err != nil {
+					t.Error(err)
+				}
+				if job.ID != "" {
+					if err := rdb.Del(context.Background(), "buddy:job:{article-study}:claim:"+job.ID, "buddy:job:{article-study}:checkpoint:"+job.ID).Err(); err != nil {
+						t.Error(err)
+					}
+				}
+			})
+			findQueued := func() (asyncjob.Job, bool) {
+				raws, err := rdb.LRange(ctx, queuedKey, 0, -1).Result()
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, raw := range raws {
+					var entry asyncjob.Job
+					if err := json.Unmarshal([]byte(raw), &entry); err != nil {
+						t.Fatal(err)
+					}
+					if entry.DedupeKey == articleID {
+						return entry, true
+					}
+				}
+				return asyncjob.Job{}, false
+			}
+			claim := func(entry asyncjob.Job) {
+				if owned, err := queue.TryClaimByID(ctx, entry, time.Minute); err != nil || !owned {
+					t.Fatalf("claim = %v, %v", owned, err)
+				}
+			}
+			sweep := func() error {
+				if err := SweepStaleArticleStudies(ctx, queue, &pipeline.Pipeline{}, articles, nil); err != nil {
+					return err
+				}
+				stale, err := articles.StalePending(ctx, ArticleStudyStaleAfter)
+				if err != nil || len(stale) != 1 {
+					return fmt.Errorf("Redis sweep refreshed database claim: stale=%v, error=%v", stale, err)
+				}
+				return nil
+			}
+			calls := 0
+			generate := func() (string, error) { calls++; return "completed stage", nil }
+			interrupted := errors.New("interrupted next stage")
+			if state != "orphan" {
+				var added bool
+				var err error
+				job, added, err = queue.Enqueue(ctx, asyncjob.KindArticleStudy, articleID, articleStudyJobPayload{ArticleID: articleID})
+				if err != nil || !added {
+					t.Fatalf("enqueue = %v, %v", added, err)
+				}
+				claim(job)
+				err = queue.Execute(ctx, job, time.Minute, func(jobCtx context.Context, _ asyncjob.Job) error {
+					if _, err := checkpoint.Do(jobCtx, "completed-model", generate); err != nil {
+						return err
+					}
+					if state == "live" {
+						if err := sweep(); err != nil {
+							return err
+						}
+						if _, found := findQueued(); found {
+							return errors.New("sweep requeued a live job")
+						}
+						_, err := checkpoint.Do(jobCtx, "completed-model", generate)
+						return err
+					}
+					return interrupted
+				})
+				if state == "live" {
+					if err != nil || calls != 1 {
+						t.Fatalf("live job after sweep: calls=%d, error=%v", calls, err)
+					}
+					return
+				}
+				if !errors.Is(err, interrupted) {
+					t.Fatalf("first execution = %v", err)
+				}
+				if err := rdb.Del(ctx, "buddy:job:{article-study}:claim:"+job.ID).Err(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := sweep(); err != nil {
+				t.Fatal(err)
+			}
+			recovered, found := findQueued()
+			if !found {
+				t.Fatal("sweep did not durably queue recovery")
+			}
+			if state == "expired" && (recovered.ID != job.ID || recovered.Attempts != job.Attempts+1) {
+				t.Fatalf("sweep replaced existing job: before=%+v after=%+v", job, recovered)
+			}
+			job = recovered
+			claim(job)
+			if err := queue.Execute(ctx, job, time.Minute, func(jobCtx context.Context, _ asyncjob.Job) error {
+				result, err := checkpoint.Do(jobCtx, "completed-model", generate)
+				if err == nil && result != "completed stage" {
+					return fmt.Errorf("recovered result = %q", result)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 {
+				t.Fatalf("model calls = %d, want completed stage reused", calls)
+			}
+		})
+	}
+}
+
+func TestSweepStaleArticleStudiesEnqueueFailureKeepsOrphanVisible(t *testing.T) {
+	rdb := redis.NewClient(&redis.Options{Addr: "unused"})
+	if err := rdb.Close(); err != nil {
+		t.Fatal(err)
+	}
+	articles := newFakeNewsArticleStore(newsarticle.Article{ID: "orphan", Status: newsarticle.StatusPending})
+	articles.markStale("orphan")
+	err := SweepStaleArticleStudies(context.Background(), asyncjob.NewQueue(rdb), &pipeline.Pipeline{}, articles, nil)
+	if !errors.Is(err, redis.ErrClosed) {
+		t.Fatalf("sweep error = %v, want enqueue failure", err)
+	}
+	stale, err := articles.StalePending(context.Background(), ArticleStudyStaleAfter)
+	if err != nil || len(stale) != 1 {
+		t.Fatalf("enqueue failure hid orphan from next sweep: stale=%v, error=%v", stale, err)
 	}
 }
 

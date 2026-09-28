@@ -35,10 +35,19 @@ type StudyIssue struct {
 // sessionStudySummaryHandler) rather than spend an LLM call being told
 // there's nothing to report.
 func (p *Pipeline) GenerateStudySummary(ctx context.Context, issues []StudyIssue) ([]protocol.StudySummarySentence, error) {
-	raw, err := p.analyze(ctx, studySummarySystemPrompt(p.FeedbackLang), renderStudySummaryInput(issues), true)
+	raw, err := p.analyze(ctx, studySummarySystemPrompt(p.FeedbackLang), renderStudySummaryInput(issues), true, func(raw string) bool {
+		sentences, err := parseStudySummary(raw)
+		// Transport rejects an empty wrap-up when there are real issues. Keep
+		// that rejected response retryable without changing this method's API.
+		return err == nil && (len(issues) == 0 || len(sentences) > 0)
+	})
 	if err != nil {
 		return nil, err
 	}
+	return parseStudySummary(raw)
+}
+
+func parseStudySummary(raw string) ([]protocol.StudySummarySentence, error) {
 	parsed, err := parseJSON[struct {
 		Sentences []protocol.StudySummarySentence `json:"sentences"`
 	}](raw, "study summary")
@@ -103,10 +112,14 @@ func renderStudySummaryInput(issues []StudyIssue) string {
 // not automatically alongside the wrap-up — callers should skip this call
 // entirely when issues is empty, same reasoning as GenerateStudySummary.
 func (p *Pipeline) GenerateStudyQuiz(ctx context.Context, issues []StudyIssue) ([]protocol.QuizQuestion, error) {
-	raw, err := p.analyze(ctx, quizSystemPrompt(p.FeedbackLang), renderStudySummaryInput(issues), true)
+	raw, err := p.analyze(ctx, quizSystemPrompt(p.FeedbackLang), renderStudySummaryInput(issues), true, reusableOutput(parseStudyQuiz))
 	if err != nil {
 		return nil, err
 	}
+	return parseStudyQuiz(raw)
+}
+
+func parseStudyQuiz(raw string) ([]protocol.QuizQuestion, error) {
 	parsed, err := parseJSON[struct {
 		Questions []protocol.QuizQuestion `json:"questions"`
 	}](raw, "study quiz")
@@ -189,7 +202,7 @@ func (p *Pipeline) CheckQuizAnswer(ctx context.Context, prompt, canonicalAnswer 
 // must not recreate it from the bool or ask Chat a second time.
 func (p *Pipeline) CheckQuizAnswerFast(ctx context.Context, prompt, canonicalAnswer string, acceptableAnswers []string, learnerAnswer string) (correct bool, chatDraft string, err error) {
 	input := renderQuizAnswerCheckInput(prompt, canonicalAnswer, acceptableAnswers, learnerAnswer)
-	raw, err := p.chatDraft(ctx, quizAnswerCheckSystemPrompt, input, true)
+	raw, err := p.chatDraft(ctx, quizAnswerCheckSystemPrompt, input, true, reusableOutput(parseQuizAnswerVerdict))
 	if err != nil {
 		return false, "", err
 	}
@@ -206,7 +219,7 @@ func (p *Pipeline) CheckQuizAnswerFast(ctx context.Context, prompt, canonicalAns
 // current quiz attempt.
 func (p *Pipeline) RefineQuizAnswerFromDraft(ctx context.Context, prompt, canonicalAnswer string, acceptableAnswers []string, learnerAnswer, chatDraft string) (bool, error) {
 	input := renderQuizAnswerCheckInput(prompt, canonicalAnswer, acceptableAnswers, learnerAnswer)
-	raw, err := p.analyzeFromDraft(ctx, quizAnswerCheckSystemPrompt, input, true, chatDraft)
+	raw, err := p.analyzeFromDraft(ctx, quizAnswerCheckSystemPrompt, input, true, chatDraft, reusableOutput(parseQuizAnswerVerdict))
 	if err != nil {
 		return false, err
 	}

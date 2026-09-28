@@ -116,7 +116,7 @@ func correctionResultsEqual(
 // transport's queue-backed CorrectHook implementation reuses the exact same
 // call correct() uses directly by default.
 func (p *Pipeline) AnalyzeCorrection(ctx context.Context, text, contextMsg string) (corrected string, issues []protocol.Issue, translation string, err error) {
-	raw, err := p.analyze(ctx, correctionSystemPrompt(p.FeedbackLang), renderCorrectionInput(contextMsg, text), true)
+	raw, err := p.analyze(ctx, correctionSystemPrompt(p.FeedbackLang), renderCorrectionInput(contextMsg, text), true, reusableCorrection)
 	if err != nil {
 		return "", nil, "", err
 	}
@@ -128,7 +128,7 @@ func (p *Pipeline) AnalyzeCorrection(ctx context.Context, text, contextMsg strin
 // this raw JSON in their durable payload, so a retry on another replica still
 // refines the same preview instead of spending another Chat call.
 func (p *Pipeline) AnalyzeCorrectionFromDraft(ctx context.Context, text, contextMsg, chatDraft string) (corrected string, issues []protocol.Issue, translation string, err error) {
-	raw, err := p.analyzeFromDraft(ctx, correctionSystemPrompt(p.FeedbackLang), renderCorrectionInput(contextMsg, text), true, chatDraft)
+	raw, err := p.analyzeFromDraft(ctx, correctionSystemPrompt(p.FeedbackLang), renderCorrectionInput(contextMsg, text), true, chatDraft, reusableCorrection)
 	if err != nil {
 		return "", nil, "", err
 	}
@@ -150,7 +150,7 @@ func (p *Pipeline) AnalyzeCorrectionFast(ctx context.Context, text, contextMsg s
 // fields. The raw form is the lossless handoff to Analysis/Judge and is also
 // safe to serialize into an async-job payload.
 func (p *Pipeline) analyzeCorrectionFast(ctx context.Context, text, contextMsg string) (raw, corrected string, issues []protocol.Issue, translation string, err error) {
-	raw, err = p.chatDraft(ctx, correctionSystemPrompt(p.FeedbackLang), renderCorrectionInput(contextMsg, text), true)
+	raw, err = p.chatDraft(ctx, correctionSystemPrompt(p.FeedbackLang), renderCorrectionInput(contextMsg, text), true, reusableCorrection)
 	if err != nil {
 		return raw, "", nil, "", err
 	}
@@ -170,6 +170,11 @@ func parseCorrection(raw string) (corrected string, issues []protocol.Issue, tra
 		return "", nil, "", err
 	}
 	return parsed.Corrected, parsed.Issues, parsed.Translation, nil
+}
+
+func reusableCorrection(raw string) bool {
+	_, _, _, err := parseCorrection(raw)
+	return err == nil
 }
 
 // CorrectWithContext runs the grammar-correction cascade for one turn using
