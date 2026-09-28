@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { QuizChoices } from "../components/QuizChoices";
+import { QuizBlankInput } from "../components/QuizBlankInput";
 import { WordMeaningReview } from "../components/WordMeaningReview";
 import { WordDuplicateNotice } from "../components/WordDuplicateNotice";
 import { EmptyState, LearningIntro } from "../components/LearningIntro";
@@ -23,7 +24,7 @@ import {
 import type { WordSuggestion } from "../lib/protocol";
 import { formatAbsoluteDateTime } from "../lib/time";
 import { buildReviewQueue, currentQuestion, reshuffleRecognitionChoices, type QuizItem } from "../lib/wordReviewQuiz";
-import { checkQuizAnswer, normalizeQuizAnswer as normalizeAnswer, quizBlankInputClass } from "../lib/quizCheck";
+import { checkQuizAnswer, normalizeQuizAnswer as normalizeAnswer } from "../lib/quizCheck";
 import { LearningPage } from "../components/LearningPage";
 import { usePollScaffold } from "../hooks/usePollScaffold";
 import { LoadingHint } from "../components/LoadingHint";
@@ -596,23 +597,16 @@ export function WordReview() {
               {currentItem.mode === "recall" ? (
                 <>
                   <p className="quiz-meaning-hint">{current.meaning}</p>
-                  {/* Answers are typed directly in place inside the
-                      sentence. Each width follows what has been typed, not
-                      the hidden answer's length, which would give it away. */}
                   <div className="quiz-prompt quiz-blank-sentence" lang="en">
                     {recallParts.map((part, blankIndex) => (
                       <Fragment key={blankIndex}>
                         <span>{part}</span>
                         {blankIndex < recallQuestion!.answers.length && (
-                          <input
+                          <QuizBlankInput
                             autoFocus={blankIndex === 0}
                             ref={(input) => { blankRefs.current[blankIndex] = input; }}
-                            type="text"
-                            className={quizBlankInputClass(
-                              checked,
-                              normalizeAnswer(recallAnswers[blankIndex]) === normalizeAnswer(recallQuestion!.answers[blankIndex]),
-                            )}
-                            style={{ width: `${Math.min(16, Math.max(3, recallAnswers[blankIndex].length + 1))}ch` }}
+                            checked={checked}
+                            correct={normalizeAnswer(recallAnswers[blankIndex]) === normalizeAnswer(recallQuestion!.answers[blankIndex])}
                             maxLength={255}
                             value={recallAnswers[blankIndex]}
                             onChange={(e) => setAnswers((currentAnswers) => {
@@ -621,7 +615,7 @@ export function WordReview() {
                               return nextAnswers;
                             })}
                             onKeyDown={(e) => handleBlankKeyDown(e, blankIndex)}
-                            disabled={checked || checkingSimilarity}
+                            disabled={checkingSimilarity}
                             aria-label={recallQuestion!.answers.length === 1 ? "정답 입력" : `정답 ${blankIndex + 1} 입력`}
                           />
                         )}

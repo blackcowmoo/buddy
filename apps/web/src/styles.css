@@ -231,8 +231,7 @@ body {
   box-shadow: var(--shadow-lg);
   z-index: 40;
 }
-.subpage-menu-panel { width: 260px; }
-.subpage-menu-panel a.menu-item {
+a.menu-item {
   min-height: 44px;
   padding: 0 12px;
   background: var(--panel-2);
@@ -246,7 +245,7 @@ body {
   touch-action: manipulation;
 }
 @media (hover: hover) {
-  .subpage-menu-panel a.menu-item:hover { background: var(--panel-3); border-color: var(--border-2); }
+  a.menu-item:hover { background: var(--panel-3); border-color: var(--border-2); }
 }
 .menu-row { display: flex; }
 .menu-row .pill, .menu-row > button { width: 100%; justify-content: center; }

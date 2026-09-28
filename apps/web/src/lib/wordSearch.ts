@@ -24,14 +24,6 @@ type ArticleWordLookupResponse = {
 
 const wordLookupPollIntervalMs = 1000;
 
-// Checks the server-side article lookup cache without starting a new model
-// job. This lets the reading UI distinguish an existing server result from a
-// word that still needs the learner to request a lookup.
-export async function checkDefinedWord(articleID: string, word: string, position: number): Promise<WordSuggestion | null> {
-  const response = await checkDefinedWordStatus(articleID, word, position);
-  return response?.status === "done" ? response.result ?? null : null;
-}
-
 // Returns the durable server-side state as well as a completed result. The
 // reading page uses "pending" to resume watching a lookup after navigation
 // or a deployment instead of mistaking an in-flight Redis job for a miss.

@@ -1189,11 +1189,6 @@ export function App() {
     el.style.height = `${el.scrollHeight}px`;
   }, [text]);
 
-  // Relative navigation (not "/recordings"): resolves against the current
-  // page URL, so this still works under a ROOT_PATH prefix like "/pr/14"
-  // (see lib/route.ts).
-  const goTo = useCallback((path: string) => () => window.location.assign(path), []);
-
   // Click-outside / Escape closes the menu, same as any dropdown.
   const closeMenu = useCallback(() => setMenuOpen(false), []);
   useDismiss(menuOpen, menuRef, closeMenu);
@@ -1234,13 +1229,6 @@ export function App() {
     onPrInputChange: handlePrInputChange,
     prError,
     onGoToPath: goToPath,
-    onGoToRecordings: goTo("recordings"),
-    onGoToInstant: goTo("instant"),
-    onGoToWords: goTo("words"),
-    onGoToMatch: goTo("match"),
-    onGoToNuance: goTo("nuance"),
-    onGoToArticle: goTo("article"),
-    onGoToWriting: goTo("writing"),
     wordDueCount,
     nuanceDueCount,
     styleInput,

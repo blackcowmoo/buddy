@@ -31,12 +31,6 @@ export function quizChoiceClass(checked: boolean, isSelected: boolean, isAnswer:
   return isAnswer ? "quiz-choice-btn correct" : "quiz-choice-btn";
 }
 
-// quizBlankInputClass picks a fill-in-the-blank quiz input's class — shared
-// by WordReview.tsx and EndConversationControl.tsx's blank-input quizzes.
-export function quizBlankInputClass(checked: boolean, isCorrect: boolean): string {
-  return "quiz-blank-input" + (checked ? (isCorrect ? " correct" : " incorrect") : "");
-}
-
 export async function checkQuizAnswer(
   prompt: string,
   answer: string,
