@@ -74,70 +74,20 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 	// versions. Treat a duplicate-column error as success so this migration
 	// remains idempotent on both fresh and already-migrated databases.
 	steps := []migration.Step{
-		{Version: 1, Name: "word_reviews.original_word", Up: func(ctx context.Context, db *sql.DB) error {
-			return mysqlerr.ApplyAdditive(func() error {
-				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN original_word VARCHAR(255) NOT NULL DEFAULT ''`)
-				return err
-			}, mysqlerr.DupFieldName)
-		}},
-		{Version: 2, Name: "word_reviews.research_status", Up: func(ctx context.Context, db *sql.DB) error {
-			return mysqlerr.ApplyAdditive(func() error {
-				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN research_status VARCHAR(16) NOT NULL DEFAULT ''`)
-				return err
-			}, mysqlerr.DupFieldName)
-		}},
-		{Version: 3, Name: "word_reviews.research_results", Up: func(ctx context.Context, db *sql.DB) error {
-			return mysqlerr.ApplyAdditive(func() error {
-				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN research_results JSON NULL`)
-				return err
-			}, mysqlerr.DupFieldName)
-		}},
-		{Version: 4, Name: "word_reviews.review_question_version", Up: func(ctx context.Context, db *sql.DB) error {
-			return mysqlerr.ApplyAdditive(func() error {
-				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN review_question_version INT NOT NULL DEFAULT 0`)
-				return err
-			}, mysqlerr.DupFieldName)
-		}},
-		{Version: 5, Name: "word_reviews.review_prompt", Up: func(ctx context.Context, db *sql.DB) error {
-			return mysqlerr.ApplyAdditive(func() error {
-				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN review_prompt TEXT NOT NULL`)
-				return err
-			}, mysqlerr.DupFieldName)
-		}},
-		{Version: 6, Name: "word_reviews.review_answer", Up: func(ctx context.Context, db *sql.DB) error {
-			return mysqlerr.ApplyAdditive(func() error {
-				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN review_answer VARCHAR(255) NOT NULL DEFAULT ''`)
-				return err
-			}, mysqlerr.DupFieldName)
-		}},
-		{Version: 7, Name: "word_reviews.review_answers", Up: func(ctx context.Context, db *sql.DB) error {
-			return mysqlerr.ApplyAdditive(func() error {
-				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN review_answers JSON NULL`)
-				return err
-			}, mysqlerr.DupFieldName)
-		}},
-		{Version: 8, Name: "word_reviews.dictionary_meaning", Up: func(ctx context.Context, db *sql.DB) error {
-			for _, column := range []string{
-				"meaning_version INT NOT NULL DEFAULT 0",
-				"meaning_status VARCHAR(16) NOT NULL DEFAULT ''",
-				"meaning_error VARCHAR(255) NOT NULL DEFAULT ''",
-				"previous_meaning TEXT NULL",
-			} {
-				if err := mysqlerr.ApplyAdditive(func() error {
-					_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN `+column)
-					return err
-				}, mysqlerr.DupFieldName); err != nil {
-					return err
-				}
-			}
-			return nil
-		}},
-		{Version: 9, Name: "word_reviews.meaning_revision", Up: func(ctx context.Context, db *sql.DB) error {
-			return mysqlerr.ApplyAdditive(func() error {
-				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN meaning_revision INT NOT NULL DEFAULT 0`)
-				return err
-			}, mysqlerr.DupFieldName)
-		}},
+		{Version: 1, Name: "word_reviews.original_word", Up: addWordColumns("original_word VARCHAR(255) NOT NULL DEFAULT ''")},
+		{Version: 2, Name: "word_reviews.research_status", Up: addWordColumns("research_status VARCHAR(16) NOT NULL DEFAULT ''")},
+		{Version: 3, Name: "word_reviews.research_results", Up: addWordColumns("research_results JSON NULL")},
+		{Version: 4, Name: "word_reviews.review_question_version", Up: addWordColumns("review_question_version INT NOT NULL DEFAULT 0")},
+		{Version: 5, Name: "word_reviews.review_prompt", Up: addWordColumns("review_prompt TEXT NOT NULL")},
+		{Version: 6, Name: "word_reviews.review_answer", Up: addWordColumns("review_answer VARCHAR(255) NOT NULL DEFAULT ''")},
+		{Version: 7, Name: "word_reviews.review_answers", Up: addWordColumns("review_answers JSON NULL")},
+		{Version: 8, Name: "word_reviews.dictionary_meaning", Up: addWordColumns(
+			"meaning_version INT NOT NULL DEFAULT 0",
+			"meaning_status VARCHAR(16) NOT NULL DEFAULT ''",
+			"meaning_error VARCHAR(255) NOT NULL DEFAULT ''",
+			"previous_meaning TEXT NULL",
+		)},
+		{Version: 9, Name: "word_reviews.meaning_revision", Up: addWordColumns("meaning_revision INT NOT NULL DEFAULT 0")},
 	}
 	if err := migration.ApplyLegacy(ctx, rw, "wordreview", steps); err != nil {
 		return nil, fmt.Errorf("wordreview: migrations: %w", err)
@@ -156,6 +106,22 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 		return nil, fmt.Errorf("wordreview: answer cache schema: %w", err)
 	}
 	return &MySQLStore{rw: rw, ro: ro}, nil
+}
+
+// addWordColumns keeps legacy upgrades restartable when an earlier column in
+// the same migration already landed. Only duplicate-column errors are ignored.
+func addWordColumns(columns ...string) func(context.Context, *sql.DB) error {
+	return func(ctx context.Context, db *sql.DB) error {
+		for _, column := range columns {
+			if err := mysqlerr.ApplyAdditive(func() error {
+				_, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN `+column)
+				return err
+			}, mysqlerr.DupFieldName); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 }
 
 func answerCacheKey(prompt, answer, learnerAnswer string) []byte {
