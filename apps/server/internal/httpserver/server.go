@@ -118,7 +118,7 @@ func New(cfg config.Config, deps Dependencies) *http.Server {
 	if candidate, ok := words.(wordreview.AnswerCache); ok {
 		answerCache = candidate
 	}
-	mux.HandleFunc("POST /api/quiz/check-answer", quizAnswerCheckWithOwners(ident, pipe, quizOwners{Sessions: st, Words: words}, answerCache))
+	mux.HandleFunc("POST /api/quiz/check-answer", quizAnswerCheckHandler(ident, pipe, quizOwners{Sessions: st, Words: words}, answerCache))
 	mux.HandleFunc("DELETE /api/sessions/{id}", sessionDeleteHandler(ident, st, audio, recordings, pipe, profileRegenerateQueue))
 	mux.HandleFunc("GET /api/settings", settingsGetHandler(ident, st))
 	mux.HandleFunc("PUT /api/settings", settingsSaveHandler(ident, st))

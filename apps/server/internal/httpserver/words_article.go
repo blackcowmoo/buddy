@@ -11,6 +11,7 @@ import (
 	"buddy/server/internal/protocol"
 	"buddy/server/internal/transport"
 	"buddy/server/internal/wordlookup"
+	"buddy/server/internal/wordreview"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -46,7 +47,7 @@ func articleWordDefineHandler(ident identity.Identifier, articles newsarticle.St
 			http.Error(w, "word is required", http.StatusBadRequest)
 			return
 		}
-		if !requireMaxRunes(w, word, maxWordLen, "word is too long") {
+		if !requireMaxRunes(w, word, wordreview.MaxWordLen, "word is too long") {
 			return
 		}
 		if body.Position < 0 || body.Position > maxWordLookupPosition {

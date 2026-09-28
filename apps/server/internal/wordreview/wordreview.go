@@ -25,7 +25,6 @@ package wordreview
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -278,11 +277,6 @@ type ResearchStore interface {
 	StartResearch(context.Context, string, string) (Word, error)
 	FinishResearch(context.Context, string, string, []ResearchSuggestion) (Word, error)
 	ConfirmResearch(context.Context, string, string) (Word, error)
-}
-
-func EncodeResearchResults(results []ResearchSuggestion) (string, error) {
-	b, err := json.Marshal(results)
-	return string(b), err
 }
 
 // Store persists the learner's study words (chosen or auto-captured — see

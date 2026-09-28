@@ -506,12 +506,6 @@ func (f *fakeSessionStore) snapshotCompleteSummaryCalls() int {
 	return len(f.completeSummaryCalls)
 }
 
-func (f *fakeSessionStore) snapshotFailSummaryCalls() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.failSummaryCalls)
-}
-
 func (f *fakeSessionStore) snapshotRestartSummaryCalls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -522,12 +516,6 @@ func (f *fakeSessionStore) snapshotCompleteQuizCalls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.completeQuizCalls)
-}
-
-func (f *fakeSessionStore) snapshotFailQuizCalls() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.failQuizCalls)
 }
 
 func (f *fakeSessionStore) snapshotMarkQuizCompletedCalls() int {

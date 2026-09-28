@@ -46,10 +46,10 @@ func TestAnswerChecksDiscardDeletedOwner(t *testing.T) {
 						handler = writingCheckHandler(ident, pipe, &ownedWriting{&fakeWritingStore{}, owner})
 						body = `{"promptId":"item","prompt":"문장","answer":"sentence"}`
 					case "session quiz":
-						handler = quizAnswerCheckWithOwners(ident, pipe, quizOwners{Sessions: owner}, cache)
+						handler = quizAnswerCheckHandler(ident, pipe, quizOwners{Sessions: owner}, cache)
 						body = `{"sessionId":"item","prompt":"p","answer":"a","learnerAnswer":"b"}`
 					case "word quiz":
-						handler = quizAnswerCheckWithOwners(ident, pipe, quizOwners{Words: owner}, cache)
+						handler = quizAnswerCheckHandler(ident, pipe, quizOwners{Words: owner}, cache)
 						body = `{"wordId":"item","prompt":"p","answer":"a","learnerAnswer":"b"}`
 					}
 					rec := httptest.NewRecorder()
@@ -68,6 +68,32 @@ func TestAnswerChecksDiscardDeletedOwner(t *testing.T) {
 						t.Fatal("deleted check cached a verdict")
 					}
 				})
+			}
+		})
+	}
+}
+
+func TestQuizAnswerCheckChecksEachOwnerBeforeCache(t *testing.T) {
+	for _, deleted := range []string{"neither", "session", "word"} {
+		t.Run(deleted, func(t *testing.T) {
+			sessions, words := &checkOwner{}, &checkOwner{}
+			sessions.deleted.Store(deleted == "session")
+			words.deleted.Store(deleted == "word")
+			cache := &fakeAnswerCache{found: true, result: true}
+			// No model is configured: a live owner's cached answer needs no LLM.
+			handler := quizAnswerCheckHandler(fakeIdentifier{id: "alex", ok: true}, &pipeline.Pipeline{},
+				quizOwners{Sessions: sessions, Words: words}, cache)
+			rec := httptest.NewRecorder()
+			handler(rec, httptest.NewRequest(http.MethodPost, "/api/quiz/check-answer", strings.NewReader(
+				`{"sessionId":"s1","wordId":"w1","prompt":"p","answer":"a","learnerAnswer":"b"}`)))
+
+			wantStatus, wantLookups := http.StatusNotFound, 0
+			if deleted == "neither" {
+				wantStatus, wantLookups = http.StatusOK, 1
+			}
+			if rec.Code != wantStatus || cache.lookups != wantLookups || cache.saves != 0 {
+				t.Fatalf("status=%d lookups=%d saves=%d; want status=%d lookups=%d saves=0",
+					rec.Code, cache.lookups, cache.saves, wantStatus, wantLookups)
 			}
 		})
 	}

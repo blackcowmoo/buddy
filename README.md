@@ -489,7 +489,7 @@ without touching the pipeline:
 | **True streaming partials** | Implement `stt.StreamingRecognizer` with the Vosk Go bindings; feed audio chunks instead of one-utterance frames and emit `partial_transcript`. |
 | **Hands-free (auto VAD)** | Replace `PCMRecorder` with `@ricky0123/vad-web`; its `onSpeechEnd` hands you a 16 kHz `Float32Array` per utterance — pipe through `floatTo16()`. |
 | **In-process STT (no subprocess)** | Swap `stt.Whisper` for the whisper.cpp CGo bindings; same `Recognizer` interface. |
-| **Server-side TTS** | Implement `tts.Synthesizer` (e.g. shell out to piper) and stream audio frames down the socket for non-browser clients. |
+| **Another TTS engine** | Implement `tts.Speaker` in place of the Kokoro HTTP client; article and message read-aloud already use its buffered/streaming audio and versioned S3 cache. |
 | **Lower TTS latency** | Speak per sentence as `assistant_delta`s arrive instead of on `assistant_done`. |
 | **Different LLM host** | `llm.OpenAI` already works with any OpenAI-compatible server (llama.cpp, vLLM, LM Studio, hosted APIs) — just change `BUDDY_LLM_CHAT_URL`/`BUDDY_LLM_ANALYSIS_URLS`/`BUDDY_LLM_JUDGE_URL`. |
 | **Another STT server engine** (e.g. parakeet.cpp) | Add a row to `sttEngines` in `internal/config/config.go` (its `*_URLS` env var name — `model@url` pairs, parsed by `parseModelURLPairs`); `stt.HTTPTranscriber` already speaks whisper.cpp's `/inference` multipart contract, so no new Go type is needed unless the engine's wire format differs. |
@@ -513,10 +513,6 @@ without touching the pipeline:
   per-file `jsdom` environment since the rest of the suite runs under
   `node`), but most of the conversation UI (message list, corrections,
   mic/TTS flows) still has no component tests.
-- **Server-side TTS is just an interface, no implementation.**
-  `tts.Synthesizer` exists as a seam but nothing implements it — fine today
-  since the browser (kokoro-82M) handles all TTS, but needed for any
-  non-browser client.
 - **No `llm.Translate()` seam.** The correction prompt asks the LLM to emit
   Korean explanations directly in one call. That's simpler than a separate
   translation round-trip, but means "translate this other piece of UI text"

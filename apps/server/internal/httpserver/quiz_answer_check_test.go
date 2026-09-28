@@ -16,13 +16,15 @@ import (
 )
 
 type fakeAnswerCache struct {
-	result bool
-	found  bool
-	saves  int
-	saveCh chan bool
+	result  bool
+	found   bool
+	lookups int
+	saves   int
+	saveCh  chan bool
 }
 
 func (f *fakeAnswerCache) LookupAnswer(context.Context, string, string, string, time.Time) (bool, bool, error) {
+	f.lookups++
 	return f.result, f.found, nil
 }
 func (f *fakeAnswerCache) SaveAnswer(_ context.Context, _, _, _ string, result bool, _ time.Time) error {
@@ -53,7 +55,7 @@ func TestQuizAnswerCheckHandlerReturnsCorrectVerdict(t *testing.T) {
 		LLM:       &fakeQuizAnswerCheckLLM{complete: func(msgs []llm.Message) (string, error) { return `{"correct": true}`, nil }},
 		ChatModel: "m",
 	}
-	h := quizAnswerCheckHandler(fakeIdentifier{id: "alex", ok: true}, pipe)
+	h := quizAnswerCheckHandler(fakeIdentifier{id: "alex", ok: true}, pipe, quizOwners{}, nil)
 
 	body, _ := json.Marshal(map[string]any{
 		"prompt": "He ___ to school.", "answer": "goes", "acceptableAnswers": []string{"walks"}, "learnerAnswer": "commutes",
@@ -79,7 +81,7 @@ func TestQuizAnswerCheckHandlerReturnsFalseVerdict(t *testing.T) {
 		LLM:       &fakeQuizAnswerCheckLLM{complete: func(msgs []llm.Message) (string, error) { return `{"correct": false}`, nil }},
 		ChatModel: "m",
 	}
-	h := quizAnswerCheckHandler(fakeIdentifier{id: "alex", ok: true}, pipe)
+	h := quizAnswerCheckHandler(fakeIdentifier{id: "alex", ok: true}, pipe, quizOwners{}, nil)
 
 	body, _ := json.Marshal(map[string]any{"prompt": "He ___ to school.", "answer": "goes", "learnerAnswer": "banana"})
 	req := httptest.NewRequest("POST", "/api/quiz/check-answer", bytes.NewReader(body))
@@ -104,7 +106,7 @@ func TestQuizAnswerCheckHandlerUsesCachedVerdictWithoutCallingLLM(t *testing.T) 
 		t.Fatal("LLM called for cached answer")
 		return "", nil
 	}}, ChatModel: "m"}
-	h := quizAnswerCheckHandler(fakeIdentifier{id: "alex", ok: true}, pipe, cache)
+	h := quizAnswerCheckHandler(fakeIdentifier{id: "alex", ok: true}, pipe, quizOwners{}, cache)
 	req := httptest.NewRequest("POST", "/api/quiz/check-answer", strings.NewReader(`{"prompt":"He ___","answer":"goes","learnerAnswer":"walks"}`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -137,7 +139,7 @@ func TestQuizAnswerCheckHandlerReturnsChatImmediatelyThenCachesRefinedVerdict(t 
 		}},
 		JudgeModel: "judge",
 	}
-	h := quizAnswerCheckHandler(fakeIdentifier{id: "alex", ok: true}, pipe, cache)
+	h := quizAnswerCheckHandler(fakeIdentifier{id: "alex", ok: true}, pipe, quizOwners{}, cache)
 	req := httptest.NewRequest(http.MethodPost, "/api/quiz/check-answer", strings.NewReader(
 		`{"prompt":"He ___ home.","answer":"went","learnerAnswer":"goed"}`,
 	))
@@ -175,14 +177,14 @@ func TestQuizAnswerCheckHandlerReturnsChatImmediatelyThenCachesRefinedVerdict(t 
 }
 
 func TestQuizAnswerCheckHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
-	h := quizAnswerCheckHandler(fakeIdentifier{ok: false}, &pipeline.Pipeline{})
+	h := quizAnswerCheckHandler(fakeIdentifier{ok: false}, &pipeline.Pipeline{}, quizOwners{}, nil)
 
 	req := httptest.NewRequest("POST", "/api/quiz/check-answer", strings.NewReader(`{"prompt":"x","answer":"y","learnerAnswer":"z"}`))
 	assertUnauthorized(t, h, req)
 }
 
 func TestQuizAnswerCheckHandlerBadRequestOnMalformedJSON(t *testing.T) {
-	h := quizAnswerCheckHandler(fakeIdentifier{id: "alex", ok: true}, &pipeline.Pipeline{})
+	h := quizAnswerCheckHandler(fakeIdentifier{id: "alex", ok: true}, &pipeline.Pipeline{}, quizOwners{}, nil)
 
 	req := httptest.NewRequest("POST", "/api/quiz/check-answer", strings.NewReader(`not json`))
 	rec := httptest.NewRecorder()
@@ -202,7 +204,7 @@ func TestQuizAnswerCheckHandlerRejectsMissingFields(t *testing.T) {
 		`{"prompt":"  ","answer":"y","learnerAnswer":"z"}`,
 	}
 	for _, body := range cases {
-		h := quizAnswerCheckHandler(fakeIdentifier{id: "alex", ok: true}, &pipeline.Pipeline{})
+		h := quizAnswerCheckHandler(fakeIdentifier{id: "alex", ok: true}, &pipeline.Pipeline{}, quizOwners{}, nil)
 		req := httptest.NewRequest("POST", "/api/quiz/check-answer", strings.NewReader(body))
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -220,7 +222,7 @@ func TestQuizAnswerCheckHandlerRejectsOverlongLearnerAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	h := quizAnswerCheckHandler(fakeIdentifier{id: "alex", ok: true}, &pipeline.Pipeline{})
+	h := quizAnswerCheckHandler(fakeIdentifier{id: "alex", ok: true}, &pipeline.Pipeline{}, quizOwners{}, nil)
 
 	req := httptest.NewRequest("POST", "/api/quiz/check-answer", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
@@ -234,7 +236,7 @@ func TestQuizAnswerCheckHandlerInternalErrorOnPipelineFailure(t *testing.T) {
 		LLM:       &fakeQuizAnswerCheckLLM{complete: func(msgs []llm.Message) (string, error) { return "", errors.New("model unreachable") }},
 		ChatModel: "m",
 	}
-	h := quizAnswerCheckHandler(fakeIdentifier{id: "alex", ok: true}, pipe)
+	h := quizAnswerCheckHandler(fakeIdentifier{id: "alex", ok: true}, pipe, quizOwners{}, nil)
 
 	body, _ := json.Marshal(map[string]string{"prompt": "x", "answer": "y", "learnerAnswer": "z"})
 	req := httptest.NewRequest("POST", "/api/quiz/check-answer", bytes.NewReader(body))

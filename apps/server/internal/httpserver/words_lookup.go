@@ -7,6 +7,7 @@ import (
 
 	"buddy/server/internal/identity"
 	"buddy/server/internal/pipeline"
+	"buddy/server/internal/wordreview"
 )
 
 const (
@@ -65,7 +66,7 @@ func wordDefineHandler(ident identity.Identifier, pipe *pipeline.Pipeline) http.
 			http.Error(w, "word is required", http.StatusBadRequest)
 			return
 		}
-		if !requireMaxRunes(w, word, maxWordLen, "word is too long") {
+		if !requireMaxRunes(w, word, wordreview.MaxWordLen, "word is too long") {
 			return
 		}
 		if !requireMaxRunes(w, wordContext, maxWordDefineContextLen, fmt.Sprintf("context exceeds %d characters", maxWordDefineContextLen)) {
