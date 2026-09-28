@@ -112,11 +112,7 @@ func renderStudySummaryInput(issues []StudyIssue) string {
 // not automatically alongside the wrap-up — callers should skip this call
 // entirely when issues is empty, same reasoning as GenerateStudySummary.
 func (p *Pipeline) GenerateStudyQuiz(ctx context.Context, issues []StudyIssue) ([]protocol.QuizQuestion, error) {
-	raw, err := p.analyze(ctx, quizSystemPrompt(p.FeedbackLang), renderStudySummaryInput(issues), true, reusableOutput(parseStudyQuiz))
-	if err != nil {
-		return nil, err
-	}
-	return parseStudyQuiz(raw)
+	return analyzeJSON(ctx, p, quizSystemPrompt(p.FeedbackLang), renderStudySummaryInput(issues), parseStudyQuiz)
 }
 
 func parseStudyQuiz(raw string) ([]protocol.QuizQuestion, error) {

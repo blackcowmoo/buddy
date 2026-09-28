@@ -31,11 +31,7 @@ const articleQuizMinSubQuestions = 2
 // learner practicing on their own; all drafts stay hidden until the terminal
 // result is ready.
 func (p *Pipeline) GenerateArticleStudy(ctx context.Context, source, title, description string) (protocol.ArticleStudy, error) {
-	raw, err := p.analyze(ctx, articleStudySystemPrompt(p.FeedbackLang), renderArticleStudyInput(source, title, description), true, reusableOutput(parseArticleStudy))
-	if err != nil {
-		return protocol.ArticleStudy{}, err
-	}
-	study, err := parseArticleStudy(raw)
+	study, err := analyzeJSON(ctx, p, articleStudySystemPrompt(p.FeedbackLang), renderArticleStudyInput(source, title, description), parseArticleStudy)
 	if err != nil {
 		return protocol.ArticleStudy{}, err
 	}

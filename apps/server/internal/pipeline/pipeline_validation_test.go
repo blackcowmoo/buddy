@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"reflect"
 	"testing"
 
 	"buddy/server/internal/checkpoint"
@@ -64,6 +65,10 @@ func TestGenerationRetryRegeneratesInvalidTerminalOutput(t *testing.T) {
 			_, err := p.SuggestNewWords(ctx, "profile", nil)
 			return err
 		}},
+		{"word meanings malformed entry", `{"suggestions":[{"word":7}]}`, `{"suggestions":[{"word":"go","meaning":"가다","example":"He goes home."}]}`, false, func(ctx context.Context, p *Pipeline) error {
+			_, err := p.defineWordMeanings(ctx, "go", "He goes home.")
+			return err
+		}},
 		{"correction malformed issues", `{"issues":7}`, `{"corrected":"He goes.","issues":[]}`, false, func(ctx context.Context, p *Pipeline) error {
 			_, _, _, err := p.AnalyzeCorrection(ctx, "He go.", "")
 			return err
@@ -104,6 +109,9 @@ func TestGenerationRetryRegeneratesInvalidTerminalOutput(t *testing.T) {
 			if err := tc.generate(checkpoint.Bind(context.Background(), &saved), newPipeline()); err != nil {
 				t.Fatalf("retry reused rejected terminal response: %v", err)
 			}
+			if err := tc.generate(checkpoint.Bind(context.Background(), &saved), newPipeline()); err != nil {
+				t.Fatalf("replaying the successful generation failed: %v", err)
+			}
 			wantJudgements := 2
 			if tc.repairFails {
 				wantJudgements++
@@ -111,6 +119,87 @@ func TestGenerationRetryRegeneratesInvalidTerminalOutput(t *testing.T) {
 			if drafts != 1 || refinements != 1 || judgements != wantJudgements {
 				t.Fatalf("calls = chat:%d analysis:%d judge:%d; want 1,1,%d", drafts, refinements, judgements, wantJudgements)
 			}
+		})
+	}
+}
+
+func TestChatJSONGenerationRetriesInvalidOutputAndReplaysValidResult(t *testing.T) {
+	word := protocol.WordSuggestion{Word: "go", Meaning: "가다", Example: "He goes home."}
+	for _, tc := range []struct {
+		name     string
+		invalid  string
+		valid    string
+		want     any
+		generate func(context.Context, *Pipeline) (any, error)
+	}{
+		{"suggestions", `{"suggestions":[{"word":7}]}`, `{"suggestions":[{"word":"go","meaning":"가다","example":"He goes home."}]}`, []protocol.WordSuggestion{word}, func(ctx context.Context, p *Pipeline) (any, error) {
+			return p.SuggestWords(ctx, "가다")
+		}},
+		{"word form", `{"word":" "}`, `{"word":" go "}`, "go", func(ctx context.Context, p *Pipeline) (any, error) {
+			return p.resolveWordForm(ctx, "goes", "He goes home.")
+		}},
+		{"definition", `not json`, `{"word":"go","meaning":"가다","example":"He goes home."}`, word, func(ctx context.Context, p *Pipeline) (any, error) {
+			return p.defineWord(ctx, "go", "He goes home.")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var saved checkpointtest.Memory
+			calls := 0
+			newPipeline := func() *Pipeline {
+				unexpected := &fakeLLM{complete: func([]llm.Message) (string, error) {
+					t.Error("fast vocabulary generation invoked Analysis or Judge")
+					return "", errors.New("unexpected refinement")
+				}}
+				return &Pipeline{
+					LLM: &fakeLLM{complete: func([]llm.Message) (string, error) {
+						calls++
+						if calls == 1 {
+							return tc.invalid, nil
+						}
+						return tc.valid, nil
+					}}, ChatModel: "chat",
+					Analysis: []Candidate{{LLM: unexpected, Model: "analysis"}},
+					Judge:    unexpected, JudgeModel: "judge",
+				}
+			}
+			if _, err := tc.generate(checkpoint.Bind(context.Background(), &saved), newPipeline()); err == nil {
+				t.Fatal("invalid output unexpectedly succeeded")
+			}
+			for _, attempt := range []string{"regenerate", "replay"} {
+				got, err := tc.generate(checkpoint.Bind(context.Background(), &saved), newPipeline())
+				if err != nil || !reflect.DeepEqual(got, tc.want) {
+					t.Fatalf("%s = %#v, %v; want %#v", attempt, got, err, tc.want)
+				}
+			}
+			if calls != 2 {
+				t.Fatalf("model calls = %d, want one invalid call and one valid call", calls)
+			}
+		})
+	}
+}
+
+func TestJSONGenerationPreservesCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		zero     any
+		generate func(context.Context, *Pipeline) (any, error)
+	}{
+		{"chat", []protocol.WordSuggestion(nil), func(ctx context.Context, p *Pipeline) (any, error) {
+			return p.SuggestWords(ctx, "가다")
+		}},
+		{"cascade", protocol.WritingPrompt{}, func(ctx context.Context, p *Pipeline) (any, error) {
+			return p.GenerateWritingPrompt(ctx, "profile", nil, "draw")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			p, clients := checkpointCascade()
+			got, err := tc.generate(ctx, p)
+			if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(got, tc.zero) {
+				t.Fatalf("canceled generation = %#v, %v; want %#v, context.Canceled", got, err, tc.zero)
+			}
+			assertCheckpointCalls(t, clients, []int32{0, 0, 0, 0})
 		})
 	}
 }
