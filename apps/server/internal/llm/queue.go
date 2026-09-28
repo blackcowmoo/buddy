@@ -20,14 +20,12 @@ type CallQueue struct {
 }
 
 type callLane struct {
-	running bool
 	waiters []*callWaiter
 }
 
 type callWaiter struct {
-	ready    chan struct{}
-	started  bool
-	canceled bool
+	ready   chan struct{}
+	started bool
 }
 
 // NewCallQueue returns an empty per-key call queue.
@@ -70,13 +68,11 @@ func (q *CallQueue) acquire(ctx context.Context, key string) (*callLane, error) 
 	if lane == nil {
 		lane = &callLane{}
 		q.lanes[key] = lane
-	}
-	if !lane.running && len(lane.waiters) == 0 {
-		lane.running = true
 		q.mu.Unlock()
 		return lane, nil
 	}
 
+	// A lane exists only while a call owns it, including during a handoff.
 	w := &callWaiter{ready: make(chan struct{})}
 	lane.waiters = append(lane.waiters, w)
 	q.mu.Unlock()
@@ -88,7 +84,7 @@ func (q *CallQueue) acquire(ctx context.Context, key string) (*callLane, error) 
 		// If release already handed this waiter the slot, keep ownership and
 		// let Do's deferred release balance it. Otherwise remove it so a
 		// canceled request does not leave a dead waiter in the lane.
-		if q.cancel(key, lane, w) {
+		if q.cancel(lane, w) {
 			return lane, nil
 		}
 		return nil, ctx.Err()
@@ -97,13 +93,12 @@ func (q *CallQueue) acquire(ctx context.Context, key string) (*callLane, error) 
 
 // cancel returns true when release concurrently handed w the slot. In that
 // case the caller must proceed to release it, even though its context ended.
-func (q *CallQueue) cancel(key string, lane *callLane, w *callWaiter) bool {
+func (q *CallQueue) cancel(lane *callLane, w *callWaiter) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if w.started {
 		return true
 	}
-	w.canceled = true
 	for i, queued := range lane.waiters {
 		if queued != w {
 			continue
@@ -111,29 +106,18 @@ func (q *CallQueue) cancel(key string, lane *callLane, w *callWaiter) bool {
 		lane.waiters = append(lane.waiters[:i], lane.waiters[i+1:]...)
 		break
 	}
-	q.removeIdleLaneLocked(key, lane)
 	return false
 }
 
 func (q *CallQueue) release(key string, lane *callLane) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	for len(lane.waiters) > 0 {
-		w := lane.waiters[0]
-		lane.waiters = lane.waiters[1:]
-		if w.canceled {
-			continue
-		}
-		w.started = true
-		close(w.ready)
+	if len(lane.waiters) == 0 {
+		delete(q.lanes, key)
 		return
 	}
-	lane.running = false
-	q.removeIdleLaneLocked(key, lane)
-}
-
-func (q *CallQueue) removeIdleLaneLocked(key string, lane *callLane) {
-	if !lane.running && len(lane.waiters) == 0 && q.lanes[key] == lane {
-		delete(q.lanes, key)
-	}
+	w := lane.waiters[0]
+	lane.waiters = lane.waiters[1:]
+	w.started = true
+	close(w.ready)
 }

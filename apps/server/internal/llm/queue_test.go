@@ -2,139 +2,195 @@ package llm
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"sync"
 	"testing"
-	"time"
+	"testing/synctest"
 )
 
 func TestCallQueueIsIndependentPerKey(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		q := NewCallQueue()
+		release := make(chan struct{})
+		unblock := sync.OnceFunc(func() { close(release) })
+		defer unblock()
+		go func() {
+			if err := q.Do(context.Background(), "llm2", func() error {
+				<-release
+				return nil
+			}); err != nil {
+				t.Errorf("first call: %v", err)
+			}
+		}()
+		synctest.Wait()
+
+		sameKeyStarted, otherKeyStarted := false, false
+		for _, call := range []struct {
+			key     string
+			started *bool
+		}{{"llm2", &sameKeyStarted}, {"llm1", &otherKeyStarted}} {
+			go func() {
+				if err := q.Do(context.Background(), call.key, func() error {
+					*call.started = true
+					return nil
+				}); err != nil {
+					t.Errorf("call for %s: %v", call.key, err)
+				}
+			}()
+		}
+		synctest.Wait()
+		if sameKeyStarted || !otherKeyStarted {
+			t.Fatalf("while llm2 is occupied: same key started = %v, other key started = %v", sameKeyStarted, otherKeyStarted)
+		}
+		unblock()
+		synctest.Wait()
+		if !sameKeyStarted {
+			t.Fatal("same-key call did not start after the first call released its lane")
+		}
+		assertCallQueueEmpty(t, q)
+	})
+}
+
+func TestCallQueuePreservesFIFOThroughCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		canceled int
+	}{
+		{"none", -1},
+		{"first waiter", 1},
+		{"middle waiter", 2},
+		{"last waiter", 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var q CallQueue // The zero value must work as well as NewCallQueue.
+				release := make(chan struct{})
+				unblock := sync.OnceFunc(func() { close(release) })
+				defer unblock()
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				var calls []int
+				var results [4]error
+				for i := range results {
+					callCtx := context.Background()
+					if i == tc.canceled {
+						callCtx = ctx
+					}
+					go func() {
+						results[i] = q.Do(callCtx, "llm", func() error {
+							calls = append(calls, i)
+							if i == 0 {
+								<-release
+							}
+							return nil
+						})
+					}()
+					// Establish registration order without relying on scheduling or sleeps.
+					synctest.Wait()
+				}
+				cancel()
+				synctest.Wait()
+				if !slices.Equal(calls, []int{0}) {
+					t.Fatalf("calls before release = %v, want [0]", calls)
+				}
+				unblock()
+				synctest.Wait()
+
+				var want []int
+				for i, err := range results {
+					var wantErr error
+					if i == tc.canceled {
+						wantErr = context.Canceled
+					} else {
+						want = append(want, i)
+					}
+					if !errors.Is(err, wantErr) {
+						t.Errorf("call %d error = %v, want %v", i, err, wantErr)
+					}
+				}
+				if !slices.Equal(calls, want) {
+					t.Errorf("call order = %v, want %v", calls, want)
+				}
+				assertCallQueueEmpty(t, &q)
+			})
+		})
+	}
+}
+
+func TestCallQueueCancellationAfterHandoffKeepsOwnership(t *testing.T) {
 	q := NewCallQueue()
-	firstStarted := make(chan struct{})
-	releaseFirst := make(chan struct{})
-	sameKeyStarted := make(chan struct{})
-	otherKeyStarted := make(chan struct{})
-	var wg sync.WaitGroup
+	lane, err := q.acquire(context.Background(), "llm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := &callWaiter{ready: make(chan struct{})}
+	next := &callWaiter{ready: make(chan struct{})}
+	lane.waiters = append(lane.waiters, first, next)
+	q.release("llm", lane)
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := q.Do(context.Background(), "llm2", func() error {
-			close(firstStarted)
-			<-releaseFirst
-			return nil
-		}); err != nil {
-			t.Errorf("first call: %v", err)
-		}
-	}()
-	<-firstStarted
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := q.Do(context.Background(), "llm2", func() error {
-			close(sameKeyStarted)
-			return nil
-		}); err != nil {
-			t.Errorf("same-key call: %v", err)
-		}
-	}()
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := q.Do(context.Background(), "llm1", func() error {
-			close(otherKeyStarted)
-			return nil
-		}); err != nil {
-			t.Errorf("other-key call: %v", err)
-		}
-	}()
-
-	waitForCallQueueSignal(t, otherKeyStarted, "other-key call")
+	// Drive the cancellation/handoff ordering explicitly: acquire must keep
+	// the already-handed-off slot so Do's deferred release can advance it.
+	if !q.cancel(lane, first) {
+		t.Fatal("cancellation discarded the handed-off slot")
+	}
 	select {
-	case <-sameKeyStarted:
-		t.Fatal("same-key call started before the first call released its lane")
+	case <-next.ready:
+		t.Fatal("next waiter started before the handed-off slot was released")
 	default:
 	}
-
-	close(releaseFirst)
-	<-sameKeyStarted
-	wg.Wait()
-}
-
-func TestCallQueueCanceledWaiterDoesNotBlockNextCall(t *testing.T) {
-	q := NewCallQueue()
-	firstStarted := make(chan struct{})
-	releaseFirst := make(chan struct{})
-	firstDone := make(chan error, 1)
-	go func() {
-		firstDone <- q.Do(context.Background(), "llm", func() error {
-			close(firstStarted)
-			<-releaseFirst
-			return nil
-		})
-	}()
-	<-firstStarted
-
-	ctx, cancel := context.WithCancel(context.Background())
-	secondDone := make(chan error, 1)
-	go func() {
-		secondDone <- q.Do(ctx, "llm", func() error {
-			return nil
-		})
-	}()
-	waitForWaiters(t, q, "llm", 1)
-	cancel()
-	if err := <-secondDone; err != context.Canceled {
-		t.Fatalf("canceled waiter error = %v, want context.Canceled", err)
-	}
-
-	thirdStarted := make(chan struct{})
-	thirdDone := make(chan error, 1)
-	go func() {
-		thirdDone <- q.Do(context.Background(), "llm", func() error {
-			close(thirdStarted)
-			return nil
-		})
-	}()
+	q.release("llm", lane)
 	select {
-	case <-thirdStarted:
-		t.Fatal("next call started before the first call released its lane")
+	case <-next.ready:
 	default:
+		t.Fatal("next waiter did not receive the slot")
 	}
-	close(releaseFirst)
-	if err := <-firstDone; err != nil {
-		t.Fatalf("first call: %v", err)
-	}
-	if err := <-thirdDone; err != nil {
-		t.Fatalf("next call: %v", err)
-	}
-	<-thirdStarted
+	q.release("llm", lane)
+	assertCallQueueEmpty(t, q)
 }
 
-func waitForWaiters(t *testing.T, q *CallQueue, key string, want int) {
-	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		q.mu.Lock()
-		lane := q.lanes[key]
-		got := 0
-		if lane != nil {
-			got = len(lane.waiters)
+func TestCallQueueReleasesFailedCalls(t *testing.T) {
+	for _, panics := range []bool{false, true} {
+		name := "error"
+		if panics {
+			name = "panic"
 		}
-		q.mu.Unlock()
-		if got == want {
-			return
-		}
-		time.Sleep(time.Millisecond)
+		t.Run(name, func(t *testing.T) {
+			q := NewCallQueue()
+			failure := errors.New("call failed")
+			func() {
+				defer func() {
+					got := recover()
+					if panics && got != failure {
+						t.Errorf("panic = %v, want %v", got, failure)
+					} else if !panics && got != nil {
+						t.Errorf("unexpected panic: %v", got)
+					}
+				}()
+				err := q.Do(context.Background(), "llm", func() error {
+					if panics {
+						panic(failure)
+					}
+					return failure
+				})
+				if !errors.Is(err, failure) {
+					t.Errorf("error = %v, want %v", err, failure)
+				}
+			}()
+			assertCallQueueEmpty(t, q)
+			if err := q.Do(context.Background(), "llm", func() error { return nil }); err != nil {
+				t.Fatalf("reuse after failure: %v", err)
+			}
+			assertCallQueueEmpty(t, q)
+		})
 	}
-	t.Fatalf("waiter count for %q did not reach %d", key, want)
 }
 
-func waitForCallQueueSignal(t *testing.T, signal <-chan struct{}, name string) {
+func assertCallQueueEmpty(t *testing.T, q *CallQueue) {
 	t.Helper()
-	select {
-	case <-signal:
-	case <-time.After(time.Second):
-		t.Fatalf("timed out waiting for %s", name)
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.lanes) != 0 {
+		t.Fatalf("queue retained %d idle lane(s)", len(q.lanes))
 	}
 }
