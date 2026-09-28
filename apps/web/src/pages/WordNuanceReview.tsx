@@ -6,7 +6,7 @@ import { dueQuestions, fetchNuanceLesson, fetchNuanceLessons, practiceNuance, st
 
 const reviewItemParam = "item";
 
-export function readNuanceReviewOrder(search = window.location.search): NuanceReviewItem[] {
+function readNuanceReviewOrder(search = window.location.search): NuanceReviewItem[] {
   const items: NuanceReviewItem[] = [];
   for (const raw of new URLSearchParams(search).getAll(reviewItemParam)) {
     try {

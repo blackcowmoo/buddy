@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { dueQuestions, fetchNuanceLessons } from "../lib/nuance";
 import { fetchWords } from "../lib/wordReview";
 
-export interface LearningDueCounts {
+interface LearningDueCounts {
   wordDueCount: number;
   nuanceDueCount: number;
 }

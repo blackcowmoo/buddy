@@ -5,7 +5,7 @@ import { fetchJSON, postJSON, requestOK } from "./fetchJSON";
 // background, "done" once it's ready, "failed" after an attempt errored
 // (the asyncjob reaper still retries it from scratch regardless, so this is
 // shown the same as "pending", not a dead end).
-export type ArticleStatus = "pending" | "done" | "failed";
+type ArticleStatus = "pending" | "done" | "failed";
 
 // Mirrors httpserver's articleListItem shape (apps/server/internal/httpserver/articles.go).
 // Never carries the quiz's Choices/CorrectIndex/Explanation — the list only
@@ -27,7 +27,7 @@ export interface ArticleInstance {
 // "spot the difference" redesign), never carrying CorrectOptionIndex/
 // Explanation; the server only reveals those via answerArticle's per-sub-
 // question reveal, after the learner has answered every one.
-export interface ArticleSubQuestion {
+interface ArticleSubQuestion {
   prompt: string;
   options: string[]; // always exactly 2
 }
@@ -53,7 +53,7 @@ export interface ArticleDraw {
 // reveal, with its answer key and what the learner actually picked, so the
 // UI can color each one correct/incorrect independently (see
 // lib/quizCheck.ts's quizChoiceClass).
-export interface ArticleSubQuestionResult {
+interface ArticleSubQuestionResult {
   prompt: string;
   options: string[];
   correctOptionIndex: number;
@@ -74,7 +74,7 @@ export interface ArticleAnswerResult {
   subQuestions: ArticleSubQuestionResult[];
 }
 
-export type ArticleDrawResult =
+type ArticleDrawResult =
   | { status: "ok"; draw: ArticleDraw }
   // Every candidate from today's feeds has already been drawn by this
   // learner (see httpserver.articleDrawHandler's 204 response) — distinct

@@ -22,15 +22,14 @@ const mismatchDelayMs = 700;
 interface Card {
   cardId: string; // unique per card (two cards share wordId, not cardId)
   wordId: string;
-  kind: "word" | "meaning";
   label: string;
 }
 
 function dealCards(words: WordReviewItem[]): Card[] {
   const pairs = shuffled(words).slice(0, maxPairs);
   const cards: Card[] = pairs.flatMap((w) => [
-    { cardId: `${w.id}-word`, wordId: w.id, kind: "word", label: w.word },
-    { cardId: `${w.id}-meaning`, wordId: w.id, kind: "meaning", label: w.meaning },
+    { cardId: `${w.id}-word`, wordId: w.id, label: w.word },
+    { cardId: `${w.id}-meaning`, wordId: w.id, label: w.meaning },
   ]);
   return shuffled(cards);
 }

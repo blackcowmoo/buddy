@@ -1,6 +1,6 @@
 import { fetchJSON, postJSON, requestOK } from "./fetchJSON";
 
-export interface NuanceWord {
+interface NuanceWord {
   word: string;
   tone: string;
   description: string;
@@ -15,14 +15,14 @@ export interface NuanceQuestion {
   answer: string;
   explanation: string;
 }
-export interface NuanceContent {
+interface NuanceContent {
   meaning: string;
   distinction: string;
   caveat: string;
   words: NuanceWord[];
   questions: NuanceQuestion[];
 }
-export interface NuanceProgress {
+interface NuanceProgress {
   stage: number;
   attempts: number;
   correct: number;
@@ -52,7 +52,7 @@ export interface NuanceReviewItem {
   lessonId: string;
   questionId: string;
 }
-export interface NuanceReviewBatch {
+interface NuanceReviewBatch {
   items: NuanceReviewItem[];
   lessons: NuanceLesson[];
 }

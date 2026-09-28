@@ -4,7 +4,7 @@ import { fetchJSON, requestOK } from "./fetchJSON";
 // (apps/server/internal/httpserver/server.go). Global to the user (not
 // per-session): it's layered onto the chat persona's system prompt when a
 // session is created (see pipeline.BuildSystemPrompt).
-export interface Settings {
+interface Settings {
   interlocutorStyle: string;
   // The learner's persistent, LLM-maintained cross-session profile (recurring
   // mistakes, interests, proficiency trend) — folded in from each ended

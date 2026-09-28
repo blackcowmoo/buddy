@@ -27,7 +27,6 @@
   --phrase: #c997f3;
   --border: rgba(255, 255, 255, 0.075);
   --border-2: rgba(255, 255, 255, 0.11);
-  --border-3: rgba(255, 255, 255, 0.18);
   --app-bg: linear-gradient(180deg, rgba(20, 18, 30, 0.99), rgba(12, 11, 18, 0.995));
   --header-bg: rgba(16, 15, 24, 0.78);
   --composer-bg: rgba(16, 15, 24, 0.86);
@@ -75,7 +74,6 @@
   --phrase: #8c58ae;
   --border: rgba(48, 35, 68, 0.075);
   --border-2: rgba(48, 35, 68, 0.12);
-  --border-3: rgba(48, 35, 68, 0.2);
   --app-bg: linear-gradient(180deg, rgba(251, 250, 253, 0.99), rgba(245, 243, 248, 0.995));
   --header-bg: rgba(250, 249, 252, 0.82);
   --composer-bg: rgba(250, 249, 252, 0.9);
