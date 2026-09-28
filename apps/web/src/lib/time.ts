@@ -18,7 +18,7 @@ export function formatRelativeTime(unixSeconds: number): string {
 // Local calendar day the two timestamps fall on — not a 24h-window diff, so
 // 11:59pm and 12:01am on consecutive days count as different days even
 // though they're 2 minutes apart.
-export function isSameDay(aUnixSeconds: number, bUnixSeconds: number): boolean {
+function isSameDay(aUnixSeconds: number, bUnixSeconds: number): boolean {
   const a = new Date(aUnixSeconds * 1000);
   const b = new Date(bUnixSeconds * 1000);
   return (

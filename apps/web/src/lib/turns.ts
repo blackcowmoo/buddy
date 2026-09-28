@@ -94,7 +94,7 @@ function hydrateTurnMeta(t: TurnRecord, recentlyActive: boolean): { meta: TurnMe
   return { meta, pending };
 }
 
-export interface HydratedTurnPage {
+interface HydratedTurnPage {
   messages: Msg[];
   metadata: Record<number, TurnMeta>;
   pending: boolean;

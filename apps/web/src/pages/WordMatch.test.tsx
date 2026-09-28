@@ -90,15 +90,15 @@ describe("WordMatch page", () => {
     }
   });
 
-  it("matches a pair immediately when the two cards flipped share a word", async () => {
+  it.each([[1, 2], [2, 1]])("matches a pair when cards %i then %i are flipped", async (first, second) => {
     vi.mocked(fetchWords).mockResolvedValue({ words: [w1, w2, w3], dueCount: 0 });
     render(<WordMatch />);
     await screen.findAllByRole("button", { name: "카드 뒤집기" });
     const cards = cardButtons();
 
     // Index 1 and 2 are jaded's word/meaning pair (see the layout note above).
-    fireEvent.click(cards[1]);
-    fireEvent.click(cards[2]);
+    fireEvent.click(cards[first]);
+    fireEvent.click(cards[second]);
 
     expect(screen.getByText("jaded")).toBeVisible();
     expect(screen.getByText("지친")).toBeVisible();

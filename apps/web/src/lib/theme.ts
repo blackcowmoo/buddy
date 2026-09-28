@@ -22,7 +22,7 @@ export function setStoredTheme(theme: Theme): void {
 
 // The concrete palette a theme choice resolves to once "system" is settled
 // against the current OS/browser preference.
-export type ResolvedTheme = "white" | "dark";
+type ResolvedTheme = "white" | "dark";
 
 const SYSTEM_THEME_QUERY = "(prefers-color-scheme: light)";
 

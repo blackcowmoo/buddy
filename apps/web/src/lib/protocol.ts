@@ -1,18 +1,18 @@
-// Mirror of apps/server/internal/protocol/protocol.go — keep in sync.
+// Live wire types from apps/server/internal/protocol/protocol.go. Legacy
+// refined transcripts are only read from persisted TurnRecord history.
 
-export type EventType =
+type EventType =
   | "ready"
   | "pending_transcript"
   | "final_transcript"
   | "assistant_delta"
   | "assistant_done"
-  | "refined_transcript"
   | "correction"
   | "user_translation"
   | "assistant_translation"
   | "error";
 
-export interface Issue {
+interface Issue {
   type: string; // "grammar" | "vocabulary" | "phrasing" | "context"
   span: string;
   suggestion: string;
@@ -81,7 +81,7 @@ export interface ServerEvent {
   // pipeline.StartConversation server-side) — real turns start at 1.
   turn: number;
   text?: string;
-  // Set on "final_transcript"/"refined_transcript" (a committed turn) and on
+  // Set on "final_transcript" (a committed turn) and on
   // "pending_transcript" (a not-yet-committed voice draft, always "voice") —
   // there's no ambiguity to record on any other event type.
   source?: InputSource;

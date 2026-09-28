@@ -1,7 +1,7 @@
 import { fetchJSON, postJSON, requestOK } from "./fetchJSON";
 import type { Correction } from "./protocol";
 
-export type WritingStatus = "pending" | "done" | "failed";
+type WritingStatus = "pending" | "done" | "failed";
 export interface WritingPrompt { id: string; korean: string; status: WritingStatus; createdAt: number }
 
 export function fetchWritingPrompts(): Promise<WritingPrompt[]> {

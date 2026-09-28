@@ -172,13 +172,6 @@ export function App() {
   // typing indicator in the empty gap before assistant_delta/assistant_done.
   const [awaitingReply, setAwaitingReply] = useState(false);
 
-  // Clears per-turn UI state (corrections, translations) — shared by
-  // enterChat (about to load a room's own state, or none for a fresh one)
-  // and backToList (leaving the room entirely).
-  const resetTurnState = useCallback(() => {
-    setTurns({});
-  }, []);
-
   // Clears the ended-room wrap-up/quiz state — shared by enterChat (about to
   // load a room's own state, or none for a fresh one) and resetToListView
   // (leaving the room entirely).
@@ -407,15 +400,6 @@ export function App() {
           },
         ]);
         patchTurn(e.turn, { correctionPending: true, correctionFailed: false, userTranslationPending: true });
-        break;
-      case "refined_transcript":
-        setMsgs((m) =>
-          m.map((x) =>
-            x.turn === e.turn && x.role === "user"
-              ? { ...x, text: e.text ?? x.text, refined: true, source: e.source ?? x.source }
-              : x,
-          ),
-        );
         break;
       case "assistant_delta":
         setAwaitingReply(false);
@@ -694,7 +678,7 @@ export function App() {
   const enterChat = useCallback(
     async (sessionId?: string, opts?: { push?: boolean; quick?: boolean }) => {
       resetTransientChatState();
-      resetTurnState();
+      setTurns({});
       resetEndedState();
       resetQuickState(!!opts?.quick);
       setMsgs([]);
@@ -773,7 +757,6 @@ export function App() {
         setAwaitingReply(hydrated.awaitingReply);
         if (hydrated.pending) pollMissingFeedback(sessionId, token);
       } else {
-        setMsgs([]);
         clientRef.current?.connect(undefined);
         // A brand-new room gets an opening line from the server before the
         // learner says anything (see pipeline.StartConversation) — show the
@@ -786,7 +769,6 @@ export function App() {
     },
     [
       resetTransientChatState,
-      resetTurnState,
       resetEndedState,
       resetQuickState,
       pollMissingFeedback,
@@ -832,7 +814,7 @@ export function App() {
     clientRef.current?.close();
     resetTransientChatState();
     setMsgs([]);
-    resetTurnState();
+    setTurns({});
     resetEndedState();
     resetQuickState(false);
     setMenuOpen(false);
@@ -844,7 +826,7 @@ export function App() {
     stickToBottomRef.current = true;
     hasPushedRoomEntryRef.current = false;
     void refreshSessions();
-  }, [refreshSessions, resetTransientChatState, resetTurnState, resetEndedState, resetQuickState]);
+  }, [refreshSessions, resetTransientChatState, resetEndedState, resetQuickState]);
 
   // Holds the .convo scroll position steady when new content is added:
   // pinned to the bottom for a fresh room entry or a live message arriving

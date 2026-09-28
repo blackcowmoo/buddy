@@ -2133,13 +2133,21 @@ describe("input source indicator", () => {
     expect(await screen.findByTitle("채팅으로 입력함")).toBeInTheDocument();
   });
 
-  it("carries the source over when a voice turn is later upgraded by refine", async () => {
+  it("restores a legacy refined voice turn from persisted history", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      { id: "s1", title: "legacy voice chat", createdAt: 1, updatedAt: 2 },
+    ]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      hasMore: false,
+      session: { id: "s1", title: "legacy voice chat", createdAt: 1, updatedAt: 2 },
+      turns: [{ turn: 1, role: "user", text: "I am hungry", refined: true, source: "voice" }],
+    });
     const user = userEvent.setup();
     render(<App />);
-    await enterNewChat(user);
-    act(() => emit({ type: "final_transcript", turn: 1, text: "i are hungry", source: "voice" }));
-    act(() => emit({ type: "refined_transcript", turn: 1, text: "I am hungry" }));
-    await screen.findByText("I am hungry");
+    await user.click(await screen.findByText("legacy voice chat"));
+
+    expect(await screen.findByText("I am hungry")).toBeInTheDocument();
+    expect(screen.getByText("refined")).toBeInTheDocument();
     expect(screen.getByTitle("음성으로 입력함")).toBeInTheDocument();
   });
 

@@ -92,7 +92,7 @@ export interface SessionDetail {
 }
 
 // Mirrors the JSON shape written by httpserver.sessionCompactionHandler.
-export interface SessionCompaction {
+interface SessionCompaction {
   summary: string;
   recentMessages: number;
   totalTurns: number;

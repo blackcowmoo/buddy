@@ -104,8 +104,8 @@ export async function confirmResearchWord(id: string): Promise<WordReviewItem | 
 // background), "done", or "failed" — see store.JobStatusPending/Done/Failed
 // server-side. count is only meaningful once status is "done": how many
 // words that run actually added (0 means the model found nothing new).
-export type WordAutoAddJobStatus = "" | "pending" | "done" | "failed";
-export interface WordAutoAddStatus {
+type WordAutoAddJobStatus = "" | "pending" | "done" | "failed";
+interface WordAutoAddStatus {
   status: WordAutoAddJobStatus;
   count: number;
 }
