@@ -32,6 +32,11 @@ func TestWSFinalAndAssistantTurnsArePersisted(t *testing.T) {
 	if len(turns) != 3 {
 		t.Fatalf("expected 3 persisted turns (greeting+user+assistant), got %+v", turns)
 	}
+	for _, turn := range turns {
+		if turn.Refined {
+			t.Fatalf("live turn must not use the legacy refined flag: %+v", turn)
+		}
+	}
 	if turns[0].Turn != 0 || turns[0].Role != "assistant" || turns[0].Text == "" || turns[0].Source != "" {
 		t.Fatalf("turn[0] = %+v, want a non-empty opening greeting with no source", turns[0])
 	}
@@ -80,8 +85,8 @@ func TestWSBinaryFramePersistsVoiceSource(t *testing.T) {
 	if !found {
 		t.Fatalf("no user turn persisted in time")
 	}
-	if userTurn.Source != protocol.SourceVoice {
-		t.Fatalf("user turn = %+v, want source=voice", userTurn)
+	if userTurn.Source != protocol.SourceVoice || userTurn.Text != draft.Text || userTurn.Refined {
+		t.Fatalf("user turn = %+v, want confirmed draft with source=voice and refined=false", userTurn)
 	}
 }
 

@@ -191,7 +191,7 @@ func main() {
 	// redeploy killing the in-process fallback goroutine EnqueueOrRunInline
 	// uses when articleStudyQueue is nil) when there's no durable Redis claim
 	// to reap in the first place — see transport.RunArticleStudySweepLoop.
-	go transport.RunArticleStudySweepLoop(jobsCtx, articleStudyQueue, pipe, articles, articleAudio)
+	go transport.RunArticleStudySweepLoop(jobsCtx, pipe, articles, articleAudio)
 
 	// Word auto-add generation: generates a batch of new words fit to the
 	// learner's profile in the background (see httpserver.wordAutoAddHandler),

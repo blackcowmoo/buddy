@@ -218,7 +218,7 @@ func EnqueueArticleStudyJob(ctx context.Context, queue *asyncjob.Queue, pipe *pi
 // moment ago by a racing sweep on another replica), it's skipped rather than
 // redispatched, so at most one redundant generation ever runs per truly
 // abandoned article per sweep tick.
-func SweepStaleArticleStudies(ctx context.Context, queue *asyncjob.Queue, pipe *pipeline.Pipeline, articles newsarticle.Store, audio *ArticleAudio) error {
+func SweepStaleArticleStudies(ctx context.Context, pipe *pipeline.Pipeline, articles newsarticle.Store, audio *ArticleAudio) error {
 	stale, err := articles.StalePending(ctx, ArticleStudyStaleAfter)
 	if err != nil {
 		return fmt.Errorf("article study: sweep: list stale: %w", err)
@@ -258,7 +258,7 @@ func SweepStaleArticleStudies(ctx context.Context, queue *asyncjob.Queue, pipe *
 // 아티클" draw resume automatically even when articleStudyQueue is nil and
 // the original generation was only ever a best-effort in-process goroutine
 // with no durability of its own (see asyncjob.EnqueueOrRunInline).
-func RunArticleStudySweepLoop(ctx context.Context, queue *asyncjob.Queue, pipe *pipeline.Pipeline, articles newsarticle.Store, audio *ArticleAudio) {
+func RunArticleStudySweepLoop(ctx context.Context, pipe *pipeline.Pipeline, articles newsarticle.Store, audio *ArticleAudio) {
 	ticker := time.NewTicker(ArticleStudySweepInterval)
 	defer ticker.Stop()
 	for {
@@ -266,7 +266,7 @@ func RunArticleStudySweepLoop(ctx context.Context, queue *asyncjob.Queue, pipe *
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := SweepStaleArticleStudies(context.Background(), queue, pipe, articles, audio); err != nil {
+			if err := SweepStaleArticleStudies(context.Background(), pipe, articles, audio); err != nil {
 				log.Printf("article study: sweep: %v", err)
 			}
 		}

@@ -259,7 +259,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		switch typ {
 		case websocket.MessageBinary:
 			pcm := append([]byte(nil), data...) // copy: Read may reuse the buffer
-			go h.pipe.HandleUtterance(tctx, userID, sessionID, sess, pcm, emit)
+			go h.pipe.HandleUtterance(tctx, sess, pcm, emit)
 			// Both backups below are side-effects independent of the
 			// conversation pipeline, so they use context.Background() (like
 			// save() above) rather than ctx/tctx: a barge-in or the user

@@ -58,7 +58,7 @@ func shouldGenerateTitle(turn int) bool {
 // sess.Export()'s recent window reliably includes every turn up to and
 // including this turn's user message (session.Session.AppendUser runs
 // synchronously before the pipeline's async work starts), but NOT this
-// turn's assistant reply — pipeline.HandleText/HandleUtterance only calls
+// turn's assistant reply — pipeline.HandleText only calls
 // sess.AppendAssistant right after emit() returns, racing this goroutine.
 // That's why assistantText is passed in explicitly (as ev.Text) and appended
 // here rather than re-read from sess.

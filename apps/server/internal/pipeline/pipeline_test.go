@@ -27,7 +27,7 @@ func (f fakeSTT) Transcribe(ctx context.Context, pcm []byte) (stt.Result, error)
 	if f.err != nil {
 		return stt.Result{}, f.err
 	}
-	return stt.Result{Text: f.text, Confidence: 1}, nil
+	return stt.Result{Text: f.text}, nil
 }
 
 // fakeLLM is a deterministic llm.Client double. ChatStream and Complete both
@@ -341,7 +341,7 @@ func TestHandleUtteranceEmitsPendingTranscriptWithNoJudgeConfigured(t *testing.T
 	p := &Pipeline{STT: []stt.Recognizer{fakeSTT{text: "i are hungry"}}}
 	sess := session.New("sys")
 	var got []protocol.ServerEvent
-	p.HandleUtterance(context.Background(), "alex", "sess-1", sess, []byte("pcm"), func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.HandleUtterance(context.Background(), sess, []byte("pcm"), func(ev protocol.ServerEvent) { got = append(got, ev) })
 
 	if len(got) != 1 || got[0].Type != protocol.EvPendingTranscript || got[0].Text != "i are hungry" {
 		t.Fatalf("expected a single pending_transcript event, got %+v", got)
@@ -365,8 +365,10 @@ func TestHandleUtteranceEmitsUpgradedPendingTranscriptWhenJudgeDisagrees(t *test
 		JudgeModel: "judge-model",
 	}
 	sess := session.New("sys")
+	previous := []llm.Message{{Role: llm.RoleUser, Content: "I skipped lunch."}}
+	sess.Seed("We talked about food.", previous, 8)
 	var got []protocol.ServerEvent
-	p.HandleUtterance(context.Background(), "alex", "sess-1", sess, []byte("pcm"), func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.HandleUtterance(context.Background(), sess, []byte("pcm"), func(ev protocol.ServerEvent) { got = append(got, ev) })
 
 	if len(got) != 2 {
 		t.Fatalf("expected fast + upgraded pending_transcript events, got %+v", got)
@@ -377,9 +379,12 @@ func TestHandleUtteranceEmitsUpgradedPendingTranscriptWhenJudgeDisagrees(t *test
 	if got[1].Type != protocol.EvPendingTranscript || got[1].Text != "I am hungry" || got[1].Source != protocol.SourceVoice {
 		t.Fatalf("second event should be the Judge-reconciled guess, got %+v", got[1])
 	}
-	_, recent := sess.Export()
-	if len(recent) != 0 {
-		t.Fatalf("session should be untouched by an unconfirmed draft, got %+v", recent)
+	summary, recent := sess.Export()
+	if summary != "We talked about food." || !reflect.DeepEqual(recent, previous) {
+		t.Fatalf("session changed by an unconfirmed draft: summary=%q recent=%+v", summary, recent)
+	}
+	if next := sess.NextTurn(); next != 9 {
+		t.Fatalf("next turn = %d, want 9; drafts must not consume turn numbers", next)
 	}
 }
 
@@ -409,7 +414,7 @@ func TestHandleUtteranceReusesChatReconciliationThroughAnalysisAndJudge(t *testi
 		JudgeModel: "judge",
 	}
 	var got []protocol.ServerEvent
-	p.HandleUtterance(context.Background(), "alex", "sess-1", session.New("sys"), []byte("pcm"), func(ev protocol.ServerEvent) {
+	p.HandleUtterance(context.Background(), session.New("sys"), []byte("pcm"), func(ev protocol.ServerEvent) {
 		got = append(got, ev)
 	})
 
@@ -436,7 +441,7 @@ func TestHandleUtteranceNoopSecondEmitWhenJudgeAgrees(t *testing.T) {
 	}
 	sess := session.New("sys")
 	var got []protocol.ServerEvent
-	p.HandleUtterance(context.Background(), "alex", "sess-1", sess, []byte("pcm"), func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.HandleUtterance(context.Background(), sess, []byte("pcm"), func(ev protocol.ServerEvent) { got = append(got, ev) })
 
 	if len(got) != 1 {
 		t.Fatalf("expected no second pending_transcript event when Judge agrees, got %+v", got)
@@ -452,7 +457,7 @@ func TestHandleUtteranceKeepsFastGuessOnJudgeError(t *testing.T) {
 	}
 	sess := session.New("sys")
 	var got []protocol.ServerEvent
-	p.HandleUtterance(context.Background(), "alex", "sess-1", sess, []byte("pcm"), func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.HandleUtterance(context.Background(), sess, []byte("pcm"), func(ev protocol.ServerEvent) { got = append(got, ev) })
 
 	if len(got) != 1 || got[0].Text != "fast text" {
 		t.Fatalf("expected only the fast guess on judge error, got %+v", got)
@@ -621,7 +626,7 @@ func TestHandleUtteranceEmptyTranscriptIsNoop(t *testing.T) {
 	p := &Pipeline{STT: []stt.Recognizer{fakeSTT{text: "   "}}, LLM: &fakeLLM{}}
 	sess := session.New("sys")
 	var got []protocol.ServerEvent
-	p.HandleUtterance(context.Background(), "alex", "sess-1", sess, []byte("pcm"), func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.HandleUtterance(context.Background(), sess, []byte("pcm"), func(ev protocol.ServerEvent) { got = append(got, ev) })
 
 	if len(got) != 0 {
 		t.Fatalf("expected no events for an empty transcript, got %+v", got)
@@ -636,7 +641,7 @@ func TestHandleUtteranceSTTErrorEmitsError(t *testing.T) {
 	p := &Pipeline{STT: []stt.Recognizer{fakeSTT{err: errors.New("mic disconnected")}}, LLM: &fakeLLM{}}
 	sess := session.New("sys")
 	var got []protocol.ServerEvent
-	p.HandleUtterance(context.Background(), "alex", "sess-1", sess, []byte("pcm"), func(ev protocol.ServerEvent) { got = append(got, ev) })
+	p.HandleUtterance(context.Background(), sess, []byte("pcm"), func(ev protocol.ServerEvent) { got = append(got, ev) })
 
 	if len(got) != 1 || got[0].Type != protocol.EvError {
 		t.Fatalf("expected a single error event, got %+v", got)

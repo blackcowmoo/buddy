@@ -207,10 +207,8 @@ func (p *Pipeline) STTNames() []string {
 // append, no correct(), no reply() — until the learner reviews the draft and
 // actually sends it, which comes back as an ordinary "text" ClientMsg with
 // Source set to SourceVoice and is handled by HandleText exactly like typed
-// input. userID/sessionID are accepted only to keep this signature parallel
-// with HandleText/ws.go's call site; this function itself no longer needs
-// them since it never reaches a hook that would.
-func (p *Pipeline) HandleUtterance(ctx context.Context, userID, sessionID string, sess *session.Session, pcm []byte, emit Emit) {
+// input.
+func (p *Pipeline) HandleUtterance(ctx context.Context, sess *session.Session, pcm []byte, emit Emit) {
 	// Pre-utterance context: used for both STT reconciliation passes below so
 	// they answer the exact same question (same inputs, different model/care
 	// level), and so the unconfirmed guess never contaminates its own
