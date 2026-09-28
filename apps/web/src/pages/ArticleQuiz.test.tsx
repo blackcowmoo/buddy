@@ -430,6 +430,32 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     expect(screen.getByText(articleSummaryMatcher(sampleDraw.summary))).toBeInTheDocument();
   });
 
+  it.each(["new", "history"])("keeps watching a %s draw through missing results and failed attempts until its translation arrives", async (entry) => {
+    vi.useFakeTimers();
+    vi.mocked(fetchArticleInstances).mockResolvedValue(articleHistory(1));
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: pendingDraw });
+    const fetchInstance = vi.mocked(fetchArticleInstance);
+    if (entry === "history") fetchInstance.mockResolvedValueOnce(pendingDraw);
+    fetchInstance.mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ ...pendingDraw, status: "failed" })
+      .mockResolvedValueOnce({ ...sampleDraw, translation: "" })
+      .mockResolvedValue(sampleDraw);
+    await act(async () => { render(<ArticleQuiz />); });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: entry === "new" ? "새 아티클 뽑기" : /\[BBC\] Story 0/ }));
+    });
+    const initialRequests = entry === "history" ? 1 : 0;
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+      expect(fetchInstance).toHaveBeenCalledTimes(initialRequests + attempt);
+      if (attempt <= 2) expect(screen.getByText(/아티클을 요약하고 문제를 만드는 중이에요/)).toBeInTheDocument();
+      else expect(screen.getByText(articleSummaryMatcher(sampleDraw.summary))).toBeInTheDocument();
+    }
+    await act(async () => { await vi.advanceTimersByTimeAsync(9000); });
+    expect(fetchInstance).toHaveBeenCalledTimes(initialRequests + 4);
+  });
+
   it("resumes polling a still-generating draw reopened from the list", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([
       { id: "i1", source: "BBC", title: "Scientists make discovery", summary: "", answered: false, correct: false, createdAt: 1700000000, publishedAt: 0, status: "pending" },

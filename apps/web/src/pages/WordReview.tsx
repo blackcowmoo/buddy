@@ -95,38 +95,30 @@ export function WordReview() {
   // asyncjob.KindWordAutoAdd keeps generating regardless (see
   // lib/wordReview.ts's startAutoAddWords doc comment); reopening this page
   // resumes watching via the mount effect below.
-  const { tokenRef: pollTokenRef, schedulePoll } = usePollScaffold();
+  const { tokenRef: pollTokenRef, startPoll } = usePollScaffold();
 
   // Polls the auto-add job's status until it leaves "pending" — started
   // either right after pressing "새 단어 추가로 학습하기" or, on mount, when
   // reopening this page finds one already in flight (see the mount effect
   // below).
-  const pollAutoAdd = useCallback((token: object) => {
-    const tick = async () => {
-      if (pollTokenRef.current !== token) return; // a newer run took over
-      const status = await fetchAutoAddStatus();
-      if (pollTokenRef.current !== token) return;
-      if (!status) {
-        schedulePoll(tick, wordAutoAddPollIntervalMs); // transient fetch failure — keep trying
-        return;
-      }
-      if (status.status === "pending") {
-        schedulePoll(tick, wordAutoAddPollIntervalMs);
-        return;
-      }
+  const pollAutoAdd = useCallback((token: object) => startPoll(token, {
+    intervalMs: wordAutoAddPollIntervalMs,
+    fetchResult: fetchAutoAddStatus,
+    onResult: (status) => {
+      if (!status || status.status === "pending") return true;
       setAutoAdding(false);
       if (status.status === "failed") {
         setAutoAddError("단어를 추가하지 못했어요. 잠시 후 다시 시도해주세요.");
-        return;
+        return false;
       }
       // "done" (or "" — treated the same as an already-finished idle state).
       if (status.count === 0) {
         setAutoAddError("추천할 새 단어를 찾지 못했어요. 잠시 후 다시 시도해주세요.");
       }
       void refreshWords();
-    };
-    schedulePoll(tick, wordAutoAddPollIntervalMs);
-  }, [schedulePoll, refreshWords]);
+      return false;
+    },
+  }), [startPoll, refreshWords]);
 
   useEffect(() => {
     refreshWords().then((result) => {

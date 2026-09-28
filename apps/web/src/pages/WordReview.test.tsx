@@ -826,6 +826,29 @@ describe("WordReview page", () => {
       expect(screen.getByRole("button", { name: "새 단어 추가로 학습하기" })).toBeInTheDocument();
     });
 
+    it("keeps watching through a missing status and stops after the auto-add job completes", async () => {
+      vi.useFakeTimers();
+      vi.mocked(fetchWords).mockResolvedValue({ words: [], dueCount: 0 });
+      vi.mocked(startAutoAddWords).mockResolvedValue({ status: "pending", count: 0 });
+      vi.mocked(fetchAutoAddStatus)
+        .mockResolvedValueOnce({ status: "", count: 0 })
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ status: "pending", count: 0 })
+        .mockResolvedValue({ status: "done", count: 1 });
+      await act(async () => { render(<WordReview />); });
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: "새 단어 추가로 학습하기" })); });
+
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+        expect(screen.getByRole("button", { name: "새 단어 찾는 중…" })).toBeDisabled();
+      }
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+      expect(screen.getByRole("button", { name: "새 단어 추가로 학습하기" })).toBeEnabled();
+      expect(screen.queryByText("단어를 추가하지 못했어요. 잠시 후 다시 시도해주세요.")).not.toBeInTheDocument();
+      await act(async () => { await vi.advanceTimersByTimeAsync(9000); });
+      expect(fetchAutoAddStatus).toHaveBeenCalledTimes(4);
+    });
+
     it("shows an error hint immediately when starting the job fails", async () => {
       vi.mocked(fetchWords).mockResolvedValue({ words: [], dueCount: 0 });
       vi.mocked(startAutoAddWords).mockResolvedValue(null);
