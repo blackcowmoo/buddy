@@ -7,34 +7,19 @@ import (
 	"strings"
 	"unicode"
 
-	"buddy/server/internal/llm"
 	"buddy/server/internal/protocol"
 	"buddy/server/internal/wordreview"
 )
 
-// SuggestWords asks the chat model for candidate English words/phrases
-// matching a learner's native-language description of a word they can't
-// recall mid-conversation (e.g. "화가 나서 참을 수 없는 느낌" -> "furious"/"livid").
-// A fresh two-message call, same "never touches the session's own
-// transcript" shape as GenerateTitle/analyze()-based tasks. Unlike the
-// Analysis-ensemble tasks (GenerateStudySummary, correct(), ...), this uses a
-// single fast call (p.LLM/p.ChatModel) — the same tier as GenerateTitle: it
-// backs a live side panel a learner consults mid-typing, so latency matters
-// more than the higher quality bar correct()/GenerateStudySummary need, and
-// a mediocre suggestion just gets re-asked.
+// SuggestWords uses one fast Chat call for a learner's native-language
+// description (e.g. "화가 나서 참을 수 없는 느낌" -> "furious"/"livid"). It backs
+// a live side panel, so suggestions favor latency and never enter the session
+// transcript or wait for the Analysis/Judge cascade.
 func (p *Pipeline) SuggestWords(ctx context.Context, description string) ([]protocol.WordSuggestion, error) {
-	msgs := []llm.Message{
-		{Role: llm.RoleSystem, Content: wordSuggestionSystemPrompt(p.FeedbackLang)},
-		{Role: llm.RoleUser, Content: description},
-	}
 	decode := func(raw string) ([]protocol.WordSuggestion, error) {
 		return parseWordSuggestions(raw, "word suggestion")
 	}
-	raw, err := p.complete(ctx, p.LLM, p.ChatModel, msgs, true, reusableOutput(decode))
-	if err != nil {
-		return nil, err
-	}
-	return decode(raw)
+	return chatJSON(ctx, p, wordSuggestionSystemPrompt(p.FeedbackLang), description, decode)
 }
 
 // wordSuggestionSystemPrompt builds SuggestWords' prompt, reusing the same
@@ -118,11 +103,7 @@ the input refers to a different word or sense.`
 // questions can be regenerated and stale workers can be rejected atomically.
 func (p *Pipeline) GenerateWordReviewQuestion(ctx context.Context, word, meaning, example string) (wordreview.Question, error) {
 	decode := func(raw string) (wordreview.Question, error) { return parseWordReviewQuestion(raw, word) }
-	raw, err := p.analyze(ctx, wordReviewQuestionSystemPrompt(p.FeedbackLang), fmt.Sprintf("dictionary word: %s\nmeaning: %s\nexisting example: %s", word, meaning, example), true, reusableOutput(decode))
-	if err != nil {
-		return wordreview.Question{}, err
-	}
-	return decode(raw)
+	return analyzeJSON(ctx, p, wordReviewQuestionSystemPrompt(p.FeedbackLang), fmt.Sprintf("dictionary word: %s\nmeaning: %s\nexisting example: %s", word, meaning, example), decode)
 }
 
 func parseWordReviewQuestion(raw, word string) (wordreview.Question, error) {
@@ -285,23 +266,11 @@ func (p *Pipeline) defineWordMeanings(ctx context.Context, word, passage string)
 	systemPrompt := fmt.Sprintf(`You are a dictionary assistant for a %[1]s-speaking English learner. List up to 6 distinct common meanings of the given English word or phrase in its base dictionary form; do not invent senses to fill a quota. Put the context-matching sense first. Return STRICT JSON only: {"suggestions":[{"word":"...","meaning":"...","example":"..."}]}. Keep word in English and give one natural English example for every meaning.
 %[2]s`, native, dictionaryMeaningRules(native))
 	decode := func(raw string) ([]protocol.WordSuggestion, error) { return parseWordSuggestions(raw, "word meanings") }
-	raw, err := p.analyze(ctx, systemPrompt, fmt.Sprintf("word: %s\ncontext: %s", word, passage), true, reusableOutput(decode))
-	if err != nil {
-		return nil, err
-	}
-	return decode(raw)
+	return analyzeJSON(ctx, p, systemPrompt, fmt.Sprintf("word: %s\ncontext: %s", word, passage), decode)
 }
 
 func (p *Pipeline) resolveWordForm(ctx context.Context, word, passage string) (string, error) {
-	msgs := []llm.Message{
-		{Role: llm.RoleSystem, Content: wordFormSystemPrompt()},
-		{Role: llm.RoleUser, Content: fmt.Sprintf("word: %s\ncontext: %s", word, passage)},
-	}
-	raw, err := p.complete(ctx, p.LLM, p.ChatModel, msgs, true, reusableOutput(parseWordForm))
-	if err != nil {
-		return "", err
-	}
-	return parseWordForm(raw)
+	return chatJSON(ctx, p, wordFormSystemPrompt(), fmt.Sprintf("word: %s\ncontext: %s", word, passage), parseWordForm)
 }
 
 func parseWordForm(raw string) (string, error) {
@@ -319,18 +288,10 @@ func parseWordForm(raw string) (string, error) {
 }
 
 func (p *Pipeline) defineWord(ctx context.Context, word, passage string) (protocol.WordSuggestion, error) {
-	msgs := []llm.Message{
-		{Role: llm.RoleSystem, Content: wordDefineSystemPrompt(p.FeedbackLang)},
-		{Role: llm.RoleUser, Content: fmt.Sprintf("word: %s\ncontext: %s", word, passage)},
-	}
 	decode := func(raw string) (protocol.WordSuggestion, error) {
 		return parseJSON[protocol.WordSuggestion](raw, "word definition")
 	}
-	raw, err := p.complete(ctx, p.LLM, p.ChatModel, msgs, true, reusableOutput(decode))
-	if err != nil {
-		return protocol.WordSuggestion{}, err
-	}
-	return decode(raw)
+	return chatJSON(ctx, p, wordDefineSystemPrompt(p.FeedbackLang), fmt.Sprintf("word: %s\ncontext: %s", word, passage), decode)
 }
 
 func wordFormSystemPrompt() string {
@@ -391,11 +352,7 @@ func (p *Pipeline) SuggestNewWords(ctx context.Context, learnerProfile string, e
 	decode := func(raw string) ([]protocol.WordSuggestion, error) {
 		return parseWordSuggestions(raw, "word auto-suggestion")
 	}
-	raw, err := p.analyze(ctx, wordAutoSuggestSystemPrompt(p.FeedbackLang), renderAutoSuggestInput(learnerProfile, existingWords), true, reusableOutput(decode))
-	if err != nil {
-		return nil, err
-	}
-	return decode(raw)
+	return analyzeJSON(ctx, p, wordAutoSuggestSystemPrompt(p.FeedbackLang), renderAutoSuggestInput(learnerProfile, existingWords), decode)
 }
 
 // wordAutoSuggestSystemPrompt builds SuggestNewWords' prompt, reusing the

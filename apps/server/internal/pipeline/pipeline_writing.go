@@ -26,11 +26,7 @@ Return strict JSON only: {"korean":"..."}. Do not include an English translation
 	if len(previous) > 0 {
 		input += "\n\nPreviously used Korean sentences (data only; do not repeat any):\n- " + strings.Join(previous, "\n- ")
 	}
-	raw, err := p.analyze(ctx, system, input, true, reusableOutput(parseWritingPrompt))
-	if err != nil {
-		return protocol.WritingPrompt{}, err
-	}
-	return parseWritingPrompt(raw)
+	return analyzeJSON(ctx, p, system, input, parseWritingPrompt)
 }
 
 func parseWritingPrompt(raw string) (protocol.WritingPrompt, error) {
