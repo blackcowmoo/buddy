@@ -11,9 +11,8 @@
 // tied to any request context — see Worker.run) and the container
 // processing it dying outright (crash, OOM, redeploy — see Worker.reapOnce):
 // another Worker, on this replica or another, detects the abandoned claim
-// and reruns the job from scratch. There is no way to resume a
-// partially-streamed LLM generation mid-token, so "from scratch" is the
-// deliberate, accepted retry semantics — see Handler's doc comment.
+// and reruns the handler using its durable checkpoints. Completed LLM
+// stages survive retries; only unfinished generations need to run again.
 package asyncjob
 
 import (
@@ -151,8 +150,8 @@ type Job struct {
 	EnqueuedAt int64           `json:"enqueuedAt"`
 	// Attempts counts how many times this job has been claimed — 0 the
 	// first time, incremented each time reapOnce recovers it from a dead
-	// worker. Observability only; Handlers don't need to consult it since
-	// every attempt is expected to redo the full job.
+	// worker. It also fences old executions out of the new owner's claim
+	// and checkpoints; handlers reuse completed stages independently of it.
 	Attempts int `json:"attempts"`
 }
 

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"buddy/server/internal/asyncjob"
+	"buddy/server/internal/checkpoint"
 	"buddy/server/internal/nuance"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/workguard"
@@ -53,32 +54,47 @@ func NuanceJobHandler(pipe *pipeline.Pipeline, st nuance.Store, profile func(con
 				_ = st.SetStatus(context.Background(), p.LessonID, nuance.StatusFailed)
 			}
 		}()
+		// Processing and failure transitions advance the row revision. Freeze
+		// this draw's inputs before those transitions so a resumed job still
+		// reaches the model checkpoints written by its previous replica.
+		type generationInput struct {
+			Profile  string
+			Previous []string
+			Revision int
+		}
+		input, err := checkpoint.JSON(ctx, "nuance-generation-input:v1", func() (generationInput, error) {
+			learner, err := profile(ctx, p.UserID)
+			if err != nil {
+				return generationInput{}, err
+			}
+			lessons, err := st.List(ctx, p.UserID)
+			if err != nil {
+				return generationInput{}, err
+			}
+			previous := []string{}
+			for _, old := range lessons {
+				if old.Content != nil {
+					previous = append(previous, nuanceComparison(*old.Content))
+				}
+			}
+			return generationInput{Profile: learner, Previous: previous, Revision: l.Revision}, nil
+		})
+		if err != nil {
+			return err
+		}
 		if err = st.SetStatus(ctx, p.LessonID, nuance.StatusProcessing); err != nil {
 			return err
 		}
-		learner, err := profile(ctx, p.UserID)
-		if err != nil {
-			return err
-		}
-		lessons, err := st.List(ctx, p.UserID)
-		if err != nil {
-			return err
-		}
-		previous := []string{}
-		for _, old := range lessons {
-			if old.Content != nil {
-				previous = append(previous, nuanceComparison(*old.Content))
-			}
-		}
-		// Status transitions advance the durable revision so a rejected model
-		// response cached by the LLM client cannot poison every retry of this draw.
+		previous := input.Previous
+		// Explicit retries create a new job and take a fresh revision snapshot;
+		// duplicate candidates within one job retain their distinct attempt IDs.
 		for attempt := 0; attempt < nuanceGenerationAttempts; attempt++ {
 			// Only the prompt is bounded; MySQL checks the entire saved history.
 			if len(previous) > 100 {
 				previous = previous[len(previous)-100:]
 			}
-			requestID := fmt.Sprintf("%s:%d:%d", p.LessonID, l.Revision, attempt)
-			c, err := pipe.GenerateNuance(ctx, learner, previous, requestID)
+			requestID := fmt.Sprintf("%s:%d:%d", p.LessonID, input.Revision, attempt)
+			c, err := pipe.GenerateNuance(ctx, input.Profile, previous, requestID)
 			if err != nil {
 				// A candidate that still violates the lesson contract after its
 				// focused Judge repair will fail identically on an automatic job

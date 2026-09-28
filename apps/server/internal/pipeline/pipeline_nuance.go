@@ -40,7 +40,8 @@ type nuanceSupplement struct {
 
 func (p *Pipeline) GenerateNuance(ctx context.Context, profile string, previous []string, requestID string) (nuance.Content, error) {
 	input := renderNuanceInput(profile, previous, requestID)
-	raw, err := p.analyze(ctx, nuanceSystemPrompt, input, true)
+	reusable := reusableOutput(decodeNuanceContent)
+	raw, err := p.analyze(ctx, nuanceSystemPrompt, input, true, reusable)
 	if err != nil {
 		return nuance.Content{}, err
 	}
@@ -59,7 +60,7 @@ func (p *Pipeline) GenerateNuance(ctx context.Context, profile string, previous 
 		{Role: llm.RoleSystem, Content: nuanceRepairSystemPrompt + "\n\nORIGINAL TASK:\n" + nuanceSystemPrompt},
 		{Role: llm.RoleUser, Content: renderNuanceRepairInput(input, raw, validationErr)},
 	}
-	repaired, err := p.complete(ctx, p.Judge, p.JudgeModel, repairMsgs, true)
+	repaired, err := p.complete(ctx, p.Judge, p.JudgeModel, repairMsgs, true, reusable)
 	if err != nil {
 		return nuance.Content{}, fmt.Errorf("nuance repair: %w", err)
 	}
@@ -78,7 +79,8 @@ func (p *Pipeline) SupplementNuance(ctx context.Context, lesson nuance.Content, 
 		return []nuance.Question{}, nil
 	}
 	input := renderNuanceSupplementInput(lesson, missing, requestID)
-	raw, err := p.analyze(ctx, nuanceSupplementSystemPrompt, input, true)
+	reusable := reusableOutput(func(raw string) ([]nuance.Question, error) { return decodeNuanceSupplement(raw, lesson) })
+	raw, err := p.analyze(ctx, nuanceSupplementSystemPrompt, input, true, reusable)
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +95,7 @@ func (p *Pipeline) SupplementNuance(ctx context.Context, lesson nuance.Content, 
 		{Role: llm.RoleSystem, Content: nuanceSupplementRepairSystemPrompt + "\n\nORIGINAL TASK:\n" + nuanceSupplementSystemPrompt},
 		{Role: llm.RoleUser, Content: renderNuanceRepairInput(input, raw, validationErr)},
 	}
-	repaired, err := p.complete(ctx, p.Judge, p.JudgeModel, repairMsgs, true)
+	repaired, err := p.complete(ctx, p.Judge, p.JudgeModel, repairMsgs, true, reusable)
 	if err != nil {
 		return nil, fmt.Errorf("nuance supplement repair: %w", err)
 	}

@@ -3,12 +3,15 @@ package transport
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"buddy/server/internal/asyncjob"
+	"buddy/server/internal/checkpoint"
+	"buddy/server/internal/checkpoint/checkpointtest"
 	"buddy/server/internal/llm"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/protocol"
@@ -221,5 +224,123 @@ func TestEnqueueWordAutoAddJobRunsInBackgroundAndPersists(t *testing.T) {
 	}
 	if len(saved) != 2 {
 		t.Fatalf("saved words = %+v, want 2", saved)
+	}
+}
+
+type resumedAutoAddWords struct {
+	*fakeWordReviewStore
+	cancelAfterSave context.CancelFunc
+	saveCalls       []string
+	listCalls       int
+}
+
+func (s *resumedAutoAddWords) List(ctx context.Context, userID string) ([]wordreview.Word, error) {
+	s.listCalls++
+	return s.fakeWordReviewStore.List(ctx, userID)
+}
+
+func (s *resumedAutoAddWords) Save(_ context.Context, userID, word, meaning, example string) (wordreview.Word, error) {
+	s.saveCalls = append(s.saveCalls, word)
+	s.mu.Lock()
+	w, ok := s.words[word]
+	if !ok {
+		// Verification is a separate durable job; keep this test focused on
+		// resuming the proposal batch without starting detached goroutines.
+		w = wordreview.Word{ID: word, UserID: userID, Word: word, Meaning: meaning, Example: example, Status: wordreview.StatusVerified}
+		s.words[word] = w
+	}
+	s.mu.Unlock()
+	if s.cancelAfterSave != nil {
+		s.cancelAfterSave()
+		s.cancelAfterSave = nil
+	}
+	return w, nil
+}
+
+func TestWordAutoAddResumeKeepsGeneratedBatchAfterPartialSave(t *testing.T) {
+	st := newFakeStore()
+	if err := st.StartWordAutoAdd(context.Background(), "alex"); err != nil {
+		t.Fatal(err)
+	}
+	var saved checkpointtest.Memory
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	words := &resumedAutoAddWords{fakeWordReviewStore: newFakeWordReviewStore(), cancelAfterSave: cancel}
+	modelCalls := 0
+	pipe := &pipeline.Pipeline{LLM: fakeLLM{completeFn: func([]llm.Message) (string, error) {
+		modelCalls++
+		return fakeAutoAddSuggestionJSON, nil
+	}}, ChatModel: "chat"}
+	if err := RunWordAutoAddInline(checkpoint.Bind(ctx, &saved), pipe, words, st, nil, "alex"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("interrupted attempt error = %v", err)
+	}
+	status, _, err := st.GetWordAutoAddStatus(context.Background(), "alex")
+	if err != nil || status != store.JobStatusPending || len(words.saveCalls) != 1 {
+		t.Fatalf("interrupted status=%q saves=%v error=%v", status, words.saveCalls, err)
+	}
+	if err := st.SaveLearnerProfile(context.Background(), "alex", "profile changed since the first attempt"); err != nil {
+		t.Fatal(err)
+	}
+	words.words["unrelated"] = wordreview.Word{ID: "unrelated", UserID: "alex", Word: "unrelated", Status: wordreview.StatusVerified}
+	resumed := &pipeline.Pipeline{LLM: fakeLLM{completeFn: func([]llm.Message) (string, error) {
+		t.Fatal("regenerated suggestions after saving part of the checkpointed batch")
+		return "", nil
+	}}, ChatModel: "chat"}
+	if err := RunWordAutoAddInline(checkpoint.Bind(context.Background(), &saved), resumed, words, st, nil, "alex"); err != nil {
+		t.Fatal(err)
+	}
+	status, count, err := st.GetWordAutoAddStatus(context.Background(), "alex")
+	if err != nil || status != store.JobStatusDone || count != 2 || modelCalls != 1 || words.listCalls != 1 {
+		t.Fatalf("resumed status=%q count=%d model calls=%d list calls=%d error=%v", status, count, modelCalls, words.listCalls, err)
+	}
+	if got := strings.Join(words.saveCalls, ","); got != "resilient,resilient,savory" || len(words.words) != 3 {
+		t.Fatalf("resumed saves=%q words=%+v", got, words.words)
+	}
+}
+
+func TestWordAutoAddResumeKeepsInputsWhileRefinementIsInterrupted(t *testing.T) {
+	st := newFakeStore()
+	if err := st.StartWordAutoAdd(context.Background(), "alex"); err != nil {
+		t.Fatal(err)
+	}
+	var saved checkpointtest.Memory
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	words := &resumedAutoAddWords{fakeWordReviewStore: newFakeWordReviewStore()}
+	draftCalls := 0
+	draft := nuanceLLM{complete: func(context.Context) (string, error) {
+		draftCalls++
+		return fakeAutoAddSuggestionJSON, nil
+	}}
+	var refinementInputs []string
+	refinement := nuanceLLM{
+		messages: func(msgs []llm.Message) { refinementInputs = append(refinementInputs, msgs[1].Content) },
+		complete: func(ctx context.Context) (string, error) {
+			if len(refinementInputs) == 1 {
+				cancel()
+				return "", ctx.Err()
+			}
+			return fakeAutoAddSuggestionJSON, nil
+		},
+	}
+	newPipeline := func() *pipeline.Pipeline {
+		return &pipeline.Pipeline{LLM: draft, ChatModel: "chat", Analysis: []pipeline.Candidate{{LLM: refinement, Model: "analysis"}}}
+	}
+	if err := RunWordAutoAddInline(checkpoint.Bind(ctx, &saved), newPipeline(), words, st, nil, "alex"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("interrupted attempt error = %v", err)
+	}
+	if err := st.SaveLearnerProfile(context.Background(), "alex", "updated profile"); err != nil {
+		t.Fatal(err)
+	}
+	words.words["unrelated"] = wordreview.Word{ID: "unrelated", UserID: "alex", Word: "unrelated", Status: wordreview.StatusVerified}
+	if err := RunWordAutoAddInline(checkpoint.Bind(context.Background(), &saved), newPipeline(), words, st, nil, "alex"); err != nil {
+		t.Fatal(err)
+	}
+	if draftCalls != 1 || words.listCalls != 1 || len(refinementInputs) != 2 || refinementInputs[0] != refinementInputs[1] {
+		t.Fatalf("resumed inputs changed: draft calls=%d list calls=%d refinements=%q", draftCalls, words.listCalls, refinementInputs)
+	}
+	status, count, err := st.GetWordAutoAddStatus(context.Background(), "alex")
+	if err != nil || status != store.JobStatusDone || count != 2 {
+		t.Fatalf("resumed status=%q count=%d error=%v", status, count, err)
 	}
 }

@@ -15,12 +15,11 @@ import (
 // handed to a Handler more than once — most commonly because the Worker
 // that first claimed it died mid-handler (crash, redeploy, OOM) and
 // reapOnce requeued it once its claim expired, so a second Worker (maybe on
-// a different replica) picks it up and reruns it from scratch. There is no
-// way to resume a partially-streamed LLM generation, so "from scratch" is
-// the deliberate, accepted retry semantics here — Handler implementations
-// should check whether their work is already done (e.g. via a durable
-// status column) before redoing anything expensive; see
-// pipeline.ReplyJobHandler for the pattern.
+// a different replica) picks it up. Completed LLM stages recorded through
+// internal/checkpoint are reused across attempts; an interrupted generation
+// starts again because its partial stream is not a completed checkpoint.
+// Handlers should also check durable final status before repeating work;
+// see pipeline.ReplyJobHandler for the pattern.
 type Handler func(ctx context.Context, job Job) error
 
 const (
@@ -162,8 +161,8 @@ func (w *Worker) run(raw string) {
 		}
 		// Deliberately do NOT complete the job here: leave it claimed, but
 		// shorten that claim to FailureRetryBackoff (rather than the full,
-		// possibly many-hours-long claimTTL) so reapOnce retries it from
-		// scratch soon, without hot-looping a handler that's failing fast
+		// possibly many-hours-long claimTTL) so reapOnce resumes unfinished
+		// work soon, without hot-looping a handler that's failing fast
 		// (e.g. a downstream LLM outage).
 		log.Printf("asyncjob: %s: handler failed for job %s: %v", w.kind, job.ID, handlerErr)
 		owned, err := renewClaim(context.Background(), w.rdb, w.kind, job.ID, token, FailureRetryBackoff)

@@ -58,15 +58,10 @@ func main() {
 	rdb, redisCloser := buildRedis(cfg)
 	defer redisCloser.Close()
 
-	// Cache Analysis/Judge/STT candidates' external calls in Redis, keyed by
-	// model+input (see llm.NewCached/stt.NewCached). This is what makes an
-	// asyncjob reap-retry (worker crash/OOM/redeploy — jobs always rerun
-	// "from scratch", see that package's doc comment) cheap: a candidate
-	// that already succeeded on the failed attempt is served from cache
-	// instead of being called again, so only the candidate(s) that actually
-	// failed do real work the second time. pipe.LLM (the streamed chat
-	// reply) is deliberately left unwrapped — see llm.CachedClient's doc
-	// comment.
+	// These optional caches reuse identical Analysis/Judge/STT requests across
+	// independent jobs. Separately, asyncjob checkpoints every completed LLM
+	// call (including Chat drafts and streams) for the lifetime of that job,
+	// so recovery does not depend on these caches or their TTL.
 	if rdb != nil {
 		pipe.Judge = llm.NewCached(pipe.Judge, rdb, llm.DefaultCacheTTL)
 		for i := range pipe.Analysis {
@@ -185,13 +180,10 @@ func main() {
 	// finishes.
 	articleStudyQueue := startWorker(rdb, jobsCtx, asyncjob.KindArticleStudy, transport.ArticleStudyWorkerConcurrency, transport.ArticleStudyClaimTTL,
 		transport.ArticleStudyJobHandler(pipe, articles, articleAudio))
-	// DB-only orphan sweep for article-study generation: runs regardless of
-	// whether Redis/articleStudyQueue is configured, since it's the only
-	// thing that resumes a draw abandoned mid-generation (crash, OOM, or a
-	// redeploy killing the in-process fallback goroutine EnqueueOrRunInline
-	// uses when articleStudyQueue is nil) when there's no durable Redis claim
-	// to reap in the first place — see transport.RunArticleStudySweepLoop.
-	go transport.RunArticleStudySweepLoop(jobsCtx, pipe, articles, articleAudio)
+	// The database sweep also recovers rows abandoned before Redis enqueue.
+	// With Redis it preserves existing leases and checkpoints; without Redis
+	// it reclaims orphan rows for detached inline generation.
+	go transport.RunArticleStudySweepLoop(jobsCtx, articleStudyQueue, pipe, articles, articleAudio)
 
 	// Word auto-add generation: generates a batch of new words fit to the
 	// learner's profile in the background (see httpserver.wordAutoAddHandler),

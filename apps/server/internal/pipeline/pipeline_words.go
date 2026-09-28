@@ -27,11 +27,14 @@ func (p *Pipeline) SuggestWords(ctx context.Context, description string) ([]prot
 		{Role: llm.RoleSystem, Content: wordSuggestionSystemPrompt(p.FeedbackLang)},
 		{Role: llm.RoleUser, Content: description},
 	}
-	raw, err := p.complete(ctx, p.LLM, p.ChatModel, msgs, true)
+	decode := func(raw string) ([]protocol.WordSuggestion, error) {
+		return parseWordSuggestions(raw, "word suggestion")
+	}
+	raw, err := p.complete(ctx, p.LLM, p.ChatModel, msgs, true, reusableOutput(decode))
 	if err != nil {
 		return nil, err
 	}
-	return parseWordSuggestions(raw, "word suggestion")
+	return decode(raw)
 }
 
 // wordSuggestionSystemPrompt builds SuggestWords' prompt, reusing the same
@@ -114,10 +117,15 @@ the input refers to a different word or sense.`
 // model. The caller persists this value with the prompt and answers so legacy
 // questions can be regenerated and stale workers can be rejected atomically.
 func (p *Pipeline) GenerateWordReviewQuestion(ctx context.Context, word, meaning, example string) (wordreview.Question, error) {
-	raw, err := p.analyze(ctx, wordReviewQuestionSystemPrompt(p.FeedbackLang), fmt.Sprintf("dictionary word: %s\nmeaning: %s\nexisting example: %s", word, meaning, example), true)
+	decode := func(raw string) (wordreview.Question, error) { return parseWordReviewQuestion(raw, word) }
+	raw, err := p.analyze(ctx, wordReviewQuestionSystemPrompt(p.FeedbackLang), fmt.Sprintf("dictionary word: %s\nmeaning: %s\nexisting example: %s", word, meaning, example), true, reusableOutput(decode))
 	if err != nil {
 		return wordreview.Question{}, err
 	}
+	return decode(raw)
+}
+
+func parseWordReviewQuestion(raw, word string) (wordreview.Question, error) {
 	parsed, err := parseJSON[struct {
 		Prompt  string   `json:"prompt"`
 		Answers []string `json:"answers"`
@@ -276,11 +284,12 @@ func (p *Pipeline) defineWordMeanings(ctx context.Context, word, passage string)
 	native := languageName(p.FeedbackLang)
 	systemPrompt := fmt.Sprintf(`You are a dictionary assistant for a %[1]s-speaking English learner. List up to 6 distinct common meanings of the given English word or phrase in its base dictionary form; do not invent senses to fill a quota. Put the context-matching sense first. Return STRICT JSON only: {"suggestions":[{"word":"...","meaning":"...","example":"..."}]}. Keep word in English and give one natural English example for every meaning.
 %[2]s`, native, dictionaryMeaningRules(native))
-	raw, err := p.analyze(ctx, systemPrompt, fmt.Sprintf("word: %s\ncontext: %s", word, passage), true)
+	decode := func(raw string) ([]protocol.WordSuggestion, error) { return parseWordSuggestions(raw, "word meanings") }
+	raw, err := p.analyze(ctx, systemPrompt, fmt.Sprintf("word: %s\ncontext: %s", word, passage), true, reusableOutput(decode))
 	if err != nil {
 		return nil, err
 	}
-	return parseWordSuggestions(raw, "word meanings")
+	return decode(raw)
 }
 
 func (p *Pipeline) resolveWordForm(ctx context.Context, word, passage string) (string, error) {
@@ -288,10 +297,14 @@ func (p *Pipeline) resolveWordForm(ctx context.Context, word, passage string) (s
 		{Role: llm.RoleSystem, Content: wordFormSystemPrompt()},
 		{Role: llm.RoleUser, Content: fmt.Sprintf("word: %s\ncontext: %s", word, passage)},
 	}
-	raw, err := p.complete(ctx, p.LLM, p.ChatModel, msgs, true)
+	raw, err := p.complete(ctx, p.LLM, p.ChatModel, msgs, true, reusableOutput(parseWordForm))
 	if err != nil {
 		return "", err
 	}
+	return parseWordForm(raw)
+}
+
+func parseWordForm(raw string) (string, error) {
 	parsed, err := parseJSON[struct {
 		Word string `json:"word"`
 	}](raw, "word form")
@@ -310,15 +323,14 @@ func (p *Pipeline) defineWord(ctx context.Context, word, passage string) (protoc
 		{Role: llm.RoleSystem, Content: wordDefineSystemPrompt(p.FeedbackLang)},
 		{Role: llm.RoleUser, Content: fmt.Sprintf("word: %s\ncontext: %s", word, passage)},
 	}
-	raw, err := p.complete(ctx, p.LLM, p.ChatModel, msgs, true)
+	decode := func(raw string) (protocol.WordSuggestion, error) {
+		return parseJSON[protocol.WordSuggestion](raw, "word definition")
+	}
+	raw, err := p.complete(ctx, p.LLM, p.ChatModel, msgs, true, reusableOutput(decode))
 	if err != nil {
 		return protocol.WordSuggestion{}, err
 	}
-	parsed, err := parseJSON[protocol.WordSuggestion](raw, "word definition")
-	if err != nil {
-		return protocol.WordSuggestion{}, err
-	}
-	return parsed, nil
+	return decode(raw)
 }
 
 func wordFormSystemPrompt() string {
@@ -376,11 +388,14 @@ const autoAddSuggestionCount = 5
 // exactly like a manually picked word. The draft stays internal; only the
 // Judge result is returned.
 func (p *Pipeline) SuggestNewWords(ctx context.Context, learnerProfile string, existingWords []string) ([]protocol.WordSuggestion, error) {
-	raw, err := p.analyze(ctx, wordAutoSuggestSystemPrompt(p.FeedbackLang), renderAutoSuggestInput(learnerProfile, existingWords), true)
+	decode := func(raw string) ([]protocol.WordSuggestion, error) {
+		return parseWordSuggestions(raw, "word auto-suggestion")
+	}
+	raw, err := p.analyze(ctx, wordAutoSuggestSystemPrompt(p.FeedbackLang), renderAutoSuggestInput(learnerProfile, existingWords), true, reusableOutput(decode))
 	if err != nil {
 		return nil, err
 	}
-	return parseWordSuggestions(raw, "word auto-suggestion")
+	return decode(raw)
 }
 
 // wordAutoSuggestSystemPrompt builds SuggestNewWords' prompt, reusing the
@@ -434,10 +449,17 @@ func renderAutoSuggestInput(learnerProfile string, existingWords []string) strin
 // never on a request a learner is waiting on, since a local model can be
 // slow and this makes several ordered model calls, not one.
 func (p *Pipeline) VerifyWord(ctx context.Context, word, meaning, example string) (valid bool, reason string, err error) {
-	raw, err := p.analyze(ctx, wordVerifySystemPrompt(p.FeedbackLang), fmt.Sprintf("word: %s\nmeaning: %s\nexample: %s", word, meaning, example), true)
+	raw, err := p.analyze(ctx, wordVerifySystemPrompt(p.FeedbackLang), fmt.Sprintf("word: %s\nmeaning: %s\nexample: %s", word, meaning, example), true, func(raw string) bool {
+		_, _, err := parseWordVerification(raw)
+		return err == nil
+	})
 	if err != nil {
 		return false, "", err
 	}
+	return parseWordVerification(raw)
+}
+
+func parseWordVerification(raw string) (valid bool, reason string, err error) {
 	parsed, err := parseJSON[struct {
 		Valid  *bool  `json:"valid"`
 		Reason string `json:"reason"`

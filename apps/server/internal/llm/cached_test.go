@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"buddy/server/internal/checkpoint"
+	"buddy/server/internal/checkpoint/checkpointtest"
 	"buddy/server/internal/testdocker"
 
 	"github.com/redis/go-redis/v9"
@@ -153,5 +155,63 @@ func TestCachedClientFallsBackWhenRedisUnavailable(t *testing.T) {
 	got, err := cached.Complete(context.Background(), "model-a", msgs, false)
 	if err != nil || got != "result" {
 		t.Fatalf("Complete() with Redis down = %q, %v; want direct call to still succeed", got, err)
+	}
+}
+
+type endpointCountingClient struct {
+	countingClient
+	endpoint string
+}
+
+func (c *endpointCountingClient) QueueKey(model string) string { return c.endpoint + ":" + model }
+
+func TestCachedClientDistinguishesEndpoints(t *testing.T) {
+	rdb := requireRedis(t)
+	msgs := []Message{{Role: RoleUser, Content: t.Name()}}
+	for _, endpoint := range []string{"first", "second"} {
+		inner := &endpointCountingClient{countingClient: countingClient{text: endpoint}, endpoint: endpoint}
+		cached := NewCached(inner, rdb, time.Minute)
+		for range 2 {
+			got, err := cached.Complete(context.Background(), "same-model", msgs, false)
+			if err != nil || got != endpoint {
+				t.Fatalf("endpoint %s = %q, %v", endpoint, got, err)
+			}
+		}
+		if inner.completes.Load() != 1 {
+			t.Fatalf("endpoint %s calls = %d", endpoint, inner.completes.Load())
+		}
+	}
+}
+
+func TestCachedClientDefersReuseToJobCheckpoint(t *testing.T) {
+	rdb := requireRedis(t)
+	inner := &countingClient{text: "unvalidated old response"}
+	client := NewCached(inner, rdb, time.Minute)
+	msgs := []Message{{Role: RoleUser, Content: t.Name()}}
+	if _, err := client.Complete(context.Background(), "model", msgs, true); err != nil {
+		t.Fatal(err)
+	}
+	inner.text = "fresh valid response"
+	var store checkpointtest.Memory
+	got, err := client.Complete(checkpoint.Bind(context.Background(), &store), "model", msgs, true)
+	if err != nil || got != inner.text || inner.completes.Load() != 2 {
+		t.Fatalf("job completion = %q, %v, calls = %d", got, err, inner.completes.Load())
+	}
+}
+
+func TestCompleteCacheKeyPreservesRequestBoundaries(t *testing.T) {
+	base := completeCacheKey("endpoint", "model", []Message{{Role: "user", Content: "a"}}, false)
+	for _, other := range []string{
+		completeCacheKey("endpoint", "model", []Message{{Role: "user", Content: "a"}}, true),
+		completeCacheKey("endpoint", "model", []Message{{Role: "user", Content: "a\x00assistant\x00b"}}, false),
+		completeCacheKey("endpoint", "model", []Message{{Role: "user", Content: "a"}, {Role: "assistant", Content: "b"}}, false),
+	} {
+		if base == other {
+			t.Fatal("different request shared a cache key")
+		}
+	}
+	if completeCacheKey("endpoint", "model", []Message{{Role: "user", Content: "a\x00assistant\x00b"}}, false) ==
+		completeCacheKey("endpoint", "model", []Message{{Role: "user", Content: "a"}, {Role: "assistant", Content: "b"}}, false) {
+		t.Fatal("message boundary collision")
 	}
 }

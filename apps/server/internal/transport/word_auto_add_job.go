@@ -8,9 +8,12 @@ import (
 	"time"
 
 	"buddy/server/internal/asyncjob"
+	"buddy/server/internal/checkpoint"
 	"buddy/server/internal/pipeline"
+	"buddy/server/internal/protocol"
 	"buddy/server/internal/store"
 	"buddy/server/internal/wordreview"
+	"buddy/server/internal/workguard"
 )
 
 // WordAutoAddClaimTTL/WordAutoAddWorkerConcurrency mirror ArticleStudyClaimTTL/
@@ -30,11 +33,9 @@ const (
 // suggestion).
 const maxAutoAddExclusionWords = 200
 
-// wordAutoAddJobPayload carries just the userID: runWordAutoAdd re-reads the
-// learner's profile and tracked-word list fresh at run time rather than
-// snapshotting them into the payload, so a reap-retry (or a run that was
-// simply queued for a while behind other work) never suggests against a
-// stale exclusion list.
+// wordAutoAddJobPayload carries just the userID. The first execution snapshots
+// current inputs; retries retain that draw's inputs and proposed batch even
+// when some of its words were already saved by an interrupted attempt.
 type wordAutoAddJobPayload struct {
 	UserID string
 }
@@ -47,36 +48,59 @@ type wordAutoAddJobPayload struct {
 // httpserver.wordAutoAddHandler used to do inline before this became a
 // background job.
 func generateAndSaveAutoAddWords(ctx context.Context, pipe *pipeline.Pipeline, words wordreview.Store, st store.Store, wordVerifyQueue *asyncjob.Queue, userID string) (int, error) {
-	profile, err := st.GetLearnerProfile(ctx, userID)
+	// Persist the proposed batch before its first write. Re-reading exclusions
+	// after a partial save would otherwise turn a retry into another new draw.
+	suggestions, err := checkpoint.JSON(ctx, "word-auto-add-proposals:v1", func() ([]protocol.WordSuggestion, error) {
+		type generationInput struct {
+			Profile  string
+			Existing []string
+		}
+		input, err := checkpoint.JSON(ctx, "word-auto-add-input:v1", func() (generationInput, error) {
+			profile, err := st.GetLearnerProfile(ctx, userID)
+			if err != nil {
+				return generationInput{}, fmt.Errorf("word auto-add: get learner profile: %w", err)
+			}
+			tracked, err := words.List(ctx, userID)
+			if err != nil {
+				return generationInput{}, fmt.Errorf("word auto-add: list: %w", err)
+			}
+			if len(tracked) > maxAutoAddExclusionWords {
+				tracked = tracked[:maxAutoAddExclusionWords]
+			}
+			existing := make([]string, len(tracked))
+			for i, t := range tracked {
+				existing[i] = t.Word
+			}
+			return generationInput{Profile: profile, Existing: existing}, nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		proposals, err := pipe.SuggestNewWords(ctx, input.Profile, input.Existing)
+		if err != nil {
+			return nil, fmt.Errorf("word auto-add: suggest: %w", err)
+		}
+		valid := make([]protocol.WordSuggestion, 0, len(proposals))
+		for _, s := range proposals {
+			s.Word = strings.TrimSpace(s.Word)
+			s.Meaning = strings.TrimSpace(s.Meaning)
+			s.Example = strings.TrimSpace(s.Example)
+			if wordreview.ValidateFields(s.Word, s.Meaning, s.Example) == nil {
+				valid = append(valid, s)
+			}
+		}
+		return valid, nil
+	})
 	if err != nil {
-		return 0, fmt.Errorf("word auto-add: get learner profile: %w", err)
-	}
-	tracked, err := words.List(ctx, userID)
-	if err != nil {
-		return 0, fmt.Errorf("word auto-add: list: %w", err)
-	}
-	if len(tracked) > maxAutoAddExclusionWords {
-		tracked = tracked[:maxAutoAddExclusionWords]
-	}
-	existing := make([]string, len(tracked))
-	for i, t := range tracked {
-		existing[i] = t.Word
-	}
-
-	suggestions, err := pipe.SuggestNewWords(ctx, profile, existing)
-	if err != nil {
-		return 0, fmt.Errorf("word auto-add: suggest: %w", err)
+		return 0, err
 	}
 
 	added := 0
 	for _, s := range suggestions {
-		word := strings.TrimSpace(s.Word)
-		meaning := strings.TrimSpace(s.Meaning)
-		example := strings.TrimSpace(s.Example)
-		if err := wordreview.ValidateFields(word, meaning, example); err != nil {
-			continue
+		if err := workguard.Check(ctx); err != nil {
+			return added, err
 		}
-		if _, err := SaveWordAndVerify(ctx, words, pipe, wordVerifyQueue, userID, word, meaning, example, word); err != nil {
+		if _, err := SaveWordAndVerify(ctx, words, pipe, wordVerifyQueue, userID, s.Word, s.Meaning, s.Example, s.Word); err != nil {
 			return added, fmt.Errorf("word auto-add: save: %w", err)
 		}
 		added++
@@ -106,9 +130,15 @@ func runWordAutoAdd(ctx context.Context, pipe *pipeline.Pipeline, words wordrevi
 
 	added, err := generateAndSaveAutoAddWords(ctx, pipe, words, st, wordVerifyQueue, userID)
 	if err != nil {
+		if checkErr := workguard.Check(ctx); checkErr != nil {
+			return checkErr
+		}
 		if failErr := st.FailWordAutoAdd(context.Background(), userID); failErr != nil {
 			log.Printf("word auto-add: fail %s: %v", userID, failErr)
 		}
+		return err
+	}
+	if err := workguard.Check(ctx); err != nil {
 		return err
 	}
 	if err := st.CompleteWordAutoAdd(ctx, userID, added); err != nil {

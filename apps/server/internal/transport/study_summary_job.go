@@ -205,7 +205,7 @@ func studySummaryEnglish(summary []protocol.StudySummarySentence) string {
 // context — see ReplyJobHandler's doc comment for the shared durability
 // rationale. runStudySummary's own FailStudySummary call is what makes a
 // failure durable for a poller/reload in the meantime; the reaper still
-// retries the job from scratch regardless (see asyncjob.Queue.Execute).
+// retries the job using completed model checkpoints (see asyncjob.Queue.Execute).
 func StudySummaryJobHandler(pipe *pipeline.Pipeline, st store.Store) asyncjob.Handler {
 	return asyncjob.DecodePayloadHandler(asyncjob.KindStudySummary, func(ctx context.Context, payload studySummaryJobPayload) error {
 		return runStudySummary(ctx, pipe, st, payload.UserID, payload.SessionID)

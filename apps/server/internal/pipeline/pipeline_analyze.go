@@ -24,26 +24,26 @@ import (
 // draft first; it then calls analyzeFromDraft with that exact text so the
 // background stages continue the same work instead of starting a second,
 // disconnected pipeline (see correct).
-func (p *Pipeline) analyze(ctx context.Context, systemPrompt, input string, jsonMode bool) (string, error) {
-	draft, draftErr := p.chatDraft(ctx, systemPrompt, input, jsonMode)
+func (p *Pipeline) analyze(ctx context.Context, systemPrompt, input string, jsonMode bool, reusable ...func(string) bool) (string, error) {
+	draft, draftErr := p.chatDraft(ctx, systemPrompt, input, jsonMode, reusable...)
 	if draftErr != nil {
 		log.Printf("analyze: chat draft: %v", draftErr)
 	}
-	return p.analyzeFromDraft(ctx, systemPrompt, input, jsonMode, draft)
+	return p.analyzeFromDraft(ctx, systemPrompt, input, jsonMode, draft, reusable...)
 }
 
 // chatDraft performs the first stage of the cascade. Kept separate so a
 // latency-sensitive caller can show this draft immediately, then pass it to
 // analyzeFromDraft without paying for (or potentially disagreeing with) a
 // second Chat call.
-func (p *Pipeline) chatDraft(ctx context.Context, systemPrompt, input string, jsonMode bool) (string, error) {
+func (p *Pipeline) chatDraft(ctx context.Context, systemPrompt, input string, jsonMode bool, reusable ...func(string) bool) (string, error) {
 	if p.LLM == nil {
 		return "", fmt.Errorf("chat draft: no chat model configured")
 	}
 	text, err := p.complete(ctx, p.LLM, p.ChatModel, []llm.Message{
 		{Role: llm.RoleSystem, Content: systemPrompt},
 		{Role: llm.RoleUser, Content: input},
-	}, jsonMode)
+	}, jsonMode, reusable...)
 	if err != nil {
 		return "", err
 	}
@@ -58,7 +58,9 @@ func (p *Pipeline) chatDraft(ctx context.Context, systemPrompt, input string, js
 // failed after the job was durably queued): Analysis and Judge still get the
 // authoritative task/input and may recover, but they are only invoked after
 // the failed Chat stage has settled, preserving stage ordering.
-func (p *Pipeline) analyzeFromDraft(ctx context.Context, systemPrompt, input string, jsonMode bool, draft string) (result string, resultErr error) {
+// The optional predicate limits checkpoint reuse to valid outputs; every stage
+// can become the terminal fallback, so each must satisfy the same contract.
+func (p *Pipeline) analyzeFromDraft(ctx context.Context, systemPrompt, input string, jsonMode bool, draft string, reusable ...func(string) bool) (result string, resultErr error) {
 	if err := workguard.Check(ctx); err != nil {
 		return "", err
 	}
@@ -86,7 +88,7 @@ func (p *Pipeline) analyzeFromDraft(ctx context.Context, systemPrompt, input str
 	// candidate", not "whichever happened to finish first".
 	slots := fanOutOrdered(len(p.Analysis), func(i int) candidateResult {
 		c := p.Analysis[i]
-		text, err := p.complete(ctx, c.LLM, c.Model, refineMsgs, jsonMode)
+		text, err := p.complete(ctx, c.LLM, c.Model, refineMsgs, jsonMode, reusable...)
 		if err != nil {
 			log.Printf("analyze: candidate %s: %v", c.Model, err)
 			return candidateResult{}
@@ -139,7 +141,7 @@ func (p *Pipeline) analyzeFromDraft(ctx context.Context, systemPrompt, input str
 		{Role: llm.RoleSystem, Content: judgeSystemPrompt + "\n\nORIGINAL TASK (authoritative):\n" + systemPrompt},
 		{Role: llm.RoleUser, Content: b.String()},
 	}
-	final, err := p.complete(ctx, p.Judge, p.JudgeModel, judgeMsgs, jsonMode)
+	final, err := p.complete(ctx, p.Judge, p.JudgeModel, judgeMsgs, jsonMode, reusable...)
 	if final = strings.TrimSpace(final); err == nil && final != "" {
 		return final, nil
 	}

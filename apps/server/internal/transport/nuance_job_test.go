@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"buddy/server/internal/asyncjob"
+	"buddy/server/internal/checkpoint"
+	"buddy/server/internal/checkpoint/checkpointtest"
 	"buddy/server/internal/llm"
 	"buddy/server/internal/nuance"
 	"buddy/server/internal/pipeline"
@@ -210,13 +212,15 @@ func TestNuanceInvalidGenerationIsTerminalAndExplicitRetryGetsFreshInput(t *test
 	pipe := &pipeline.Pipeline{Analysis: []pipeline.Candidate{{LLM: model}}}
 	handler := NuanceJobHandler(pipe, st, func(context.Context, string) (string, error) { return "", nil })
 	payload := asyncjob.Job{Payload: mustPayload(nuanceJobPayload{UserID: "user", LessonID: "lesson"})}
-	if err := handler(context.Background(), payload); err != nil {
+	var rejected checkpointtest.Memory
+	if err := handler(checkpoint.Bind(context.Background(), &rejected), payload); err != nil {
 		t.Fatalf("terminal model output error must not trigger an automatic job retry: %v", err)
 	}
 	if st.lesson.Status != nuance.StatusFailed {
 		t.Fatalf("invalid generation status = %q, want failed", st.lesson.Status)
 	}
-	if err := handler(context.Background(), payload); err != nil {
+	var nextDraw checkpointtest.Memory
+	if err := handler(checkpoint.Bind(context.Background(), &nextDraw), payload); err != nil {
 		t.Fatal(err)
 	}
 	if len(inputs) != 2 || inputs[0] == inputs[1] || st.lesson.Status != nuance.StatusDone {
@@ -306,5 +310,59 @@ func TestNuanceDuplicateAttemptsAreBoundedAndOtherErrorsStop(t *testing.T) {
 				t.Fatalf("error=%v calls=%d lesson=%+v", err, calls, st.lesson)
 			}
 		})
+	}
+}
+
+func TestNuanceResumeKeepsInputsAcrossRevisionAndProfileChanges(t *testing.T) {
+	data, err := os.ReadFile("../nuance/testdata/lesson.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &nuanceJobStore{lesson: nuance.Lesson{ID: "lesson", Status: nuance.StatusPending, Revision: 4}}
+	var saved checkpointtest.Memory
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	profileText, profileCalls := "original profile", 0
+	profile := func(context.Context, string) (string, error) {
+		profileCalls++
+		return profileText, nil
+	}
+	draftCalls := 0
+	draft := nuanceLLM{complete: func(context.Context) (string, error) {
+		draftCalls++
+		return string(data), nil
+	}}
+	var refinementInputs []string
+	refinement := nuanceLLM{
+		messages: func(msgs []llm.Message) { refinementInputs = append(refinementInputs, msgs[1].Content) },
+		complete: func(ctx context.Context) (string, error) {
+			if len(refinementInputs) == 1 {
+				cancel()
+				return "", ctx.Err()
+			}
+			return string(data), nil
+		},
+	}
+	newHandler := func() asyncjob.Handler {
+		pipe := &pipeline.Pipeline{LLM: draft, ChatModel: "chat", Analysis: []pipeline.Candidate{{LLM: refinement, Model: "analysis"}}}
+		return NuanceJobHandler(pipe, st, profile)
+	}
+	job := asyncjob.Job{Payload: mustPayload(nuanceJobPayload{UserID: "user", LessonID: "lesson"})}
+	if err := newHandler()(checkpoint.Bind(ctx, &saved), job); !errors.Is(err, context.Canceled) {
+		t.Fatalf("interrupted attempt error = %v", err)
+	}
+	if st.lesson.Revision != 5 || st.lesson.Status != nuance.StatusProcessing {
+		t.Fatalf("interrupted lesson = %+v", st.lesson)
+	}
+	profileText = "changed profile"
+	st.lessons = []nuance.Lesson{{Content: &nuance.Content{Words: []nuance.Word{{Word: "new exclusion"}}}}}
+	if err := newHandler()(checkpoint.Bind(context.Background(), &saved), job); err != nil {
+		t.Fatal(err)
+	}
+	if draftCalls != 1 || profileCalls != 1 || len(refinementInputs) != 2 || refinementInputs[0] != refinementInputs[1] {
+		t.Fatalf("resumed draw changed: draft calls=%d profile calls=%d refinement inputs=%q", draftCalls, profileCalls, refinementInputs)
+	}
+	if st.lesson.Status != nuance.StatusDone || st.lesson.Content == nil {
+		t.Fatalf("resumed lesson = %+v", st.lesson)
 	}
 }
