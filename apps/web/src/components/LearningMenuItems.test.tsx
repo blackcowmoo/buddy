@@ -4,7 +4,12 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { LearningMenuItems } from "./LearningMenuItems";
 
-afterEach(cleanup);
+const initialURL = window.location.href;
+
+afterEach(() => {
+  cleanup();
+  window.history.replaceState(null, "", initialURL);
+});
 
 describe("LearningMenuItems", () => {
   it("keeps every learning destination in one relative-link list", () => {
@@ -15,10 +20,16 @@ describe("LearningMenuItems", () => {
     expect(screen.getByRole("menuitem", { name: /오늘의 작문/ })).toHaveAttribute("href", "writing");
   });
 
-  it("supports the callback form used by the main screen menu", () => {
-    const selected: string[] = [];
-    render(<div role="menu"><LearningMenuItems onSelect={(key) => selected.push(key)} /></div>);
-    screen.getByRole("menuitem", { name: /단어 뉘앙스/ }).click();
-    expect(selected).toEqual(["nuance"]);
+  it.each(["/", "/words", "/pr/14/", "/pr/14/words"])("keeps navigation within the deployment at %s", (path) => {
+    window.history.replaceState(null, "", path);
+    render(<div role="menu"><LearningMenuItems /></div>);
+    const prefix = path.startsWith("/pr/14/") ? "/pr/14/" : "/";
+    const destinations = ["recordings", "instant", "words", "match", "nuance", "article", "writing"];
+
+    expect(screen.getAllByRole<HTMLAnchorElement>("menuitem").map((link) => link.href)).toEqual(
+      destinations.map((destination) => `${window.location.origin}${prefix}${destination}`),
+    );
+    expect(screen.getByRole("menuitem", { name: "단어 복습" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "단어 뉘앙스" })).toBeInTheDocument();
   });
 });

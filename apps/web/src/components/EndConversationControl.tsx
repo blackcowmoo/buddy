@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { QuizQuestion, StudySummarySentence } from "../lib/protocol";
 import { markQuizCompleted, type SessionJobStatus } from "../lib/sessions";
 import { useDismiss } from "../hooks/useDismiss";
-import { checkQuizAnswer, normalizeQuizAnswer, quizBlankInputClass } from "../lib/quizCheck";
+import { checkQuizAnswer, normalizeQuizAnswer } from "../lib/quizCheck";
+import { QuizBlankInput } from "./QuizBlankInput";
 
 // Per-question quiz progress, hoisted out of QuizPanel itself into
 // EndConversationControl (see quizProgress there). QuizPanel is only
@@ -84,16 +85,12 @@ export function EndConversationControl({
   const [quizProgress, setQuizProgress] = useState<QuizProgress>(initialQuizProgress);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  const resetQuizProgress = useCallback(() => {
-    setQuizProgress(initialQuizProgress);
-  }, []);
-
   // A new question set (e.g. after "퀴즈 다시 만들기" — see onQuizReset)
   // invalidates any progress made against the old one. pollEndedField stops
   // polling once quizStatus is "done", so this doesn't fire again mid-quiz.
   useEffect(() => {
-    resetQuizProgress();
-  }, [quiz, resetQuizProgress]);
+    setQuizProgress(initialQuizProgress);
+  }, [quiz]);
 
   // Dismissing the popover (outside click/Escape) only hides it — it must
   // not reset quizMode/progress, or reopening would look identical to a
@@ -342,6 +339,7 @@ function QuizPanel({
   }, [setProgress]);
 
   if (!question) return null;
+  const [before, after] = question.prompt.split("___");
 
   return (
     <div className="quiz-panel">
@@ -352,37 +350,25 @@ function QuizPanel({
         <div className="quiz-progress">
           {index + 1} / {questions.length}
         </div>
-        {/* The blank is typed directly in place inside the sentence rather
-            than in a separate box below it -- generation guarantees exactly
-            one "___" per prompt (see pipeline_study.go's quizSystemPrompt),
-            so a plain two-way split is enough here (see WordReview.tsx's
-            computeBlank for the multi-blank case that needs more). */}
+        {/* Conversation quizzes contain exactly one blank per prompt. */}
         <div className="quiz-prompt quiz-blank-sentence">
-          {(() => {
-            const [before, after] = question.prompt.split("___");
-            return (
-              <>
-                <span>{before}</span>
-                <input
-                  autoFocus
-                  ref={answerRef}
-                  type="text"
-                  className={quizBlankInputClass(checked, correct)}
-                  style={{ width: `${Math.min(16, Math.max(3, answer.length + 1))}ch` }}
-                  value={answer}
-                  onChange={(e) => setProgress((p) => ({ ...p, answer: e.target.value }))}
-                  onKeyDown={(e) => {
-                    if (e.key !== "Enter") return;
-                    if (checked) next();
-                    else check();
-                  }}
-                  disabled={checked || checking}
-                  aria-label="정답 입력"
-                />
-                <span>{after}</span>
-              </>
-            );
-          })()}
+          <span>{before}</span>
+          <QuizBlankInput
+            autoFocus
+            ref={answerRef}
+            checked={checked}
+            correct={correct}
+            value={answer}
+            onChange={(e) => setProgress((p) => ({ ...p, answer: e.target.value }))}
+            onKeyDown={(e) => {
+              if (e.key !== "Enter") return;
+              if (checked) next();
+              else check();
+            }}
+            disabled={checking}
+            aria-label="정답 입력"
+          />
+          <span>{after}</span>
         </div>
         {question.answerMeaning && <div className="quiz-meaning-hint">💡 {question.answerMeaning}</div>}
         {!checked && (

@@ -1929,36 +1929,23 @@ describe("hamburger menu", () => {
     expect(location.assign).toHaveBeenCalledWith("/pr/14/");
   });
 
-  it("navigates to the relative recordings page from the menu", async () => {
+  it.each(["list", "chat"])("links every learning destination from the %s menu", async (view) => {
     const user = userEvent.setup();
     render(<App />);
-    await openMenu(user);
-    await user.click(screen.getByRole("menuitem", { name: /녹음 목록/ }));
-    expect(location.assign).toHaveBeenCalledWith("recordings");
-  });
+    if (view === "chat") await enterNewChatAndOpenMenu(user);
+    else await openMenu(user);
 
-  it("navigates to the relative word-matching game page from the menu", async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    await openMenu(user);
-    await user.click(screen.getByRole("menuitem", { name: /단어 매칭 게임/ }));
-    expect(location.assign).toHaveBeenCalledWith("match");
-  });
-
-  it("navigates to word nuance practice from the menu", async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    await openMenu(user);
-    await user.click(screen.getByRole("menuitem", { name: /단어 뉘앙스/ }));
-    expect(location.assign).toHaveBeenCalledWith("nuance");
-  });
-
-  it("navigates to the relative instant-sessions page from the menu", async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    await openMenu(user);
-    await user.click(screen.getByRole("menuitem", { name: /인스턴트 대화 목록/ }));
-    expect(location.assign).toHaveBeenCalledWith("instant");
+    for (const [label, href] of [
+      ["녹음 목록", "recordings"],
+      ["인스턴트 대화 목록", "instant"],
+      ["단어 복습", "words"],
+      ["단어 매칭 게임", "match"],
+      ["단어 뉘앙스", "nuance"],
+      ["오늘의 아티클", "article"],
+      ["오늘의 작문", "writing"],
+    ]) {
+      expect(screen.getByRole("menuitem", { name: label })).toHaveAttribute("href", href);
+    }
   });
 });
 

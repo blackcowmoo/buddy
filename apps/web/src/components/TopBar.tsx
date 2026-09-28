@@ -4,7 +4,7 @@ import type { Theme } from "../lib/theme";
 import { NATIVE_RATE, RATE_PRESETS } from "../lib/ttsSettings";
 import { MAX_INTERLOCUTOR_STYLE_LEN } from "../lib/settings";
 import { ThemeSwitch } from "./ThemeSwitch";
-import { LearningMenuItems, type LearningMenuKey } from "./LearningMenuItems";
+import { LearningMenuItems } from "./LearningMenuItems";
 
 // Read-only view onto the learner's persistent cross-session profile (see
 // settings.ts/store.Store.GetLearnerProfile) — recurring mistakes,
@@ -102,13 +102,6 @@ function MenuPanel({
   onPrInputChange,
   prError,
   onGoToPath,
-  onGoToRecordings,
-  onGoToInstant,
-  onGoToWords,
-  onGoToMatch,
-  onGoToNuance,
-  onGoToArticle,
-  onGoToWriting,
   wordDueCount,
   nuanceDueCount,
   styleInput,
@@ -128,13 +121,6 @@ function MenuPanel({
   onPrInputChange: (v: string) => void;
   prError: boolean;
   onGoToPath: (e: React.FormEvent) => void;
-  onGoToRecordings: () => void;
-  onGoToInstant: () => void;
-  onGoToWords: () => void;
-  onGoToMatch: () => void;
-  onGoToNuance: () => void;
-  onGoToArticle: () => void;
-  onGoToWriting: () => void;
   wordDueCount: number;
   nuanceDueCount: number;
   styleInput: string;
@@ -221,18 +207,7 @@ function MenuPanel({
       <div className="menu-divider" />
       <LearnerProfileControl profile={learnerProfile} loadError={styleLoadError} />
       <div className="menu-divider" />
-      <LearningMenuItems onSelect={(key: LearningMenuKey) => {
-        const actions: Record<LearningMenuKey, () => void> = {
-          recordings: onGoToRecordings,
-          instant: onGoToInstant,
-          words: onGoToWords,
-          match: onGoToMatch,
-          nuance: onGoToNuance,
-          article: onGoToArticle,
-          writing: onGoToWriting,
-        };
-        actions[key]();
-      }} wordDueCount={wordDueCount} nuanceDueCount={nuanceDueCount} />
+      <LearningMenuItems wordDueCount={wordDueCount} nuanceDueCount={nuanceDueCount} />
       <div className="menu-divider" />
       <form className="path-form" onSubmit={onGoToPath}>
         <label htmlFor="pr-path">PR 미리보기로 이동</label>

@@ -36,7 +36,7 @@ export function SubPageHeader({ title }: { title: string }) {
           <MenuIcon />
         </button>
         {menuOpen && (
-          <div className="menu-panel subpage-menu-panel" role="menu">
+          <div className="menu-panel" role="menu">
             <a className="ghost menu-item" href="." role="menuitem">
               <span aria-hidden="true">🏠</span> 메인으로
             </a>
