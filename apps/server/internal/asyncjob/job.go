@@ -1,6 +1,6 @@
 // Package asyncjob is a generalized, durable, Redis-backed job queue shared
 // by every background task in the server (chat replies, grammar correction,
-// translation, title generation, compaction). It generalizes the primitives
+// translation, title generation). It generalizes the primitives
 // internal/backfill pioneered for translation backfill, fixing that
 // package's one limitation for this broader use: backfill serializes all
 // work behind a single cluster-wide lock (fine for a low-volume,
@@ -58,7 +58,6 @@ const (
 	// no-Redis/no-hook inline path), so nothing else would ever retry it.
 	KindCorrectionBackfill Kind = "correction-backfill"
 	KindTitle              Kind = "title"
-	KindCompaction         Kind = "compaction"
 	// KindStudySummary is the session-level end-of-conversation wrap-up job
 	// (payload: {UserID, SessionID} — see transport.EnqueueStudySummaryJob),
 	// enqueued once the learner confirms "end this conversation" freezes the

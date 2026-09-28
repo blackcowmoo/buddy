@@ -119,7 +119,7 @@ func (h *HTTPTranscriber) Transcribe(ctx context.Context, pcm []byte) (Result, e
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
 		return Result{}, err
 	}
-	return Result{Text: strings.TrimSpace(parsed.Text), Confidence: 0.9}, nil
+	return Result{Text: strings.TrimSpace(parsed.Text)}, nil
 }
 
 func uniqueNonEmpty(ss []string) []string {

@@ -32,7 +32,7 @@ type fakeSTT struct{ text string }
 
 func (f fakeSTT) Name() string { return "fake" }
 func (f fakeSTT) Transcribe(ctx context.Context, pcm []byte) (stt.Result, error) {
-	return stt.Result{Text: f.text, Confidence: 1}, nil
+	return stt.Result{Text: f.text}, nil
 }
 
 // fakeHeaderIdentifier stands in for a real verified-identity mechanism

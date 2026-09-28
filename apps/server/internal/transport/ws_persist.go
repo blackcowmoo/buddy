@@ -32,11 +32,9 @@ import (
 func persistEvent(pipe *pipeline.Pipeline, st store.Store, words wordreview.Store, wordVerifyQueue *asyncjob.Queue, userID, sessionID string, ev protocol.ServerEvent) {
 	switch ev.Type {
 	case protocol.EvFinal:
-		go saveTurn(st, userID, sessionID, ev.Turn, "user", ev.Text, false, ev.Source)
-	case protocol.EvRefined:
-		go saveTurn(st, userID, sessionID, ev.Turn, "user", ev.Text, true, ev.Source)
+		go saveTurn(st, userID, sessionID, ev.Turn, "user", ev.Text, ev.Source)
 	case protocol.EvAssistantDone:
-		go saveTurn(st, userID, sessionID, ev.Turn, "assistant", ev.Text, false, "")
+		go saveTurn(st, userID, sessionID, ev.Turn, "assistant", ev.Text, "")
 	case protocol.EvCorrection:
 		if ev.Failed {
 			// Only durable when a job was actually reserved for this turn
@@ -77,8 +75,8 @@ func saveCorrectionPreview(st store.Store, userID, sessionID string, turn int, c
 	}
 }
 
-func saveTurn(st store.Store, userID, sessionID string, turn int, role, text string, refined bool, source string) {
-	if err := st.SaveTurn(context.Background(), userID, sessionID, turn, role, text, refined, source); err != nil {
+func saveTurn(st store.Store, userID, sessionID string, turn int, role, text, source string) {
+	if err := st.SaveTurn(context.Background(), userID, sessionID, turn, role, text, false, source); err != nil {
 		log.Printf("store: save turn %s/%s#%d: %v", userID, sessionID, turn, err)
 	}
 }

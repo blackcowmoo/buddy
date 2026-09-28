@@ -7,8 +7,7 @@ import "context"
 
 // Result is a single transcription.
 type Result struct {
-	Text       string
-	Confidence float64 // 0..1, best-effort (engines may not provide it)
+	Text string
 }
 
 // Recognizer transcribes one complete utterance.

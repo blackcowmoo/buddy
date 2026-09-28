@@ -61,5 +61,5 @@ func (w *Whisper) Transcribe(ctx context.Context, pcm []byte) (Result, error) {
 	if err := cmd.Run(); err != nil {
 		return Result{}, fmt.Errorf("whisper-cli: %w: %s", err, errb.String())
 	}
-	return Result{Text: strings.TrimSpace(out.String()), Confidence: 0.9}, nil
+	return Result{Text: strings.TrimSpace(out.String())}, nil
 }

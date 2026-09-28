@@ -29,7 +29,6 @@ func (m *Mock) Transcribe(ctx context.Context, pcm []byte) (Result, error) {
 	// 16-bit mono @ 16kHz => 32000 bytes/sec.
 	secs := float64(len(pcm)) / 32000.0
 	return Result{
-		Text:       fmt.Sprintf("[mock-%s heard ~%.1fs of audio] hello, how are you today?", m.Label, secs),
-		Confidence: 0.5,
+		Text: fmt.Sprintf("[mock-%s heard ~%.1fs of audio] hello, how are you today?", m.Label, secs),
 	}, nil
 }

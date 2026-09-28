@@ -30,7 +30,6 @@ const (
 	EvFinal                EventType = "final_transcript"      // committed turn (typed, or a learner-confirmed voice draft)
 	EvAssistantDelta       EventType = "assistant_delta"       // streamed reply token
 	EvAssistantDone        EventType = "assistant_done"        // full reply (browser speaks this)
-	EvRefined              EventType = "refined_transcript"    // legacy: upgraded an already-committed turn's text; no longer emitted live, kept for hydrating turns saved before EvPendingTranscript existed
 	EvCorrection           EventType = "correction"            // grammar/vocab feedback
 	EvUserTranslation      EventType = "user_translation"      // native-language translation of the user's turn
 	EvAssistantTranslation EventType = "assistant_translation" // native-language translation of the assistant's reply
@@ -57,7 +56,7 @@ type ServerEvent struct {
 	Text string `json:"text,omitempty"`
 
 	// Source says how the learner produced this turn: "voice" (spoken,
-	// transcribed by STT) or "text" (typed). Set on EvFinal/EvRefined (a
+	// transcribed by STT) or "text" (typed). Set on EvFinal (a
 	// committed turn) and on EvPendingTranscript (a not-yet-committed voice
 	// draft, always SourceVoice) — there's no ambiguity to record on any
 	// other event type.

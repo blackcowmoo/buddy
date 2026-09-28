@@ -78,7 +78,7 @@ func (r *countingRecognizer) Transcribe(ctx context.Context, pcm []byte) (Result
 
 func TestCachedRecognizerServesSecondCallFromCacheWithoutCallingInner(t *testing.T) {
 	rdb := requireRedis(t)
-	inner := &countingRecognizer{name: "whisper", result: Result{Text: "hello there", Confidence: 0.9}}
+	inner := &countingRecognizer{name: "whisper", result: Result{Text: "hello there"}}
 	cached := NewCached(inner, rdb, time.Minute)
 
 	pcm := []byte{1, 2, 3, 4}
@@ -92,11 +92,31 @@ func TestCachedRecognizerServesSecondCallFromCacheWithoutCallingInner(t *testing
 	}
 
 	got, err = cached.Transcribe(context.Background(), pcm)
-	if err != nil || got.Text != "hello there" || got.Confidence != 0.9 {
+	if err != nil || got != inner.result {
 		t.Fatalf("second Transcribe() = %+v, %v; want the cached result", got, err)
 	}
 	if n := inner.transcribes.Load(); n != 1 {
 		t.Fatalf("inner.transcribes after second (should-be-cached) call = %d, want still 1", n)
+	}
+}
+
+func TestCachedRecognizerReadsLegacyResultWithoutCallingInner(t *testing.T) {
+	rdb := requireRedis(t)
+	ctx := context.Background()
+	inner := &countingRecognizer{name: t.Name(), err: errors.New("must use cached transcript")}
+	pcm := []byte{1, 2, 3, 4}
+	key := transcribeCacheKey(inner.Name(), pcm)
+	t.Cleanup(func() { rdb.Del(ctx, key) })
+	// Entries written before Confidence was removed must still be cache hits.
+	if err := rdb.Set(ctx, key, `{"Text":"hello there","Confidence":0.9}`, time.Minute).Err(); err != nil {
+		t.Fatalf("seed legacy result: %v", err)
+	}
+	got, err := NewCached(inner, rdb, time.Minute).Transcribe(ctx, pcm)
+	if err != nil || got.Text != "hello there" {
+		t.Fatalf("Transcribe() = %+v, %v; want cached legacy text", got, err)
+	}
+	if n := inner.transcribes.Load(); n != 0 {
+		t.Fatalf("inner.transcribes = %d, want 0", n)
 	}
 }
 

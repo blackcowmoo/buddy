@@ -496,9 +496,8 @@ func TestRunArticleStudyIsNoopForMissingArticle(t *testing.T) {
 // orphan-recovery flow: a StatusPending article the fake reports stale (see
 // markStale) gets claimed and regenerated, ending up StatusDone — this is
 // what makes a redeploy- or crash-abandoned "오늘의 아티클" draw resume
-// automatically without the learner doing anything. This deliberately passes
-// a non-nil queue as well: a stale Redis claim must not prevent recovery by
-// leaving the dedupe key in the way.
+// automatically without the learner doing anything. Recovery depends only on
+// the database claim, so a stale Redis dedupe key cannot block it.
 func TestSweepStaleArticleStudiesResumesAbandonedGeneration(t *testing.T) {
 	pipe := &pipeline.Pipeline{
 		Analysis: []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{complete: fakeArticleStudyJSON}}},
@@ -508,7 +507,7 @@ func TestSweepStaleArticleStudiesResumesAbandonedGeneration(t *testing.T) {
 	})
 	articles.markStale("a-stale")
 
-	if err := SweepStaleArticleStudies(context.Background(), asyncjob.NewQueue(nil), pipe, articles, nil); err != nil {
+	if err := SweepStaleArticleStudies(context.Background(), pipe, articles, nil); err != nil {
 		t.Fatalf("SweepStaleArticleStudies() error = %v", err)
 	}
 	// Recovery runs on a detached goroutine so the sweep loop is not blocked by
@@ -533,7 +532,7 @@ func TestSweepStaleArticleStudiesSkipsNonStalePending(t *testing.T) {
 		ID: "a-fresh", Source: "BBC", Title: "Headline", URL: "https://example.com/fresh", Status: newsarticle.StatusPending,
 	})
 
-	if err := SweepStaleArticleStudies(context.Background(), nil, pipe, articles, nil); err != nil {
+	if err := SweepStaleArticleStudies(context.Background(), pipe, articles, nil); err != nil {
 		t.Fatalf("SweepStaleArticleStudies() error = %v", err)
 	}
 	if calls != 0 {
