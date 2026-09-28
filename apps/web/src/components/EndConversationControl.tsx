@@ -42,7 +42,7 @@ const initialQuizProgress: QuizProgress = {
 // on: onEnd fires, and the learner is back on the list, before that LLM call
 // has even started. Reopening an ended room shows whatever the room's own
 // SessionDetail already carries — ended/studySummary/studySummaryStatus —
-// with "pending"/"failed" kept fresh by pollStudySummary (see enterChat)
+// with "pending"/"failed" kept fresh by pollEndedField (see enterChat)
 // while the background job is still working.
 export function EndConversationControl({
   sessionId,
@@ -74,7 +74,7 @@ export function EndConversationControl({
   // unmounting/remounting as the popover is closed and reopened — see the
   // quiz progress state just below for why that no longer means losing
   // place. The questions themselves are a prop now (pre-generated alongside
-  // the wrap-up — see App's endedQuiz/pollQuizStatus), not fetched on
+  // the wrap-up — see App's endedQuiz/pollEndedField), not fetched on
   // demand here anymore.
   const [quizMode, setQuizMode] = useState(false);
   // Local-only echo of "내가 읽었음" being tapped this visit, so the button
@@ -89,7 +89,7 @@ export function EndConversationControl({
   }, []);
 
   // A new question set (e.g. after "퀴즈 다시 만들기" — see onQuizReset)
-  // invalidates any progress made against the old one. pollQuizStatus stops
+  // invalidates any progress made against the old one. pollEndedField stops
   // polling once quizStatus is "done", so this doesn't fire again mid-quiz.
   useEffect(() => {
     resetQuizProgress();

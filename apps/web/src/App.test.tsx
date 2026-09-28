@@ -629,6 +629,59 @@ describe("room list", () => {
     }
   });
 
+  it.each(["summary", "quiz"])("preserves the completed %s while the other ended-room job keeps polling", async (first) => {
+    vi.useFakeTimers();
+    const session = {
+      id: "s1", title: "Independent jobs", createdAt: 1, updatedAt: 2,
+      ended: true, studySummaryStatus: "pending" as const, quizStatus: "pending" as const,
+    };
+    const studySummary = [{ english: "Practice third-person verbs.", translation: "3인칭 동사를 연습하세요." }];
+    const quiz = [{ prompt: "He ___ home.", answer: "goes", translation: "그는 집에 가요.", explanation: "Use goes.", explanationTranslation: "goes를 쓰세요." }];
+    vi.mocked(fetchSessions).mockResolvedValue([session]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({ session, turns: [], hasMore: false });
+    await act(async () => { render(<App />); });
+    await act(async () => { fireEvent.click(screen.getByText(session.title)); });
+    fireEvent.click(screen.getByRole("button", { name: "대화 종료" }));
+    expect(screen.getByText("학습 피드백을 정리하는 중…")).toBeInTheDocument();
+
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      session: {
+        ...session,
+        studySummary: first === "summary" ? studySummary : [],
+        studySummaryStatus: first === "summary" ? "done" : "failed",
+        quiz: first === "quiz" ? quiz : [],
+        quizStatus: first === "quiz" ? "done" : "failed",
+      },
+      turns: [], hasMore: false,
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+    expect(fetchSessionDetail).toHaveBeenCalledTimes(3);
+    if (first === "summary") {
+      expect(screen.getByText(studySummary[0].english)).toBeInTheDocument();
+      expect(screen.getByText("퀴즈를 준비하는 중…")).toBeInTheDocument();
+    } else {
+      expect(screen.getByText("학습 피드백을 정리하지 못했어요. 잠시 후 다시 확인해주세요.")).toBeInTheDocument();
+    }
+
+    // The remaining poll must only apply its own field, even if the response
+    // carries an older snapshot of the field that already finished.
+    vi.mocked(fetchSessionDetail).mockResolvedValue({
+      session: {
+        ...session,
+        studySummary: first === "quiz" ? studySummary : [],
+        studySummaryStatus: first === "quiz" ? "done" : "pending",
+        quiz: first === "summary" ? quiz : [],
+        quizStatus: first === "summary" ? "done" : "pending",
+      },
+      turns: [], hasMore: false,
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+    expect(screen.getByText(studySummary[0].english)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "퀴즈 풀기" })).toBeInTheDocument();
+    await act(async () => { await vi.advanceTimersByTimeAsync(8000); });
+    expect(fetchSessionDetail).toHaveBeenCalledTimes(4);
+  });
+
   // Guards the pre-generated quiz flow (see EndConversationControl/
   // QuizPanel): the questions already arrive on session.quiz (pre-generated
   // alongside the wrap-up — see asyncjob.KindStudyQuiz), so "퀴즈 풀기" just

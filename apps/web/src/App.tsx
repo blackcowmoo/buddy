@@ -28,8 +28,6 @@ import {
   messageAudioURL,
   resetQuiz,
   restudySession,
-  type SessionJobStatus,
-  type SessionDetail,
   type SessionSummary,
 } from "./lib/sessions";
 import { createConversationEndState, type ConversationEndState } from "./lib/conversationEnd";
@@ -546,12 +544,12 @@ export function App() {
     }
   }, []);
 
-  // Poll scaffolding for pollMissingFeedback/pollStudySummary/pollQuizStatus
+  // Poll scaffolding for pollMissingFeedback/pollEndedField
   // below (see usePollScaffold's doc comment). pollTokenRef identifies the
   // most recent poll chain so a slow fetch that resolves after the learner
   // already left the room, or opened a different one, doesn't apply its
   // (now stale) result to the wrong room's state.
-  const { tokenRef: pollTokenRef, schedulePoll } = usePollScaffold();
+  const { tokenRef: pollTokenRef, startPoll } = usePollScaffold();
 
   // Polls a room's transcript for translations, grammar corrections, and
   // assistant replies the server is still working on in the background —
@@ -570,18 +568,13 @@ export function App() {
   // yet. Stops once nothing is missing anymore or maxAttempts is reached; a
   // fresh call to enterChat/backToList invalidates `token` so a slow,
   // late-arriving response never overwrites a different room's state.
-  const pollMissingFeedback = useCallback((sessionId: string, token: object) => {
-    const maxAttempts = 20;
-    const intervalMs = 4000;
-    let attempt = 0;
-    const tick = async () => {
-      if (pollTokenRef.current !== token) return; // left this room, or opened another
-      attempt++;
-      // limit: 0 asks for the whole transcript, not just the latest page —
-      // a pending correction/translation/reply can sit on any turn, not
-      // just ones on the page currently loaded into msgs.
-      const detail = await fetchSessionDetail(sessionId, { limit: 0 });
-      if (pollTokenRef.current !== token || !detail) return;
+  const pollMissingFeedback = useCallback((sessionId: string, token: object) => startPoll(token, {
+    intervalMs: 4000,
+    maxAttempts: 20,
+    // Pending work may belong to any turn, including unloaded history pages.
+    fetchResult: () => fetchSessionDetail(sessionId, { limit: 0 }),
+    onResult: (detail) => {
+      if (!detail) return false;
       let stillMissing = false;
       const patches: Record<number, Partial<TurnMeta>> = {};
       for (const t of detail.turns) {
@@ -647,10 +640,9 @@ export function App() {
         }
       }
       if (Object.keys(patches).length > 0) patchTurns(patches);
-      if (stillMissing && attempt < maxAttempts) schedulePoll(tick, intervalMs);
-    };
-    schedulePoll(tick, intervalMs);
-  }, [patchTurns, schedulePoll]);
+      return stillMissing;
+    },
+  }), [patchTurns, startPoll]);
 
   // Opening the feedback panel is the point where "unread" becomes read.
   // Persist that acknowledgement on the server, then clear local state only
@@ -673,73 +665,25 @@ export function App() {
     });
   }, [activeSessionId, msgs, openGrammarIndex, patchTurn, turns]);
 
-  // Shared shape behind pollStudySummary/pollQuizStatus below: poll
-  // fetchSessionDetail until a session-level background job's status field
-  // reaches "done" (or maxAttempts runs out), applying whatever value came
-  // back on every tick regardless of status so a "pending"/"failed" mid-poll
-  // state renders too, not just the final one.
-  const pollSessionField = useCallback(
-    <T,>(
-      sessionId: string,
-      token: object,
-      maxAttempts: number,
-      getField: (s: SessionDetail["session"]) => { status: SessionJobStatus; value: T },
-      apply: (status: SessionJobStatus, value: T) => void,
-    ) => {
-      const intervalMs = 4000;
-      let attempt = 0;
-      const tick = async () => {
-        if (pollTokenRef.current !== token) return; // left this room, or opened another
-        attempt++;
-        const detail = await fetchSessionDetail(sessionId, { limit: 0 });
-        if (pollTokenRef.current !== token || !detail) return;
-        const { status, value } = getField(detail.session);
-        apply(status, value);
-        if (status !== "done" && attempt < maxAttempts) schedulePoll(tick, intervalMs);
-      };
-      schedulePoll(tick, intervalMs);
-    },
-    [pollTokenRef, schedulePoll],
-  );
-
-  // Polls an ended room's background study-summary job (see
-  // asyncjob.KindStudySummary) until it lands — the same "no push channel to
-  // an already-open client" gap pollMissingFeedback fills for turn-level
-  // jobs, just for the session-level wrap-up instead. Reuses pollTokenRef
-  // (set by enterChat, cleared by resetToListView) so leaving the room stops
-  // this the same way it stops pollMissingFeedback. "failed" keeps polling
-  // rather than giving up: the reaper (see internal/asyncjob) retries a
-  // failed attempt on its own, so a later attempt may still land.
-  const pollStudySummary = useCallback(
-    (sessionId: string, token: object) =>
-      pollSessionField(
-        sessionId,
-        token,
-        30,
-        (s) => ({ status: s.studySummaryStatus || "done", value: s.studySummary ?? [] }),
-        (status, value) => {
-          patchConversationEnd({ studySummaryStatus: status, studySummary: value });
-        },
-      ),
-    [patchConversationEnd, pollSessionField],
-  );
-
-  // Mirrors pollStudySummary exactly, but for the quiz pre-generation job
-  // (see asyncjob.KindStudyQuiz) — a separate poller, not folded into the
-  // one above, since the two background jobs run independently and can land
-  // at different times.
-  const pollQuizStatus = useCallback(
-    (sessionId: string, token: object) =>
-      pollSessionField(
-        sessionId,
-        token,
-        30,
-        (s) => ({ status: s.quizStatus || "done", value: s.quiz ?? [] }),
-        (status, value) => {
-          patchConversationEnd({ quizStatus: status, quiz: value });
-        },
-      ),
-    [patchConversationEnd, pollSessionField],
+  // Summary and quiz jobs finish independently, so each watches only its
+  // own field. Publish pending/failed states too; the server reaper can
+  // retry a failed job while this room stays open.
+  const pollEndedField = useCallback(
+    (sessionId: string, token: object, field: "studySummary" | "quiz") => startPoll(token, {
+      intervalMs: 4000,
+      maxAttempts: 30,
+      fetchResult: () => fetchSessionDetail(sessionId, { limit: 0 }),
+      onResult: (detail) => {
+        if (!detail) return false;
+        const session = detail.session;
+        const status = session[`${field}Status`] || "done";
+        patchConversationEnd(field === "studySummary"
+          ? { studySummaryStatus: status, studySummary: session.studySummary ?? [] }
+          : { quizStatus: status, quiz: session.quiz ?? [] });
+        return status !== "done";
+      },
+    }),
+    [patchConversationEnd, startPoll],
   );
 
   // Opens a room and enters chat view. sessionId omitted starts a brand-new
@@ -809,12 +753,12 @@ export function App() {
           setConversationEnd(endState);
           clientRef.current?.close();
           // The wrap-up is still generating (or the last attempt failed —
-          // see pollStudySummary's doc comment) — keep checking until it
+          // see pollEndedField's doc comment) — keep checking until it
           // lands, since nothing pushes it to an already-open client.
-          if (endState.studySummaryStatus !== "done") pollStudySummary(sessionId, token);
+          if (endState.studySummaryStatus !== "done") pollEndedField(sessionId, token, "studySummary");
           // Same reasoning, for the quiz pre-generation job running
-          // independently alongside it — see pollQuizStatus.
-          if (endState.quizStatus !== "done") pollQuizStatus(sessionId, token);
+          // independently alongside it.
+          if (endState.quizStatus !== "done") pollEndedField(sessionId, token, "quiz");
         }
         // Whether this room saw activity recently enough that a user turn
         // with no correctionStatus at all is plausibly still in flight
@@ -846,8 +790,7 @@ export function App() {
       resetEndedState,
       resetQuickState,
       pollMissingFeedback,
-      pollStudySummary,
-      pollQuizStatus,
+      pollEndedField,
     ],
   );
 
@@ -1012,7 +955,7 @@ export function App() {
   // occasional case where GenerateStudySummary's LLM call returned a
   // valid-but-empty result despite real issues in the transcript, with no
   // automatic way back to pending. Switches straight to the "정리 중" view
-  // and reuses pollStudySummary the same way reopening a still-generating
+  // and reuses pollEndedField the same way reopening a still-generating
   // room does, since the background job runs the identical path either way.
   const restudyConversation = useCallback(async () => {
     if (!activeSessionId) return;
@@ -1023,8 +966,8 @@ export function App() {
       patchConversationEnd({ studySummaryStatus: "failed" });
       return;
     }
-    if (token) pollStudySummary(activeSessionId, token);
-  }, [activeSessionId, patchConversationEnd, pollStudySummary]);
+    if (token) pollEndedField(activeSessionId, token, "studySummary");
+  }, [activeSessionId, patchConversationEnd, pollEndedField]);
 
   // Regenerates an ended session's practice quiz from scratch on demand —
   // see httpserver.sessionQuizResetHandler, the "퀴즈 다시 만들기" button in
@@ -1033,7 +976,7 @@ export function App() {
   // even when the current quiz already has real content (e.g. one generated
   // before answerMeaning/acceptableAnswers existed). Clears the local quiz
   // state immediately so the panel shows "준비하는 중" rather than the stale
-  // quiz while the background job regenerates it, and reuses pollQuizStatus
+  // quiz while the background job regenerates it, and reuses pollEndedField
   // the same way reopening a still-generating room does.
   const resetConversationQuiz = useCallback(async () => {
     if (!activeSessionId) return;
@@ -1044,8 +987,8 @@ export function App() {
       patchConversationEnd({ quizStatus: "failed" });
       return;
     }
-    if (token) pollQuizStatus(activeSessionId, token);
-  }, [activeSessionId, patchConversationEnd, pollQuizStatus]);
+    if (token) pollEndedField(activeSessionId, token, "quiz");
+  }, [activeSessionId, patchConversationEnd, pollEndedField]);
 
   // Reflects a just-completed quiz (see markQuizCompleted, called from
   // QuizPanel/EndConversationControl) in this room's own state immediately —
@@ -1088,12 +1031,12 @@ export function App() {
       endedRef.current = true;
       patchConversationEnd({ ended: true, studySummaryStatus: "pending", quizStatus: "pending" });
       if (token) {
-        pollStudySummary(activeSessionId, token);
-        pollQuizStatus(activeSessionId, token);
+        pollEndedField(activeSessionId, token, "studySummary");
+        pollEndedField(activeSessionId, token, "quiz");
         pollMissingFeedback(activeSessionId, token);
       }
     });
-  }, [quickMode, quickWatchTurn, ended, activeSessionId, turns, patchConversationEnd, pollStudySummary, pollQuizStatus, pollMissingFeedback]);
+  }, [quickMode, quickWatchTurn, ended, activeSessionId, turns, patchConversationEnd, pollEndedField, pollMissingFeedback]);
 
   // Restores an open room from the URL on a fresh load (e.g. a refresh), and
   // keeps the view in sync with browser back/forward (incl. swipe) — neither

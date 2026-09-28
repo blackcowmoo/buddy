@@ -32,7 +32,7 @@ import { newestFirst } from "../lib/listView";
 // How often to re-check a draw that's still generating in the background
 // (see asyncjob.KindArticleStudy) — a poll, not a push, since nothing on the
 // server tells an already-open client "it's ready now" (same reasoning as
-// App.tsx's pollStudySummary).
+// App.tsx's pollEndedField).
 const articleStudyPollIntervalMs = 3000;
 const articleListPageSize = 20;
 const articleListLoadThreshold = 80;
@@ -206,7 +206,7 @@ export function ArticleQuiz() {
   // keeps generating regardless (see lib/articles.ts's drawArticle doc
   // comment); reopening this page and tapping the still-pending row resumes
   // watching.
-  const { tokenRef: pollTokenRef, schedulePoll } = usePollScaffold();
+  const { tokenRef: pollTokenRef, startPoll } = usePollScaffold();
 
   // Polls one draw's status until it leaves "pending"/"failed" — started
   // right after a fresh draw, or when reopening a still-generating row from
@@ -214,21 +214,16 @@ export function ArticleQuiz() {
   // up: the asyncjob reaper retries the job from scratch on its own (see
   // asyncjob.Queue.Execute), so a later attempt can still land.
   const pollDraw = useCallback(
-    (id: string, token: object) => {
-      const tick = async () => {
-        if (pollTokenRef.current !== token) return; // left this draw, or started another
-        const updated = await fetchArticleInstance(id);
-        if (pollTokenRef.current !== token) return;
-        if (!updated) {
-          schedulePoll(tick, articleStudyPollIntervalMs); // transient fetch failure — keep trying
-          return;
-        }
+    (id: string, token: object) => startPoll(token, {
+      intervalMs: articleStudyPollIntervalMs,
+      fetchResult: () => fetchArticleInstance(id),
+      onResult: (updated) => {
+        if (!updated) return true;
         setDraw(updated);
-        if (updated.status !== "done" || !updated.translation) schedulePoll(tick, articleStudyPollIntervalMs);
-      };
-      schedulePoll(tick, articleStudyPollIntervalMs);
-    },
-    [schedulePoll],
+        return updated.status !== "done" || !updated.translation;
+      },
+    }),
+    [startPoll],
   );
 
   const loadInstances = useCallback(() => {
@@ -274,19 +269,23 @@ export function ArticleQuiz() {
 
   const visibleInstances = instances.slice(0, visibleInstanceCount);
 
+  const showDraw = useCallback((next: ArticleDraw) => {
+    setDraw(next);
+    setSelections([]);
+    setResult(null);
+    setView("reading");
+    setDrawState("idle");
+    setTts("idle");
+    setWordLookup(null);
+    setSearchedWords(loadSearchedWords(next.id));
+    setSearchedWordsOpen(false);
+  }, []);
+
   const handleDraw = useCallback(async () => {
     setDrawState("drawing");
     const res = await drawArticle();
     if (res.status === "ok") {
-      setDraw(res.draw);
-      setSelections([]);
-      setResult(null);
-      setView("reading");
-      setDrawState("idle");
-      setTts("idle");
-      setWordLookup(null);
-      setSearchedWords(loadSearchedWords(res.draw.id));
-      setSearchedWordsOpen(false);
+      showDraw(res.draw);
       if (res.draw.status !== "done") {
         const token = {};
         pollTokenRef.current = token;
@@ -295,7 +294,7 @@ export function ArticleQuiz() {
     } else {
       setDrawState(res.status);
     }
-  }, [pollDraw]);
+  }, [pollDraw, showDraw]);
 
   // Reopens one of the caller's own draws from the list, whether it's done
   // (read the past summary/quiz result) or still generating (resume
@@ -304,22 +303,14 @@ export function ArticleQuiz() {
     async (id: string) => {
       const found = await fetchArticleInstance(id);
       if (!found) return;
-      setDraw(found);
-      setSelections([]);
-      setResult(null);
-      setDrawState("idle");
-      setTts("idle");
-      setWordLookup(null);
-      setSearchedWords(loadSearchedWords(found.id));
-      setSearchedWordsOpen(false);
-      setView("reading");
+      showDraw(found);
       if (found.status !== "done" || !found.translation) {
         const token = {};
         pollTokenRef.current = token;
         pollDraw(found.id, token);
       }
     },
-    [pollDraw],
+    [pollDraw, showDraw],
   );
 
   // Plays the English summary's read-aloud audio — generated and cached
