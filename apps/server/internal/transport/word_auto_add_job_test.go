@@ -11,6 +11,7 @@ import (
 	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/llm"
 	"buddy/server/internal/pipeline"
+	"buddy/server/internal/protocol"
 	"buddy/server/internal/store"
 	"buddy/server/internal/wordreview"
 )
@@ -151,6 +152,37 @@ func TestRunWordAutoAddSkipsSuggestionsFailingValidation(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("addedCount = %d, want 1 (the blank suggestion skipped)", count)
+	}
+}
+
+func TestRunWordAutoAddSkipsOversizedSuggestions(t *testing.T) {
+	st := newFakeStore()
+	ctx := context.Background()
+	if err := st.StartWordAutoAdd(ctx, "alex"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(map[string]any{"suggestions": []protocol.WordSuggestion{
+		{Word: strings.Repeat("a", 256)},
+		{Word: "meaning", Meaning: strings.Repeat("뜻", 2001)},
+		{Word: "example", Example: strings.Repeat("例", 2001)},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pipe := &pipeline.Pipeline{LLM: fakeLLM{completeFn: func([]llm.Message) (string, error) {
+		return string(raw), nil
+	}}, ChatModel: "m"}
+	words := newFakeWordReviewStore()
+	if err := RunWordAutoAddInline(ctx, pipe, words, st, nil, "alex"); err != nil {
+		t.Fatal(err)
+	}
+	status, count, err := st.GetWordAutoAddStatus(ctx, "alex")
+	if err != nil || status != store.JobStatusDone || count != 0 {
+		t.Fatalf("status=%q count=%d err=%v, want done with no added words", status, count, err)
+	}
+	saved, err := words.List(ctx, "alex")
+	if err != nil || len(saved) != 0 {
+		t.Fatalf("saved=%+v err=%v, want no saved words", saved, err)
 	}
 }
 

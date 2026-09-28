@@ -58,7 +58,3 @@ func EnqueueWordDefineJob(ctx context.Context, queue *asyncjob.Queue, pipe *pipe
 	key := payload.CacheKey
 	return queue.EnqueueAndRunInBackground(ctx, asyncjob.KindWordDefine, key, key, payload, WordDefineClaimTTL, WordDefineJobHandler(pipe, rdb, articles))
 }
-
-func RunWordDefineInline(ctx context.Context, pipe *pipeline.Pipeline, rdb redis.UniversalClient, req wordlookup.Request, articles newsarticle.Store) error {
-	return runWordDefine(ctx, pipe, rdb, wordDefineJobPayload{CacheKey: wordlookup.Key(req), Request: req}, articles)
-}

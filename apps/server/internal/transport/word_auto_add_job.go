@@ -6,7 +6,6 @@ import (
 	"log"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/pipeline"
@@ -25,18 +24,7 @@ const (
 	WordAutoAddWorkerConcurrency = 4
 )
 
-// maxAutoAddWordLen/maxAutoAddFieldLen mirror httpserver's maxWordLen/
-// maxWordFieldLen (buddy_word_reviews' VARCHAR(255)/TEXT column limits) —
-// duplicated here rather than imported because transport must never depend
-// on httpserver (the reverse is already true), and these are small,
-// DB-column-derived constants unlikely to drift apart.
-const (
-	maxAutoAddWordLen  = 255
-	maxAutoAddFieldLen = 2000
-)
-
-// maxAutoAddExclusionWords mirrors httpserver's identically-named constant —
-// caps how many of the learner's already-tracked words get listed in
+// maxAutoAddExclusionWords caps how many already-tracked words get listed in
 // pipe.SuggestNewWords' prompt, keeping the newest ones (words.List returns
 // most-recently-added first, the likeliest near-duplicates of a fresh
 // suggestion).
@@ -85,10 +73,7 @@ func generateAndSaveAutoAddWords(ctx context.Context, pipe *pipeline.Pipeline, w
 		word := strings.TrimSpace(s.Word)
 		meaning := strings.TrimSpace(s.Meaning)
 		example := strings.TrimSpace(s.Example)
-		if word == "" || utf8.RuneCountInString(word) > maxAutoAddWordLen {
-			continue
-		}
-		if utf8.RuneCountInString(meaning) > maxAutoAddFieldLen || utf8.RuneCountInString(example) > maxAutoAddFieldLen {
+		if err := wordreview.ValidateFields(word, meaning, example); err != nil {
 			continue
 		}
 		if _, err := SaveWordAndVerify(ctx, words, pipe, wordVerifyQueue, userID, word, meaning, example, word); err != nil {

@@ -21,22 +21,12 @@ import (
 // maxWordQueryLen.
 const maxQuizAnswerCheckLen = 200
 
-// quizAnswerCheckHandler asks pipeline.CheckQuizAnswer whether a learner's
-// typed quiz answer should count as correct, for the one case QuizPanel's
-// client-side isQuizAnswerAccepted can't already resolve on its own: an
-// answer that didn't literally match QuizQuestion.answer or
-// acceptableAnswers, but might still be a genuine synonym the model didn't
-// think to list at quiz-generation time. Not session-scoped — the question
-// itself (prompt/answer/acceptableAnswers) is already loaded client-side
-// (see App.tsx's endedQuiz), so this only needs what's in the request body,
-// the same "no session lookup needed" shape as wordSuggestHandler.
 type quizOwners struct{ Sessions, Words any }
 
-func quizAnswerCheckHandler(ident identity.Identifier, pipe *pipeline.Pipeline, caches ...wordreview.AnswerCache) http.HandlerFunc {
-	return quizAnswerCheckWithOwners(ident, pipe, quizOwners{}, caches...)
-}
-
-func quizAnswerCheckWithOwners(ident identity.Identifier, pipe *pipeline.Pipeline, owners quizOwners, caches ...wordreview.AnswerCache) http.HandlerFunc {
+// quizAnswerCheckHandler grades synonyms the client cannot match locally.
+// Owner guards stop grading deleted sessions/words, including on cache hits.
+// A nil cache disables reuse and background refinement.
+func quizAnswerCheckHandler(ident identity.Identifier, pipe *pipeline.Pipeline, owners quizOwners, cache wordreview.AnswerCache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)
 		if !ok {
@@ -73,10 +63,6 @@ func quizAnswerCheckWithOwners(ident identity.Identifier, pipe *pipeline.Pipelin
 		if err := workguard.Check(ctx); err != nil {
 			http.NotFound(w, r)
 			return
-		}
-		var cache wordreview.AnswerCache
-		if len(caches) > 0 {
-			cache = caches[0]
 		}
 		if cache != nil {
 			if result, found, err := cache.LookupAnswer(r.Context(), prompt, answer, learnerAnswer, time.Now()); err != nil {

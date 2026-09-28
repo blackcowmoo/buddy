@@ -4,22 +4,12 @@ import (
 	"context"
 	"log"
 	"strings"
-	"unicode/utf8"
 
 	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/protocol"
 	"buddy/server/internal/wordreview"
 	"buddy/server/internal/workguard"
-)
-
-// maxCapturedWordLen/maxCapturedFieldLen mirror httpserver's
-// maxWordLen/maxWordFieldLen — the same buddy_word_reviews column limits —
-// since captureCorrectionWords bypasses wordSaveHandler's own request-body
-// validation and writes to wordreview.Store directly.
-const (
-	maxCapturedWordLen  = 255
-	maxCapturedFieldLen = 2000
 )
 
 // captureCorrectionWords adds one conversation turn's vocabulary/phrasing
@@ -71,9 +61,7 @@ func captureCorrectionWords(ctx context.Context, pipe *pipeline.Pipeline, words 
 			// capture behavior; existing entries can use the meaning cleanup.
 			meaning = strings.TrimSpace(issue.ExplanationTranslation)
 		}
-		if utf8.RuneCountInString(word) > maxCapturedWordLen ||
-			utf8.RuneCountInString(meaning) > maxCapturedFieldLen ||
-			utf8.RuneCountInString(example) > maxCapturedFieldLen {
+		if err := wordreview.ValidateFields(word, meaning, example); err != nil {
 			continue // wildly oversized LLM output isn't worth failing the correction save over
 		}
 

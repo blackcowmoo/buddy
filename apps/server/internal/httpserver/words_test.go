@@ -573,6 +573,35 @@ func TestWordSaveRejectsEmptyWord(t *testing.T) {
 	requireStatus(t, rec, http.StatusBadRequest)
 }
 
+func TestWordSaveRejectsOversizedFieldsBeforeSaving(t *testing.T) {
+	for _, field := range []string{"word", "meaning", "example"} {
+		t.Run(field, func(t *testing.T) {
+			fields := map[string]string{"word": "word", "meaning": "뜻", "example": "An example."}
+			limit, message := 2000, "meaning/example is too long"
+			if field == "word" {
+				limit, message = 255, "word is too long"
+			}
+			fields[field] = strings.Repeat("가", limit+1)
+			body, err := json.Marshal(fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			words := &fakeWordStore{}
+			h := wordSaveHandler(fakeIdentifier{id: "alex", ok: true}, words, noopVerifyPipeline(), nil)
+			rec := httptest.NewRecorder()
+			h(rec, httptest.NewRequest(http.MethodPost, "/api/words/save", bytes.NewReader(body)))
+			requireStatus(t, rec, http.StatusBadRequest)
+			if got := rec.Body.String(); got != message+"\n" {
+				t.Fatalf("response = %q, want %q", got, message)
+			}
+			saved, err := words.List(context.Background(), "alex")
+			if err != nil || len(saved) != 0 {
+				t.Fatalf("saved=%+v err=%v, want no saved words", saved, err)
+			}
+		})
+	}
+}
+
 func TestWordSaveUnauthorizedWhenIdentifyFails(t *testing.T) {
 	h := wordSaveHandler(fakeIdentifier{ok: false}, &fakeWordStore{}, noopVerifyPipeline(), nil)
 

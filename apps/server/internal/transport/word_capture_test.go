@@ -81,23 +81,32 @@ func TestCaptureCorrectionWordsSkipsNoOpAndEmptySuggestions(t *testing.T) {
 // unexpectedly long LLM output, without letting that fail the correction
 // save itself.
 func TestCaptureCorrectionWordsSkipsOversizedFields(t *testing.T) {
-	pipe := &pipeline.Pipeline{}
-	words := newFakeWordReviewStore()
-	c := protocol.Correction{
-		Corrected: "Whatever.",
-		Issues: []protocol.Issue{
-			{Type: "vocabulary", Span: "x", Suggestion: strings.Repeat("a", maxCapturedWordLen+1)},
-		},
-	}
+	for _, field := range []string{"word", "meaning", "legacy meaning", "example"} {
+		t.Run(field, func(t *testing.T) {
+			issue := protocol.Issue{Type: "vocabulary", Span: "x", Suggestion: "word"}
+			example := "Whatever."
+			switch field {
+			case "word":
+				issue.Suggestion = strings.Repeat("a", 256)
+			case "meaning":
+				issue.StudyMeaning = strings.Repeat("뜻", 2001)
+			case "legacy meaning":
+				issue.ExplanationTranslation = strings.Repeat("뜻", 2001)
+			case "example":
+				example = strings.Repeat("例", 2001)
+			}
+			words := newFakeWordReviewStore()
+			captureCorrectionWords(context.Background(), &pipeline.Pipeline{}, words, nil, "alex",
+				protocol.Correction{Corrected: example, Issues: []protocol.Issue{issue}})
 
-	captureCorrectionWords(context.Background(), pipe, words, nil, "alex", c)
-
-	list, err := words.List(context.Background(), "alex")
-	if err != nil {
-		t.Fatalf("List() error = %v", err)
-	}
-	if len(list) != 0 {
-		t.Fatalf("List() = %+v, want the oversized suggestion skipped", list)
+			list, err := words.List(context.Background(), "alex")
+			if err != nil {
+				t.Fatalf("List() error = %v", err)
+			}
+			if len(list) != 0 {
+				t.Fatalf("List() = %+v, want the oversized suggestion skipped", list)
+			}
+		})
 	}
 }
 

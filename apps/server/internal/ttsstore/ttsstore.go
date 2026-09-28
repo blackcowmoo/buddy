@@ -255,36 +255,7 @@ func (s *Store) SweepExpired(ctx context.Context, ttl time.Duration) (int, error
 	return len(keys), nil
 }
 
-// TTL/SweepInterval bound RunSweepLoop. TTL matches this feature's explicit
-// spec (regenerate audio not replayed in three months rather than storing
-// it forever); the interval is coarse — unlike article-study's orphan
-// sweep, a few extra hours of storage before a stale entry gets swept isn't
-// a correctness concern, so there's no reason to poll aggressively.
-const (
-	TTL           = 90 * 24 * time.Hour
-	SweepInterval = 6 * time.Hour
-)
-
-// RunSweepLoop runs SweepExpired every SweepInterval until ctx is canceled
-// — started unconditionally at server startup alongside the other sweep
-// loops (see cmd/server/main.go), a no-op (0 deleted) whenever nothing has
-// aged past TTL yet.
-func RunSweepLoop(ctx context.Context, store *Store) {
-	ticker := time.NewTicker(SweepInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			n, err := store.SweepExpired(context.Background(), TTL)
-			if err != nil {
-				log.Printf("ttsstore: sweep: %v", err)
-				continue
-			}
-			if n > 0 {
-				log.Printf("ttsstore: sweep: removed %d expired entries", n)
-			}
-		}
-	}
-}
+// TTL matches the audio retention policy: regenerate clips not replayed in
+// three months rather than storing them forever. Callers that perform cache
+// cleanup pass this value to SweepExpired.
+const TTL = 90 * 24 * time.Hour

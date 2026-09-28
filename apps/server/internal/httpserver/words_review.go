@@ -8,18 +8,12 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/identity"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/transport"
 	"buddy/server/internal/wordreview"
-)
-
-const (
-	maxWordLen      = 255 // buddy_word_reviews.word is VARCHAR(255)
-	maxWordFieldLen = 2000
 )
 
 // wordItem is the frontend projection of a tracked word. Legacy or partially
@@ -96,15 +90,8 @@ func wordSaveHandler(ident identity.Identifier, words wordreview.Store, pipe *pi
 		word := strings.TrimSpace(body.Word)
 		meaning := strings.TrimSpace(body.Meaning)
 		example := strings.TrimSpace(body.Example)
-		if word == "" {
-			http.Error(w, "word is required", http.StatusBadRequest)
-			return
-		}
-		if !requireMaxRunes(w, word, maxWordLen, "word is too long") {
-			return
-		}
-		if utf8.RuneCountInString(meaning) > maxWordFieldLen || utf8.RuneCountInString(example) > maxWordFieldLen {
-			http.Error(w, "meaning/example is too long", http.StatusBadRequest)
+		if err := wordreview.ValidateFields(word, meaning, example); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		saved, err := transport.SaveWordAndVerify(
