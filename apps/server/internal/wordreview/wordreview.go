@@ -219,10 +219,15 @@ type Word struct {
 	PreviousMeaning      string
 }
 
-// Bump this when all saved meanings need another pass. MeaningVersion is the
-// learner-confirmed version; MeaningTargetVersion identifies the pending work
-// or result, and never advances the confirmed version on its own.
+// Bump this when saved meanings need assessment against a new contract.
+// MeaningVersion is the confirmed version; MeaningTargetVersion identifies
+// pending work or its result. Changed results await the learner's choice.
 const CurrentMeaningVersion = 2
+
+// MeaningOptimizationVersion starts the fast necessity check and automatic
+// confirmation of byte-identical meanings. Keep the in-flight version-2
+// migration unchanged; the next contract bump activates both optimizations.
+const MeaningOptimizationVersion = 3
 
 const (
 	MeaningPending   = "pending"
@@ -254,7 +259,8 @@ type MeaningSelectionStore interface {
 // MeaningStore updates glosses in place, preserving identity and review history.
 // StartMeaningCleanup schedules older versions, including previously confirmed
 // entries, once per version. Pending rows are durable work intent; a list refresh
-// can resume an interrupted enqueue. Results and failures await learner action.
+// can resume an interrupted enqueue. Changed results and failures await learner
+// action; identical results confirm automatically from MeaningOptimizationVersion.
 type MeaningStore interface {
 	StartMeaningCleanup(context.Context, string) error
 	PendingMeanings(context.Context, string) ([]Word, error)
