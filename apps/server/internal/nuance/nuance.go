@@ -86,7 +86,7 @@ func (c Content) Validate() error {
 	}
 	ids, sentences, used := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, q := range c.Questions {
-		if !nonempty(q.ID, q.Context, q.Sentence, q.Translation, q.Explanation) || !words[strings.ToLower(q.Answer)] || !exactAnswer(c.Words, q.Answer) || len(q.ID) > 64 || ids[q.ID] || sentences[q.Sentence] || strings.Count(q.Sentence, "____") != 1 || strings.Contains(strings.Replace(q.Sentence, "____", "", 1), "_") {
+		if !nonempty(q.ID) || !validQuestionText(q) || !exactAnswer(c.Words, q.Answer) || len(q.ID) > 64 || ids[q.ID] || sentences[q.Sentence] {
 			return fmt.Errorf("%w: invalid question", ErrInvalid)
 		}
 		ids[q.ID], sentences[q.Sentence], used[strings.ToLower(q.Answer)] = true, true, true
@@ -124,10 +124,7 @@ func (c Content) ValidateSupplement(questions []Question) error {
 	if len(questions) != len(missing) {
 		return fmt.Errorf("%w: supplement must cover each missing word once", ErrInvalid)
 	}
-	words, required := map[string]bool{}, map[string]bool{}
-	for _, w := range c.Words {
-		words[w.Word] = true
-	}
+	required := map[string]bool{}
 	for _, word := range missing {
 		required[word] = true
 	}
@@ -136,7 +133,7 @@ func (c Content) ValidateSupplement(questions []Question) error {
 		sentences[q.Sentence] = true
 	}
 	for _, q := range questions {
-		if !nonemptyQuestion(q) || !words[q.Answer] || !required[q.Answer] || covered[q.Answer] || sentences[q.Sentence] || strings.Count(q.Sentence, "____") != 1 || strings.Contains(strings.Replace(q.Sentence, "____", "", 1), "_") {
+		if !validQuestionText(q) || !required[q.Answer] || covered[q.Answer] || sentences[q.Sentence] {
 			return fmt.Errorf("%w: invalid supplement question", ErrInvalid)
 		}
 		covered[q.Answer], sentences[q.Sentence] = true, true
@@ -144,13 +141,13 @@ func (c Content) ValidateSupplement(questions []Question) error {
 	return nil
 }
 
-func nonemptyQuestion(q Question) bool {
+func validQuestionText(q Question) bool {
 	for _, value := range []string{q.Context, q.Sentence, q.Translation, q.Answer, q.Explanation} {
 		if strings.TrimSpace(value) == "" {
 			return false
 		}
 	}
-	return true
+	return strings.Count(q.Sentence, "____") == 1 && !strings.Contains(strings.Replace(q.Sentence, "____", "", 1), "_")
 }
 
 func exactAnswer(words []Word, answer string) bool {
@@ -230,13 +227,7 @@ func (l *Lesson) Apply(a Action, now time.Time) error {
 		if len(l.State.Queue) == 0 || l.State.Queue[0] != a.QuestionID || l.State.Feedback != nil {
 			return ErrConflict
 		}
-		valid := false
-		for _, w := range l.Content.Words {
-			if w.Word == a.Selected {
-				valid = true
-			}
-		}
-		if !valid {
+		if !exactAnswer(l.Content.Words, a.Selected) {
 			return ErrInvalid
 		}
 		var question *Question
