@@ -1,6 +1,6 @@
 // Playback-speed preference for read-aloud audio (chat's per-message 🔊
 // button and "오늘의 아티클"'s read-aloud, see App.tsx's playAudio/
-// ArticleQuiz.tsx's handleRead) — one global rate, set once via the
+// ArticleReadAloud) — one global rate, set once via the
 // hamburger menu (see TopBar's MenuPanel) and applied to every play,
 // instead of a per-tap choice from a popover. The old popover (several rate
 // buttons behind each message's 🔊 tap) rendered below the button and could

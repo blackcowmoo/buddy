@@ -4,7 +4,7 @@ import type { Correction } from "../lib/protocol";
 import { LoadingHint } from "../components/LoadingHint";
 import { LearningPage } from "../components/LearningPage";
 import { DatedList } from "../components/DatedList";
-import { HistoryItemContent } from "../components/HistoryItemContent";
+import { HistoryItem } from "../components/HistoryItem";
 import { WordSearchControl } from "../components/WordSearchControl";
 import { formatMessageTime } from "../lib/time";
 import { checkWriting, deleteWritingPrompt, drawWritingPrompt, fetchWritingPrompt, fetchWritingPrompts, type WritingPrompt } from "../lib/writing";
@@ -104,16 +104,14 @@ export function Writing() {
         {state === "loading" && <LoadingHint />}
         {state === "ready" && prompts.length === 0 && <EmptyState title="아직 만든 작문 문제가 없어요." description="‘새 문제 만들기’로 시작해 보세요. 모르는 단어는 답안 옆에서 찾아볼 수 있어요." />}
         <DatedList items={prompts}>{(item) => (
-          <div className="session-row">
-            <button type="button" className="session-item" onClick={() => void openPrompt(item)}>
-              <HistoryItemContent
-                title={item.korean || "문제를 만드는 중…"}
-                badges={item.status !== "done" && <span className="study-summary-pending-badge"><span className="spinning">⏳</span> 생성 중</span>}
-                meta={formatMessageTime(item.createdAt)}
-              />
-            </button>
-            <button type="button" className="ghost icon-btn session-delete" onClick={() => void deletePrompt(item.id)} aria-label="작문 문제 삭제" title="작문 문제 삭제">🗑</button>
-          </div>
+          <HistoryItem
+            title={item.korean || "문제를 만드는 중…"}
+            badges={item.status !== "done" && <span className="study-summary-pending-badge"><span className="spinning">⏳</span> 생성 중</span>}
+            meta={formatMessageTime(item.createdAt)}
+            onOpen={() => void openPrompt(item)}
+            onDelete={() => void deletePrompt(item.id)}
+            deleteLabel="작문 문제 삭제"
+          />
         )}</DatedList>
       </>
     )}

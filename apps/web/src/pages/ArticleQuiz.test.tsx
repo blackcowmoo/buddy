@@ -43,10 +43,8 @@ import { formatAbsoluteDate, formatDateDivider } from "../lib/time";
 import { checkDefinedWordStatus, defineWord } from "../lib/wordSearch";
 import { fetchWords, saveWord } from "../lib/wordReview";
 
-// jsdom doesn't implement HTMLMediaElement.play() — stub it so handleRead's
-// el.play() resolves instead of throwing "not implemented", the same reason
-// kokoro.test.ts stubs the global Audio constructor for its own (unrelated,
-// client-side chat read-aloud) tests.
+// jsdom has no audio playback; ArticleReadAloud uses the real media element
+// with play/pause stubbed so its event-driven controls remain testable.
 beforeEach(() => {
   HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
   HTMLMediaElement.prototype.pause = vi.fn();
@@ -175,7 +173,7 @@ describe("ArticleQuiz page — list view", () => {
     expect(await screen.findByText("[BBC] Story 0")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "이전 아티클 더 보기" })).not.toBeInTheDocument();
     expect(page.scrollTop).toBe(920);
-    const titles = [...page.querySelectorAll(".article-instance-item .title")].map((title) => title.textContent);
+    const titles = [...page.querySelectorAll(".session-item .title")].map((title) => title.textContent);
     expect(titles).toEqual(Array.from({ length: 22 }, (_, i) => `[BBC] Story ${21 - i}`));
     expect(screen.getAllByText(formatDateDivider(1700000000))).toHaveLength(1);
   });
@@ -511,7 +509,7 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
 
     // Regression guard: requesting the "ambient" audio session type must run
     // synchronously in the same click as play(), before the network request
-    // for the audio even starts — see handleRead's doc comment — so
+    // for the audio even starts — see ArticleReadAloud — so
     // read-aloud mixes with (never pauses) music already playing in another
     // app.
     expect(audioSession.type).toBe("ambient");

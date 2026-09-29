@@ -3,7 +3,6 @@ import { EmptyState, LearningIntro } from "../components/LearningIntro";
 import { confirmThenDelete } from "../lib/confirmDelete";
 import {
   answerArticle,
-  articleAudioURL,
   deleteArticleInstance,
   drawArticle,
   fetchArticleInstance,
@@ -16,10 +15,9 @@ import { formatAbsoluteDate, formatMessageTime } from "../lib/time";
 import { QuizChoices } from "../components/QuizChoices";
 import { LearningPage } from "../components/LearningPage";
 import { DatedList } from "../components/DatedList";
-import { HistoryItemContent } from "../components/HistoryItemContent";
+import { HistoryItem } from "../components/HistoryItem";
+import { ArticleReadAloud } from "../components/ArticleReadAloud";
 import { usePollScaffold } from "../hooks/usePollScaffold";
-import { requestAmbientAudioSession } from "../lib/audioSession";
-import { loadPlaybackRate } from "../lib/ttsSettings";
 import { checkDefinedWordStatus, defineWord } from "../lib/wordSearch";
 import { fetchWords, saveWord, type WordReviewItem, type WordReviewStatus } from "../lib/wordReview";
 import type { WordSuggestion } from "../lib/protocol";
@@ -53,7 +51,6 @@ export function shouldCenterWordLookup(anchorLeft: number, panelWidth: number, v
 type View = "reading" | "quiz" | "result" | null;
 
 type DrawState = "idle" | "drawing" | "noMore" | "error";
-type TtsState = "idle" | "loading" | "speaking" | "error";
 
 type SearchedWord = {
   key: number;
@@ -103,12 +100,9 @@ function loadSearchedWords(articleID: string): SearchedWord[] {
 // "오늘의 아티클": draws a news article the learner hasn't seen before (see
 // lib/articles.ts's drawArticle, which excludes every article already drawn
 // — no daily limit, only repeats are excluded), shows an English study
-// paragraph to read (with an optional read-aloud for listening practice —
-// audio generated and cached server-side once per shared article, see
-// lib/articles.ts's articleAudioURL, unlike App.tsx's per-message chat
-// read-aloud, which is still generated client-side since each reply is
-// unique to that conversation), then a native-language multiple-choice
-// comprehension check. Past attempts live in their own list here, the same
+// paragraph to read (with server-generated audio via ArticleReadAloud),
+// then a native-language multiple-choice comprehension check.
+// Past attempts live in their own list here, the same
 // "instant, unlimited, own list" shape as InstantSessions.tsx.
 export function ArticleQuiz() {
   const [state, setState] = useState<LoadState>("loading");
@@ -121,11 +115,6 @@ export function ArticleQuiz() {
   const [selections, setSelections] = useState<(number | null)[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<ArticleAnswerResult | null>(null);
-  const [tts, setTts] = useState<TtsState>("idle");
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  // Invalidates a pending play() rejection when the learner cancels before
-  // the browser has finished starting playback.
-  const ttsAttemptRef = useRef(0);
 
   // A learner tapping a word inside the reading paragraph can look it up and,
   // if it's new to them, add it to their vocabulary study list — the same
@@ -275,7 +264,6 @@ export function ArticleQuiz() {
     setResult(null);
     setView("reading");
     setDrawState("idle");
-    setTts("idle");
     setWordLookup(null);
     setSearchedWords(loadSearchedWords(next.id));
     setSearchedWordsOpen(false);
@@ -312,46 +300,6 @@ export function ArticleQuiz() {
     },
     [pollDraw, showDraw],
   );
-
-  // Plays the English summary's read-aloud audio — generated and cached
-  // server-side once per shared article (see lib/articles.ts's
-  // articleAudioURL), so this is just pointing a plain <audio> element at
-  // it, the same "src + play(), let the browser handle buffering" shape as
-  // Recordings.tsx's playback. "loading"/"speaking" are driven by the
-  // element's own buffering/playing events (below) rather than tracked by
-  // hand, so the label never claims audio is playing before it actually is.
-  const handleRead = useCallback(() => {
-    const el = audioRef.current;
-    if (!el || !draw) return;
-    const attempt = ++ttsAttemptRef.current;
-    // Must run synchronously in this click, before play() — see
-    // requestAmbientAudioSession's doc comment.
-    requestAmbientAudioSession();
-    setTts("loading");
-    el.playbackRate = loadPlaybackRate();
-    el.src = articleAudioURL(draw.id);
-    el.play().catch((err) => {
-      if (ttsAttemptRef.current !== attempt) return;
-      console.error("tts:", err);
-      // Show the failure briefly instead of silently reverting to the idle
-      // "🔊 읽어주기" label, which reads as if nothing was ever pressed even
-      // though playback genuinely failed.
-      setTts("error");
-      setTimeout(() => setTts("idle"), 2000);
-    });
-  }, [draw]);
-
-  // Stops both an audible read and one that is still buffering. Resetting the
-  // position means the next "읽어주기" starts from the beginning.
-  const cancelRead = useCallback(() => {
-    ttsAttemptRef.current += 1;
-    const el = audioRef.current;
-    if (el) {
-      el.pause();
-      el.currentTime = 0;
-    }
-    setTts("idle");
-  }, []);
 
   const followWordLookup = useCallback((articleID: string, key: number, word: string) => {
     const lookupKey = `${articleID}:${key}`;
@@ -511,12 +459,6 @@ export function ArticleQuiz() {
     setResult(null);
     setSelections([]);
     setDrawState("idle");
-    // The reading view's <audio> element unmounts with it (view leaves
-    // "reading"), which does stop playback — but that's a DOM-level effect
-    // its own onEnded/onError event never fires for, so without this the
-    // "재생 중…"/"불러오는 중…" label would otherwise survive stale into
-    // whatever's opened next.
-    setTts("idle");
     setWordLookup(null);
     setSearchedWordsOpen(false);
     loadInstances();
@@ -663,35 +605,21 @@ export function ArticleQuiz() {
             <EmptyState title="아직 읽은 아티클이 없어요." description="‘새 아티클 뽑기’를 눌러 읽을거리를 만나 보세요. 읽던 글은 이 목록에서 다시 열 수 있어요." />
           )}
           <DatedList items={visibleInstances}>{(inst) => (
-            <div className="session-row article-instance-row">
-              <button
-                type="button"
-                className="session-item article-instance-item"
-                onClick={() => void openInstance(inst.id)}
-              >
-                <HistoryItemContent
-                  title={`[${inst.source}] ${inst.title}`}
-                  badges={inst.status !== "done" && (
-                    <span className="study-summary-pending-badge" title="아티클을 만드는 중">
-                      <span className="spinning">⏳</span> 생성 중
-                    </span>
-                  )}
-                  meta={<>
-                    {formatMessageTime(inst.createdAt)}
-                    {inst.answered && (inst.correct ? " · 정답" : " · 오답")}
-                  </>}
-                />
-              </button>
-              <button
-                type="button"
-                className="ghost icon-btn session-delete"
-                onClick={() => void handleDelete(inst.id)}
-                aria-label="아티클 퀴즈 삭제"
-                title="아티클 퀴즈 삭제"
-              >
-                🗑
-              </button>
-            </div>
+            <HistoryItem
+              title={`[${inst.source}] ${inst.title}`}
+              badges={inst.status !== "done" && (
+                <span className="study-summary-pending-badge" title="아티클을 만드는 중">
+                  <span className="spinning">⏳</span> 생성 중
+                </span>
+              )}
+              meta={<>
+                {formatMessageTime(inst.createdAt)}
+                {inst.answered && (inst.correct ? " · 정답" : " · 오답")}
+              </>}
+              onOpen={() => void openInstance(inst.id)}
+              onDelete={() => void handleDelete(inst.id)}
+              deleteLabel="아티클 퀴즈 삭제"
+            />
           )}</DatedList>
 
           {visibleInstances.length < instances.length && (
@@ -716,36 +644,7 @@ export function ArticleQuiz() {
                   the selected token. A <p> cannot legally contain that
                   panel and browsers may re-parent it unpredictably. */}
               {searchableSummary}
-              <audio
-                ref={audioRef}
-                style={{ display: "none" }}
-                onPlaying={() => setTts("speaking")}
-                onWaiting={() => setTts("loading")}
-                onEnded={() => setTts("idle")}
-                onError={() => {
-                  setTts("error");
-                  setTimeout(() => setTts("idle"), 2000);
-                }}
-              />
-              <button
-                type="button"
-                className="ghost article-read-aloud-btn"
-                onClick={handleRead}
-                disabled={tts !== "idle"}
-              >
-                {tts === "loading"
-                  ? "불러오는 중…"
-                  : tts === "speaking"
-                    ? "재생 중…"
-                    : tts === "error"
-                      ? "재생 실패, 다시 시도해주세요"
-                      : "🔊 읽어주기"}
-              </button>
-              {(tts === "loading" || tts === "speaking") && (
-                <button type="button" className="ghost article-read-aloud-btn" onClick={cancelRead}>
-                  취소
-                </button>
-              )}
+              <ArticleReadAloud key={draw.id} articleId={draw.id} />
               <button type="button" className="quiz-start-btn" onClick={startQuiz}>
                 문제풀기
               </button>

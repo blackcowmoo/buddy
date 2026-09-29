@@ -14,7 +14,7 @@ declare global {
 // would stop the learner's music. Trade-off: like any other ambient sound,
 // playback stays silent while the ring/silent switch is on. Call
 // synchronously inside the click handler that also starts playback — see
-// ArticleQuiz.tsx's/App.tsx's handleRead/playMessage.
+// ArticleReadAloud and App.tsx's playAudio.
 export function requestAmbientAudioSession(): void {
   const session = navigator.audioSession;
   if (session) session.type = "ambient";

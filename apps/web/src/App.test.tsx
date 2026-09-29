@@ -2598,7 +2598,7 @@ describe("per-message tts playback", () => {
   it("plays a message's read-aloud audio immediately on tap, with no popover", async () => {
     // Regression guard: read-aloud is generated and cached server-side (see
     // lib/sessions.ts's messageAudioURL), so this is a plain <audio src> +
-    // play(), the same shape as ArticleQuiz.tsx's handleRead. Also guards the
+    // play(), the same shape as ArticleReadAloud. Also guards the
     // fix this replaced: the button used to open a per-rate popover that
     // could render clipped behind the chat's own fixed layout — see
     // StudyControl's doc comment — so a tap must now play right away.
