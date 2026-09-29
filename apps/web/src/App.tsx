@@ -930,46 +930,23 @@ export function App() {
     backToList();
   }, [activeSessionId, backToList]);
 
-  // Forces a stuck "no issues found" wrap-up to regenerate — see
-  // httpserver.sessionRestudyHandler, which only accepts this while
-  // studySummaryStatus is "done" with an empty summary (the same state
-  // EndConversationControl gates showing its "다시 확인하기" button on): an
-  // occasional case where GenerateStudySummary's LLM call returned a
-  // valid-but-empty result despite real issues in the transcript, with no
-  // automatic way back to pending. Switches straight to the "정리 중" view
-  // and reuses pollEndedField the same way reopening a still-generating
-  // room does, since the background job runs the identical path either way.
-  const restudyConversation = useCallback(async () => {
+  // Each restart updates only its own job. A fresh quiz also discards the
+  // previous questions/completion flag while the server regenerates them.
+  const restartEndedField = useCallback(async (field: "studySummary" | "quiz") => {
     if (!activeSessionId) return;
     const token = pollTokenRef.current;
-    patchConversationEnd({ studySummaryStatus: "pending" });
-    const ok = await restudySession(activeSessionId);
+    const statusField = `${field}Status` as const;
+    patchConversationEnd({
+      [statusField]: "pending",
+      ...(field === "quiz" ? { quiz: [], quizCompleted: false } : {}),
+    });
+    const restart = field === "studySummary" ? restudySession : resetQuiz;
+    const ok = await restart(activeSessionId);
     if (!ok) {
-      patchConversationEnd({ studySummaryStatus: "failed" });
+      patchConversationEnd({ [statusField]: "failed" });
       return;
     }
-    if (token) pollEndedField(activeSessionId, token, "studySummary");
-  }, [activeSessionId, patchConversationEnd, pollEndedField]);
-
-  // Regenerates an ended session's practice quiz from scratch on demand —
-  // see httpserver.sessionQuizResetHandler, the "퀴즈 다시 만들기" button in
-  // EndConversationControl. Unlike restudyConversation, this isn't limited
-  // to a stuck-empty result: a learner can ask for a fresh set of questions
-  // even when the current quiz already has real content (e.g. one generated
-  // before answerMeaning/acceptableAnswers existed). Clears the local quiz
-  // state immediately so the panel shows "준비하는 중" rather than the stale
-  // quiz while the background job regenerates it, and reuses pollEndedField
-  // the same way reopening a still-generating room does.
-  const resetConversationQuiz = useCallback(async () => {
-    if (!activeSessionId) return;
-    const token = pollTokenRef.current;
-    patchConversationEnd({ quiz: [], quizStatus: "pending", quizCompleted: false });
-    const ok = await resetQuiz(activeSessionId);
-    if (!ok) {
-      patchConversationEnd({ quizStatus: "failed" });
-      return;
-    }
-    if (token) pollEndedField(activeSessionId, token, "quiz");
+    if (token) pollEndedField(activeSessionId, token, field);
   }, [activeSessionId, patchConversationEnd, pollEndedField]);
 
   // Reflects a just-completed quiz (see markQuizCompleted, called from
@@ -1282,9 +1259,9 @@ export function App() {
               quizStatus={endedQuizStatus}
               quizCompleted={endedQuizCompleted}
               onEnd={endConversation}
-              onRestudy={restudyConversation}
+              onRestudy={() => void restartEndedField("studySummary")}
               onQuizCompleted={handleQuizCompleted}
-              onQuizReset={resetConversationQuiz}
+              onQuizReset={() => void restartEndedField("quiz")}
             />
           </>
         }

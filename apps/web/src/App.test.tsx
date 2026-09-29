@@ -1151,7 +1151,7 @@ describe("room list", () => {
   });
 
   // Guards the "퀴즈 다시 만들기" reset button (see
-  // httpserver.sessionQuizResetHandler): unlike restudyConversation, this is
+  // httpserver.sessionQuizResetHandler): unlike summary regeneration, this is
   // available whenever a quiz already has real questions, not just a
   // stuck-empty one. Clicking it must call resetQuiz, show the same
   // "준비하는 중" state a still-generating quiz shows, and pick up the
@@ -1308,6 +1308,41 @@ describe("room list", () => {
       await flushUntil(() => screen.queryByText("Focus on third-person -s.") !== null);
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it.each(["studySummary", "quiz"] as const)("does not poll after a failed %s restart", async (field) => {
+    vi.useFakeTimers();
+    const session = {
+      id: "s1", title: "Finished room", createdAt: 1, updatedAt: 2, ended: true,
+      studySummaryStatus: "done" as const, quizStatus: "done" as const,
+      studySummary: field === "quiz" ? [{ english: "Keep this summary.", translation: "이 요약은 유지해요." }] : [],
+      quiz: [{ prompt: "He ___ home.", answer: "goes", translation: "그는 집에 가요.", explanation: "Present tense.", explanationTranslation: "현재 시제예요." }],
+      quizCompleted: true,
+    };
+    vi.mocked(fetchSessions).mockResolvedValue([session]);
+    vi.mocked(fetchSessionDetail).mockResolvedValue({ session, turns: [], hasMore: false });
+    let finishRestart!: (ok: boolean) => void;
+    const restart = field === "studySummary" ? restudySession : resetQuiz;
+    vi.mocked(restart).mockReturnValueOnce(new Promise((resolve) => { finishRestart = resolve; }));
+    await act(async () => { render(<App />); });
+    await act(async () => { fireEvent.click(screen.getByText("Finished room")); });
+    fireEvent.click(screen.getByRole("button", { name: "대화 종료" }));
+    fireEvent.click(screen.getByRole("button", { name: field === "quiz" ? "퀴즈 다시 만들기" : "다시 확인하기" }));
+
+    expect(restart).toHaveBeenCalledExactlyOnceWith("s1");
+    expect(field === "quiz" ? restudySession : resetQuiz).not.toHaveBeenCalled();
+    expect(screen.getByText(field === "quiz" ? "퀴즈를 준비하는 중…" : "학습 피드백을 정리하는 중…")).toBeInTheDocument();
+    await act(async () => { finishRestart(false); });
+    await act(() => vi.advanceTimersByTimeAsync(4000));
+
+    expect(fetchSessionDetail).toHaveBeenCalledTimes(1);
+    if (field === "studySummary") {
+      expect(screen.getByText("학습 피드백을 정리하지 못했어요. 잠시 후 다시 확인해주세요.")).toBeInTheDocument();
+    } else {
+      expect(screen.getByText("Keep this summary.")).toBeInTheDocument();
+      expect(screen.queryByText("학습 완료로 표시했어요.")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "퀴즈 풀기" })).not.toBeInTheDocument();
     }
   });
 

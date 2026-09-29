@@ -242,16 +242,20 @@ export function WordReview() {
     );
   };
 
-  const startQuiz = useCallback(() => {
-    setQuizQueue(buildReviewQueue(words, Date.now() / 1000));
-    setIndex(0);
+  const resetQuestion = useCallback(() => {
     setAnswers([]);
     setSelectedChoice(null);
     setChecked(false);
     setCheckingSimilarity(false);
     setSimilarHint(false);
+  }, []);
+
+  const startQuiz = useCallback(() => {
+    setQuizQueue(buildReviewQueue(words, Date.now() / 1000));
+    setIndex(0);
+    resetQuestion();
     setCorrectCount(0);
-  }, [words]);
+  }, [words, resetQuestion]);
 
   const backToList = useCallback(() => setQuizQueue(null), []);
 
@@ -303,12 +307,26 @@ export function WordReview() {
         : selectedChoice === currentItem.word.meaning
       : false;
 
+  const submitReview = useCallback(async (item: QuizItem, correct: boolean, repeat = false) => {
+    const updated = await reviewWord(item.word.id, correct, repeat, currentQuestion(item.word)!.version);
+    if (!updated) return;
+    setWords((prev) => prev.map((w) => w.id === updated.id ? updated : w));
+    setDueCount((count) => Math.max(0, count - 1));
+    if (!correct) {
+      // A miss resets stage to 0. Update queued retries too, so they cannot
+      // offer the forced-guess action based on the word's pre-miss stage.
+      setQuizQueue((prev) => prev?.map((queued) =>
+        queued.word.id === updated.id ? { ...queued, word: updated } : queued,
+      ) ?? prev);
+    }
+  }, []);
+
   const finishCheck = useCallback(
     (item: QuizItem, correct: boolean) => {
       setChecked(true);
       if (correct) {
         // The review call for a correct answer is deferred until the
-        // learner advances (see advanceCorrect) rather than fired here,
+        // learner advances rather than fired here,
         // because "억지로 맞췄어요" needs to pick between two different
         // outcomes (advance vs. repeat) before anything is sent.
         setCorrectCount((c) => c + 1);
@@ -320,20 +338,9 @@ export function WordReview() {
       // that same-day retry now rather than only next time they open
       // review.
       setQuizQueue((prev) => (prev ? [...prev, reshuffleRecognitionChoices(item)] : prev));
-      void reviewWord(item.word.id, false, false, currentQuestion(item.word)!.version).then((updated) => {
-        if (!updated) return;
-        setWords((prev) => prev.map((w) => (w.id === updated.id ? updated : w)));
-        // The item is also present in the in-progress queue. Keep that copy
-        // in sync with the server immediately after a miss: an incorrect
-        // answer resets stage to 0, and a later same-session retry must not
-        // offer the "forced guess" action based on the stale pre-miss stage.
-        setQuizQueue((prev) => prev?.map((queued) =>
-          queued.word.id === updated.id ? { ...queued, word: updated } : queued,
-        ) ?? prev);
-        setDueCount((c) => Math.max(0, c - 1));
-      });
+      void submitReview(item, false);
     },
-    [],
+    [submitReview],
   );
 
   const checkRecall = useCallback(async () => {
@@ -378,45 +385,15 @@ export function WordReview() {
     if (checked) nextButtonRef.current?.focus();
   }, [checked]);
 
-  const advanceToNext = useCallback(() => {
-    setIndex(index + 1);
-    setAnswers([]);
-    setSelectedChoice(null);
-    setChecked(false);
-    setCheckingSimilarity(false);
-    setSimilarHint(false);
-  }, [index]);
-
-  // Sends the deferred correct-answer review call, then moves on. repeat
-  // marks the learner flagging a technically-correct-but-forced guess (the
-  // "억지로 맞췄어요" button): the word gets rescheduled at the same interval
-  // it just came from instead of advancing to the next, wider one (see
-  // wordreview.nextSchedule server-side) -- so a word that took 30 days to
-  // come up stays on a 30-day cadence for as long as repeat keeps getting
-  // pressed, only moving to 60 once answered confidently.
-  const advanceCorrect = useCallback(
-    (repeat: boolean) => {
-      if (currentItem) {
-        void reviewWord(currentItem.word.id, true, repeat, currentQuestion(currentItem.word)!.version).then((updated) => {
-          if (!updated) return;
-          setWords((prev) => prev.map((w) => (w.id === updated.id ? updated : w)));
-          setDueCount((c) => Math.max(0, c - 1));
-        });
-      }
-      advanceToNext();
-    },
-    [currentItem, advanceToNext],
-  );
-
-  const next = useCallback(() => {
-    if (isCorrect) {
-      advanceCorrect(false);
-      return;
+  const advanceToNext = useCallback((repeat = false) => {
+    if (isCorrect && currentItem) {
+      // Correct answers wait until this choice: a forced guess repeats the
+      // current interval instead of advancing to the next, wider one.
+      void submitReview(currentItem, true, repeat);
     }
-    advanceToNext();
-  }, [isCorrect, advanceCorrect, advanceToNext]);
-
-  const markForced = useCallback(() => advanceCorrect(true), [advanceCorrect]);
+    setIndex(index + 1);
+    resetQuestion();
+  }, [isCorrect, currentItem, submitReview, index, resetQuestion]);
 
   // Enter submits the sentence blank or, once checked, advances to the next
   // question so the learner never has to reach for the mouse mid-question.
@@ -425,7 +402,7 @@ export function WordReview() {
       if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
       e.preventDefault();
       if (checked) {
-        next();
+        advanceToNext();
         return;
       }
       const nextEmpty = blankRefs.current.findIndex((input, i) => i > blankIndex && input && !input.value.trim());
@@ -435,7 +412,7 @@ export function WordReview() {
       }
       checkRecall();
     },
-    [checked, next, checkRecall],
+    [checked, advanceToNext, checkRecall],
   );
 
   const confirmedWords = words.filter((w) => wordStudyStatus(w) === "confirmed");
@@ -642,14 +619,14 @@ export function WordReview() {
                       : `아쉬워요. 정답: ${currentItem.mode === "recall" ? recallQuestion!.answers.join(", ") : current.meaning}`}
                   </div>
                   <div className="quiz-next-actions">
-                    <button ref={nextButtonRef} type="button" className="quiz-next-btn" onClick={next}>
+                    <button ref={nextButtonRef} type="button" className="quiz-next-btn" onClick={() => advanceToNext()}>
                       {index + 1 < quizQueue.length ? "다음 단어" : "결과 보기"}
                     </button>
                     {isCorrect && current.stage > 0 && (
                       <button
                         type="button"
                         className="ghost quiz-forced-btn"
-                        onClick={markForced}
+                        onClick={() => advanceToNext(true)}
                         title="확신 없이 찍어서 맞춘 경우, 같은 간격으로 다시 복습해요"
                       >
                         😅 억지로 맞춘 것 같아요
