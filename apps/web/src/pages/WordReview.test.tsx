@@ -976,6 +976,46 @@ describe("WordReview page", () => {
     expect(input).toHaveFocus();
   });
 
+  it.each(["advance", "restart"])("clears the answer, feedback, and similarity hint on quiz %s", async (action) => {
+    vi.spyOn(Math, "random").mockReturnValue(0.99);
+    vi.mocked(checkQuizAnswer).mockResolvedValue(true);
+    // Keep both words due so returning to the list can start the same quiz.
+    vi.mocked(reviewWord).mockResolvedValue(null);
+    const second = {
+      ...dueWord, id: "w-second", word: "calm", meaning: "차분한",
+      reviewQuestion: { version: 2, prompt: "He felt ___.", answers: ["calm"] },
+    };
+    const user = await startQuiz([dueWord, second]);
+    await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "thrilled{Enter}");
+    expect(screen.getByText("유사한 정답이에요! 다시 입력해보세요.")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "ecstatic{Enter}");
+    expect(screen.getByText("정답이에요!")).toBeInTheDocument();
+
+    if (action === "restart") {
+      await user.click(screen.getByRole("button", { name: "← 목록으로" }));
+      await user.click(screen.getByRole("button", { name: "복습 시작" }));
+    } else {
+      await user.click(screen.getByRole("button", { name: "다음 단어" }));
+    }
+
+    expect(screen.getByLabelText("문제 진행")).toHaveTextContent(action === "restart" ? "1 / 2" : "2 / 2");
+    expect(screen.getByRole("textbox", { name: "정답 입력" })).toHaveValue("");
+    expect(screen.getByRole("textbox", { name: "정답 입력" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "답안 확인" })).toBeDisabled();
+    expect(screen.queryByText("정답이에요!")).not.toBeInTheDocument();
+    expect(screen.queryByText("유사한 정답이에요! 다시 입력해보세요.")).not.toBeInTheDocument();
+
+    if (action === "restart") {
+      await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "ecstatic{Enter}");
+      await user.click(screen.getByRole("button", { name: "다음 단어" }));
+    }
+    await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "calm{Enter}");
+    await user.click(screen.getByRole("button", { name: "결과 보기" }));
+    expect(screen.getByText("2개 중 2개 맞혔어요!")).toBeInTheDocument();
+    expect(reviewWord).toHaveBeenNthCalledWith(1, "w1", true, false, 2);
+    expect(reviewWord).toHaveBeenNthCalledWith(2, "w-second", true, false, 2);
+  });
+
   it("supports submitting, advancing, and completing a recall quiz by keyboard", async () => {
     vi.mocked(reviewWord).mockResolvedValue({ ...dueWord, stage: 1 });
     const user = await startQuiz();

@@ -51,13 +51,13 @@ export function shouldCenterWordLookup(anchorLeft: number, panelWidth: number, v
 type View = "reading" | "quiz" | "result" | null;
 
 type DrawState = "idle" | "drawing" | "noMore" | "error";
+type TrackedWordStatus = WordReviewStatus | "saving";
 
 type SearchedWord = {
   key: number;
   word: string;
   result: WordSuggestion | null;
   loading: boolean;
-  saving: boolean;
   definitionVersion?: number;
 };
 
@@ -69,8 +69,8 @@ function trackedWordKey(word: Pick<WordReviewItem, "word" | "meaning"> | WordSug
   return `${word.word.trim().replace(/\s+/g, " ").toLocaleLowerCase()}\u0000${word.meaning.trim().toLocaleLowerCase()}`;
 }
 
-function learnButtonLabel(status: WordReviewStatus | undefined, saving: boolean, checking: boolean) {
-  if (saving) return "저장 중…";
+function learnButtonLabel(status: TrackedWordStatus | undefined, checking: boolean) {
+  if (status === "saving") return "저장 중…";
   if (checking) return "확인 중…";
   if (status === "pending") return "✓ 확인 중";
   if (status === "verified") return "✓ 학습 중";
@@ -92,7 +92,7 @@ function loadSearchedWords(articleID: string): SearchedWord[] {
       return typeof value.key === "number" && typeof value.word === "string" && (value.result === null || typeof value.result === "object");
     }).map((item) => {
       const result = item.definitionVersion === definitionVersion ? item.result : null;
-      return { ...item, result, loading: result === null, saving: false };
+      return { ...item, result, loading: result === null };
     });
   }, []);
 }
@@ -130,7 +130,6 @@ export function ArticleQuiz() {
     loading: boolean;
     failed: boolean;
     result: WordSuggestion | null;
-    saving: boolean;
   } | null>(null);
   const wordLookupRef = useRef<HTMLDivElement>(null);
   const wordLookupAnchorRef = useRef<HTMLSpanElement>(null);
@@ -142,7 +141,9 @@ export function ArticleQuiz() {
   // word+meaning is already tracked, including after a reload or on another
   // device. null means the initial check is still in flight, during which
   // learn buttons stay disabled so a fast revisit cannot submit twice.
-  const [trackedWords, setTrackedWords] = useState<Map<string, WordReviewStatus> | null>(null);
+  // Saving belongs to the same word+meaning entry, so the popover and history
+  // cannot offer a duplicate save while either one is waiting for its response.
+  const [trackedWords, setTrackedWords] = useState<Map<string, TrackedWordStatus> | null>(null);
   // Successful lookups are kept for this page session so reopening a word
   // doesn't make the learner confirm (or request) the same lookup again.
   // Include the token position because the server resolves words in context,
@@ -162,7 +163,7 @@ export function ArticleQuiz() {
       const existing = prev.find((item) => item.key === key);
       const next = existing
         ? prev.map((item) => (item.key === key ? { ...item, ...update } : item))
-        : [...prev, { key, word, result: null, loading: false, saving: false, ...update }];
+        : [...prev, { key, word, result: null, loading: false, ...update }];
       if (draw) {
         writeStored(searchedWordsStorageKey(draw.id), JSON.stringify(next.map(({ key: itemKey, word: itemWord, result, definitionVersion }) => ({ key: itemKey, word: itemWord, result, definitionVersion }))));
       }
@@ -236,19 +237,6 @@ export function ArticleQuiz() {
     return () => {
       active = false;
     };
-  }, []);
-
-  const trackedStatus = useCallback((word: WordSuggestion | null) => {
-    if (!word || !trackedWords) return undefined;
-    return trackedWords.get(trackedWordKey(word));
-  }, [trackedWords]);
-
-  const rememberTrackedWord = useCallback((word: WordReviewItem) => {
-    setTrackedWords((current) => {
-      const next = new Map(current ?? []);
-      next.set(trackedWordKey(word), word.status);
-      return next;
-    });
   }, []);
 
   const loadOlderInstances = useCallback(() => {
@@ -360,7 +348,6 @@ export function ArticleQuiz() {
         loading: pending || (!localResult && !failedWordLookupsRef.current.has(lookupKey)),
         failed: !pending && !localResult && failedWordLookupsRef.current.has(lookupKey),
         result: localResult ?? null,
-        saving: false,
       });
 
       if (localResult || pending || failedWordLookupsRef.current.has(lookupKey)) return;
@@ -397,29 +384,20 @@ export function ArticleQuiz() {
     followWordLookup(draw.id, key, word);
   }, [draw, followWordLookup, wordLookup]);
 
-  // Saves the currently open word-lookup popover's result to the learner's
-  // vocabulary study list — same saveWord() call and pending-until-verified
-  // lifecycle as WordSearchControl's "학습하기" button.
-  const learnLookedUpWord = useCallback(() => {
-    if (!wordLookup || !wordLookup.result || wordLookup.saving || trackedWords === null || trackedStatus(wordLookup.result)) return;
-    const key = wordLookup.key;
-    const suggestion = wordLookup.result;
-    setWordLookup((prev) => (prev && prev.key === key ? { ...prev, saving: true } : prev));
-    void saveWord(suggestion, wordLookup.word).then((saved) => {
-      if (saved) rememberTrackedWord(saved);
-      updateSearchedWord(key, wordLookup.word, { saving: false, result: suggestion });
-      setWordLookup((prev) => (prev && prev.key === key ? { ...prev, saving: false } : prev));
-    });
-  }, [rememberTrackedWord, trackedStatus, trackedWords, updateSearchedWord, wordLookup]);
-
-  const learnSearchedWord = useCallback((item: SearchedWord) => {
-    if (!item.result || item.saving || trackedWords === null || trackedStatus(item.result)) return;
-    updateSearchedWord(item.key, item.word, { saving: true });
+  const learnWord = useCallback((item: Pick<SearchedWord, "word" | "result">) => {
+    if (!item.result || trackedWords === null) return;
+    const key = trackedWordKey(item.result);
+    if (trackedWords.has(key)) return;
+    setTrackedWords((current) => new Map(current).set(key, "saving"));
     void saveWord(item.result, item.word).then((saved) => {
-      if (saved) rememberTrackedWord(saved);
-      updateSearchedWord(item.key, item.word, { saving: false });
+      setTrackedWords((current) => {
+        const next = new Map(current);
+        next.delete(key);
+        if (saved) next.set(trackedWordKey(saved), saved.status);
+        return next;
+      });
     });
-  }, [rememberTrackedWord, trackedStatus, trackedWords, updateSearchedWord]);
+  }, [trackedWords]);
 
   const startQuiz = useCallback(() => {
     setSelections((prev) => (draw ? draw.subQuestions.map(() => null) : prev));
@@ -473,6 +451,21 @@ export function ArticleQuiz() {
     <p className="hint" role="alert">아티클을 가져오지 못했어요. 연결 상태를 확인한 뒤 ‘새 아티클 뽑기’를 다시 눌러 주세요.</p>
   ) : null;
 
+  const learnWordButton = (item: Pick<SearchedWord, "word" | "result">) => {
+    if (!item.result) return null;
+    const status = trackedWords?.get(trackedWordKey(item.result));
+    return (
+      <button
+        type="button"
+        className="word-learn-btn"
+        onClick={() => learnWord(item)}
+        disabled={trackedWords === null || status !== undefined}
+      >
+        {learnButtonLabel(status, trackedWords === null)}
+      </button>
+    );
+  };
+
   // Reading and answer review intentionally share this exact renderer. The
   // lookup state, per-position cache, and persisted searched-word history
   // therefore continue across the quiz instead of the result view becoming
@@ -521,14 +514,7 @@ export function ArticleQuiz() {
                   <>
                     <span className="word-search-meaning">{wordLookup.result.meaning}</span>
                     <span className="word-search-example">{wordLookup.result.example}</span>
-                    <button
-                      type="button"
-                      className="word-learn-btn"
-                      onClick={learnLookedUpWord}
-                      disabled={wordLookup.saving || trackedWords === null || trackedStatus(wordLookup.result) !== undefined}
-                    >
-                      {learnButtonLabel(trackedStatus(wordLookup.result), wordLookup.saving, trackedWords === null)}
-                    </button>
+                    {learnWordButton(wordLookup)}
                   </>
                 )}
               </div>
@@ -549,27 +535,15 @@ export function ArticleQuiz() {
             <strong>검색한 단어</strong>
             <button type="button" className="ghost icon-btn" onClick={() => setSearchedWordsOpen(false)} aria-label="검색한 단어 목록 닫기">✕</button>
           </div>
-          {searchedWords.map((item) => {
-            const status = trackedStatus(item.result);
-            return (
-              <div className="searched-word-row" key={item.key}>
-                <div className="searched-word-definition">
-                  <strong>{item.word}</strong>
-                  <span>{item.loading ? "뜻을 찾는 중…" : item.result?.meaning ?? "뜻을 가져오지 못했어요."}</span>
-                </div>
-                {item.result && (
-                  <button
-                    type="button"
-                    className="word-learn-btn"
-                    onClick={() => learnSearchedWord(item)}
-                    disabled={item.saving || trackedWords === null || status !== undefined}
-                  >
-                    {learnButtonLabel(status, item.saving, trackedWords === null)}
-                  </button>
-                )}
+          {searchedWords.map((item) => (
+            <div className="searched-word-row" key={item.key}>
+              <div className="searched-word-definition">
+                <strong>{item.word}</strong>
+                <span>{item.loading ? "뜻을 찾는 중…" : item.result?.meaning ?? "뜻을 가져오지 못했어요."}</span>
               </div>
-            );
-          })}
+              {learnWordButton(item)}
+            </div>
+          ))}
         </div>
       )}
       <button type="button" className="article-searched-words-btn" onClick={() => setSearchedWordsOpen((open) => !open)} aria-expanded={searchedWordsOpen}>

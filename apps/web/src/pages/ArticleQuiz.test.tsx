@@ -840,6 +840,51 @@ describe("ArticleQuiz page — word lookup while reading", () => {
     expect(await screen.findByRole("button", { name: "✓ 확인 중" })).toBeInTheDocument();
   });
 
+  it.each(["popover", "history"] as const)("shares a pending save from the %s with the other view and allows retry after failure", async (origin) => {
+    const suggestion = { word: "discovery", meaning: "발견", example: "A new discovery." };
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    vi.mocked(defineWord).mockResolvedValue(suggestion);
+    let finishSave!: (saved: Awaited<ReturnType<typeof saveWord>>) => void;
+    vi.mocked(saveWord).mockImplementation(() => new Promise((resolve) => { finishSave = resolve; }));
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+    await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
+    await user.click(screen.getByRole("button", { name: "discovery" }));
+    await user.click(await screen.findByRole("button", { name: "찾기" }));
+    await screen.findByText("발견");
+
+    const showView = async (view: "popover" | "history") => {
+      const closeLookup = screen.queryByRole("button", { name: "단어 뜻 닫기" });
+      if (closeLookup) await user.click(closeLookup);
+      const closeHistory = screen.queryByRole("button", { name: "검색한 단어 목록 닫기" });
+      if (closeHistory) await user.click(closeHistory);
+      await user.click(screen.getByRole("button", { name: view === "popover" ? "discovery" : /검색한 단어 1/ }));
+    };
+    await showView(origin);
+    await user.click(screen.getByRole("button", { name: "학습하기" }));
+    expect(screen.getByRole("button", { name: "저장 중…" })).toBeDisabled();
+
+    await showView(origin === "popover" ? "history" : "popover");
+    const saving = screen.getByRole("button", { name: "저장 중…" });
+    expect(saving).toBeDisabled();
+    await user.click(saving);
+    expect(saveWord).toHaveBeenCalledExactlyOnceWith(suggestion, "discovery");
+
+    await act(async () => { finishSave(null); });
+    await user.click(screen.getByRole("button", { name: "학습하기" }));
+    expect(saveWord).toHaveBeenCalledTimes(2);
+    expect(saveWord).toHaveBeenLastCalledWith(suggestion, "discovery");
+    await act(async () => {
+      finishSave({ ...suggestion, id: "w1", stage: 0, reviewCount: 0, nextReviewAt: 0, status: "pending" });
+    });
+    expect(screen.getByRole("button", { name: "✓ 확인 중" })).toBeDisabled();
+    await showView(origin);
+    expect(screen.getByRole("button", { name: "✓ 확인 중" })).toBeDisabled();
+    expect(JSON.parse(localStorage.getItem("buddy.article.searched-words.i1") ?? "[]"))
+      .toEqual([{ key: 9, word: "discovery", result: suggestion, definitionVersion: 2 }]);
+  });
+
   it("keeps the same word lookup and search history available while reviewing the answer", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
