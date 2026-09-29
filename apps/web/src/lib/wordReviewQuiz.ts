@@ -1,4 +1,4 @@
-import { meaningNeedsReview, type WordReviewItem, type WordReviewQuestion } from "./wordReview";
+import { wordStudyStatus, type WordReviewItem, type WordReviewQuestion } from "./wordReview";
 import { shuffled } from "./shuffle";
 
 const currentReviewQuestionVersion = 2;
@@ -23,10 +23,10 @@ export function currentQuestion(word: WordReviewItem): WordReviewQuestion | null
 // Recognition uses other confirmed meanings already loaded in the browser;
 // smaller vocabularies use the stored recall question without waiting on an LLM.
 export function buildReviewQueue(words: readonly WordReviewItem[], now: number): QuizItem[] {
-  const verified = words.filter((word) => word.status === "verified" && word.researchStatus === "confirmed" && !meaningNeedsReview(word));
-  const due = verified.filter((word) => word.nextReviewAt <= now && currentQuestion(word) !== null);
+  const confirmed = words.filter((word) => wordStudyStatus(word) === "confirmed");
+  const due = confirmed.filter((word) => word.nextReviewAt <= now && currentQuestion(word) !== null);
   return shuffled(due).map((word) => {
-    const otherMeanings = verified.filter((other) => other.id !== word.id).map((other) => other.meaning);
+    const otherMeanings = confirmed.filter((other) => other.id !== word.id).map((other) => other.meaning);
     if (otherMeanings.length < minRecognitionDistractors || Math.random() >= 0.5) {
       return { word, mode: "recall" };
     }

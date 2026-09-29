@@ -47,6 +47,15 @@ export function meaningNeedsReview(word: WordReviewItem): boolean {
   return word.meaningStatus === "pending" || word.meaningStatus === "done" || word.meaningStatus === "failed";
 }
 
+// Verification and learner confirmation are separate gates. Meaning cleanup
+// reopens the decision even when the original research was already confirmed.
+export function wordStudyStatus(word: WordReviewItem): "confirmed" | "unconfirmed" | "rejected" {
+  if (word.status === "rejected") return "rejected";
+  return word.status === "verified" && word.researchStatus === "confirmed" && !meaningNeedsReview(word)
+    ? "confirmed"
+    : "unconfirmed";
+}
+
 export function findSameWordEntries(words: WordReviewItem[]): Map<string, WordReviewItem[]> {
   const wordKey = (word: string) => word.trim().replace(/\s+/g, " ").toLowerCase();
   const byWord = new Map<string, WordReviewItem[]>();
