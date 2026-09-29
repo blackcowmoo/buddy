@@ -382,7 +382,7 @@ func TestFailedMeaningCanRetryButCannotConfirm(t *testing.T) {
 	}
 }
 
-func TestMeaningVersionRefreshRequiresConfirmationEveryTime(t *testing.T) {
+func TestMeaningVersionRefreshConfirmsUnchangedOnlyWhenEnabled(t *testing.T) {
 	for _, newMeaning := range []string{"생산 시설", "제조 시설"} {
 		t.Run(newMeaning, func(t *testing.T) {
 			st, _, done := preparedMeaning(t)
@@ -427,15 +427,29 @@ func TestMeaningVersionRefreshRequiresConfirmationEveryTime(t *testing.T) {
 			}
 			result, err := st.Get(ctx, done.UserID, done.ID)
 			want.Meaning, want.PreviousMeaning, want.MeaningStatus = newMeaning, previous.Meaning, MeaningDone
+			autoConfirmed := CurrentMeaningVersion >= MeaningOptimizationVersion && newMeaning == previous.Meaning
+			if autoConfirmed {
+				want.PreviousMeaning, want.MeaningStatus, want.MeaningVersion = "", MeaningConfirmed, CurrentMeaningVersion
+			}
 			if err != nil || !reflect.DeepEqual(result, want) {
-				t.Fatalf("completion advanced the confirmed version: %+v want=%+v err=%v", result, want, err)
+				t.Fatalf("completion=%+v want=%+v err=%v", result, want, err)
 			}
 			if err := st.StartMeaningCleanup(ctx, done.UserID); err != nil {
 				t.Fatal(err)
 			}
 			count, err := st.DueCount(ctx, done.UserID, done.NextReviewAt.Add(time.Hour))
-			if err != nil || count != 0 {
-				t.Fatalf("unconfirmed refresh became due: %d err=%v", count, err)
+			wantCount := 0
+			if autoConfirmed {
+				wantCount = 1
+			}
+			if err != nil || count != wantCount {
+				t.Fatalf("refresh due=%d want=%d err=%v", count, wantCount, err)
+			}
+			if autoConfirmed {
+				if _, err := st.SelectMeaning(ctx, done.UserID, done.ID, MeaningChoiceOriginal, result.MeaningRevision); !errors.Is(err, ErrMeaningConflict) {
+					t.Fatalf("automatic confirmation reopened: %v", err)
+				}
+				return
 			}
 			// A manual retry also retains the last confirmed version and the schedule.
 			retry, err := st.SelectMeaning(ctx, done.UserID, done.ID, MeaningChoiceOriginal, result.MeaningRevision)
@@ -552,5 +566,168 @@ func TestMeaningConfirmationUsesTheResultVersion(t *testing.T) {
 	next, err := st.Get(ctx, done.UserID, done.ID)
 	if err != nil || next.MeaningStatus != MeaningPending || next.MeaningVersion != confirmed.MeaningVersion || next.MeaningTargetVersion != CurrentMeaningVersion || next.MeaningRevision != confirmed.MeaningRevision+1 {
 		t.Fatalf("new deployment bypassed review: %+v err=%v", next, err)
+	}
+}
+
+// Exercise a future deployment without advancing the production migration
+// version or changing the behavior of the in-flight version-2 rollout.
+func pendingMeaningAtVersion(t *testing.T, version int, previous string) (*MySQLStore, Word) {
+	t.Helper()
+	st, _, done := preparedMeaning(t)
+	ctx := context.Background()
+	if _, err := st.FinishResearch(ctx, done.UserID, done.ID, []ResearchSuggestion{{Word: "facility", Meaning: "설비", Example: done.Example}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.rw.ExecContext(ctx, `UPDATE `+table+` SET meaning_status='pending', meaning_error='earlier error',
+		meaning_version=?, meaning_target_version=?, meaning_revision=meaning_revision+1, previous_meaning=NULLIF(?, '')
+		WHERE id=? AND user_id=?`, version-1, version, previous, done.ID, done.UserID); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := st.Get(ctx, done.UserID, done.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st, pending
+}
+
+func TestMeaningAutomaticConfirmationStartsAtNextVersion(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		version   int
+		previous  string
+		meaning   string
+		confirmed bool
+	}{
+		{name: "version 2 unchanged still needs choice", version: 2, meaning: "생산 시설"},
+		{name: "version 3 unchanged confirms", version: 3, meaning: "생산 시설", confirmed: true},
+		{name: "later version unchanged confirms", version: 4, meaning: "생산 시설", confirmed: true},
+		{name: "changed meaning needs choice", version: 3, meaning: "제조 시설"},
+		{name: "whitespace difference needs choice", version: 3, meaning: "생산 시설 "},
+		{name: "repeated suggestion needs choice", version: 3, previous: "맥락상 생산 시설을 의미함", meaning: "생산 시설"},
+		{name: "restored learner baseline confirms", version: 3, previous: "맥락상 생산 시설을 의미함", meaning: "맥락상 생산 시설을 의미함", confirmed: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			st, before := pendingMeaningAtVersion(t, tt.version, tt.previous)
+			ctx := context.Background()
+			// A legacy replica can record a review after the worker snapshot.
+			want, err := st.Review(ctx, before.UserID, before.ID, true, false, time.Unix(1700003600, 0))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := st.saveMeaningForVersion(ctx, before, tt.meaning, tt.version); err != nil {
+				t.Fatal(err)
+			}
+			want.Meaning, want.MeaningError = tt.meaning, ""
+			want.MeaningStatus = MeaningDone
+			if want.PreviousMeaning == "" {
+				want.PreviousMeaning = before.Meaning
+			}
+			if tt.confirmed {
+				want.MeaningStatus, want.MeaningVersion = MeaningConfirmed, tt.version
+				want.PreviousMeaning = ""
+				want.ResearchStatus, want.ResearchResults = ResearchConfirmed, nil
+			}
+			got, err := st.Get(ctx, before.UserID, before.ID)
+			if err != nil || !reflect.DeepEqual(got, want) {
+				t.Fatalf("saved=%+v\nwant=%+v err=%v", got, want, err)
+			}
+			count, err := st.DueCount(ctx, before.UserID, want.NextReviewAt.Add(time.Hour))
+			wantCount := 0
+			if tt.confirmed {
+				wantCount = 1
+			}
+			if err != nil || count != wantCount {
+				t.Fatalf("due=%d want=%d err=%v", count, wantCount, err)
+			}
+			// Delayed duplicate completions and failures must not reopen the card.
+			if err := st.saveMeaningForVersion(ctx, before, "stale result", tt.version); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.failMeaningForVersion(ctx, before, "stale error", tt.version); err != nil {
+				t.Fatal(err)
+			}
+			again, err := st.Get(ctx, before.UserID, before.ID)
+			if err != nil || !reflect.DeepEqual(again, want) {
+				t.Fatalf("stale worker changed result=%+v err=%v", again, err)
+			}
+		})
+	}
+}
+
+func TestMeaningAutomaticConfirmationRejectsStaleSnapshot(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		change     string
+		fails      bool
+		otherOwner bool
+		version    int
+	}{
+		{name: "meaning edited", change: "meaning='다른 뜻'", fails: true, version: 3},
+		{name: "word case edited", change: "word='Facility'", fails: true, version: 3},
+		{name: "example edited", change: "example='A different facility.'", fails: true, version: 3},
+		{name: "baseline edited", change: "previous_meaning='다른 이전 뜻'", fails: true, version: 3},
+		{name: "new revision", change: "meaning_revision=meaning_revision+1", version: 3},
+		{name: "new target version", change: "meaning_target_version=4", version: 3},
+		{name: "already confirmed version", change: "meaning_version=3", version: 3},
+		{name: "already completed", change: "meaning_status='done'", version: 3},
+		{name: "older binary", version: 2},
+		{name: "other owner", otherOwner: true, version: 3},
+		{name: "deleted", change: "DELETE", version: 3},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			st, before := pendingMeaningAtVersion(t, 3, "")
+			ctx := context.Background()
+			if tt.change == "DELETE" {
+				if err := st.Delete(ctx, before.UserID, before.ID); err != nil {
+					t.Fatal(err)
+				}
+			} else if tt.change != "" {
+				if _, err := st.rw.ExecContext(ctx, `UPDATE `+table+` SET `+tt.change+` WHERE id=? AND user_id=?`, before.ID, before.UserID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want, err := st.Get(ctx, before.UserID, before.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			worker := before
+			if tt.otherOwner {
+				worker.UserID = "other-user"
+			}
+			if err := st.saveMeaningForVersion(ctx, worker, before.Meaning, tt.version); err != nil {
+				t.Fatal(err)
+			}
+			if tt.fails {
+				want.MeaningStatus = MeaningFailed
+				want.MeaningError = "정리 중 단어가 변경되어 기존 뜻을 유지했어요."
+			}
+			got, err := st.Get(ctx, before.UserID, before.ID)
+			if err != nil || !reflect.DeepEqual(got, want) {
+				t.Fatalf("stale snapshot result=%+v\nwant=%+v err=%v", got, want, err)
+			}
+		})
+	}
+}
+
+func TestMeaningAutomaticConfirmationKeepsConflictingCards(t *testing.T) {
+	st, before := pendingMeaningAtVersion(t, 3, "맥락상 생산 시설을 의미함")
+	ctx := context.Background()
+	duplicate, err := st.Save(ctx, before.UserID, before.Word, before.PreviousMeaning, before.Example)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.saveMeaningForVersion(ctx, before, before.PreviousMeaning, 3); err != nil {
+		t.Fatal(err)
+	}
+	want := before
+	want.MeaningStatus = MeaningFailed
+	want.MeaningError = "같은 단어와 뜻의 항목이 있어 기존 뜻을 유지했어요."
+	got, err := st.Get(ctx, before.UserID, before.ID)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("conflicting confirmation=%+v want=%+v err=%v", got, want, err)
+	}
+	other, err := st.Get(ctx, before.UserID, duplicate.ID)
+	if err != nil || !reflect.DeepEqual(other, duplicate) {
+		t.Fatalf("duplicate changed=%+v want=%+v err=%v", other, duplicate, err)
 	}
 }

@@ -41,7 +41,7 @@ func runWordMeaningCleanup(ctx context.Context, pipe *pipeline.Pipeline, words w
 			}
 			visited[key], processed = true, true
 			wordCtx := workguard.BindStore(ctx, words, userID, word.ID)
-			meaning, err := pipe.NormalizeWordMeaning(wordCtx, word.Word, word.Meaning, word.Example)
+			meaning, err := wordMeaningForCleanup(wordCtx, pipe, word)
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -69,6 +69,25 @@ func runWordMeaningCleanup(ctx context.Context, pipe *pipeline.Pipeline, words w
 			return nil
 		}
 	}
+}
+
+func wordMeaningForCleanup(ctx context.Context, pipe *pipeline.Pipeline, word wordreview.Word) (string, error) {
+	// Version 2 is already in flight. Enable the cheaper path only when a
+	// later meaning contract is deployed, without restarting today's work.
+	if word.MeaningTargetVersion >= wordreview.MeaningOptimizationVersion {
+		needsCleanup, err := pipe.NeedsWordMeaningCleanup(ctx, word.Word, word.Meaning, word.Example)
+		if checkErr := workguard.Check(ctx); checkErr != nil {
+			return "", checkErr
+		}
+		if err == nil && !needsCleanup {
+			// SaveMeaning confirms an unchanged learner baseline, or preserves
+			// a different original for the learner's choice.
+			return word.Meaning, nil
+		}
+		// An unavailable or malformed preflight cannot certify a skip. Use
+		// the existing normalization cascade to make the final decision.
+	}
+	return pipe.NormalizeWordMeaning(ctx, word.Word, word.Meaning, word.Example)
 }
 
 func EnqueueWordMeaningCleanup(ctx context.Context, queue *asyncjob.Queue, pipe *pipeline.Pipeline, words wordreview.Store, userID string) error {

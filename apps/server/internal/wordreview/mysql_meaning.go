@@ -56,22 +56,39 @@ func (s *MySQLStore) PendingMeanings(ctx context.Context, userID string) ([]Word
 }
 
 func (s *MySQLStore) SaveMeaning(ctx context.Context, before Word, meaning string) error {
-	if before.MeaningTargetVersion != CurrentMeaningVersion {
+	return s.saveMeaningForVersion(ctx, before, meaning, CurrentMeaningVersion)
+}
+
+func (s *MySQLStore) saveMeaningForVersion(ctx context.Context, before Word, meaning string, version int) error {
+	if before.MeaningTargetVersion != version {
 		return nil
+	}
+	baseline := before.PreviousMeaning
+	if baseline == "" {
+		baseline = before.Meaning
+	}
+	set := `previous_meaning=COALESCE(previous_meaning, meaning), meaning=?, meaning_status='done', meaning_error=''`
+	args := []any{meaning}
+	if version >= MeaningOptimizationVersion && baseline == meaning {
+		// Older unconfirmed suggestions can survive a version bump. Compare
+		// against the learner's original gloss so merely repeating a suggestion
+		// cannot silently accept it. An unchanged gloss needs no choice.
+		set = `previous_meaning=NULL, meaning=?, meaning_status='confirmed', meaning_error='', meaning_version=?, research_status=?, research_results=NULL`
+		args = append(args, version, ResearchConfirmed)
 	}
 	// A compare-and-swap prevents a delayed worker from overwriting a later
 	// edit. Only gloss metadata changes; even a review completed during the
 	// model call keeps its schedule, counts, and existing same-sense question.
-	res, err := workguard.Executor(ctx, s.rw).ExecContext(ctx, `UPDATE `+table+`
-		SET previous_meaning=COALESCE(previous_meaning, meaning), meaning=?, meaning_status='done', meaning_error=''
+	res, err := workguard.Executor(ctx, s.rw).ExecContext(ctx, `UPDATE `+table+` SET `+set+`
 		WHERE id=? AND user_id=? AND status=? AND meaning_status='pending' AND meaning_version<?
 		AND meaning_revision=? AND meaning_target_version=?
-		AND BINARY meaning=BINARY ? AND BINARY word=BINARY ? AND BINARY example=BINARY ?`,
-		meaning, before.ID, before.UserID, StatusVerified, CurrentMeaningVersion, before.MeaningRevision, before.MeaningTargetVersion, before.Meaning, before.Word, before.Example)
+		AND BINARY meaning=BINARY ? AND BINARY word=BINARY ? AND BINARY example=BINARY ?
+		AND BINARY COALESCE(previous_meaning, '')=BINARY ?`,
+		append(args, before.ID, before.UserID, StatusVerified, version, before.MeaningRevision, before.MeaningTargetVersion, before.Meaning, before.Word, before.Example, before.PreviousMeaning)...)
 	if mysqlerr.Is(err, 1062) {
 		// Do not merge or delete duplicate study cards: either may have progress
 		// the learner wants to keep. Record a recoverable conflict instead.
-		return s.FailMeaning(ctx, before, "같은 단어와 뜻의 항목이 있어 기존 뜻을 유지했어요.")
+		return s.failMeaningForVersion(ctx, before, "같은 단어와 뜻의 항목이 있어 기존 뜻을 유지했어요.", version)
 	}
 	if err != nil {
 		return fmt.Errorf("word meaning: save: %w", err)
@@ -79,18 +96,22 @@ func (s *MySQLStore) SaveMeaning(ctx context.Context, before Word, meaning strin
 	if n, err := res.RowsAffected(); err != nil {
 		return err
 	} else if n == 0 {
-		return s.FailMeaning(ctx, before, "정리 중 단어가 변경되어 기존 뜻을 유지했어요.")
+		return s.failMeaningForVersion(ctx, before, "정리 중 단어가 변경되어 기존 뜻을 유지했어요.", version)
 	}
 	return nil
 }
 
 func (s *MySQLStore) FailMeaning(ctx context.Context, before Word, reason string) error {
-	if before.MeaningTargetVersion != CurrentMeaningVersion {
+	return s.failMeaningForVersion(ctx, before, reason, CurrentMeaningVersion)
+}
+
+func (s *MySQLStore) failMeaningForVersion(ctx context.Context, before Word, reason string, version int) error {
+	if before.MeaningTargetVersion != version {
 		return nil
 	}
 	_, err := workguard.Executor(ctx, s.rw).ExecContext(ctx, `UPDATE `+table+` SET meaning_status='failed', meaning_error=?
 		WHERE id=? AND user_id=? AND meaning_status='pending' AND meaning_version<? AND meaning_revision=? AND meaning_target_version=?`,
-		reason, before.ID, before.UserID, CurrentMeaningVersion, before.MeaningRevision, before.MeaningTargetVersion)
+		reason, before.ID, before.UserID, version, before.MeaningRevision, before.MeaningTargetVersion)
 	return err
 }
 

@@ -3,13 +3,17 @@ package transport
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"buddy/server/internal/asyncjob"
+	"buddy/server/internal/llm"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/wordreview"
+	"buddy/server/internal/workguard"
 )
 
 type meaningJobStore struct {
@@ -127,5 +131,78 @@ func TestMeaningCleanupDrainsRetryRequestedDuringActiveBatch(t *testing.T) {
 	got := st.words[w.ID]
 	if st.saves != 2 || got.MeaningStatus != wordreview.MeaningDone || got.MeaningRevision != 2 || got.PreviousMeaning != w.Meaning {
 		t.Fatalf("retry stranded: saves=%d word=%+v", st.saves, got)
+	}
+}
+
+func TestWordMeaningPreflightStartsWithNextContract(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		version   int
+		response  string
+		checkErr  error
+		want      string
+		wantCalls string
+	}{
+		{name: "in-flight version unchanged", version: 2, want: "생산 시설", wantCalls: "chat,analysis,judge"},
+		{name: "next version skips cleanup", version: 3, response: `{"needsCleanup":false}`, want: "시설", wantCalls: "preflight"},
+		{name: "later version skips cleanup", version: 4, response: `{"needsCleanup":false}`, want: "시설", wantCalls: "preflight"},
+		{name: "needs cleanup", version: 3, response: `{"needsCleanup":true}`, want: "생산 시설", wantCalls: "preflight,chat,analysis,judge"},
+		{name: "missing decision", version: 3, response: `{}`, want: "생산 시설", wantCalls: "preflight,chat,analysis,judge"},
+		{name: "null decision", version: 3, response: `{"needsCleanup":null}`, want: "생산 시설", wantCalls: "preflight,chat,analysis,judge"},
+		{name: "malformed decision", version: 3, response: `invalid`, want: "생산 시설", wantCalls: "preflight,chat,analysis,judge"},
+		{name: "unavailable preflight", version: 3, checkErr: errors.New("chat unavailable"), want: "생산 시설", wantCalls: "preflight,chat,analysis,judge"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []string
+			model := func(stage string) fakeLLM {
+				return fakeLLM{completeFn: func(msgs []llm.Message) (string, error) {
+					if strings.Contains(msgs[0].Content, "needsCleanup") {
+						if stage != "chat" {
+							t.Fatal("preflight invoked a slower model")
+						}
+						calls = append(calls, "preflight")
+						return tc.response, tc.checkErr
+					}
+					calls = append(calls, stage)
+					return `{"sameSense":true,"meaning":"생산 시설"}`, nil
+				}}
+			}
+			pipe := &pipeline.Pipeline{LLM: model("chat"), Analysis: []pipeline.Candidate{{LLM: model("analysis")}}, Judge: model("judge"), FeedbackLang: "ko"}
+			word := wordreview.Word{Word: "facility", Meaning: "시설", Example: "The steel facility closed.", MeaningTargetVersion: tc.version}
+			got, err := wordMeaningForCleanup(context.Background(), pipe, word)
+			if err != nil || got != tc.want || strings.Join(calls, ",") != tc.wantCalls {
+				t.Fatalf("meaning=%q calls=%v err=%v; want=%q calls=%s", got, calls, err, tc.want, tc.wantCalls)
+			}
+		})
+	}
+}
+
+func TestWordMeaningPreflightStopsBeforeFallbackOnDeletionOrCancellation(t *testing.T) {
+	for _, reason := range []string{"deleted", "canceled"} {
+		t.Run(reason, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			owner := &deletedOwner{}
+			ctx = workguard.BindStore(ctx, owner, "alex", "w1")
+			calls := 0
+			model := fakeLLM{completeFn: func([]llm.Message) (string, error) {
+				calls++
+				if reason == "deleted" {
+					owner.deleted.Store(true)
+				} else {
+					cancel()
+				}
+				return `{"needsCleanup":false}`, nil
+			}}
+			pipe := &pipeline.Pipeline{LLM: model, Analysis: []pipeline.Candidate{{LLM: model}}, Judge: model}
+			got, err := wordMeaningForCleanup(ctx, pipe, wordreview.Word{Word: "facility", Meaning: "시설", MeaningTargetVersion: 3})
+			wantErr := context.Canceled
+			if reason == "deleted" {
+				wantErr = workguard.ErrDeleted
+			}
+			if !errors.Is(err, wantErr) || calls != 1 || got != "" {
+				t.Fatalf("meaning=%q calls=%d err=%v; want one call and %v", got, calls, err, wantErr)
+			}
+		})
 	}
 }
