@@ -27,7 +27,7 @@ func (s *meaningJobStore) SaveMeaning(_ context.Context, before wordreview.Word,
 	s.saves++
 	w := s.words[before.ID]
 	w.PreviousMeaning, w.Meaning = w.Meaning, meaning
-	w.MeaningStatus, w.MeaningVersion = "done", wordreview.CurrentMeaningVersion
+	w.MeaningStatus = "done"
 	s.words[w.ID] = w
 	if s.afterSave != nil {
 		s.afterSave()
@@ -43,15 +43,21 @@ func (s *meaningJobStore) FailMeaning(_ context.Context, before wordreview.Word,
 }
 
 func TestMeaningCleanupJobResumesAndPreservesStudyState(t *testing.T) {
-	w := wordreview.Word{ID: "w1", UserID: "alex", Word: "facility", Meaning: "맥락상 생산 시설을 의미함", Example: "The facility closed.", Status: wordreview.StatusVerified, MeaningStatus: "pending", Stage: 4, ReviewCount: 12, NextReviewAt: time.Unix(1700000000, 0), ResearchStatus: wordreview.ResearchConfirmed}
+	w := wordreview.Word{ID: "w1", UserID: "alex", Word: "facility", Meaning: "맥락상 생산 시설을 의미함", Example: "The facility closed.", Status: wordreview.StatusVerified, MeaningStatus: "pending", MeaningTargetVersion: wordreview.CurrentMeaningVersion, Stage: 4, ReviewCount: 12, NextReviewAt: time.Unix(1700000000, 0), ResearchStatus: wordreview.ResearchConfirmed}
 	done := w
 	done.ID = "done"
 	done.MeaningStatus = "done"
-	done.MeaningVersion = wordreview.CurrentMeaningVersion
+	w.MeaningVersion = wordreview.CurrentMeaningVersion - 1
 	other := w
 	other.ID = "other"
 	other.UserID = "sam"
-	st := &meaningJobStore{fakeWordReviewStore: newFakeWordReviewStore(w, done, other), deletedOwner: &deletedOwner{}}
+	future := w
+	future.ID = "future"
+	future.MeaningTargetVersion++
+	older := w
+	older.ID = "older"
+	older.MeaningTargetVersion--
+	st := &meaningJobStore{fakeWordReviewStore: newFakeWordReviewStore(w, done, other, future, older), deletedOwner: &deletedOwner{}}
 	pipe := &pipeline.Pipeline{LLM: fakeAnalysisLLM{complete: `{"sameSense":true,"meaning":"생산 시설"}`}, FeedbackLang: "ko"}
 	payload, _ := json.Marshal(wordResearchJobPayload{UserID: "alex", CleanupMeanings: true})
 	handler := WordResearchJobHandler(pipe, st)
@@ -61,17 +67,22 @@ func TestMeaningCleanupJobResumesAndPreservesStudyState(t *testing.T) {
 		}
 	}
 	w.PreviousMeaning, w.Meaning = w.Meaning, "생산 시설"
-	w.MeaningStatus, w.MeaningVersion = "done", wordreview.CurrentMeaningVersion
+	w.MeaningStatus = "done"
 	if !reflect.DeepEqual(st.words[w.ID], w) || st.saves != 1 || st.failures != 0 {
 		t.Fatalf("saved=%+v saves=%d failures=%d", st.words[w.ID], st.saves, st.failures)
 	}
 	if !reflect.DeepEqual(st.words[other.ID], other) {
 		t.Fatal("modified another user")
 	}
+	for _, skipped := range []wordreview.Word{done, future, older} {
+		if !reflect.DeepEqual(st.words[skipped.ID], skipped) {
+			t.Fatalf("modified finished work or a different deployment's target: %+v", st.words[skipped.ID])
+		}
+	}
 }
 
 func TestMeaningCleanupUncertaintyKeepsOldMeaning(t *testing.T) {
-	w := wordreview.Word{ID: "w1", UserID: "alex", Status: wordreview.StatusVerified, MeaningStatus: "pending", Word: "bank", Meaning: "불명확한 원문"}
+	w := wordreview.Word{ID: "w1", UserID: "alex", Status: wordreview.StatusVerified, MeaningStatus: "pending", MeaningTargetVersion: wordreview.CurrentMeaningVersion, Word: "bank", Meaning: "불명확한 원문"}
 	st := &meaningJobStore{fakeWordReviewStore: newFakeWordReviewStore(w), deletedOwner: &deletedOwner{}}
 	pipe := &pipeline.Pipeline{LLM: fakeAnalysisLLM{complete: `{"sameSense":false,"meaning":""}`}}
 	if err := RunWordMeaningCleanupInline(context.Background(), pipe, st, "alex"); err != nil {
@@ -84,7 +95,7 @@ func TestMeaningCleanupUncertaintyKeepsOldMeaning(t *testing.T) {
 }
 
 func TestMeaningCleanupStopsAfterDeletionDuringModelCall(t *testing.T) {
-	w := wordreview.Word{ID: "w1", UserID: "alex", Status: wordreview.StatusVerified, MeaningStatus: "pending", Word: "facility"}
+	w := wordreview.Word{ID: "w1", UserID: "alex", Status: wordreview.StatusVerified, MeaningStatus: "pending", MeaningTargetVersion: wordreview.CurrentMeaningVersion, Word: "facility"}
 	owner := &deletedOwner{}
 	model := &deletingModel{owner: owner}
 	st := &meaningJobStore{fakeWordReviewStore: newFakeWordReviewStore(w), deletedOwner: owner}
@@ -98,7 +109,7 @@ func TestMeaningCleanupStopsAfterDeletionDuringModelCall(t *testing.T) {
 }
 
 func TestMeaningCleanupDrainsRetryRequestedDuringActiveBatch(t *testing.T) {
-	w := wordreview.Word{ID: "w1", UserID: "alex", Word: "facility", Meaning: "맥락상 생산 시설을 의미함", Example: "The facility closed.", Status: wordreview.StatusVerified, MeaningStatus: wordreview.MeaningPending, MeaningRevision: 1}
+	w := wordreview.Word{ID: "w1", UserID: "alex", Word: "facility", Meaning: "맥락상 생산 시설을 의미함", Example: "The facility closed.", Status: wordreview.StatusVerified, MeaningStatus: wordreview.MeaningPending, MeaningTargetVersion: wordreview.CurrentMeaningVersion, MeaningRevision: 1}
 	st := &meaningJobStore{fakeWordReviewStore: newFakeWordReviewStore(w), deletedOwner: &deletedOwner{}}
 	st.afterSave = func() {
 		if st.saves == 1 {

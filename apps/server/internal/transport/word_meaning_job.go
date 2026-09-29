@@ -36,7 +36,7 @@ func runWordMeaningCleanup(ctx context.Context, pipe *pipeline.Pipeline, words w
 		processed := false
 		for _, word := range list {
 			key := attempt{word.ID, word.MeaningRevision}
-			if visited[key] || word.Status != wordreview.StatusVerified || word.MeaningStatus != wordreview.MeaningPending || word.MeaningVersion >= wordreview.CurrentMeaningVersion {
+			if visited[key] || word.Status != wordreview.StatusVerified || word.MeaningStatus != wordreview.MeaningPending || word.MeaningVersion >= wordreview.CurrentMeaningVersion || word.MeaningTargetVersion != wordreview.CurrentMeaningVersion {
 				continue
 			}
 			visited[key], processed = true, true

@@ -36,6 +36,8 @@ export interface WordReviewItem {
   researchResults?: WordSuggestion[];
   reviewQuestion?: WordReviewQuestion;
   meaningStatus?: "pending" | "done" | "failed" | "confirmed";
+  meaningVersion?: number;
+  meaningTargetVersion?: number;
   meaningRevision?: number;
   meaningError?: string;
   previousMeaning?: string;
@@ -79,11 +81,6 @@ export function findSameWordEntries(words: WordReviewItem[]): Map<string, WordRe
 
 export async function selectWordMeaning(word: WordReviewItem, choice: MeaningChoice): Promise<WordReviewItem | null> {
   return postJSON<WordReviewItem | null>(`api/words/${encodeURIComponent(word.id)}/meaning`, { choice, revision: word.meaningRevision ?? 0 }, null);
-}
-
-export async function startMeaningCleanup(): Promise<boolean> {
-  const result = await postJSON<{ started: boolean } | null>("api/words/meanings/cleanup", {}, null);
-  return result?.started === true;
 }
 
 // Adds one word-search suggestion the learner explicitly chose to study (the

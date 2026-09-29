@@ -16,6 +16,7 @@ import (
 type meaningHTTPStore struct {
 	*fakeWordStore
 	startedFor string
+	startErr   error
 }
 
 func (s *meaningHTTPStore) PendingMeanings(ctx context.Context, userID string) ([]wordreview.Word, error) {
@@ -24,27 +25,78 @@ func (s *meaningHTTPStore) PendingMeanings(ctx context.Context, userID string) (
 
 func (s *meaningHTTPStore) StartMeaningCleanup(_ context.Context, user string) error {
 	s.startedFor = user
+	if s.startErr != nil {
+		return s.startErr
+	}
+	for i := range s.byUser[user] {
+		word := &s.byUser[user][i]
+		if word.Status == wordreview.StatusVerified && word.MeaningVersion < wordreview.CurrentMeaningVersion && word.MeaningTargetVersion < wordreview.CurrentMeaningVersion {
+			word.MeaningStatus = wordreview.MeaningPending
+			word.MeaningTargetVersion = wordreview.CurrentMeaningVersion
+			word.MeaningRevision++
+		}
+	}
 	return nil
 }
 func (s *meaningHTTPStore) SaveMeaning(context.Context, wordreview.Word, string) error { return nil }
 func (s *meaningHTTPStore) FailMeaning(context.Context, wordreview.Word, string) error { return nil }
 
-func TestMeaningCleanupHandlerScopesToAuthenticatedUser(t *testing.T) {
-	st := &meaningHTTPStore{fakeWordStore: &fakeWordStore{}}
+func TestWordsListAutomaticallySchedulesMeaningRefreshForAuthenticatedUser(t *testing.T) {
+	old := wordreview.Word{ID: "w1", Word: "facility", Status: wordreview.StatusVerified, ResearchStatus: wordreview.ResearchConfirmed,
+		MeaningVersion: wordreview.CurrentMeaningVersion - 1, MeaningTargetVersion: wordreview.CurrentMeaningVersion - 1, MeaningStatus: wordreview.MeaningConfirmed}
+	st := &meaningHTTPStore{fakeWordStore: &fakeWordStore{byUser: map[string][]wordreview.Word{"alex": {old}, "sam": {old}}}}
 	var scheduledFor string
 	schedule := func(_ context.Context, user string) { scheduledFor = user }
-	h := wordMeaningCleanupHandler(fakeIdentifier{id: "alex", ok: true}, st, schedule)
+	h := wordsListHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil, schedule)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/words/meanings/cleanup", strings.NewReader(`{"userID":"sam"}`)))
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/words?userID=sam", nil))
 	requireStatus(t, rec, http.StatusOK)
 	if st.startedFor != "alex" || scheduledFor != "alex" {
 		t.Fatalf("started=%q scheduled=%q", st.startedFor, scheduledFor)
 	}
+	var got struct {
+		Words []wordItem `json:"words"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Words) != 1 || got.Words[0].MeaningStatus != wordreview.MeaningPending || got.Words[0].MeaningVersion != old.MeaningVersion || got.Words[0].MeaningTargetVersion != wordreview.CurrentMeaningVersion || got.Words[0].MeaningRevision != 1 {
+		t.Fatalf("refresh must be visible in the first response without advancing the confirmed version: %+v", got)
+	}
+	if st.byUser["sam"][0].MeaningStatus != wordreview.MeaningConfirmed {
+		t.Fatal("refreshed another user's words")
+	}
 	st.startedFor, scheduledFor = "", ""
-	h = wordMeaningCleanupHandler(fakeIdentifier{ok: false}, st, schedule)
-	assertUnauthorized(t, h, httptest.NewRequest("POST", "/api/words/meanings/cleanup", nil))
+	h = wordsListHandler(fakeIdentifier{ok: false}, st, nil, nil, schedule)
+	assertUnauthorized(t, h, httptest.NewRequest("GET", "/api/words", nil))
 	if st.startedFor != "" || scheduledFor != "" {
 		t.Fatal("unauthorized cleanup started")
+	}
+}
+
+func TestWordsListMeaningRefreshFailureIsReported(t *testing.T) {
+	st := &meaningHTTPStore{fakeWordStore: &fakeWordStore{}, startErr: errors.New("unavailable")}
+	h := wordsListHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil, func(context.Context, string) { t.Fatal("scheduled without persisted intent") })
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/words", nil))
+	requireStatus(t, rec, http.StatusInternalServerError)
+}
+
+func TestWordsListDoesNotScheduleCompletedOrFailedMeaningRefresh(t *testing.T) {
+	for _, status := range []string{wordreview.MeaningDone, wordreview.MeaningFailed, wordreview.MeaningConfirmed} {
+		t.Run(status, func(t *testing.T) {
+			word := wordreview.Word{ID: "w1", Status: wordreview.StatusVerified, MeaningStatus: status, MeaningTargetVersion: wordreview.CurrentMeaningVersion}
+			st := &meaningHTTPStore{fakeWordStore: &fakeWordStore{byUser: map[string][]wordreview.Word{"alex": {word}}}}
+			h := wordsListHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, nil, func(context.Context, string) { t.Fatal("scheduled finished work") })
+			for range 2 {
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/words", nil))
+				requireStatus(t, rec, http.StatusOK)
+			}
+			if st.byUser["alex"][0].MeaningStatus != status {
+				t.Fatal("list changed a learner decision")
+			}
+		})
 	}
 }
 

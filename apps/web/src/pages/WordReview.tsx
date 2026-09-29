@@ -15,7 +15,6 @@ import {
   startResearchWord,
   confirmResearchWord,
   saveWord,
-  startMeaningCleanup,
   selectWordMeaning,
   meaningNeedsReview,
   wordStudyStatus,
@@ -45,8 +44,6 @@ function formatReviewAge(unixSeconds: number | undefined): string {
 }
 
 export function WordReview() {
-  const [startingMeaningCleanup, setStartingMeaningCleanup] = useState(false);
-  const [meaningCleanupError, setMeaningCleanupError] = useState(false);
   const [selectingMeanings, setSelectingMeanings] = useState<Set<string>>(new Set());
   const [meaningSelectionErrors, setMeaningSelectionErrors] = useState<Record<string, string | undefined>>({});
   const meaningSelections = useRef(new Set<string>());
@@ -160,15 +157,6 @@ export function WordReview() {
   }, [words, refreshWords]);
 
   const handleDelete = (id: string) => confirmThenDelete("이 단어를 삭제할까요?", deleteWord, id, setWords);
-
-  const handleMeaningCleanup = async () => {
-    setStartingMeaningCleanup(true);
-    setMeaningCleanupError(false);
-    const started = await startMeaningCleanup();
-    const result = started ? await refreshWords() : null;
-    setMeaningCleanupError(!started || !result);
-    setStartingMeaningCleanup(false);
-  };
 
   const handleSelectMeaning = async (word: WordReviewItem, choice: MeaningChoice) => {
     if (meaningSelections.current.has(word.id)) return;
@@ -459,7 +447,6 @@ export function WordReview() {
   const availableDueCount = Math.min(dueCount, readyDueCount);
   const pendingMeaningCount = words.filter((w) => w.meaningStatus === "pending").length;
   const completedMeaningCount = words.filter((w) => w.meaningStatus === "done").length;
-  const cleaningMeanings = startingMeaningCleanup || pendingMeaningCount > 0;
 
   const sortedReviewWords = newestFirst(confirmedWords, (word) => word.lastReviewedAt ?? 0);
   const visibleReviewWords = sortedReviewWords.slice(0, reviewWordsPageSize * (reviewOlderCount + 1));
@@ -515,15 +502,9 @@ export function WordReview() {
 
           {words.some((w) => w.status === "verified") && (
             <div>
-              <button type="button" className="ghost" onClick={() => void handleMeaningCleanup()}
-                disabled={cleaningMeanings ||
-                  !words.some((w) => w.status === "verified" && (!w.meaningStatus || w.meaningStatus === "failed"))}>
-                {cleaningMeanings ? "단어 뜻 정리 중…" : "단어 뜻 정리"}
-              </button>
-              <p className="hint">기존 뜻과 예문을 바탕으로 사전식 뜻으로 다듬어요. 복습 진도는 유지돼요.</p>
+              <p className="hint">새 버전에 맞춰 단어 뜻을 자동으로 다시 확인해요. 직접 확정해야 새 버전이 적용되며, 복습 진도는 유지돼요.</p>
               {pendingMeaningCount > 0 && <p className="hint" role="status">뜻 {pendingMeaningCount}개 정리 중이에요. 화면을 나가도 계속 진행돼요.</p>}
               {completedMeaningCount > 0 && <p className="hint" role="status">정리한 뜻 {completedMeaningCount}개를 확인하고 선택해 주세요.</p>}
-              {meaningCleanupError && <p className="hint" role="alert">뜻 정리 상태를 확인하지 못했어요. 다시 시도해 주세요.</p>}
             </div>
           )}
 
