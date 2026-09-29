@@ -20,7 +20,7 @@ const maxReconnectDelayMs = 10000;
 // BuddyClient instead auto-reconnects to the same chat room (see
 // `sessionID`, captured off the server's "ready" event so a reconnect after
 // a brand-new room resumes it instead of minting another one) and queues
-// any ClientMsg sent while disconnected, flushing the queue the moment the
+// any text/audio sent while disconnected, flushing the queue the moment the
 // new socket opens — so a message typed mid-outage still goes out once the
 // connection comes back, instead of vanishing.
 export class BuddyClient {
@@ -36,7 +36,7 @@ export class BuddyClient {
   // reconnect) — flushed in order once a new socket opens. Audio used to be
   // silently dropped here while text was queued, leaving the UI stuck on
   // "transcribing" forever after a brief mobile-network interruption.
-  private pending: Array<ClientMsg | ArrayBuffer> = [];
+  private pending: Array<string | ArrayBuffer> = [];
 
   constructor(
     private onEvent: (e: ServerEvent) => void,
@@ -107,7 +107,7 @@ export class BuddyClient {
   private flushPending() {
     const queued = this.pending;
     this.pending = [];
-    for (const m of queued) this.rawSend(m);
+    for (const data of queued) this.ws?.send(data);
   }
 
   /** Send one complete utterance (16 kHz mono s16le PCM). */
@@ -116,8 +116,7 @@ export class BuddyClient {
     // larger backing buffer, and sending that whole buffer would include
     // unrelated samples before/after the utterance.
     const audio = pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength) as ArrayBuffer;
-    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(audio);
-    else this.pending.push(audio);
+    this.send(audio);
   }
 
   /**
@@ -126,7 +125,7 @@ export class BuddyClient {
    * input — omit it for ordinary typed input.
    */
   sendText(text: string, source?: "voice") {
-    this.send({ type: "text", text, source });
+    this.send(JSON.stringify({ type: "text", text, source } satisfies ClientMsg));
   }
 
   close() {
@@ -140,15 +139,9 @@ export class BuddyClient {
     this.ws = null;
   }
 
-  // Queues m if the socket isn't open yet rather than dropping it — see the
-  // class doc for why a disconnect must never silently swallow what the
-  // learner just typed.
-  private send(m: ClientMsg) {
-    if (this.ws?.readyState === WebSocket.OPEN) this.rawSend(m);
-    else this.pending.push(m);
-  }
-
-  private rawSend(m: ClientMsg | ArrayBuffer) {
-    this.ws?.send(m instanceof ArrayBuffer ? m : JSON.stringify(m));
+  // Keep text and audio in one queue so reconnects preserve their send order.
+  private send(data: string | ArrayBuffer) {
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(data);
+    else this.pending.push(data);
   }
 }
