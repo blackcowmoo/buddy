@@ -58,8 +58,9 @@ afterEach(() => {
   // A test that simulates an unexpected close leaves a reconnect timer
   // scheduled; clear it so it can't fire during a later test and mutate
   // `lastSocket` out from under it.
-  vi.useRealTimers();
   vi.clearAllTimers();
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe("BuddyClient", () => {
@@ -173,6 +174,36 @@ describe("BuddyClient", () => {
     client.sendAudio(backing.subarray(1, 3));
 
     expect(Array.from(new Int16Array(lastSocket.sent[0] as ArrayBuffer))).toEqual([7, 8]);
+  });
+
+  it.each(["connecting", "open", "reconnecting"])("preserves mixed text/audio order while %s without replaying sent messages", (state) => {
+    vi.useFakeTimers();
+    const client = connectedClient();
+    if (state !== "connecting") lastSocket.open();
+    if (state === "reconnecting") lastSocket.close();
+    const pcm = new Int16Array([99, 7, 8, 99]);
+
+    client.sendText("first");
+    client.sendAudio(pcm.subarray(1, 3));
+    client.sendText("last", "voice");
+    pcm.fill(-1);
+
+    if (state !== "open") {
+      expect(lastSocket.sent).toEqual([]);
+      if (state === "reconnecting") vi.advanceTimersByTime(1000);
+      lastSocket.open();
+    }
+    expect(lastSocket.sent).toEqual([
+      JSON.stringify({ type: "text", text: "first" }),
+      new Int16Array([7, 8]).buffer,
+      JSON.stringify({ type: "text", text: "last", source: "voice" }),
+    ]);
+
+    lastSocket.close();
+    vi.advanceTimersByTime(1000);
+    lastSocket.open();
+    expect(lastSocket.sent).toEqual([]);
+    client.close();
   });
 
   it("close() tears down the socket", () => {

@@ -140,12 +140,8 @@ func runStudySummary(ctx context.Context, pipe *pipeline.Pipeline, st store.Stor
 	if len(issues) > 0 {
 		summary, err = pipe.GenerateStudySummary(ctx, issues)
 		if err != nil {
-			if failErr := st.FailStudySummary(context.Background(), userID, sessionID); failErr != nil {
-				log.Printf("study summary: fail %s/%s: %v", userID, sessionID, failErr)
-			}
-			return fmt.Errorf("study summary: generate: %w", err)
-		}
-		if len(summary) == 0 {
+			err = fmt.Errorf("study summary: generate: %w", err)
+		} else if len(summary) == 0 {
 			// GenerateStudySummary returned syntactically valid but empty
 			// JSON despite real issues to report — an LLM hiccup, not a
 			// genuinely clean session. Completing this as JobStatusDone
@@ -155,10 +151,13 @@ func runStudySummary(ctx context.Context, pipe *pipeline.Pipeline, st store.Stor
 			// row, would leave the learner stuck with no automatic way
 			// back — treating it as a failure instead lets the reaper retry
 			// it like any other transient error.
+			err = fmt.Errorf("study summary: generated empty summary for %d flagged issue(s)", len(issues))
+		}
+		if err != nil {
 			if failErr := st.FailStudySummary(context.Background(), userID, sessionID); failErr != nil {
 				log.Printf("study summary: fail %s/%s: %v", userID, sessionID, failErr)
 			}
-			return fmt.Errorf("study summary: generated empty summary for %d flagged issue(s)", len(issues))
+			return err
 		}
 	}
 

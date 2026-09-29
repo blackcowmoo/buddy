@@ -187,81 +187,123 @@ func TestRunStudySummaryCollectsIssuesAndMergesProfile(t *testing.T) {
 	}
 }
 
-// TestRunStudySummaryGenerateErrorMarksFailed guards the error path: a
-// failed LLM call must not persist any summary, must record
-// JobStatusFailed for a poller to show, and must propagate the error so
-// asyncjob's reaper retries the job from scratch.
-func TestRunStudySummaryGenerateErrorMarksFailed(t *testing.T) {
-	pipe := &pipeline.Pipeline{
-		Analysis: []pipeline.Candidate{{Model: "m", LLM: failingAnalysisLLM{}}},
-	}
-	st := newFakeStore()
-	if err := st.SaveTurn(context.Background(), "alex", "sess-3", 1, "user", "He go to school.", false, protocol.SourceText); err != nil {
-		t.Fatalf("SaveTurn() error = %v", err)
-	}
-	if err := st.SaveCorrection(context.Background(), "alex", "sess-3", 1, protocol.Correction{
-		Issues: []protocol.Issue{{Type: "grammar", Span: "go", Suggestion: "goes"}},
-	}); err != nil {
-		t.Fatalf("SaveCorrection() error = %v", err)
-	}
-	if err := st.EndSession(context.Background(), "alex", "sess-3"); err != nil {
-		t.Fatalf("EndSession() error = %v", err)
-	}
+// Generation errors and empty summaries despite flagged issues must remain
+// retryable failures, even if persisting their failed status also fails.
+func TestRunStudySummaryFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		pipe    func() *pipeline.Pipeline
+		wantErr string
+		cause   error
+	}{
+		{
+			name: "model error",
+			pipe: func() *pipeline.Pipeline {
+				return &pipeline.Pipeline{
+					Analysis: []pipeline.Candidate{{Model: "m", LLM: failingAnalysisLLM{}}},
+					Judge:    failingAnalysisLLM{},
+				}
+			},
+			wantErr: "study summary: generate: analyze: judge failed and no candidate succeeded: fake llm: unavailable",
+			cause:   errFakeLLMUnavailable,
+		},
+		{
+			name: "empty summary",
+			pipe: func() *pipeline.Pipeline {
+				return &pipeline.Pipeline{
+					Analysis: []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{complete: `{"sentences":[]}`}}},
+				}
+			},
+			wantErr: "study summary: generated empty summary for 1 flagged issue(s)",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, persistence := range []struct {
+				name   string
+				err    error
+				status string
+			}{
+				{name: "status saved", status: store.JobStatusFailed},
+				{name: "status save failed", err: errors.New("summary store unavailable"), status: store.JobStatusPending},
+			} {
+				t.Run(persistence.name, func(t *testing.T) {
+					ctx, cancel := context.WithCancel(context.Background())
+					defer cancel()
+					st := &summaryFailureStore{fakeStore: newFakeStore(), cancel: cancel, failErr: persistence.err}
+					if err := st.SaveTurn(ctx, "alex", "sess-failed", 1, "user", "He go to school.", false, protocol.SourceText); err != nil {
+						t.Fatalf("SaveTurn() error = %v", err)
+					}
+					if err := st.SaveCorrection(ctx, "alex", "sess-failed", 1, protocol.Correction{
+						Issues: []protocol.Issue{{Type: "grammar", Span: "go", Suggestion: "goes"}},
+					}); err != nil {
+						t.Fatalf("SaveCorrection() error = %v", err)
+					}
+					if err := st.EndSession(ctx, "alex", "sess-failed"); err != nil {
+						t.Fatalf("EndSession() error = %v", err)
+					}
+					if err := st.SaveLearnerProfile(ctx, "alex", "old profile"); err != nil {
+						t.Fatalf("SaveLearnerProfile() error = %v", err)
+					}
 
-	if err := RunStudySummaryInline(context.Background(), pipe, st, "alex", "sess-3"); err == nil {
-		t.Fatalf("RunStudySummaryInline() error = nil, want the LLM error propagated")
-	}
-	meta, _, err := st.SessionDetail(context.Background(), "alex", "sess-3")
-	if err != nil {
-		t.Fatalf("SessionDetail() error = %v", err)
-	}
-	if meta.StudySummaryStatus != store.JobStatusFailed {
-		t.Fatalf("StudySummaryStatus = %q, want JobStatusFailed", meta.StudySummaryStatus)
-	}
-	if len(meta.StudySummary) != 0 {
-		t.Fatalf("StudySummary = %+v, want still empty after a failed attempt", meta.StudySummary)
+					err := RunStudySummaryInline(ctx, tc.pipe(), st, "alex", "sess-failed")
+					if err == nil || err.Error() != tc.wantErr {
+						t.Fatalf("RunStudySummaryInline() error = %v, want %q", err, tc.wantErr)
+					}
+					if tc.cause != nil && !errors.Is(err, tc.cause) {
+						t.Fatalf("RunStudySummaryInline() error = %v, want wrapped cause %v", err, tc.cause)
+					}
+					if st.failCalls != 1 || st.failContextErr != nil || ctx.Err() != context.Canceled {
+						t.Fatalf("failure writes = %d, write context error = %v, job context error = %v; want one detached write after cancellation", st.failCalls, st.failContextErr, ctx.Err())
+					}
+					if st.completeCalls != 0 || st.profileReads != 0 {
+						t.Fatalf("completion calls = %d, profile reads = %d, want no completion or profile merge", st.completeCalls, st.profileReads)
+					}
+					meta, _, err := st.SessionDetail(context.Background(), "alex", "sess-failed")
+					if err != nil {
+						t.Fatalf("SessionDetail() error = %v", err)
+					}
+					if meta.StudySummaryStatus != persistence.status || len(meta.StudySummary) != 0 {
+						t.Fatalf("meta = %+v, want status %q and no summary", meta, persistence.status)
+					}
+					if got, err := st.fakeStore.GetLearnerProfile(context.Background(), "alex"); err != nil || got != "old profile" {
+						t.Fatalf("learner profile = %q, %v, want unchanged profile", got, err)
+					}
+				})
+			}
+		})
 	}
 }
 
-// TestRunStudySummaryEmptyResultDespiteIssuesMarksFailed guards against the
-// exact bug httpserver.sessionRestudyHandler's "다시 확인하기" button exists to
-// recover from: GenerateStudySummary can return syntactically valid JSON
-// with an empty "sentences" array even when real issues were flagged. That
-// must not land as JobStatusDone — indistinguishable from a genuinely clean
-// session (see CompleteStudySummary's doc comment) with no automatic way
-// back, since needsStudySummaryBackfill only re-triggers a JobStatusPending
-// row — so it has to be treated as a failure instead, letting the reaper
-// retry it like any other transient error.
-func TestRunStudySummaryEmptyResultDespiteIssuesMarksFailed(t *testing.T) {
-	pipe := &pipeline.Pipeline{
-		Analysis: []pipeline.Candidate{{Model: "m", LLM: fakeAnalysisLLM{complete: `{"sentences":[]}`}}},
-	}
-	st := newFakeStore()
-	if err := st.SaveTurn(context.Background(), "alex", "sess-empty", 1, "user", "He go to school.", false, protocol.SourceText); err != nil {
-		t.Fatalf("SaveTurn() error = %v", err)
-	}
-	if err := st.SaveCorrection(context.Background(), "alex", "sess-empty", 1, protocol.Correction{
-		Issues: []protocol.Issue{{Type: "grammar", Span: "go", Suggestion: "goes"}},
-	}); err != nil {
-		t.Fatalf("SaveCorrection() error = %v", err)
-	}
-	if err := st.EndSession(context.Background(), "alex", "sess-empty"); err != nil {
-		t.Fatalf("EndSession() error = %v", err)
-	}
+type summaryFailureStore struct {
+	*fakeStore
+	cancel         context.CancelFunc
+	failErr        error
+	failContextErr error
+	failCalls      int
+	completeCalls  int
+	profileReads   int
+}
 
-	if err := RunStudySummaryInline(context.Background(), pipe, st, "alex", "sess-empty"); err == nil {
-		t.Fatalf("RunStudySummaryInline() error = nil, want an error for an empty result despite flagged issues")
+func (s *summaryFailureStore) FailStudySummary(ctx context.Context, userID, sessionID string) error {
+	// Cancel at the persistence boundary to prove the write remains detached
+	// without depending on goroutine scheduling or wall-clock delays.
+	s.cancel()
+	s.failCalls++
+	s.failContextErr = ctx.Err()
+	if s.failErr != nil {
+		return s.failErr
 	}
-	meta, _, err := st.SessionDetail(context.Background(), "alex", "sess-empty")
-	if err != nil {
-		t.Fatalf("SessionDetail() error = %v", err)
-	}
-	if meta.StudySummaryStatus != store.JobStatusFailed {
-		t.Fatalf("StudySummaryStatus = %q, want JobStatusFailed, not JobStatusDone-with-nothing-to-show", meta.StudySummaryStatus)
-	}
-	if len(meta.StudySummary) != 0 {
-		t.Fatalf("StudySummary = %+v, want still empty after a rejected empty result", meta.StudySummary)
-	}
+	return s.fakeStore.FailStudySummary(ctx, userID, sessionID)
+}
+
+func (s *summaryFailureStore) CompleteStudySummary(ctx context.Context, userID, sessionID string, summary []protocol.StudySummarySentence) error {
+	s.completeCalls++
+	return s.fakeStore.CompleteStudySummary(ctx, userID, sessionID, summary)
+}
+
+func (s *summaryFailureStore) GetLearnerProfile(ctx context.Context, userID string) (string, error) {
+	s.profileReads++
+	return s.fakeStore.GetLearnerProfile(ctx, userID)
 }
 
 // TestRunStudySummaryProfileMergeFailureStillCompletes guards the
