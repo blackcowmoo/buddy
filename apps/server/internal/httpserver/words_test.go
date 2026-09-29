@@ -382,14 +382,17 @@ func (f *fakeWordStore) StartResearch(ctx context.Context, userID, id string) (w
 	return wordreview.Word{}, nil
 }
 
-func (f *fakeWordStore) FinishResearch(ctx context.Context, userID, id string, results []wordreview.ResearchSuggestion) (wordreview.Word, error) {
+func (f *fakeWordStore) FinishResearch(ctx context.Context, before wordreview.Word, results []wordreview.ResearchSuggestion) (wordreview.Word, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for i, w := range f.byUser[userID] {
-		if w.ID == id {
+	for i, w := range f.byUser[before.UserID] {
+		if w.ID == before.ID {
 			w.ResearchStatus = wordreview.ResearchDone
+			if len(results) == 0 {
+				w.ResearchStatus = wordreview.ResearchFailed
+			}
 			w.ResearchResults = results
-			f.byUser[userID][i] = w
+			f.byUser[before.UserID][i] = w
 			return w, nil
 		}
 	}
@@ -683,12 +686,15 @@ func TestWordsListUnauthorizedWhenIdentifyFails(t *testing.T) {
 
 type questionBackfillStore struct{ *fakeWordStore }
 
-func (s *questionBackfillStore) SaveQuestion(ctx context.Context, userID, id string, question wordreview.Question) (wordreview.Word, bool, error) {
+func (s *questionBackfillStore) SaveQuestion(ctx context.Context, userID, id string, question wordreview.Question, expected ...wordreview.Word) (wordreview.Word, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i, word := range s.byUser[userID] {
 		if word.ID != id {
 			continue
+		}
+		if len(expected) > 0 && (word.MeaningRevision != expected[0].MeaningRevision || word.Word != expected[0].Word || word.Meaning != expected[0].Meaning || word.Example != expected[0].Example) {
+			return word, false, nil
 		}
 		if word.ReviewQuestion.Version > question.Version ||
 			(word.ReviewQuestion.Version == question.Version && word.ReviewQuestion.Prompt != "" && len(word.ReviewQuestion.Answers) > 0) {

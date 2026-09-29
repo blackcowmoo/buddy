@@ -141,6 +141,7 @@ func New(cfg config.Config, deps Dependencies) *http.Server {
 	mux.HandleFunc("POST /api/words/{id}/review", wordReviewHandler(ident, words))
 	mux.HandleFunc("DELETE /api/words/{id}", wordDeleteHandler(ident, words))
 	mux.HandleFunc("POST /api/words/{id}/research", wordResearchHandler(ident, words, pipe, wordResearchQueue))
+	mux.HandleFunc("POST /api/words/{id}/research/select", wordResearchSelectionHandler(ident, words))
 	mux.HandleFunc("POST /api/words/{id}/research/confirm", wordResearchConfirmHandler(ident, words))
 	mux.HandleFunc("GET /api/recordings", recordingsListHandler(ident, recordings))
 	mux.HandleFunc("GET /api/recordings/{id}/audio", recordingAudioHandler(ident, recordings))

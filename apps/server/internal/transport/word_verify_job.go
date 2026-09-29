@@ -98,7 +98,7 @@ func runWordVerify(ctx context.Context, pipe *pipeline.Pipeline, words wordrevie
 	if err != nil {
 		return fmt.Errorf("word review question: generate: %w", err)
 	}
-	if _, _, err := questionStore.SaveQuestion(ctx, userID, wordID, question); err != nil {
+	if _, _, err := questionStore.SaveQuestion(ctx, userID, wordID, question, target); err != nil {
 		return fmt.Errorf("word review question: save: %w", err)
 	}
 	return nil

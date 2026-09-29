@@ -27,13 +27,16 @@ func TestMeaningResearchReceivesDictionaryExamples(t *testing.T) {
 		if msgs[0].Content == wordFormSystemPrompt() {
 			return `{"word":"bank"}`, nil
 		}
+		if msgs[0].Content == wordVerifySystemPrompt("ko") {
+			return `{"valid":true}`, nil
+		}
 		assertArticleMemorizationMeaningPrompt(t, msgs[0].Content)
 		if !strings.Contains(msgs[0].Content, "each distinct sense in a separate entry") {
 			t.Fatal("missing sense separation")
 		}
 		return `{"suggestions":[{"word":"bank","meaning":"은행","example":"I went to the bank."},{"word":"bank","meaning":"강둑","example":"They sat on the bank."}]}`, nil
 	}}}
-	got, err := p.DefineWordMeanings(context.Background(), "bank", "I went to the bank.")
+	got, err := p.DefineWordMeanings(context.Background(), "bank", "은행", "I went to the bank.", "")
 	if err != nil || len(got) != 2 || got[0].Meaning != "은행" || got[1].Meaning != "강둑" {
 		t.Fatalf("results=%+v err=%v", got, err)
 	}

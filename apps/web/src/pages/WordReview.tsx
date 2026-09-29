@@ -14,7 +14,7 @@ import {
   type WordReviewItem,
   startResearchWord,
   confirmResearchWord,
-  saveWord,
+  selectResearchWord,
   selectWordMeaning,
   meaningNeedsReview,
   wordStudyStatus,
@@ -74,6 +74,8 @@ export function WordReview() {
   const [autoAdding, setAutoAdding] = useState(false);
   const [autoAddError, setAutoAddError] = useState<string | null>(null);
   const [researching, setResearching] = useState<Set<string>>(new Set());
+  const [selectingResearch, setSelectingResearch] = useState<Set<string>>(new Set());
+  const [researchErrors, setResearchErrors] = useState<Record<string, string>>({});
   const wordsRequest = useRef(0);
 
   const refreshWords = useCallback(async () => {
@@ -185,10 +187,12 @@ export function WordReview() {
   );
 
   const handleResearch = useCallback(async (word: WordReviewItem) => {
+    setResearchErrors((prev) => ({ ...prev, [word.id]: "" }));
     setResearching((prev) => new Set(prev).add(word.id));
     const updated = await startResearchWord(word.id);
     setResearching((prev) => { const next = new Set(prev); next.delete(word.id); return next; });
     if (updated) setWords((prev) => prev.map((w) => w.id === updated.id ? updated : w));
+    else setResearchErrors((prev) => ({ ...prev, [word.id]: "검색을 시작하지 못했어요. 다시 시도해 주세요." }));
   }, []);
 
   const handleConfirmResearch = useCallback(async (word: WordReviewItem) => {
@@ -210,21 +214,29 @@ export function WordReview() {
   }, []);
 
   const handleChooseMeaning = useCallback(async (oldWord: WordReviewItem, suggestion: WordSuggestion) => {
-    const saved = await saveWord(suggestion, oldWord.originalWord ?? oldWord.word);
-    if (!saved) return;
-    await deleteWord(oldWord.id);
-    setWords((prev) => [...prev.filter((w) => w.id !== oldWord.id), saved]);
+    setSelectingResearch((prev) => new Set(prev).add(oldWord.id));
+    setResearchErrors((prev) => ({ ...prev, [oldWord.id]: "" }));
+    const saved = await selectResearchWord(oldWord, suggestion);
+    setSelectingResearch((prev) => { const next = new Set(prev); next.delete(oldWord.id); return next; });
+    if (saved) setWords((prev) => prev.map((w) => w.id === oldWord.id ? saved : w));
+    else setResearchErrors((prev) => ({ ...prev, [oldWord.id]: "예문을 적용하지 못했어요. 이미 학습 중인 뜻이거나 검색 결과가 바뀌었을 수 있어요. 다시 검색해 주세요." }));
   }, []);
 
   const researchControls = (word: WordReviewItem) => {
     if (word.researchStatus === "confirmed" || meaningNeedsReview(word)) return null;
+    const pending = researching.has(word.id) || word.researchStatus === "pending";
+    const selecting = selectingResearch.has(word.id);
+    const results = word.researchStatus === "done" ? (word.researchResults ?? []).filter((s) => s.verified) : [];
     return (
       <>
-        <button type="button" className="ghost word-research-btn" onClick={() => void handleResearch(word)} disabled={researching.has(word.id) || word.researchStatus === "pending"}>
-          {researching.has(word.id) || word.researchStatus === "pending" ? "다시 찾는 중…" : "다시 검색"}
+        <button type="button" className="ghost word-research-btn" onClick={() => void handleResearch(word)} disabled={pending || selecting || word.status === "pending"}>
+          {pending ? "예문을 찾고 검증하는 중…" : "다시 검색"}
         </button>
-        {(word.researchResults ?? []).map((s, i) => (
-          <button key={i} type="button" className="ghost word-research-choice" onClick={() => void handleChooseMeaning(word, s)}>
+        {word.researchStatus === "failed" && <p role="status">검증된 새 예문을 찾지 못했어요. 기존 단어는 유지했어요.</p>}
+        {word.researchStatus === "done" && results.length === 0 && <p role="status">검증된 예문이 없어요. 다시 검색해 주세요.</p>}
+        {researchErrors[word.id] && <p role="alert">{researchErrors[word.id]}</p>}
+        {results.map((s, i) => (
+          <button key={i} type="button" className="ghost word-research-choice" onClick={() => void handleChooseMeaning(word, s)} disabled={pending || selecting || word.status === "pending"}>
             {s.meaning} · {s.example}
           </button>
         ))}
@@ -233,7 +245,7 @@ export function WordReview() {
             type="button"
             className="ghost word-research-btn"
             onClick={() => void handleConfirmResearch(word)}
-            disabled={word.status === "pending"}
+            disabled={word.status === "pending" || pending || selecting}
           >
             {word.status === "pending" ? "검증 중…" : "확정"}
           </button>

@@ -66,7 +66,7 @@ func TestGenerationRetryRegeneratesInvalidTerminalOutput(t *testing.T) {
 			return err
 		}},
 		{"word meanings malformed entry", `{"suggestions":[{"word":7}]}`, `{"suggestions":[{"word":"go","meaning":"가다","example":"He goes home."}]}`, false, func(ctx context.Context, p *Pipeline) error {
-			_, err := p.defineWordMeanings(ctx, "go", "He goes home.")
+			_, err := p.generateWordMeanings(ctx, `{"word":"go","previous":{"example":"He goes home."}}`)
 			return err
 		}},
 		{"correction malformed issues", `{"issues":7}`, `{"corrected":"He goes.","issues":[]}`, false, func(ctx context.Context, p *Pipeline) error {

@@ -209,6 +209,7 @@ type Word struct {
 	// (nothing to explain about a pass).
 	VerifyReason         string
 	ResearchStatus       string
+	ResearchRevision     int
 	ResearchResults      []ResearchSuggestion
 	ReviewQuestion       Question
 	MeaningVersion       int
@@ -272,12 +273,16 @@ type ResearchSuggestion struct {
 	Word    string `json:"word"`
 	Meaning string `json:"meaning"`
 	Example string `json:"example"`
+	// Older persisted candidates were not checked. They must be researched
+	// again before the selection endpoint can apply them.
+	Verified bool `json:"verified,omitempty"`
 }
 
 const (
 	ResearchNone      = ""
 	ResearchPending   = "pending"
 	ResearchDone      = "done"
+	ResearchFailed    = "failed"
 	ResearchConfirmed = "confirmed"
 )
 
@@ -286,8 +291,15 @@ const (
 // reconstruct an in-flight search after navigation or reload.
 type ResearchStore interface {
 	StartResearch(context.Context, string, string) (Word, error)
-	FinishResearch(context.Context, string, string, []ResearchSuggestion) (Word, error)
+	// Empty results terminate a search as failed, without changing the entry.
+	FinishResearch(context.Context, Word, []ResearchSuggestion) (Word, error)
 	ConfirmResearch(context.Context, string, string) (Word, error)
+}
+
+var ErrResearchConflict = errors.New("wordreview: research selection is stale or conflicts with an existing word")
+
+type ResearchSelectionStore interface {
+	SelectResearch(context.Context, string, string, int, ResearchSuggestion) (Word, error)
 }
 
 // Store persists the learner's study words (chosen or auto-captured — see
@@ -351,7 +363,9 @@ type OriginalSaver interface {
 // implementation uses a version-conditional UPDATE: a late old deployment's
 // result is ignored once a newer question exists.
 type QuestionStore interface {
-	SaveQuestion(ctx context.Context, userID, id string, question Question) (word Word, saved bool, err error)
+	// Workers supply the entry snapshot so a researched replacement cannot
+	// inherit a question generated for its old meaning or example.
+	SaveQuestion(ctx context.Context, userID, id string, question Question, expected ...Word) (word Word, saved bool, err error)
 }
 
 // VersionedReviewer records an answer only when it belongs to the exact
