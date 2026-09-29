@@ -88,6 +88,7 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 			"previous_meaning TEXT NULL",
 		)},
 		{Version: 9, Name: "word_reviews.meaning_revision", Up: addWordColumns("meaning_revision INT NOT NULL DEFAULT 0")},
+		{Version: 10, Name: "word_reviews.meaning_target_version", Up: migrateMeaningVersions},
 	}
 	if err := migration.ApplyLegacy(ctx, rw, "wordreview", steps); err != nil {
 		return nil, fmt.Errorf("wordreview: migrations: %w", err)
@@ -176,7 +177,7 @@ func scanWord(row scanner, userID string) (Word, error) {
 		&w.Stage, &w.ReviewCount, &w.CorrectStreak,
 		&nextReviewAt, &lastReviewedAt, &w.Status, &w.VerifyReason, &w.ResearchStatus, &researchResults,
 		&w.ReviewQuestion.Version, &w.ReviewQuestion.Prompt, &w.ReviewQuestion.Answer, &reviewAnswers, &createdAt,
-		&w.MeaningVersion, &w.MeaningStatus, &w.MeaningError, &w.PreviousMeaning, &w.MeaningRevision,
+		&w.MeaningVersion, &w.MeaningStatus, &w.MeaningError, &w.PreviousMeaning, &w.MeaningRevision, &w.MeaningTargetVersion,
 	); err != nil {
 		return Word{}, err
 	}
@@ -197,7 +198,7 @@ func scanWord(row scanner, userID string) (Word, error) {
 	return w, nil
 }
 
-const wordColumns = `id, word, original_word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, research_status, research_results, review_question_version, review_prompt, review_answer, review_answers, created_at, meaning_version, meaning_status, meaning_error, COALESCE(previous_meaning, ''), meaning_revision`
+const wordColumns = `id, word, original_word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, research_status, research_results, review_question_version, review_prompt, review_answer, review_answers, created_at, meaning_version, meaning_status, meaning_error, COALESCE(previous_meaning, ''), meaning_revision, meaning_target_version`
 
 func (s *MySQLStore) Save(ctx context.Context, userID, word, meaning, example string) (Word, error) {
 	return s.SaveOriginal(ctx, userID, word, meaning, example, word)

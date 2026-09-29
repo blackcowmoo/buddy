@@ -28,14 +28,18 @@ memorize, without commentary such as “맥락상 …을 의미함” or an appe
 definition. Distinct senses remain separate entries. Correction-generated
 vocabulary has a separate study gloss from the correction explanation.
 
-In **단어 복습**, **단어 뜻 정리** polishes existing verified entries using their
-old meaning and example. It preserves the entry ID, original spelling, example,
+Loading the word list automatically schedules every verified entry whose meaning
+version predates `wordreview.CurrentMeaningVersion`, including previously confirmed
+entries. Bump that constant when saved meanings need a new pass; there is no manual
+bulk-start button. The refresh polishes meanings using their old meaning and example.
+It preserves the entry ID, original spelling, example,
 review question, schedule, and review counts. Entries being cleaned or awaiting
 a meaning choice appear in **확정 전 단어**, above review history, and stay out of
 quizzes until confirmed. Choose **정리 후 뜻 → 이 뜻으로 확정** to keep just the
-cleaned gloss and exclude it from future cleanup. Choose **정리 전 뜻 → 이 뜻으로
+cleaned gloss and advance the confirmed version to the result's target version.
+Generating a result never advances the confirmed version. Choose **정리 전 뜻 → 이 뜻으로
 다시 정리** to restore the original gloss and queue another cleanup for that
-entry. Ambiguous results and duplicate word/meaning pairs
+entry without advancing its version. Ambiguous results and duplicate word/meaning pairs
 keep their original gloss and show a retryable failure; entries are never merged
 or deleted by cleanup. Semantic preservation is checked by the model cascade,
 while the server validates the response and protects concurrent writes.
@@ -43,11 +47,13 @@ while the server validates the response and protects concurrent writes.
 Cleanup persists per-word `pending` / `done` / `failed` / `confirmed` state in
 MySQL and reuses the durable word-research queue, processing words sequentially. Without Redis
 it uses detached execution; reopening the list resumes pending work. Completed
-entries await the learner's choice; revisions keep older workers or browser
+entries await the learner's choice. The persisted target version prevents polling
+from repeating completed or failed work at the same version; a failure waits for
+an individual retry or a newer version. Revisions keep older workers or browser
 requests from overwriting a retry or confirmation. Article lookup caches
 are versioned on both the server and browser so old results are refreshed while
-preserving the browser's search history. Previously saved study cards change
-only when cleanup is requested.
+preserving the browser's search history. Legacy completed meanings retain their
+result version during migration; only explicitly confirmed meanings count as upgraded.
 
 ## Word nuance practice
 

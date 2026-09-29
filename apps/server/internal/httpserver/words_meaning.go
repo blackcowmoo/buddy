@@ -30,26 +30,6 @@ func wordMeaningCleanupScheduler(words wordreview.Store, pipe *pipeline.Pipeline
 	}
 }
 
-func wordMeaningCleanupHandler(ident identity.Identifier, words wordreview.Store, schedule func(context.Context, string)) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		userID, ok := requireUser(w, r, ident)
-		if !ok {
-			return
-		}
-		store, ok := words.(wordreview.MeaningStore)
-		if !ok {
-			http.Error(w, "meaning cleanup unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		if err := store.StartMeaningCleanup(r.Context(), userID); err != nil {
-			serverError(w, "words: start meaning cleanup", err)
-			return
-		}
-		schedule(r.Context(), userID)
-		writeJSON(w, map[string]bool{"started": true})
-	}
-}
-
 func wordMeaningSelectionHandler(ident identity.Identifier, words wordreview.Store, schedule func(context.Context, string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)

@@ -19,24 +19,26 @@ import (
 // wordItem is the frontend projection of a tracked word. Legacy or partially
 // generated questions stay hidden until they satisfy the current contract.
 type wordItem struct {
-	ID              string                          `json:"id"`
-	Word            string                          `json:"word"`
-	Meaning         string                          `json:"meaning"`
-	Example         string                          `json:"example"`
-	OriginalWord    string                          `json:"originalWord"`
-	Stage           int                             `json:"stage"`
-	ReviewCount     int                             `json:"reviewCount"`
-	NextReviewAt    int64                           `json:"nextReviewAt"`
-	LastReviewedAt  int64                           `json:"lastReviewedAt,omitempty"`
-	Status          string                          `json:"status"`
-	VerifyReason    string                          `json:"verifyReason,omitempty"`
-	ResearchStatus  string                          `json:"researchStatus,omitempty"`
-	ResearchResults []wordreview.ResearchSuggestion `json:"researchResults,omitempty"`
-	ReviewQuestion  *wordreview.Question            `json:"reviewQuestion,omitempty"`
-	MeaningStatus   string                          `json:"meaningStatus,omitempty"`
-	MeaningRevision int                             `json:"meaningRevision"`
-	MeaningError    string                          `json:"meaningError,omitempty"`
-	PreviousMeaning string                          `json:"previousMeaning,omitempty"`
+	ID                   string                          `json:"id"`
+	Word                 string                          `json:"word"`
+	Meaning              string                          `json:"meaning"`
+	Example              string                          `json:"example"`
+	OriginalWord         string                          `json:"originalWord"`
+	Stage                int                             `json:"stage"`
+	ReviewCount          int                             `json:"reviewCount"`
+	NextReviewAt         int64                           `json:"nextReviewAt"`
+	LastReviewedAt       int64                           `json:"lastReviewedAt,omitempty"`
+	Status               string                          `json:"status"`
+	VerifyReason         string                          `json:"verifyReason,omitempty"`
+	ResearchStatus       string                          `json:"researchStatus,omitempty"`
+	ResearchResults      []wordreview.ResearchSuggestion `json:"researchResults,omitempty"`
+	ReviewQuestion       *wordreview.Question            `json:"reviewQuestion,omitempty"`
+	MeaningStatus        string                          `json:"meaningStatus,omitempty"`
+	MeaningVersion       int                             `json:"meaningVersion"`
+	MeaningTargetVersion int                             `json:"meaningTargetVersion"`
+	MeaningRevision      int                             `json:"meaningRevision"`
+	MeaningError         string                          `json:"meaningError,omitempty"`
+	PreviousMeaning      string                          `json:"previousMeaning,omitempty"`
 }
 
 func toWordItem(word wordreview.Word) wordItem {
@@ -45,23 +47,25 @@ func toWordItem(word wordreview.Word) wordItem {
 		lastReviewedAt = word.LastReviewedAt.Unix()
 	}
 	item := wordItem{
-		ID:              word.ID,
-		Word:            wordreview.NormalizeWord(word.Word),
-		Meaning:         word.Meaning,
-		Example:         word.Example,
-		OriginalWord:    word.OriginalWord,
-		Stage:           word.Stage,
-		ReviewCount:     word.ReviewCount,
-		NextReviewAt:    word.NextReviewAt.Unix(),
-		LastReviewedAt:  lastReviewedAt,
-		Status:          word.Status,
-		VerifyReason:    word.VerifyReason,
-		ResearchStatus:  word.ResearchStatus,
-		ResearchResults: word.ResearchResults,
-		MeaningStatus:   word.MeaningStatus,
-		MeaningRevision: word.MeaningRevision,
-		MeaningError:    word.MeaningError,
-		PreviousMeaning: word.PreviousMeaning,
+		ID:                   word.ID,
+		Word:                 wordreview.NormalizeWord(word.Word),
+		Meaning:              word.Meaning,
+		Example:              word.Example,
+		OriginalWord:         word.OriginalWord,
+		Stage:                word.Stage,
+		ReviewCount:          word.ReviewCount,
+		NextReviewAt:         word.NextReviewAt.Unix(),
+		LastReviewedAt:       lastReviewedAt,
+		Status:               word.Status,
+		VerifyReason:         word.VerifyReason,
+		ResearchStatus:       word.ResearchStatus,
+		ResearchResults:      word.ResearchResults,
+		MeaningStatus:        word.MeaningStatus,
+		MeaningVersion:       word.MeaningVersion,
+		MeaningTargetVersion: word.MeaningTargetVersion,
+		MeaningRevision:      word.MeaningRevision,
+		MeaningError:         word.MeaningError,
+		PreviousMeaning:      word.PreviousMeaning,
 	}
 	if wordreview.QuestionReady(word) {
 		question := word.ReviewQuestion
@@ -107,7 +111,7 @@ func wordSaveHandler(ident identity.Identifier, words wordreview.Store, pipe *pi
 }
 
 // wordsListHandler returns the study list and due count in one round trip. It
-// also lazily backfills review questions on verified legacy rows.
+// also schedules versioned meaning refreshes and backfills legacy questions.
 func wordsListHandler(ident identity.Identifier, words wordreview.Store, pipe *pipeline.Pipeline, wordVerifyQueue *asyncjob.Queue, resumeMeanings ...func(context.Context, string)) http.HandlerFunc {
 	// Redis deduplicates across replicas; the inline runner suppresses repeated
 	// polling work inside a no-Redis process.
@@ -116,6 +120,12 @@ func wordsListHandler(ident identity.Identifier, words wordreview.Store, pipe *p
 		userID, ok := requireUser(w, r, ident)
 		if !ok {
 			return
+		}
+		if store, ok := words.(wordreview.MeaningStore); ok {
+			if err := store.StartMeaningCleanup(r.Context(), userID); err != nil {
+				serverError(w, "words: schedule meaning refresh "+userID, err)
+				return
+			}
 		}
 		now := time.Now()
 		list, err := words.List(r.Context(), userID)

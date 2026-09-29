@@ -207,18 +207,22 @@ type Word struct {
 	// verdict — set on MarkRejected (surfaced to the learner so they know
 	// why), and left "" for a word that's still pending or was verified
 	// (nothing to explain about a pass).
-	VerifyReason    string
-	ResearchStatus  string
-	ResearchResults []ResearchSuggestion
-	ReviewQuestion  Question
-	MeaningVersion  int
-	MeaningRevision int
-	MeaningStatus   string
-	MeaningError    string
-	PreviousMeaning string
+	VerifyReason         string
+	ResearchStatus       string
+	ResearchResults      []ResearchSuggestion
+	ReviewQuestion       Question
+	MeaningVersion       int
+	MeaningTargetVersion int
+	MeaningRevision      int
+	MeaningStatus        string
+	MeaningError         string
+	PreviousMeaning      string
 }
 
-const CurrentMeaningVersion = 1
+// Bump this when all saved meanings need another pass. MeaningVersion is the
+// learner-confirmed version; MeaningTargetVersion identifies the pending work
+// or result, and never advances the confirmed version on its own.
+const CurrentMeaningVersion = 2
 
 const (
 	MeaningPending   = "pending"
@@ -241,15 +245,16 @@ const (
 var ErrMeaningConflict = errors.New("wordreview: meaning selection is stale or conflicts with an existing word")
 
 // A revision binds the learner's choice to the result they actually saw.
-// Accepting the cleaned gloss is final; choosing the original queues a new
-// revision without changing the word's identity or review history.
+// Accepting the cleaned gloss confirms its target version; choosing the original
+// queues a new revision without changing the confirmed version or review history.
 type MeaningSelectionStore interface {
 	SelectMeaning(context.Context, string, string, MeaningChoice, int) (Word, error)
 }
 
 // MeaningStore updates glosses in place, preserving identity and review history.
-// Pending rows are durable work intent; a list refresh can resume an interrupted
-// enqueue. Completed results await selection; rejecting one starts a new revision.
+// StartMeaningCleanup schedules older versions, including previously confirmed
+// entries, once per version. Pending rows are durable work intent; a list refresh
+// can resume an interrupted enqueue. Results and failures await learner action.
 type MeaningStore interface {
 	StartMeaningCleanup(context.Context, string) error
 	PendingMeanings(context.Context, string) ([]Word, error)

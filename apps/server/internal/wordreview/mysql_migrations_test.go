@@ -16,7 +16,7 @@ import (
 func TestLegacyColumnMigrationsPreserveWords(t *testing.T) {
 	db := newMigrationTestDB(t)
 	ctx := context.Background()
-	// This predates all nine additive migrations. A partially applied meaning
+	// This predates the additive migrations. A partially applied meaning
 	// migration also leaves its first column behind without a ledger entry.
 	_, err := db.ExecContext(ctx, `CREATE TABLE buddy_word_reviews (
 		id VARCHAR(64) PRIMARY KEY, user_id VARCHAR(255) NOT NULL,
@@ -82,6 +82,7 @@ func TestLegacyColumnMigrationsPreserveWords(t *testing.T) {
 		"word_reviews.original_word", "word_reviews.research_status", "word_reviews.research_results",
 		"word_reviews.review_question_version", "word_reviews.review_prompt", "word_reviews.review_answer",
 		"word_reviews.review_answers", "word_reviews.dictionary_meaning", "word_reviews.meaning_revision",
+		"word_reviews.meaning_target_version",
 	}
 	if !reflect.DeepEqual(names, wantNames) {
 		t.Fatalf("migration names = %v, want %v", names, wantNames)
@@ -108,6 +109,59 @@ func TestAddWordColumnsStopsOnRealFailure(t *testing.T) {
 	}
 	if err := addWordColumns("already_added INT", "recovered INT")(ctx, db); err != nil {
 		t.Fatalf("resume after repairing the migration: %v", err)
+	}
+}
+
+func TestMeaningVersionMigrationPreservesOnlyExplicitConfirmations(t *testing.T) {
+	db := newMigrationTestDB(t)
+	ctx := context.Background()
+	st, err := NewMySQL(ctx, db, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wants := make(map[string]Word)
+	for _, status := range []string{MeaningPending, MeaningDone, MeaningFailed, MeaningConfirmed} {
+		w, err := st.Save(ctx, "learner", status, "시설", "The facility closed.")
+		if err != nil {
+			t.Fatal(err)
+		}
+		legacyVersion := 0
+		if status == MeaningDone || status == MeaningConfirmed {
+			legacyVersion = 1
+		}
+		if _, err := db.ExecContext(ctx, `UPDATE `+table+` SET meaning_status=?, meaning_version=?,
+			meaning_revision=3, stage=2, review_count=5, previous_meaning='원래 뜻' WHERE id=?`, status, legacyVersion, w.ID); err != nil {
+			t.Fatal(err)
+		}
+		w, err = st.Get(ctx, "learner", w.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.MeaningTargetVersion = legacyVersion
+		if status != MeaningConfirmed {
+			w.MeaningVersion = 0
+		}
+		wants[w.ID] = w
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE `+table+` DROP COLUMN meaning_target_version`); err != nil {
+		t.Fatal(err)
+	}
+	for _, phase := range []string{"upgrade", "restart", "replay after partial migration"} {
+		if phase != "restart" {
+			if _, err := db.ExecContext(ctx, `DELETE FROM buddy_schema_migrations WHERE component='wordreview' AND version=10`); err != nil {
+				t.Fatal(err)
+			}
+		}
+		st, err := NewMySQL(ctx, db, db)
+		if err != nil {
+			t.Fatalf("%s: %v", phase, err)
+		}
+		for id, want := range wants {
+			got, err := st.Get(ctx, "learner", id)
+			if err != nil || !reflect.DeepEqual(got, want) {
+				t.Fatalf("%s: migration changed confirmation or progress: %+v want=%+v err=%v", phase, got, want, err)
+			}
+		}
 	}
 }
 

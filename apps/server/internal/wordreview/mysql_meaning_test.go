@@ -72,7 +72,7 @@ func TestMeaningCleanupPreservesProgressAndOriginal(t *testing.T) {
 	}
 	want := reviewed
 	want.Meaning, want.PreviousMeaning = "생산 시설", before.Meaning
-	want.MeaningVersion, want.MeaningStatus = CurrentMeaningVersion, "done"
+	want.MeaningStatus = MeaningDone
 	if !reflect.DeepEqual(after, want) {
 		t.Fatalf("after=%+v\nwant=%+v", after, want)
 	}
@@ -138,8 +138,12 @@ func TestMeaningCleanupConflictAndUserIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	retry, _ := st.Get(ctx, user, old.ID)
-	if retry.MeaningStatus != "pending" || retry.MeaningError != "" {
-		t.Fatalf("failure cannot retry: %+v", retry)
+	if !reflect.DeepEqual(retry, after) {
+		t.Fatalf("poll retried a failure without a learner choice: %+v", retry)
+	}
+	retry, err = st.SelectMeaning(ctx, user, old.ID, MeaningChoiceOriginal, after.MeaningRevision)
+	if err != nil || retry.MeaningStatus != MeaningPending || retry.MeaningError != "" {
+		t.Fatalf("failure cannot retry: %+v err=%v", retry, err)
 	}
 }
 
@@ -229,7 +233,7 @@ func preparedMeaning(t *testing.T) (*MySQLStore, Word, Word) {
 	return st, pending, done
 }
 
-func TestSelectCleanedMeaningIsFinalAndPreservesProgress(t *testing.T) {
+func TestSelectCleanedMeaningConfirmsVersionAndPreservesProgress(t *testing.T) {
 	st, pending, done := preparedMeaning(t)
 	ctx := context.Background()
 	// The mutation must return the committed state even with an unavailable replica.
@@ -244,6 +248,7 @@ func TestSelectCleanedMeaningIsFinalAndPreservesProgress(t *testing.T) {
 	got, err := primary.SelectMeaning(ctx, done.UserID, done.ID, MeaningChoiceCleaned, done.MeaningRevision)
 	want := done
 	want.MeaningStatus, want.PreviousMeaning = MeaningConfirmed, ""
+	want.MeaningVersion = CurrentMeaningVersion
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("selected=%+v want=%+v err=%v", got, want, err)
 	}
@@ -256,14 +261,10 @@ func TestSelectCleanedMeaningIsFinalAndPreservesProgress(t *testing.T) {
 	if err := st.FailMeaning(ctx, pending, "stale error"); err != nil {
 		t.Fatal(err)
 	}
-	// Even a future cleanup contract must honor an explicit learner choice.
-	if _, err := st.rw.ExecContext(ctx, `UPDATE `+table+` SET meaning_version=0 WHERE id=?`, done.ID); err != nil {
-		t.Fatal(err)
-	}
+	// Repeated list refreshes at the same version preserve the choice.
 	if err := st.StartMeaningCleanup(ctx, done.UserID); err != nil {
 		t.Fatal(err)
 	}
-	want.MeaningVersion = 0
 	again, err := st.Get(ctx, done.UserID, done.ID)
 	if err != nil || !reflect.DeepEqual(again, want) {
 		t.Fatalf("confirmed word changed=%+v err=%v", again, err)
@@ -305,7 +306,7 @@ func TestSelectOriginalMeaningRestartsAndRejectsStaleWork(t *testing.T) {
 	}
 	got, err := st.Get(ctx, done.UserID, done.ID)
 	want.Meaning, want.PreviousMeaning = "제조 시설", retry.Meaning
-	want.MeaningStatus, want.MeaningVersion = MeaningDone, CurrentMeaningVersion
+	want.MeaningStatus = MeaningDone
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("second cleanup=%+v want=%+v err=%v", got, want, err)
 	}
@@ -337,7 +338,11 @@ func TestMeaningSelectionBlocksReviewUntilConfirmed(t *testing.T) {
 		t.Run(status, func(t *testing.T) {
 			st, _, done := preparedMeaning(t)
 			ctx := context.Background()
-			if _, err := st.rw.ExecContext(ctx, `UPDATE `+table+` SET meaning_status=? WHERE id=?`, status, done.ID); err != nil {
+			if status == MeaningConfirmed {
+				if _, err := st.SelectMeaning(ctx, done.UserID, done.ID, MeaningChoiceCleaned, done.MeaningRevision); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, err := st.rw.ExecContext(ctx, `UPDATE `+table+` SET meaning_status=? WHERE id=?`, status, done.ID); err != nil {
 				t.Fatal(err)
 			}
 			now := done.NextReviewAt.Add(time.Hour)
@@ -374,5 +379,178 @@ func TestFailedMeaningCanRetryButCannotConfirm(t *testing.T) {
 	retry.MeaningRevision++
 	if err != nil || !reflect.DeepEqual(again, retry) {
 		t.Fatalf("retry=%+v want=%+v err=%v", again, retry, err)
+	}
+}
+
+func TestMeaningVersionRefreshRequiresConfirmationEveryTime(t *testing.T) {
+	for _, newMeaning := range []string{"생산 시설", "제조 시설"} {
+		t.Run(newMeaning, func(t *testing.T) {
+			st, _, done := preparedMeaning(t)
+			ctx := context.Background()
+			// Seed a learner-confirmed result from the previous deployed contract.
+			if _, err := st.rw.ExecContext(ctx, `UPDATE `+table+` SET meaning_status='confirmed', previous_meaning=NULL,
+		meaning_version=?, meaning_target_version=? WHERE id=?`, CurrentMeaningVersion-1, CurrentMeaningVersion-1, done.ID); err != nil {
+				t.Fatal(err)
+			}
+			previous, err := st.Get(ctx, done.UserID, done.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := st.StartMeaningCleanup(ctx, done.UserID); err != nil {
+				t.Fatal(err)
+			}
+			pending, err := st.Get(ctx, done.UserID, done.ID)
+			want := previous
+			want.MeaningStatus = MeaningPending
+			want.MeaningTargetVersion = CurrentMeaningVersion
+			want.MeaningRevision++
+			if err != nil || !reflect.DeepEqual(pending, want) {
+				t.Fatalf("version refresh=%+v want=%+v err=%v", pending, want, err)
+			}
+			// Neither a stale confirmation nor an early one may upgrade this version.
+			for _, revision := range []int{previous.MeaningRevision, pending.MeaningRevision} {
+				if _, err := st.SelectMeaning(ctx, done.UserID, done.ID, MeaningChoiceCleaned, revision); !errors.Is(err, ErrMeaningConflict) {
+					t.Fatalf("premature confirmation revision %d: %v", revision, err)
+				}
+			}
+			for range 2 {
+				if err := st.StartMeaningCleanup(ctx, done.UserID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			queued, err := st.PendingMeanings(ctx, done.UserID)
+			if err != nil || len(queued) != 1 || !reflect.DeepEqual(queued[0], pending) {
+				t.Fatalf("poll changed the queued revision: %+v err=%v", queued, err)
+			}
+			if err := st.SaveMeaning(ctx, pending, newMeaning); err != nil {
+				t.Fatal(err)
+			}
+			result, err := st.Get(ctx, done.UserID, done.ID)
+			want.Meaning, want.PreviousMeaning, want.MeaningStatus = newMeaning, previous.Meaning, MeaningDone
+			if err != nil || !reflect.DeepEqual(result, want) {
+				t.Fatalf("completion advanced the confirmed version: %+v want=%+v err=%v", result, want, err)
+			}
+			if err := st.StartMeaningCleanup(ctx, done.UserID); err != nil {
+				t.Fatal(err)
+			}
+			count, err := st.DueCount(ctx, done.UserID, done.NextReviewAt.Add(time.Hour))
+			if err != nil || count != 0 {
+				t.Fatalf("unconfirmed refresh became due: %d err=%v", count, err)
+			}
+			// A manual retry also retains the last confirmed version and the schedule.
+			retry, err := st.SelectMeaning(ctx, done.UserID, done.ID, MeaningChoiceOriginal, result.MeaningRevision)
+			want = pending
+			want.MeaningRevision++
+			if err != nil || !reflect.DeepEqual(retry, want) {
+				t.Fatalf("retry changed confirmed state: %+v want=%+v err=%v", retry, want, err)
+			}
+			if err := st.SaveMeaning(ctx, pending, "stale worker"); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.SaveMeaning(ctx, retry, newMeaning); err != nil {
+				t.Fatal(err)
+			}
+			confirmed, err := st.SelectMeaning(ctx, done.UserID, done.ID, MeaningChoiceCleaned, retry.MeaningRevision)
+			want.Meaning, want.MeaningStatus, want.MeaningVersion = newMeaning, MeaningConfirmed, CurrentMeaningVersion
+			if err != nil || !reflect.DeepEqual(confirmed, want) {
+				t.Fatalf("confirmation=%+v want=%+v err=%v", confirmed, want, err)
+			}
+			if err := st.StartMeaningCleanup(ctx, done.UserID); err != nil {
+				t.Fatal(err)
+			}
+			after, err := st.Get(ctx, done.UserID, done.ID)
+			if err != nil || !reflect.DeepEqual(after, confirmed) {
+				t.Fatalf("same version restarted after confirmation: %+v err=%v", after, err)
+			}
+		})
+	}
+}
+
+func TestMeaningRefreshSupersedesOlderResultsAndWorkers(t *testing.T) {
+	for _, status := range []string{MeaningPending, MeaningDone, MeaningFailed} {
+		t.Run(status, func(t *testing.T) {
+			st, _, done := preparedMeaning(t)
+			ctx := context.Background()
+			if _, err := st.rw.ExecContext(ctx, `UPDATE `+table+` SET meaning_status=?, meaning_target_version=? WHERE id=?`, status, CurrentMeaningVersion-1, done.ID); err != nil {
+				t.Fatal(err)
+			}
+			old, err := st.Get(ctx, done.UserID, done.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := st.StartMeaningCleanup(ctx, done.UserID); err != nil {
+				t.Fatal(err)
+			}
+			current, err := st.Get(ctx, done.UserID, done.ID)
+			if err != nil || current.MeaningStatus != MeaningPending || current.MeaningTargetVersion != CurrentMeaningVersion || current.MeaningRevision != old.MeaningRevision+1 || current.MeaningVersion != old.MeaningVersion {
+				t.Fatalf("refresh=%+v err=%v", current, err)
+			}
+			if err := st.SaveMeaning(ctx, old, "stale result"); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.FailMeaning(ctx, old, "stale failure"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := st.SelectMeaning(ctx, done.UserID, done.ID, MeaningChoiceCleaned, old.MeaningRevision); !errors.Is(err, ErrMeaningConflict) {
+				t.Fatalf("old screen upgraded a new version: %v", err)
+			}
+			if err := st.SaveMeaning(ctx, current, "제조 시설"); err != nil {
+				t.Fatal(err)
+			}
+			result, err := st.Get(ctx, done.UserID, done.ID)
+			if err != nil || result.MeaningStatus != MeaningDone || result.MeaningVersion != old.MeaningVersion || result.PreviousMeaning != done.PreviousMeaning {
+				t.Fatalf("refresh lost the unconfirmed baseline: %+v err=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestMeaningRefreshLeavesNewerDeploymentWorkUntouched(t *testing.T) {
+	st, _, done := preparedMeaning(t)
+	ctx := context.Background()
+	if _, err := st.rw.ExecContext(ctx, `UPDATE `+table+` SET meaning_status='pending', meaning_target_version=? WHERE id=?`, CurrentMeaningVersion+1, done.ID); err != nil {
+		t.Fatal(err)
+	}
+	future, err := st.Get(ctx, done.UserID, done.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.StartMeaningCleanup(ctx, done.UserID); err != nil {
+		t.Fatal(err)
+	}
+	queued, err := st.PendingMeanings(ctx, done.UserID)
+	if err != nil || len(queued) != 0 {
+		t.Fatalf("older deployment claimed future work: %+v err=%v", queued, err)
+	}
+	if err := st.SaveMeaning(ctx, future, "older contract"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.FailMeaning(ctx, future, "older failure"); err != nil {
+		t.Fatal(err)
+	}
+	after, err := st.Get(ctx, done.UserID, done.ID)
+	if err != nil || !reflect.DeepEqual(after, future) {
+		t.Fatalf("older deployment changed future work: %+v err=%v", after, err)
+	}
+}
+
+func TestMeaningConfirmationUsesTheResultVersion(t *testing.T) {
+	st, _, done := preparedMeaning(t)
+	ctx := context.Background()
+	// A deployment can happen between seeing a result and confirming it.
+	// Confirmation credits the result actually reviewed, never the new binary.
+	if _, err := st.rw.ExecContext(ctx, `UPDATE `+table+` SET meaning_target_version=? WHERE id=?`, CurrentMeaningVersion-1, done.ID); err != nil {
+		t.Fatal(err)
+	}
+	confirmed, err := st.SelectMeaning(ctx, done.UserID, done.ID, MeaningChoiceCleaned, done.MeaningRevision)
+	if err != nil || confirmed.MeaningVersion != CurrentMeaningVersion-1 {
+		t.Fatalf("old result confirmed a newer version: %+v err=%v", confirmed, err)
+	}
+	if err := st.StartMeaningCleanup(ctx, done.UserID); err != nil {
+		t.Fatal(err)
+	}
+	next, err := st.Get(ctx, done.UserID, done.ID)
+	if err != nil || next.MeaningStatus != MeaningPending || next.MeaningVersion != confirmed.MeaningVersion || next.MeaningTargetVersion != CurrentMeaningVersion || next.MeaningRevision != confirmed.MeaningRevision+1 {
+		t.Fatalf("new deployment bypassed review: %+v err=%v", next, err)
 	}
 }

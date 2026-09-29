@@ -10,9 +10,27 @@ import (
 	"buddy/server/internal/workguard"
 )
 
+func migrateMeaningVersions(ctx context.Context, db *sql.DB) error {
+	if err := addWordColumns("meaning_target_version INT NOT NULL DEFAULT 0")(ctx, db); err != nil {
+		return err
+	}
+	// Legacy workers advanced meaning_version on completion, before confirmation.
+	// Keep that as the result version, crediting only explicit learner choices.
+	// The target guard also makes a partially applied migration safe to replay.
+	_, err := db.ExecContext(ctx, `UPDATE `+table+` SET meaning_target_version=meaning_version,
+		meaning_version=CASE WHEN meaning_status='confirmed' THEN meaning_version ELSE 0 END
+		WHERE meaning_target_version=0 AND meaning_version>0`)
+	return err
+}
+
 func (s *MySQLStore) StartMeaningCleanup(ctx context.Context, userID string) error {
-	_, err := s.rw.ExecContext(ctx, `UPDATE `+table+` SET meaning_status='pending', meaning_error='', meaning_revision=meaning_revision+1
-		WHERE user_id=? AND status=? AND meaning_version<? AND meaning_status NOT IN ('pending', 'done', 'confirmed')`, userID, StatusVerified, CurrentMeaningVersion)
+	// The target version prevents every poll from redoing an unconfirmed result
+	// or retrying a failure. A newer version invalidates older worker snapshots
+	// and browser choices through the revision, including formerly confirmed rows.
+	_, err := s.rw.ExecContext(ctx, `UPDATE `+table+` SET meaning_status='pending', meaning_error='',
+		meaning_target_version=?, meaning_revision=meaning_revision+1
+		WHERE user_id=? AND status=? AND meaning_version<? AND meaning_target_version<?`,
+		CurrentMeaningVersion, userID, StatusVerified, CurrentMeaningVersion, CurrentMeaningVersion)
 	return err
 }
 
@@ -20,8 +38,8 @@ func (s *MySQLStore) PendingMeanings(ctx context.Context, userID string) ([]Word
 	// Workers must see the intent just written by StartMeaningCleanup even
 	// when the read replica has not caught up yet.
 	rows, err := s.rw.QueryContext(ctx, `SELECT `+wordColumns+` FROM `+table+`
-		WHERE user_id=? AND status=? AND meaning_status='pending' AND meaning_version<? ORDER BY id`,
-		userID, StatusVerified, CurrentMeaningVersion)
+		WHERE user_id=? AND status=? AND meaning_status='pending' AND meaning_version<? AND meaning_target_version=? ORDER BY id`,
+		userID, StatusVerified, CurrentMeaningVersion, CurrentMeaningVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -38,15 +56,18 @@ func (s *MySQLStore) PendingMeanings(ctx context.Context, userID string) ([]Word
 }
 
 func (s *MySQLStore) SaveMeaning(ctx context.Context, before Word, meaning string) error {
+	if before.MeaningTargetVersion != CurrentMeaningVersion {
+		return nil
+	}
 	// A compare-and-swap prevents a delayed worker from overwriting a later
 	// edit. Only gloss metadata changes; even a review completed during the
 	// model call keeps its schedule, counts, and existing same-sense question.
 	res, err := workguard.Executor(ctx, s.rw).ExecContext(ctx, `UPDATE `+table+`
-		SET previous_meaning=meaning, meaning=?, meaning_version=?, meaning_status='done', meaning_error=''
+		SET previous_meaning=COALESCE(previous_meaning, meaning), meaning=?, meaning_status='done', meaning_error=''
 		WHERE id=? AND user_id=? AND status=? AND meaning_status='pending' AND meaning_version<?
-		AND meaning_revision=?
+		AND meaning_revision=? AND meaning_target_version=?
 		AND BINARY meaning=BINARY ? AND BINARY word=BINARY ? AND BINARY example=BINARY ?`,
-		meaning, CurrentMeaningVersion, before.ID, before.UserID, StatusVerified, CurrentMeaningVersion, before.MeaningRevision, before.Meaning, before.Word, before.Example)
+		meaning, before.ID, before.UserID, StatusVerified, CurrentMeaningVersion, before.MeaningRevision, before.MeaningTargetVersion, before.Meaning, before.Word, before.Example)
 	if mysqlerr.Is(err, 1062) {
 		// Do not merge or delete duplicate study cards: either may have progress
 		// the learner wants to keep. Record a recoverable conflict instead.
@@ -64,8 +85,12 @@ func (s *MySQLStore) SaveMeaning(ctx context.Context, before Word, meaning strin
 }
 
 func (s *MySQLStore) FailMeaning(ctx context.Context, before Word, reason string) error {
+	if before.MeaningTargetVersion != CurrentMeaningVersion {
+		return nil
+	}
 	_, err := workguard.Executor(ctx, s.rw).ExecContext(ctx, `UPDATE `+table+` SET meaning_status='failed', meaning_error=?
-		WHERE id=? AND user_id=? AND meaning_status='pending' AND meaning_version<? AND meaning_revision=?`, reason, before.ID, before.UserID, CurrentMeaningVersion, before.MeaningRevision)
+		WHERE id=? AND user_id=? AND meaning_status='pending' AND meaning_version<? AND meaning_revision=? AND meaning_target_version=?`,
+		reason, before.ID, before.UserID, CurrentMeaningVersion, before.MeaningRevision, before.MeaningTargetVersion)
 	return err
 }
 
@@ -90,26 +115,30 @@ func (s *MySQLStore) SelectMeaning(ctx context.Context, userID, id string, choic
 		if w.MeaningStatus == MeaningConfirmed {
 			return w, nil
 		}
-		if w.MeaningStatus != MeaningDone {
+		if w.MeaningStatus != MeaningDone || w.MeaningTargetVersion == 0 || w.MeaningTargetVersion < w.MeaningVersion {
 			return Word{}, ErrMeaningConflict
 		}
 		w.MeaningStatus = MeaningConfirmed
+		w.MeaningVersion = w.MeaningTargetVersion
 		w.ResearchStatus, w.ResearchResults = ResearchConfirmed, nil
 	case MeaningChoiceOriginal:
 		if w.MeaningStatus != MeaningDone && w.MeaningStatus != MeaningFailed {
 			return Word{}, ErrMeaningConflict
 		}
-		if w.MeaningStatus == MeaningDone && w.PreviousMeaning != "" {
+		if w.MeaningTargetVersion > CurrentMeaningVersion {
+			return Word{}, ErrMeaningConflict
+		}
+		if w.PreviousMeaning != "" {
 			w.Meaning = w.PreviousMeaning
 		}
-		w.MeaningStatus, w.MeaningVersion = MeaningPending, 0
+		w.MeaningStatus, w.MeaningTargetVersion = MeaningPending, CurrentMeaningVersion
 		w.MeaningRevision++
 	default:
 		return Word{}, ErrMeaningConflict
 	}
 	w.PreviousMeaning, w.MeaningError = "", ""
-	query := `UPDATE ` + table + ` SET meaning=?, previous_meaning=NULL, meaning_status=?, meaning_version=?, meaning_revision=?, meaning_error=''`
-	args := []any{w.Meaning, w.MeaningStatus, w.MeaningVersion, w.MeaningRevision}
+	query := `UPDATE ` + table + ` SET meaning=?, previous_meaning=NULL, meaning_status=?, meaning_version=?, meaning_target_version=?, meaning_revision=?, meaning_error=''`
+	args := []any{w.Meaning, w.MeaningStatus, w.MeaningVersion, w.MeaningTargetVersion, w.MeaningRevision}
 	if choice == MeaningChoiceCleaned {
 		query += `, research_status=?, research_results=NULL`
 		args = append(args, ResearchConfirmed)

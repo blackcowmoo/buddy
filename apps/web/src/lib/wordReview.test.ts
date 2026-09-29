@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { confirmResearchWord, deleteWord, fetchAutoAddStatus, fetchWords, findSameWordEntries, reviewWord, saveWord, selectWordMeaning, startAutoAddWords, startResearchWord, startMeaningCleanup, wordStudyStatus, type WordReviewItem } from "./wordReview";
+import { confirmResearchWord, deleteWord, fetchAutoAddStatus, fetchWords, findSameWordEntries, reviewWord, saveWord, selectWordMeaning, startAutoAddWords, startResearchWord, wordStudyStatus, type WordReviewItem } from "./wordReview";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -67,14 +67,6 @@ describe("findSameWordEntries", () => {
   it("does not group missing English text", () => {
     expect(findSameWordEntries([{ ...learning, word: "" }, { ...learning, id: "w2", word: " \t " }])).toEqual(new Map());
   });
-});
-
-it("starts meaning cleanup and reports a failed request", async () => {
-  const request = vi.fn().mockResolvedValueOnce({ ok: true, json: async () => ({ started: true }) }).mockResolvedValueOnce({ ok: false });
-  vi.stubGlobal("fetch", request);
-  await expect(startMeaningCleanup()).resolves.toBe(true);
-  expect(request).toHaveBeenCalledWith("api/words/meanings/cleanup", expect.objectContaining({ method: "POST", body: "{}" }));
-  await expect(startMeaningCleanup()).resolves.toBe(false);
 });
 
 it.each(["cleaned", "original"] as const)("posts the %s meaning choice with its persisted revision", async (choice) => {
