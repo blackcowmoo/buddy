@@ -34,89 +34,93 @@ type nuanceJobPayload struct {
 var nuanceInlineJobs asyncjob.InlineRunner
 
 func NuanceJobHandler(pipe *pipeline.Pipeline, st nuance.Store, profile func(context.Context, string) (string, error)) asyncjob.Handler {
-	return asyncjob.DecodePayloadHandler(asyncjob.KindNuance, func(ctx context.Context, p nuanceJobPayload) (err error) {
-		ctx = workguard.BindStore(ctx, st, p.UserID, p.LessonID)
-		if err := workguard.Check(ctx); err != nil {
-			return err
-		}
-		if p.Operation == nuanceSupplementOperation {
-			return supplementNuance(ctx, pipe, st, p)
-		}
-		l, err := st.Get(ctx, p.UserID, p.LessonID)
-		if errors.Is(err, nuance.ErrNotFound) || (err == nil && l.Status == nuance.StatusDone) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		defer func() {
-			if err != nil && workguard.Check(ctx) == nil {
-				_ = st.SetStatus(context.Background(), p.LessonID, nuance.StatusFailed)
-			}
-		}()
-		// Processing and failure transitions advance the row revision. Freeze
-		// this draw's inputs before those transitions so a resumed job still
-		// reaches the model checkpoints written by its previous replica.
-		type generationInput struct {
-			Profile  string
-			Previous []string
-			Revision int
-		}
-		input, err := checkpoint.JSON(ctx, "nuance-generation-input:v1", func() (generationInput, error) {
-			learner, err := profile(ctx, p.UserID)
-			if err != nil {
-				return generationInput{}, err
-			}
-			lessons, err := st.List(ctx, p.UserID)
-			if err != nil {
-				return generationInput{}, err
-			}
-			previous := []string{}
-			for _, old := range lessons {
-				if old.Content != nil {
-					previous = append(previous, nuanceComparison(*old.Content))
-				}
-			}
-			return generationInput{Profile: learner, Previous: previous, Revision: l.Revision}, nil
-		})
-		if err != nil {
-			return err
-		}
-		if err = st.SetStatus(ctx, p.LessonID, nuance.StatusProcessing); err != nil {
-			return err
-		}
-		previous := input.Previous
-		// Explicit retries create a new job and take a fresh revision snapshot;
-		// duplicate candidates within one job retain their distinct attempt IDs.
-		for attempt := 0; attempt < nuanceGenerationAttempts; attempt++ {
-			// Only the prompt is bounded; MySQL checks the entire saved history.
-			if len(previous) > 100 {
-				previous = previous[len(previous)-100:]
-			}
-			requestID := fmt.Sprintf("%s:%d:%d", p.LessonID, input.Revision, attempt)
-			c, err := pipe.GenerateNuance(ctx, input.Profile, previous, requestID)
-			if err != nil {
-				// A candidate that still violates the lesson contract after its
-				// focused Judge repair will fail identically on an automatic job
-				// retry. Persist the terminal state and reserve queue retries for
-				// transient model, network, and storage failures. The explicit UI
-				// retry gets a fresh durable revision and request ID.
-				if errors.Is(err, nuance.ErrInvalid) {
-					log.Printf("nuance: invalid generated lesson %s: %v", p.LessonID, err)
-					return st.SetStatus(ctx, p.LessonID, nuance.StatusFailed)
-				}
-				return err
-			}
-			err = st.Complete(ctx, p.LessonID, c)
-			if !errors.Is(err, nuance.ErrDuplicate) {
-				return err
-			}
-			// Include the rejected comparison even if it is old or another draw
-			// saved it after we loaded the exclusions. The attempt ID avoids cache reuse.
-			previous = append(previous, nuanceComparison(c))
-		}
-		return fmt.Errorf("%w after %d generation attempts", nuance.ErrDuplicate, nuanceGenerationAttempts)
+	return asyncjob.DecodePayloadHandler(asyncjob.KindNuance, func(ctx context.Context, p nuanceJobPayload) error {
+		return runNuance(ctx, pipe, st, profile, p)
 	})
+}
+
+func runNuance(ctx context.Context, pipe *pipeline.Pipeline, st nuance.Store, profile func(context.Context, string) (string, error), p nuanceJobPayload) (err error) {
+	ctx = workguard.BindStore(ctx, st, p.UserID, p.LessonID)
+	if err := workguard.Check(ctx); err != nil {
+		return err
+	}
+	if p.Operation == nuanceSupplementOperation {
+		return supplementNuance(ctx, pipe, st, p)
+	}
+	l, err := st.Get(ctx, p.UserID, p.LessonID)
+	if errors.Is(err, nuance.ErrNotFound) || (err == nil && l.Status == nuance.StatusDone) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil && workguard.Check(ctx) == nil {
+			_ = st.SetStatus(context.Background(), p.LessonID, nuance.StatusFailed)
+		}
+	}()
+	// Processing and failure transitions advance the row revision. Freeze
+	// this draw's inputs before those transitions so a resumed job still
+	// reaches the model checkpoints written by its previous replica.
+	type generationInput struct {
+		Profile  string
+		Previous []string
+		Revision int
+	}
+	input, err := checkpoint.JSON(ctx, "nuance-generation-input:v1", func() (generationInput, error) {
+		learner, err := profile(ctx, p.UserID)
+		if err != nil {
+			return generationInput{}, err
+		}
+		lessons, err := st.List(ctx, p.UserID)
+		if err != nil {
+			return generationInput{}, err
+		}
+		previous := []string{}
+		for _, old := range lessons {
+			if old.Content != nil {
+				previous = append(previous, nuanceComparison(*old.Content))
+			}
+		}
+		return generationInput{Profile: learner, Previous: previous, Revision: l.Revision}, nil
+	})
+	if err != nil {
+		return err
+	}
+	if err = st.SetStatus(ctx, p.LessonID, nuance.StatusProcessing); err != nil {
+		return err
+	}
+	previous := input.Previous
+	// Explicit retries create a new job and take a fresh revision snapshot;
+	// duplicate candidates within one job retain their distinct attempt IDs.
+	for attempt := 0; attempt < nuanceGenerationAttempts; attempt++ {
+		// Only the prompt is bounded; MySQL checks the entire saved history.
+		if len(previous) > 100 {
+			previous = previous[len(previous)-100:]
+		}
+		requestID := fmt.Sprintf("%s:%d:%d", p.LessonID, input.Revision, attempt)
+		c, err := pipe.GenerateNuance(ctx, input.Profile, previous, requestID)
+		if err != nil {
+			// A candidate that still violates the lesson contract after its
+			// focused Judge repair will fail identically on an automatic job
+			// retry. Persist the terminal state and reserve queue retries for
+			// transient model, network, and storage failures. The explicit UI
+			// retry gets a fresh durable revision and request ID.
+			if errors.Is(err, nuance.ErrInvalid) {
+				log.Printf("nuance: invalid generated lesson %s: %v", p.LessonID, err)
+				return st.SetStatus(ctx, p.LessonID, nuance.StatusFailed)
+			}
+			return err
+		}
+		err = st.Complete(ctx, p.LessonID, c)
+		if !errors.Is(err, nuance.ErrDuplicate) {
+			return err
+		}
+		// Include the rejected comparison even if it is old or another draw
+		// saved it after we loaded the exclusions. The attempt ID avoids cache reuse.
+		previous = append(previous, nuanceComparison(c))
+	}
+	return fmt.Errorf("%w after %d generation attempts", nuance.ErrDuplicate, nuanceGenerationAttempts)
 }
 
 func supplementNuance(ctx context.Context, pipe *pipeline.Pipeline, st nuance.Store, p nuanceJobPayload) error {
@@ -158,29 +162,28 @@ func nuanceComparison(c nuance.Content) string {
 
 func EnqueueNuance(ctx context.Context, q *asyncjob.Queue, pipe *pipeline.Pipeline, st nuance.Store, profile func(context.Context, string) (string, error), userID, id string) error {
 	payload := nuanceJobPayload{UserID: userID, LessonID: id}
-	handler := NuanceJobHandler(pipe, st, profile)
-	if q != nil {
-		return q.EnqueueAndRunInBackground(ctx, asyncjob.KindNuance, id, id, payload, NuanceClaimTTL, handler)
-	}
-	// Read-triggered recovery must not start another inline call on every poll.
-	nuanceInlineJobs.Start(id, "nuance: generate "+id, func(ctx context.Context) error {
-		return handler(ctx, asyncjob.Job{Payload: mustPayload(payload)})
-	})
-	return nil
+	return enqueueNuanceJob(ctx, q, pipe, st, profile, payload)
 }
 
 // EnqueueNuanceSupplement lazily repairs an existing lesson without changing
 // its visible status or discarding practice history. Redis deduplicates across
 // replicas; nuanceInlineJobs does the same inside a no-Redis process.
 func EnqueueNuanceSupplement(ctx context.Context, q *asyncjob.Queue, pipe *pipeline.Pipeline, st nuance.Store, profile func(context.Context, string) (string, error), userID, id string) error {
-	key := "supplement:" + id
 	payload := nuanceJobPayload{UserID: userID, LessonID: id, Operation: nuanceSupplementOperation, RequestID: uuid.NewString()}
-	handler := NuanceJobHandler(pipe, st, profile)
-	if q != nil {
-		return q.EnqueueAndRunInBackground(ctx, asyncjob.KindNuance, key, key, payload, NuanceClaimTTL, handler)
+	return enqueueNuanceJob(ctx, q, pipe, st, profile, payload)
+}
+
+func enqueueNuanceJob(ctx context.Context, q *asyncjob.Queue, pipe *pipeline.Pipeline, st nuance.Store, profile func(context.Context, string) (string, error), payload nuanceJobPayload) error {
+	key, action := payload.LessonID, "generate"
+	if payload.Operation == nuanceSupplementOperation {
+		key, action = "supplement:"+key, "supplement"
 	}
-	nuanceInlineJobs.Start(key, "nuance: supplement "+id, func(ctx context.Context) error {
-		return handler(ctx, asyncjob.Job{Payload: mustPayload(payload)})
+	if q != nil {
+		return q.EnqueueAndRunInBackground(ctx, asyncjob.KindNuance, key, key, payload, NuanceClaimTTL, NuanceJobHandler(pipe, st, profile))
+	}
+	// Read-triggered recovery must not start another inline call on every poll.
+	nuanceInlineJobs.Start(key, "nuance: "+action+" "+payload.LessonID, func(ctx context.Context) error {
+		return runNuance(ctx, pipe, st, profile, payload)
 	})
 	return nil
 }

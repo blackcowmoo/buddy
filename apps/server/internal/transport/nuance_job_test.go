@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 
 	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/checkpoint"
@@ -23,8 +24,6 @@ type nuanceJobStore struct {
 	nuance.Store
 	mu               sync.Mutex
 	lesson           nuance.Lesson
-	completed        chan nuance.Content
-	failed           chan struct{}
 	lessons          []nuance.Lesson
 	completionErrors []error
 	completionCalls  int
@@ -46,9 +45,6 @@ func (s *nuanceJobStore) SetStatus(_ context.Context, _ string, status string) e
 	defer s.mu.Unlock()
 	s.lesson.Status = status
 	s.lesson.Revision++
-	if status == nuance.StatusFailed && s.failed != nil {
-		s.failed <- struct{}{}
-	}
 	return nil
 }
 func (s *nuanceJobStore) Complete(_ context.Context, _ string, c nuance.Content) error {
@@ -60,9 +56,6 @@ func (s *nuanceJobStore) Complete(_ context.Context, _ string, c nuance.Content)
 	}
 	s.lesson.Content = &c
 	s.lesson.Status = nuance.StatusDone
-	if s.completed != nil {
-		s.completed <- c
-	}
 	return nil
 }
 func (s *nuanceJobStore) AddQuestions(_ context.Context, _, _ string, questions []nuance.Question) error {
@@ -100,32 +93,66 @@ func TestNuanceInlineSurvivesCancellationAndDeduplicatesPolls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entered, release := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	t.Cleanup(func() { once.Do(func() { close(release) }) })
-	st := &nuanceJobStore{lesson: nuance.Lesson{ID: t.Name(), Status: nuance.StatusPending}, completed: make(chan nuance.Content, 1)}
-	pipe := &pipeline.Pipeline{Analysis: []pipeline.Candidate{{LLM: nuanceLLM{complete: func(ctx context.Context) (string, error) {
-		close(entered)
-		<-release
-		if ctx.Err() != nil {
-			return "", ctx.Err()
-		}
-		return string(data), nil
-	}}}}}
-	profile := func(ctx context.Context, _ string) (string, error) { return "learner", ctx.Err() }
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := EnqueueNuance(ctx, nil, pipe, st, profile, "user", t.Name()); err != nil {
-		t.Fatal(err)
-	}
-	<-entered
-	if err := EnqueueNuance(ctx, nil, pipe, st, profile, "user", t.Name()); err != nil {
-		t.Fatal(err)
-	}
-	once.Do(func() { close(release) })
-	c := <-st.completed
-	if len(c.Questions) != 5 {
-		t.Fatal("lesson not saved")
+	for _, operation := range []string{"generate", "supplement"} {
+		t.Run(operation, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				st := &nuanceJobStore{lesson: nuance.Lesson{ID: t.Name(), Status: nuance.StatusPending}}
+				enqueue, response := EnqueueNuance, string(data)
+				wantQuestions, wantProfileCalls := 5, 1
+				if operation == "supplement" {
+					var content nuance.Content
+					if err := json.Unmarshal(data, &content); err != nil {
+						t.Fatal(err)
+					}
+					for i := range content.Questions {
+						content.Questions[i].Answer = "cheap"
+					}
+					st.lesson.Status, st.lesson.Content = nuance.StatusDone, &content
+					st.lesson.State.Progress = map[string]nuance.Progress{"q0": {Stage: 2, Attempts: 3, Correct: 2}}
+					st.lesson.State.Queue = []string{"q1", "q0"}
+					enqueue = EnqueueNuanceSupplement
+					response = `{"questions":[{"context":"중립적인 가격표","sentence":"This option is ____.","translation":"이 선택지는 저렴합니다.","answer":"inexpensive","explanation":"inexpensive는 중립적이고 cheap은 품질이 낮다는 인상을 더할 수 있어요."}]}`
+					wantQuestions, wantProfileCalls = 6, 0
+				}
+				stateBefore, _ := json.Marshal(st.lesson.State)
+				release := make(chan struct{})
+				defer close(release)
+				calls, profileCalls := 0, 0
+				pipe := &pipeline.Pipeline{Analysis: []pipeline.Candidate{{LLM: nuanceLLM{complete: func(ctx context.Context) (string, error) {
+					calls++
+					<-release
+					return response, ctx.Err()
+				}}}}}
+				profile := func(ctx context.Context, _ string) (string, error) {
+					profileCalls++
+					return "learner", ctx.Err()
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				for range 3 {
+					if err := enqueue(ctx, nil, pipe, st, profile, "user", st.lesson.ID); err != nil {
+						t.Fatal(err)
+					}
+					synctest.Wait()
+				}
+				if calls != 1 || profileCalls != wantProfileCalls {
+					t.Fatalf("model calls=%d profile calls=%d, want 1 and %d", calls, profileCalls, wantProfileCalls)
+				}
+				if operation == "supplement" && st.lesson.Status != nuance.StatusDone {
+					t.Fatalf("supplement changed visible status to %q", st.lesson.Status)
+				}
+				release <- struct{}{}
+				synctest.Wait()
+				lesson := st.lesson
+				if lesson.Status != nuance.StatusDone || lesson.Content == nil || len(lesson.Content.Questions) != wantQuestions || len(lesson.Content.MissingAnswers()) != 0 {
+					t.Fatalf("lesson not saved: %+v", lesson)
+				}
+				stateAfter, _ := json.Marshal(lesson.State)
+				if string(stateAfter) != string(stateBefore) {
+					t.Fatalf("practice history changed: %s -> %s", stateBefore, stateAfter)
+				}
+			})
+		})
 	}
 }
 func TestNuanceWorkerRetriesFailedAndProcessingButSkipsDoneOrDeleted(t *testing.T) {

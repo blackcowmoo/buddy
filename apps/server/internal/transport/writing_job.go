@@ -2,7 +2,6 @@ package transport
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
 	"buddy/server/internal/asyncjob"
@@ -82,8 +81,6 @@ func RunWritingPromptInline(ctx context.Context, pipe *pipeline.Pipeline, st wri
 	}
 	return generateWritingPrompt(ctx, pipe, st, id, userID, profileText)
 }
-
-func mustPayload(v any) []byte { b, _ := json.Marshal(v); return b }
 
 func EnqueueWritingPromptJob(ctx context.Context, q *asyncjob.Queue, pipe *pipeline.Pipeline, st writing.Store, profile func(context.Context, string) (string, error), id, userID string) error {
 	return q.EnqueueAndRunInBackground(ctx, asyncjob.KindWritingPrompt, id, id, writingJobPayload{PromptID: id, UserID: userID}, WritingClaimTTL, WritingJobHandler(pipe, st, profile))
