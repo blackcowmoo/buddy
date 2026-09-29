@@ -164,6 +164,28 @@ describe("same English word notices", () => {
 });
 
 describe("dictionary meaning cleanup", () => {
+  it("updates cleanup totals and enables another run only after pending meanings finish", async () => {
+    vi.useFakeTimers();
+    const meanings = (["pending", "pending", "done", "done"] as const).map((meaningStatus, index) => ({
+      ...dueWord, id: `meaning-${index}`, word: `word-${index}`, meaningStatus,
+    }));
+    const completed = meanings.map((word) => ({ ...word, meaningStatus: "done" as const }));
+    vi.mocked(fetchWords).mockResolvedValueOnce({ words: [dueWord, ...meanings], dueCount: 1 })
+      .mockResolvedValue({ words: [dueWord, ...completed], dueCount: 1 });
+    await act(async () => { render(<WordReview />); });
+
+    expect(screen.getByText("뜻 2개 정리 중이에요. 화면을 나가도 계속 진행돼요.")).toBeInTheDocument();
+    expect(screen.getByText("정리한 뜻 2개를 확인하고 선택해 주세요.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "단어 뜻 정리 중…" })).toBeDisabled();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+
+    expect(screen.queryByText("뜻 2개 정리 중이에요. 화면을 나가도 계속 진행돼요.")).not.toBeInTheDocument();
+    expect(screen.getByText("정리한 뜻 4개를 확인하고 선택해 주세요.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "단어 뜻 정리" })).toBeEnabled();
+    expect(startMeaningCleanup).not.toHaveBeenCalled();
+  });
+
   it("starts cleanup and keeps pending and completed meanings in the decision section", async () => {
     vi.useFakeTimers();
     const oldMeaning = "맥락상 매우 행복하다는 뜻";

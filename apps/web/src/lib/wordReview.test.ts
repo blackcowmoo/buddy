@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { confirmResearchWord, deleteWord, fetchAutoAddStatus, fetchWords, findSameWordEntries, reviewWord, saveWord, selectWordMeaning, startAutoAddWords, startResearchWord, startMeaningCleanup, type WordReviewItem } from "./wordReview";
+import { confirmResearchWord, deleteWord, fetchAutoAddStatus, fetchWords, findSameWordEntries, reviewWord, saveWord, selectWordMeaning, startAutoAddWords, startResearchWord, startMeaningCleanup, wordStudyStatus, type WordReviewItem } from "./wordReview";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -7,6 +7,31 @@ afterEach(() => {
 
 const suggestion = { word: "ecstatic", meaning: "매우 행복한", example: "She was ecstatic." };
 const item = { id: "w1", ...suggestion, stage: 0, reviewCount: 0, nextReviewAt: 1700000000 };
+
+describe("word study status", () => {
+  const confirmed: WordReviewItem = { ...item, status: "verified", researchStatus: "confirmed" };
+
+  it.each([undefined, "confirmed"] as const)("keeps a confirmed word available with meaning status %s", (meaningStatus) => {
+    expect(wordStudyStatus({ ...confirmed, meaningStatus })).toBe("confirmed");
+  });
+
+  it.each(["pending", "done", "failed"] as const)("reopens the decision during %s meaning cleanup", (meaningStatus) => {
+    expect(wordStudyStatus({ ...confirmed, meaningStatus })).toBe("unconfirmed");
+  });
+
+  it.each([undefined, "pending", "done"] as const)("requires explicit confirmation after research status %s", (researchStatus) => {
+    expect(wordStudyStatus({ ...confirmed, researchStatus, meaningStatus: "confirmed" })).toBe("unconfirmed");
+  });
+
+  it("waits for verification even if research and the meaning were confirmed", () => {
+    expect(wordStudyStatus({ ...confirmed, status: "pending", meaningStatus: "confirmed" })).toBe("unconfirmed");
+  });
+
+  it("keeps rejected words excluded regardless of their confirmation or cleanup state", () => {
+    expect(wordStudyStatus({ ...confirmed, status: "rejected", meaningStatus: "confirmed" })).toBe("rejected");
+    expect(wordStudyStatus({ ...confirmed, status: "rejected", meaningStatus: "pending" })).toBe("rejected");
+  });
+});
 
 describe("findSameWordEntries", () => {
   const learning: WordReviewItem = { ...item, status: "verified", researchStatus: "confirmed" };

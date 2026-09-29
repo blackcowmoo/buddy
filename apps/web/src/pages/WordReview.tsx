@@ -18,6 +18,7 @@ import {
   startMeaningCleanup,
   selectWordMeaning,
   meaningNeedsReview,
+  wordStudyStatus,
   findSameWordEntries,
   type MeaningChoice,
 } from "../lib/wordReview";
@@ -449,22 +450,20 @@ export function WordReview() {
     [checked, next, checkRecall],
   );
 
-  const verifiedWords = words.filter((w) => w.status === "verified" && w.researchStatus === "confirmed" && !meaningNeedsReview(w));
+  const confirmedWords = words.filter((w) => wordStudyStatus(w) === "confirmed");
+  const unconfirmedWords = words.filter((w) => wordStudyStatus(w) === "unconfirmed");
+  const rejectedWords = words.filter((w) => wordStudyStatus(w) === "rejected");
   const nowSeconds = Date.now() / 1000;
-  const readyDueCount = verifiedWords.filter((w) => w.nextReviewAt <= nowSeconds && currentQuestion(w) !== null).length;
-  const dueQuestionBackfillCount = verifiedWords.filter((w) => w.nextReviewAt <= nowSeconds && currentQuestion(w) === null).length;
+  const readyDueCount = confirmedWords.filter((w) => w.nextReviewAt <= nowSeconds && currentQuestion(w) !== null).length;
+  const dueQuestionBackfillCount = confirmedWords.filter((w) => w.nextReviewAt <= nowSeconds && currentQuestion(w) === null).length;
   const availableDueCount = Math.min(dueCount, readyDueCount);
-  // Keep every word that still needs learner confirmation together, including
-  // verified rows created from a direct/article definition but not yet
-  // confirmed. Rejected rows remain in their own exclusion section below.
-  const unconfirmedWords = words.filter((w) =>
-    w.status !== "rejected" && (w.status === "pending" || w.researchStatus !== "confirmed" || meaningNeedsReview(w)),
-  );
-  const rejectedWords = words.filter((w) => w.status === "rejected");
+  const pendingMeaningCount = words.filter((w) => w.meaningStatus === "pending").length;
+  const completedMeaningCount = words.filter((w) => w.meaningStatus === "done").length;
+  const cleaningMeanings = startingMeaningCleanup || pendingMeaningCount > 0;
 
-  const sortedVerifiedWords = newestFirst(verifiedWords, (word) => word.lastReviewedAt ?? 0);
-  const visibleVerifiedWords = sortedVerifiedWords.slice(0, reviewWordsPageSize * (reviewOlderCount + 1));
-  const hasOlderReviewWords = visibleVerifiedWords.length < sortedVerifiedWords.length;
+  const sortedReviewWords = newestFirst(confirmedWords, (word) => word.lastReviewedAt ?? 0);
+  const visibleReviewWords = sortedReviewWords.slice(0, reviewWordsPageSize * (reviewOlderCount + 1));
+  const hasOlderReviewWords = visibleReviewWords.length < sortedReviewWords.length;
   const loadOlderReviewWords = () => {
     if (hasOlderReviewWords) setReviewOlderCount((count) => count + 1);
   };
@@ -517,13 +516,13 @@ export function WordReview() {
           {words.some((w) => w.status === "verified") && (
             <div>
               <button type="button" className="ghost" onClick={() => void handleMeaningCleanup()}
-                disabled={startingMeaningCleanup || words.some((w) => w.meaningStatus === "pending") ||
+                disabled={cleaningMeanings ||
                   !words.some((w) => w.status === "verified" && (!w.meaningStatus || w.meaningStatus === "failed"))}>
-                {startingMeaningCleanup || words.some((w) => w.meaningStatus === "pending") ? "단어 뜻 정리 중…" : "단어 뜻 정리"}
+                {cleaningMeanings ? "단어 뜻 정리 중…" : "단어 뜻 정리"}
               </button>
               <p className="hint">기존 뜻과 예문을 바탕으로 사전식 뜻으로 다듬어요. 복습 진도는 유지돼요.</p>
-              {words.some((w) => w.meaningStatus === "pending") && <p className="hint" role="status">뜻 {words.filter((w) => w.meaningStatus === "pending").length}개 정리 중이에요. 화면을 나가도 계속 진행돼요.</p>}
-              {words.some((w) => w.meaningStatus === "done") && <p className="hint" role="status">정리한 뜻 {words.filter((w) => w.meaningStatus === "done").length}개를 확인하고 선택해 주세요.</p>}
+              {pendingMeaningCount > 0 && <p className="hint" role="status">뜻 {pendingMeaningCount}개 정리 중이에요. 화면을 나가도 계속 진행돼요.</p>}
+              {completedMeaningCount > 0 && <p className="hint" role="status">정리한 뜻 {completedMeaningCount}개를 확인하고 선택해 주세요.</p>}
               {meaningCleanupError && <p className="hint" role="alert">뜻 정리 상태를 확인하지 못했어요. 다시 시도해 주세요.</p>}
             </div>
           )}
@@ -558,12 +557,12 @@ export function WordReview() {
           />
           <WordListSection
             title="복습중인 단어"
-            count={verifiedWords.length}
-            words={visibleVerifiedWords}
+            count={confirmedWords.length}
+            words={visibleReviewWords}
             renderMeaning={renderMeaning}
             onLoadMore={hasOlderReviewWords ? loadOlderReviewWords : undefined}
             onDelete={(id) => void handleDelete(id)}
-            renderMeta={(w) => <><span className="word-list-next">다음 복습: {formatAbsoluteDateTime(w.nextReviewAt)}</span>{researchControls(w)}</>}
+            renderMeta={(w) => <span className="word-list-next">다음 복습: {formatAbsoluteDateTime(w.nextReviewAt)}</span>}
           />
         </>
       )}
