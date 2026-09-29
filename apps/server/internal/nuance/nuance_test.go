@@ -96,6 +96,9 @@ func TestPracticeRejectsStaleOutOfOrderAndInvalidAnswers(t *testing.T) {
 		{Action{Kind: "answer", QuestionID: "q0", Selected: "cheap", Revision: 0}, ErrConflict},
 		{Action{Kind: "answer", QuestionID: "q1", Selected: "cheap", Revision: 1}, ErrConflict},
 		{Action{Kind: "answer", QuestionID: "q0", Selected: "unknown", Revision: 1}, ErrInvalid},
+		{Action{Kind: "answer", QuestionID: "q0", Selected: "CHEAP", Revision: 1}, ErrInvalid},
+		{Action{Kind: "answer", QuestionID: "q0", Selected: "cheap ", Revision: 1}, ErrInvalid},
+		{Action{Kind: "answer", QuestionID: "q0", Selected: "", Revision: 1}, ErrInvalid},
 		{Action{Kind: "next", Revision: 1}, ErrConflict},
 		{Action{Kind: "delete", Revision: 1}, ErrInvalid},
 	}
@@ -166,6 +169,49 @@ func TestMissingAnswersAndSupplementValidation(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if err := c.ValidateSupplement(questions); !errors.Is(err, ErrInvalid) {
 				t.Fatalf("ValidateSupplement() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestLessonAndSupplementRejectInvalidQuestionText(t *testing.T) {
+	for name, mutate := range map[string]func(*Question){
+		"blank context":     func(q *Question) { q.Context = " \t" },
+		"blank sentence":    func(q *Question) { q.Sentence = " \n" },
+		"blank translation": func(q *Question) { q.Translation = " \t" },
+		"blank answer":      func(q *Question) { q.Answer = "" },
+		"blank explanation": func(q *Question) { q.Explanation = " \n" },
+		"unknown answer":    func(q *Question) { q.Answer = "affordable" },
+		"answer case":       func(q *Question) { q.Answer = "CHEAP" },
+		"answer spacing":    func(q *Question) { q.Answer = "cheap " },
+		"missing blank":     func(q *Question) { q.Sentence = "It is cheap." },
+		"two blanks":        func(q *Question) { q.Sentence = "____ and ____." },
+		"extra underscore":  func(q *Question) { q.Sentence = "It_is ____." },
+		"oversized blank":   func(q *Question) { q.Sentence = "It is _____." },
+	} {
+		t.Run(name, func(t *testing.T) {
+			lesson := testContent()
+			question := lesson.Questions[0]
+			mutate(&question)
+			lesson.Questions[0] = question
+			if err := lesson.Validate(); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Validate() error = %v, want ErrInvalid", err)
+			}
+
+			// Leave cheap uncovered and use a new sentence so only the
+			// mutated question, not existing practice, can cause rejection.
+			legacy := testContent()
+			for i := range legacy.Questions {
+				legacy.Questions[i].Answer = "inexpensive"
+			}
+			supplement := testContent().Questions[0]
+			supplement.Sentence = "Another item is ____."
+			if err := legacy.ValidateSupplement([]Question{supplement}); err != nil {
+				t.Fatalf("valid supplement rejected: %v", err)
+			}
+			mutate(&supplement)
+			if err := legacy.ValidateSupplement([]Question{supplement}); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("ValidateSupplement() error = %v, want ErrInvalid", err)
 			}
 		})
 	}

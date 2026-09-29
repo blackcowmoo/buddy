@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -221,6 +222,92 @@ func TestSupplementNuanceGeneratesOneQuestionForEachMissingAnswer(t *testing.T) 
 	for _, want := range []string{"requiredAnswers", "inexpensive", "supplement-1"} {
 		if !strings.Contains(input, want) {
 			t.Errorf("supplement input missing %q", want)
+		}
+	}
+}
+
+func TestDecodeNuanceResponseFormats(t *testing.T) {
+	data, err := os.ReadFile("../nuance/testdata/lesson.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lesson nuance.Content
+	if err := json.Unmarshal(data, &lesson); err != nil {
+		t.Fatal(err)
+	}
+	for i := range lesson.Questions {
+		lesson.Questions[i].Answer = "cheap"
+	}
+	supplement := `{"questions":[{"id":"model-owned","context":" situation ","sentence":" This option is ____. ","translation":" translation ","answer":" INEXPENSIVE ","explanation":" explanation "}]}`
+	wantQuestions := []nuance.Question{{Context: "situation", Sentence: "This option is ____.", Translation: "translation", Answer: "inexpensive", Explanation: "explanation"}}
+	for name, format := range map[string]string{
+		"bare":          "%s",
+		"whitespace":    " \n %s \n ",
+		"fenced":        "```json\n%s\n```",
+		"prose":         "Here is the result:\n%s\nEnd of result.",
+		"array wrapper": "[%s]",
+	} {
+		t.Run(name, func(t *testing.T) {
+			content, err := decodeNuanceContent(fmt.Sprintf(format, data))
+			if err != nil || content.Meaning != "저렴한" || len(content.Questions) != 5 {
+				t.Fatalf("decodeNuanceContent() = (%+v, %v)", content, err)
+			}
+			for i, question := range content.Questions {
+				if question.ID != fmt.Sprintf("q%d", i+1) {
+					t.Errorf("question %d has model-owned ID %q", i, question.ID)
+				}
+			}
+			questions, err := decodeNuanceSupplement(fmt.Sprintf(format, supplement), lesson)
+			if err != nil || !reflect.DeepEqual(questions, wantQuestions) {
+				t.Fatalf("decodeNuanceSupplement() = (%+v, %v), want %+v", questions, err, wantQuestions)
+			}
+		})
+	}
+}
+
+func TestDecodeNuanceRejectsInvalidResponsesWithoutPartialResults(t *testing.T) {
+	lesson := nuance.Content{Words: []nuance.Word{{Word: "cheap"}, {Word: "inexpensive"}}}
+	for _, tt := range []struct {
+		name, raw, parseError string
+	}{
+		{"empty", " \n ", "unexpected end of JSON input"},
+		{"non-JSON", "not json", "invalid character 'o' in literal null (expecting 'u')"},
+		{"malformed object", `{"meaning":`, "unexpected end of JSON input"},
+		{"wrapped malformed object", `prose {"meaning":} trailing`, "invalid character '}' looking for beginning of value"},
+		{"null", "null", ""},
+		{"incomplete object", `{"meaning":"partial"}`, ""},
+		{"wrapped incomplete object", "```json\n{}\n```", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			content, contentErr := decodeNuanceContent(tt.raw)
+			questions, supplementErr := decodeNuanceSupplement(tt.raw, lesson)
+			if !reflect.DeepEqual(content, nuance.Content{}) || questions != nil {
+				t.Fatalf("invalid response leaked partial results: content=%+v questions=%+v", content, questions)
+			}
+			for label, err := range map[string]error{"nuance lesson": contentErr, "nuance supplement": supplementErr} {
+				if tt.parseError == "" {
+					if !errors.Is(err, nuance.ErrInvalid) {
+						t.Errorf("%s error = %v, want nuance.ErrInvalid", label, err)
+					}
+				} else if want := label + ": bad json: " + tt.parseError; err == nil || err.Error() != want {
+					t.Errorf("%s error = %v, want %q", label, err, want)
+				}
+			}
+		})
+	}
+}
+
+func TestDecodeNuanceDiscardsPartiallyParsedObjects(t *testing.T) {
+	raw := `Here is the result: {"meaning":"partial","questions":[{"id":"partial","answer":42}]}`
+	content, contentErr := decodeNuanceContent(raw)
+	questions, supplementErr := decodeNuanceSupplement(raw, nuance.Content{})
+	if !reflect.DeepEqual(content, nuance.Content{}) || questions != nil {
+		t.Fatalf("invalid response leaked partial results: content=%+v questions=%+v", content, questions)
+	}
+	for label, err := range map[string]error{"nuance lesson": contentErr, "nuance supplement": supplementErr} {
+		var typeErr *json.UnmarshalTypeError
+		if !errors.As(err, &typeErr) || typeErr.Field != "questions.answer" {
+			t.Errorf("%s error = %v, want the extracted object's answer type error", label, err)
 		}
 	}
 }

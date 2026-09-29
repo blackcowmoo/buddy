@@ -130,58 +130,41 @@ func renderNuanceRepairInput(input, raw string, validationErr error) string {
 		"\n\nCandidate output to repair:\n" + raw
 }
 
-// decodeNuanceContent accepts a bare JSON object as well as an object wrapped
-// in explanatory prose or a markdown fence. JSON mode is advisory across the
-// OpenAI-compatible servers Buddy supports; extracting the single object here
-// prevents harmless presentation text from turning into a full job retry.
 func decodeNuanceContent(raw string) (nuance.Content, error) {
-	candidates := []string{strings.TrimSpace(raw)}
-	if object := enclosedJSONObject(raw); object != "" && object != candidates[0] {
-		candidates = append(candidates, object)
+	c, err := parseNuanceJSON[nuance.Content](raw, "nuance lesson")
+	if err != nil {
+		return nuance.Content{}, err
 	}
-	var lastErr error
-	for _, candidate := range candidates {
-		c, err := parseJSON[nuance.Content](candidate, "nuance lesson")
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		normalizeNuanceContent(&c)
-		if err := c.Validate(); err != nil {
-			lastErr = err
-			continue
-		}
-		return c, nil
+	normalizeNuanceContent(&c)
+	if err := c.Validate(); err != nil {
+		return nuance.Content{}, err
 	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("nuance lesson: empty response")
-	}
-	return nuance.Content{}, lastErr
+	return c, nil
 }
 
 func decodeNuanceSupplement(raw string, lesson nuance.Content) ([]nuance.Question, error) {
-	candidates := []string{strings.TrimSpace(raw)}
-	if object := enclosedJSONObject(raw); object != "" && object != candidates[0] {
-		candidates = append(candidates, object)
+	set, err := parseNuanceJSON[nuanceSupplement](raw, "nuance supplement")
+	if err != nil {
+		return nil, err
 	}
-	var lastErr error
-	for _, candidate := range candidates {
-		set, err := parseJSON[nuanceSupplement](candidate, "nuance supplement")
-		if err != nil {
-			lastErr = err
-			continue
+	normalizeNuanceQuestions(set.Questions, lesson.Words)
+	if err := lesson.ValidateSupplement(set.Questions); err != nil {
+		return nil, err
+	}
+	return set.Questions, nil
+}
+
+// JSON mode is advisory across the OpenAI-compatible servers Buddy supports.
+// Recover an enclosed object so presentation text does not force a job retry.
+func parseNuanceJSON[T any](raw, label string) (T, error) {
+	raw = strings.TrimSpace(raw)
+	parsed, err := parseJSON[T](raw, label)
+	if err != nil {
+		if object := enclosedJSONObject(raw); object != "" && object != raw {
+			return parseJSON[T](object, label)
 		}
-		normalizeNuanceQuestions(set.Questions, lesson.Words)
-		if err := lesson.ValidateSupplement(set.Questions); err != nil {
-			lastErr = err
-			continue
-		}
-		return set.Questions, nil
 	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("nuance supplement: empty response")
-	}
-	return nil, lastErr
+	return parsed, err
 }
 
 func enclosedJSONObject(raw string) string {
