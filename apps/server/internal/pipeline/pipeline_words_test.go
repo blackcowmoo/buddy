@@ -22,7 +22,7 @@ func TestWordSuggestionSourcesRejectPartiallyDecodedResults(t *testing.T) {
 			return p.SuggestWords(context.Background(), "설명")
 		}},
 		{"word meanings", func(p *Pipeline) ([]protocol.WordSuggestion, error) {
-			return p.DefineWordMeanings(context.Background(), "learn", "I learn English.")
+			return p.DefineWordMeanings(context.Background(), "learn", "배우다", "I learn English.", "")
 		}},
 		{"word auto-suggestion", func(p *Pipeline) ([]protocol.WordSuggestion, error) {
 			return p.SuggestNewWords(context.Background(), "", nil)
@@ -202,15 +202,18 @@ func TestDefineWordMeaningsNormalizesInflectedWordBeforeResearch(t *testing.T) {
 		if len(inputs) == 1 {
 			return `{"word":"frill"}`, nil
 		}
+		if msgs[0].Content == wordVerifySystemPrompt("ko") {
+			return `{"valid":true}`, nil
+		}
 		return `{"suggestions":[{"word":"frill","meaning":"장식","example":"The dress has a frill."}]}`, nil
 	}}, ChatModel: "m", FeedbackLang: "ko"}
 
-	got, err := p.DefineWordMeanings(context.Background(), "frills", "The dress has frills.")
+	got, err := p.DefineWordMeanings(context.Background(), "frills", "장식", "The dress has frills.", "")
 	if err != nil {
 		t.Fatalf("DefineWordMeanings() error = %v", err)
 	}
-	if len(inputs) != 2 || !strings.Contains(inputs[1], "word: frill") || strings.Contains(inputs[1], "word: frills") {
-		t.Fatalf("lookup inputs = %v, want form resolution followed by base-form lookup", inputs)
+	if len(inputs) != 3 || !strings.HasPrefix(inputs[1], `{"word":"frill",`) || !strings.Contains(inputs[2], "word: frill\n") {
+		t.Fatalf("lookup inputs = %v, want form resolution, base-form lookup, and verification", inputs)
 	}
 	if got[0].Word != "frill" {
 		t.Fatalf("result word = %q, want frill", got[0].Word)

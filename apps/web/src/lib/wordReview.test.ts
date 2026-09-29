@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { confirmResearchWord, deleteWord, fetchAutoAddStatus, fetchWords, findSameWordEntries, reviewWord, saveWord, selectWordMeaning, startAutoAddWords, startResearchWord, wordStudyStatus, type WordReviewItem } from "./wordReview";
+import { confirmResearchWord, deleteWord, fetchAutoAddStatus, fetchWords, findSameWordEntries, reviewWord, saveWord, selectResearchWord, selectWordMeaning, startAutoAddWords, startResearchWord, wordStudyStatus, type WordReviewItem } from "./wordReview";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -7,6 +7,16 @@ afterEach(() => {
 
 const suggestion = { word: "ecstatic", meaning: "매우 행복한", example: "She was ecstatic." };
 const item = { id: "w1", ...suggestion, stage: 0, reviewCount: 0, nextReviewAt: 1700000000 };
+
+it("selects a research result with the revision the learner actually saw", async () => {
+  const word: WordReviewItem = { ...item, id: "w/a", status: "rejected", researchRevision: 3 };
+  const request = vi.fn().mockResolvedValue({ ok: true, json: async () => word });
+  vi.stubGlobal("fetch", request);
+  await expect(selectResearchWord(word, suggestion)).resolves.toEqual(word);
+  expect(request).toHaveBeenCalledWith("api/words/w%2Fa/research/select", expect.objectContaining({
+    method: "POST", body: JSON.stringify({ revision: 3, suggestion }),
+  }));
+});
 
 describe("word study status", () => {
   const confirmed: WordReviewItem = { ...item, status: "verified", researchStatus: "confirmed" };

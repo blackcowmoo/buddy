@@ -246,29 +246,6 @@ func (p *Pipeline) DefineWord(ctx context.Context, word, passage string) (protoc
 	return p.defineWord(ctx, word, passage)
 }
 
-func (p *Pipeline) DefineWordMeanings(ctx context.Context, word, passage string) ([]protocol.WordSuggestion, error) {
-	word = strings.TrimSpace(word)
-	lookupWord := word
-	if resolved, err := p.resolveWordForm(ctx, word, passage); err == nil && resolved != "" {
-		lookupWord = resolved
-	}
-	results, err := p.defineWordMeanings(ctx, lookupWord, passage)
-	if err == nil || lookupWord == word {
-		return results, err
-	}
-	// Keep the research feature useful if the form resolver produced a form
-	// the dictionary model cannot handle: retry with the exact spelling.
-	return p.defineWordMeanings(ctx, word, passage)
-}
-
-func (p *Pipeline) defineWordMeanings(ctx context.Context, word, passage string) ([]protocol.WordSuggestion, error) {
-	native := languageName(p.FeedbackLang)
-	systemPrompt := fmt.Sprintf(`You are a dictionary assistant for a %[1]s-speaking English learner. List up to 6 distinct common meanings of the given English word or phrase in its base dictionary form; do not invent senses to fill a quota. Put the context-matching sense first. Return STRICT JSON only: {"suggestions":[{"word":"...","meaning":"...","example":"..."}]}. Keep word in English and give one natural English example for every meaning.
-%[2]s`, native, dictionaryMeaningRules(native))
-	decode := func(raw string) ([]protocol.WordSuggestion, error) { return parseWordSuggestions(raw, "word meanings") }
-	return analyzeJSON(ctx, p, systemPrompt, fmt.Sprintf("word: %s\ncontext: %s", word, passage), decode)
-}
-
 func (p *Pipeline) resolveWordForm(ctx context.Context, word, passage string) (string, error) {
 	return chatJSON(ctx, p, wordFormSystemPrompt(), fmt.Sprintf("word: %s\ncontext: %s", word, passage), parseWordForm)
 }
@@ -406,7 +383,17 @@ func renderAutoSuggestInput(learnerProfile string, existingWords []string) strin
 // never on a request a learner is waiting on, since a local model can be
 // slow and this makes several ordered model calls, not one.
 func (p *Pipeline) VerifyWord(ctx context.Context, word, meaning, example string) (valid bool, reason string, err error) {
-	raw, err := p.analyze(ctx, wordVerifySystemPrompt(p.FeedbackLang), fmt.Sprintf("word: %s\nmeaning: %s\nexample: %s", word, meaning, example), true, func(raw string) bool {
+	return p.verifyWord(ctx, word, meaning, example, "")
+}
+
+func (p *Pipeline) verifyWord(ctx context.Context, word, meaning, example, requestedWord string) (valid bool, reason string, err error) {
+	input := fmt.Sprintf("word: %s\nmeaning: %s\nexample: %s", word, meaning, example)
+	if requestedWord != "" {
+		// Research may recover an inflected word after fast form resolution
+		// failed. Check the original lexeme as well as the generated entry.
+		input += "\nrequestedWord: " + requestedWord
+	}
+	raw, err := p.analyze(ctx, wordVerifySystemPrompt(p.FeedbackLang), input, true, func(raw string) bool {
 		_, _, err := parseWordVerification(raw)
 		return err == nil
 	})
@@ -445,6 +432,9 @@ gloss someone claims for it), and "example" (an English sentence claiming to
 use it), judge ALL of the following:
 - "word" is a real, naturally used English word, phrase, or idiom — not a
   typo, nonsense string, or invented term.
+- If "requestedWord" is supplied, "word" must be that same word or its base
+  dictionary form (e.g. "frills" -> "frill"), never a synonym, unrelated word,
+  or a different derivation (e.g. "discovery" must not become "discover").
 - "meaning" accurately and specifically describes "word" in %[1]s — not
   vague, not wrong, not another word's meaning.
 - "example" is a natural, grammatically correct English sentence that

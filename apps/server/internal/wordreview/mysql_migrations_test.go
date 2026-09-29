@@ -83,6 +83,7 @@ func TestLegacyColumnMigrationsPreserveWords(t *testing.T) {
 		"word_reviews.review_question_version", "word_reviews.review_prompt", "word_reviews.review_answer",
 		"word_reviews.review_answers", "word_reviews.dictionary_meaning", "word_reviews.meaning_revision",
 		"word_reviews.meaning_target_version",
+		"word_reviews.research_revision",
 	}
 	if !reflect.DeepEqual(names, wantNames) {
 		t.Fatalf("migration names = %v, want %v", names, wantNames)

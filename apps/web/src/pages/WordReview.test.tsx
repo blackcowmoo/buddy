@@ -15,6 +15,7 @@ vi.mock("../lib/wordReview", async () => {
     reviewWord: vi.fn(),
     startResearchWord: vi.fn(),
     confirmResearchWord: vi.fn(),
+    selectResearchWord: vi.fn(),
     startAutoAddWords: vi.fn(),
     fetchAutoAddStatus: vi.fn(),
     selectWordMeaning: vi.fn(),
@@ -34,6 +35,7 @@ import {
   reviewWord,
   startResearchWord,
   confirmResearchWord,
+  selectResearchWord,
   startAutoAddWords,
   selectWordMeaning,
   type WordReviewItem,
@@ -73,6 +75,63 @@ const dueWord: WordReviewItem = {
   researchStatus: "confirmed",
   reviewQuestion: { version: 2, prompt: "She was ___.", answers: ["ecstatic"] },
 };
+
+describe("validated research selection", () => {
+  const suggestion = { word: "recapitalize", meaning: "재자본화하다", example: "Investors agreed to recapitalize the bank.", verified: true };
+  const rejected: WordReviewItem = {
+    ...dueWord, ...suggestion, example: "They recapitalize the road.", status: "rejected",
+    verifyReason: "부적절한 목적어", researchStatus: "done", researchRevision: 2, researchResults: [suggestion],
+  };
+
+  it("applies the verified example to the same card without deleting it", async () => {
+    const selected: WordReviewItem = { ...rejected, ...suggestion, status: "verified", verifyReason: "", researchStatus: undefined, researchResults: [] };
+    vi.mocked(fetchWords).mockResolvedValue({ words: [rejected], dueCount: 0 });
+    vi.mocked(selectResearchWord).mockResolvedValue(selected);
+    const user = userEvent.setup();
+    render(<WordReview />);
+    await user.click(await screen.findByRole("button", { name: `${suggestion.meaning} · ${suggestion.example}` }));
+    expect(selectResearchWord).toHaveBeenCalledWith(rejected, suggestion);
+    expect(deleteWord).not.toHaveBeenCalled();
+    expect(screen.queryByText("제외된 단어")).not.toBeInTheDocument();
+    expect(screen.getAllByText(suggestion.word)).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "확정" })).toBeEnabled();
+  });
+
+  it("preserves a rejected card and reports failed selection", async () => {
+    vi.mocked(fetchWords).mockResolvedValue({ words: [rejected], dueCount: 0 });
+    vi.mocked(selectResearchWord).mockResolvedValue(null);
+    const user = userEvent.setup();
+    render(<WordReview />);
+    await user.click(await screen.findByRole("button", { name: `${suggestion.meaning} · ${suggestion.example}` }));
+    expect(screen.getByRole("alert")).toHaveTextContent("예문을 적용하지 못했어요");
+    expect(screen.getByText("제외된 단어")).toBeInTheDocument();
+    expect(screen.getByText("부적절한 목적어")).toBeInTheDocument();
+    expect(deleteWord).not.toHaveBeenCalled();
+  });
+
+  it("does not offer unverified candidates saved by older servers", async () => {
+    vi.mocked(fetchWords).mockResolvedValue({ words: [{ ...rejected, researchResults: [{ ...suggestion, verified: undefined }] }], dueCount: 0 });
+    render(<WordReview />);
+    expect(await screen.findByText("검증된 예문이 없어요. 다시 검색해 주세요.")).toHaveAttribute("role", "status");
+    expect(screen.queryByRole("button", { name: `${suggestion.meaning} · ${suggestion.example}` })).not.toBeInTheDocument();
+  });
+
+  it("shows a terminal failure without restarting research on each poll", async () => {
+    vi.useFakeTimers();
+    vi.mocked(fetchWords)
+      .mockResolvedValueOnce({ words: [{ ...rejected, researchStatus: "pending", researchResults: [] }], dueCount: 0 })
+      .mockResolvedValue({ words: [{ ...rejected, researchStatus: "failed", researchResults: [] }], dueCount: 0 });
+    await act(async () => { render(<WordReview />); });
+    expect(screen.getByRole("button", { name: "예문을 찾고 검증하는 중…" })).toBeDisabled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(screen.getByText("검증된 새 예문을 찾지 못했어요. 기존 단어는 유지했어요.")).toHaveAttribute("role", "status");
+    expect(screen.getByRole("button", { name: "다시 검색" })).toBeEnabled();
+    const polls = vi.mocked(fetchWords).mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+    expect(fetchWords).toHaveBeenCalledTimes(polls);
+    expect(startResearchWord).not.toHaveBeenCalled();
+  });
+});
 
 describe("same English word notices", () => {
   const candidate: WordReviewItem = {
@@ -709,6 +768,7 @@ describe("WordReview page", () => {
     expect(screen.getByText("확정 전")).toBeInTheDocument();
     const verificationButton = screen.getByRole("button", { name: "검증 중…" });
     expect(verificationButton).toBeDisabled();
+    expect(screen.getByRole("button", { name: "다시 검색" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "확정" })).not.toBeInTheDocument();
     fireEvent.click(verificationButton);
     expect(confirmResearchWord).not.toHaveBeenCalled();

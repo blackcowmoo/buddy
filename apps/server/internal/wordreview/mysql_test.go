@@ -214,7 +214,11 @@ func TestFinishResearchStoresJSONAsText(t *testing.T) {
 		t.Fatalf("Save() error = %v", err)
 	}
 	want := []ResearchSuggestion{{Word: "bank", Meaning: "은행", Example: "I went to the bank."}}
-	got, err := st.FinishResearch(ctx, "alex-research-json", saved.ID, want)
+	saved, err = st.StartResearch(ctx, saved.UserID, saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.FinishResearch(ctx, saved, want)
 	if err != nil {
 		t.Fatalf("FinishResearch() error = %v", err)
 	}

@@ -89,6 +89,7 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 		)},
 		{Version: 9, Name: "word_reviews.meaning_revision", Up: addWordColumns("meaning_revision INT NOT NULL DEFAULT 0")},
 		{Version: 10, Name: "word_reviews.meaning_target_version", Up: migrateMeaningVersions},
+		{Version: 11, Name: "word_reviews.research_revision", Up: addWordColumns("research_revision INT NOT NULL DEFAULT 0")},
 	}
 	if err := migration.ApplyLegacy(ctx, rw, "wordreview", steps); err != nil {
 		return nil, fmt.Errorf("wordreview: migrations: %w", err)
@@ -178,6 +179,7 @@ func scanWord(row scanner, userID string) (Word, error) {
 		&nextReviewAt, &lastReviewedAt, &w.Status, &w.VerifyReason, &w.ResearchStatus, &researchResults,
 		&w.ReviewQuestion.Version, &w.ReviewQuestion.Prompt, &w.ReviewQuestion.Answer, &reviewAnswers, &createdAt,
 		&w.MeaningVersion, &w.MeaningStatus, &w.MeaningError, &w.PreviousMeaning, &w.MeaningRevision, &w.MeaningTargetVersion,
+		&w.ResearchRevision,
 	); err != nil {
 		return Word{}, err
 	}
@@ -198,7 +200,7 @@ func scanWord(row scanner, userID string) (Word, error) {
 	return w, nil
 }
 
-const wordColumns = `id, word, original_word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, research_status, research_results, review_question_version, review_prompt, review_answer, review_answers, created_at, meaning_version, meaning_status, meaning_error, COALESCE(previous_meaning, ''), meaning_revision, meaning_target_version`
+const wordColumns = `id, word, original_word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, research_status, research_results, review_question_version, review_prompt, review_answer, review_answers, created_at, meaning_version, meaning_status, meaning_error, COALESCE(previous_meaning, ''), meaning_revision, meaning_target_version, research_revision`
 
 func (s *MySQLStore) Save(ctx context.Context, userID, word, meaning, example string) (Word, error) {
 	return s.SaveOriginal(ctx, userID, word, meaning, example, word)
@@ -229,7 +231,9 @@ func (s *MySQLStore) SaveOriginal(ctx context.Context, userID, word, meaning, ex
 }
 
 func (s *MySQLStore) Get(ctx context.Context, userID, id string) (Word, error) {
-	w, err := scanWord(s.ro.QueryRowContext(ctx, `SELECT `+wordColumns+` FROM `+table+` WHERE id = ? AND user_id = ?`, id, userID), userID)
+	// Background workers act on this snapshot immediately after a status write;
+	// replica lag must not make them miss pending work or reuse an old example.
+	w, err := scanWord(s.rw.QueryRowContext(ctx, `SELECT `+wordColumns+` FROM `+table+` WHERE id = ? AND user_id = ?`, id, userID), userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Word{}, nil
 	}
@@ -278,7 +282,7 @@ func (s *MySQLStore) DueCount(ctx context.Context, userID string, now time.Time)
 // than the stored one (or repairs an incomplete row at the same version).
 // This comparison is performed by MySQL in the UPDATE itself, so workers from
 // overlapping deployments cannot race a stale result over a newer question.
-func (s *MySQLStore) SaveQuestion(ctx context.Context, userID, id string, question Question) (Word, bool, error) {
+func (s *MySQLStore) SaveQuestion(ctx context.Context, userID, id string, question Question, expected ...Word) (Word, bool, error) {
 	answers, err := json.Marshal(question.Answers)
 	if err != nil {
 		return Word{}, false, fmt.Errorf("wordreview: save question: encode answers: %w", err)
@@ -287,13 +291,20 @@ func (s *MySQLStore) SaveQuestion(ctx context.Context, userID, id string, questi
 	if legacyAnswer == "" {
 		legacyAnswer = strings.Join(question.Answers, " ")
 	}
-	res, err := s.rw.ExecContext(ctx, `
-		UPDATE `+table+` SET review_question_version = ?, review_prompt = ?, review_answer = ?, review_answers = ?
+	query := `
+		UPDATE ` + table + ` SET review_question_version = ?, review_prompt = ?, review_answer = ?, review_answers = ?
 		WHERE id = ? AND user_id = ? AND (
 			review_question_version < ? OR
 			(review_question_version = ? AND (review_prompt = '' OR review_answers IS NULL))
 		)
-	`, question.Version, question.Prompt, legacyAnswer, string(answers), id, userID, question.Version, question.Version)
+	`
+	args := []any{question.Version, question.Prompt, legacyAnswer, string(answers), id, userID, question.Version, question.Version}
+	if len(expected) > 0 {
+		before := expected[0]
+		query += ` AND meaning_revision=? AND BINARY word=BINARY ? AND BINARY meaning=BINARY ? AND BINARY example=BINARY ?`
+		args = append(args, before.MeaningRevision, before.Word, before.Meaning, before.Example)
+	}
+	res, err := s.rw.ExecContext(ctx, query, args...)
 	if err != nil {
 		return Word{}, false, fmt.Errorf("wordreview: save question: %w", err)
 	}
@@ -413,28 +424,6 @@ func (s *MySQLStore) Delete(ctx context.Context, userID, id string) error {
 		return fmt.Errorf("wordreview: delete: %w", err)
 	}
 	return nil
-}
-
-func (s *MySQLStore) StartResearch(ctx context.Context, userID, id string) (Word, error) {
-	if _, err := s.rw.ExecContext(ctx, `UPDATE `+table+` SET research_status = ?, research_results = NULL WHERE id = ? AND user_id = ?`, ResearchPending, id, userID); err != nil {
-		return Word{}, fmt.Errorf("wordreview: research start: %w", err)
-	}
-	return s.Get(ctx, userID, id)
-}
-
-func (s *MySQLStore) FinishResearch(ctx context.Context, userID, id string, results []ResearchSuggestion) (Word, error) {
-	b, err := json.Marshal(results)
-	if err != nil {
-		return Word{}, err
-	}
-	// database/sql drivers bind []byte as a binary value. MySQL rejects that
-	// value when it is assigned to a JSON column (ER_INVALID_JSON_CHARSET,
-	// 3144), even though the bytes contain valid UTF-8 JSON. Bind the JSON as
-	// text so the connection's utf8mb4 character set is used.
-	if _, err = s.rw.ExecContext(ctx, `UPDATE `+table+` SET research_status = ?, research_results = ? WHERE id = ? AND user_id = ?`, ResearchDone, string(b), id, userID); err != nil {
-		return Word{}, fmt.Errorf("wordreview: research finish: %w", err)
-	}
-	return s.Get(ctx, userID, id)
 }
 
 func (s *MySQLStore) ConfirmResearch(ctx context.Context, userID, id string) (Word, error) {

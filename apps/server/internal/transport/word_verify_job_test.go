@@ -120,12 +120,15 @@ func (s *fakeWordReviewStore) Review(ctx context.Context, userID, id string, cor
 
 func (s *fakeWordReviewStore) Delete(ctx context.Context, userID, id string) error { return nil }
 
-func (s *fakeWordReviewStore) SaveQuestion(ctx context.Context, userID, id string, question wordreview.Question) (wordreview.Word, bool, error) {
+func (s *fakeWordReviewStore) SaveQuestion(ctx context.Context, userID, id string, question wordreview.Question, expected ...wordreview.Word) (wordreview.Word, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	w, ok := s.words[id]
 	if !ok || w.UserID != userID {
 		return wordreview.Word{}, false, nil
+	}
+	if len(expected) > 0 && (w.MeaningRevision != expected[0].MeaningRevision || w.Word != expected[0].Word || w.Meaning != expected[0].Meaning || w.Example != expected[0].Example) {
+		return w, false, nil
 	}
 	if w.ReviewQuestion.Version > question.Version ||
 		(w.ReviewQuestion.Version == question.Version && w.ReviewQuestion.Prompt != "" && len(w.ReviewQuestion.Answers) > 0) {

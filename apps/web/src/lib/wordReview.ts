@@ -32,8 +32,9 @@ export interface WordReviewItem {
   // "제외된 단어" section, where the learner reviews and deletes it.
   status: WordReviewStatus;
   verifyReason?: string;
-  researchStatus?: "pending" | "done" | "confirmed";
-  researchResults?: WordSuggestion[];
+  researchStatus?: "pending" | "done" | "failed" | "confirmed";
+  researchRevision?: number;
+  researchResults?: (WordSuggestion & { verified?: boolean })[];
   reviewQuestion?: WordReviewQuestion;
   meaningStatus?: "pending" | "done" | "failed" | "confirmed";
   meaningVersion?: number;
@@ -99,6 +100,13 @@ export async function saveWord(s: WordSuggestion, originalWord?: string): Promis
 
 export async function startResearchWord(id: string): Promise<WordReviewItem | null> {
   return postJSON<WordReviewItem | null>(`api/words/${encodeURIComponent(id)}/research`, {}, null);
+}
+
+export async function selectResearchWord(word: WordReviewItem, suggestion: WordSuggestion): Promise<WordReviewItem | null> {
+  return postJSON<WordReviewItem | null>(`api/words/${encodeURIComponent(word.id)}/research/select`, {
+    revision: word.researchRevision ?? 0,
+    suggestion,
+  }, null);
 }
 
 export async function confirmResearchWord(id: string): Promise<WordReviewItem | null> {

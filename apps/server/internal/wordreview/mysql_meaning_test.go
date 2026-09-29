@@ -575,7 +575,11 @@ func pendingMeaningAtVersion(t *testing.T, version int, previous string) (*MySQL
 	t.Helper()
 	st, _, done := preparedMeaning(t)
 	ctx := context.Background()
-	if _, err := st.FinishResearch(ctx, done.UserID, done.ID, []ResearchSuggestion{{Word: "facility", Meaning: "설비", Example: done.Example}}); err != nil {
+	pendingResearch, err := st.StartResearch(ctx, done.UserID, done.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.FinishResearch(ctx, pendingResearch, []ResearchSuggestion{{Word: "facility", Meaning: "설비", Example: done.Example}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.rw.ExecContext(ctx, `UPDATE `+table+` SET meaning_status='pending', meaning_error='earlier error',
