@@ -6,7 +6,7 @@ import { formatMessageTime } from "../lib/time";
 import { LoadingHint } from "../components/LoadingHint";
 import { LearningPage } from "../components/LearningPage";
 import { DatedList } from "../components/DatedList";
-import { HistoryItemContent } from "../components/HistoryItemContent";
+import { HistoryItem } from "../components/HistoryItem";
 import { newestFirst } from "../lib/listView";
 
 // Every "인스턴트 대화" room (see App.tsx's markInstant) lives here instead of
@@ -60,40 +60,24 @@ export function InstantSessions() {
       )}
       {loaded && sessions.length === 0 && <EmptyState title="아직 인스턴트 대화가 없어요." description="위의 ‘인스턴트 대화 시작’을 눌러 문장 하나를 보내 보세요. 답변과 피드백을 받은 뒤 대화가 마무리돼요." />}
       <DatedList items={sessions}>{(s) => (
-        <div className="session-row instant-session-row">
-          {/* Relative href (not "/"), same reasoning as the back link
-              above: resolves to the chat page's own URL regardless of
-              ROOT_PATH, and the "#chat/<id>" hash is what App.tsx's
-              mount effect reads (see lib/roomHistory.parseRoomHash) to
-              open this exact room read-only instead of the list —
-              the one way back into a room's transcript/feedback once
-              you've left this page. */}
-          <a className="session-item" href={`.#chat/${encodeURIComponent(s.id)}`}>
-            <HistoryItemContent
-              title={s.title}
-              meta={formatMessageTime(s.createdAt)}
-              badges={<>
-                {s.quizCompleted && (
-                  <span className="quiz-completed-badge" title="퀴즈까지 모두 완료했어요">✅</span>
-                )}
-                {!!s.unreadCorrections && (
-                  <span className="correction-unread-badge" title={`읽지 않은 정밀 피드백 ${s.unreadCorrections}개`}>
-                    새 피드백 {s.unreadCorrections}
-                  </span>
-                )}
-              </>}
-            />
-          </a>
-          <button
-            type="button"
-            className="ghost icon-btn session-delete"
-            onClick={() => void handleDelete(s.id)}
-            aria-label="인스턴트 대화 삭제"
-            title="인스턴트 대화 삭제"
-          >
-            🗑
-          </button>
-        </div>
+        <HistoryItem
+          title={s.title}
+          meta={formatMessageTime(s.createdAt)}
+          badges={<>
+            {s.quizCompleted && (
+              <span className="quiz-completed-badge" title="퀴즈까지 모두 완료했어요">✅</span>
+            )}
+            {!!s.unreadCorrections && (
+              <span className="correction-unread-badge" title={`읽지 않은 정밀 피드백 ${s.unreadCorrections}개`}>
+                새 피드백 {s.unreadCorrections}
+              </span>
+            )}
+          </>}
+          // Relative to the app root, including deployments under ROOT_PATH.
+          href={`.#chat/${encodeURIComponent(s.id)}`}
+          onDelete={() => void handleDelete(s.id)}
+          deleteLabel="인스턴트 대화 삭제"
+        />
       )}</DatedList>
     </LearningPage>
   );

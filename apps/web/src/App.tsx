@@ -316,7 +316,7 @@ export function App() {
   // Points the shared <audio> element at url and plays it — generated and
   // cached server-side per (session, turn, role) (see lib/sessions.ts's
   // messageAudioURL), so this is just "src + play(), let the browser handle
-  // buffering", the same shape as ArticleQuiz.tsx's handleRead. Used by both
+  // buffering", the same shape as ArticleReadAloud. Used by both
   // playMessage (a tap on a message's own 🔊 button) and onEvent's
   // assistant_done auto-read — has no reactive dependencies (audioRef is a
   // stable ref), so it's safe for the latter's permanently-stable closure to

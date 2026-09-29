@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { LearningPage } from "../components/LearningPage";
 import { LearningIntro } from "../components/LearningIntro";
 import { DatedList } from "../components/DatedList";
-import { HistoryItemContent } from "../components/HistoryItemContent";
+import { HistoryItem } from "../components/HistoryItem";
 import { LoadingHint } from "../components/LoadingHint";
 import { NuanceQuestionCard } from "../components/NuanceQuestionCard";
 import { deleteNuanceLesson, drawNuanceLesson, dueQuestions, fetchNuanceLesson, fetchNuanceLessons, lessonTitle, nextReview, practiceNuance, retryNuanceLesson, type NuanceAction, type NuanceLesson } from "../lib/nuance";
@@ -147,13 +147,11 @@ export function WordNuance() {
       {!loading && error && <button type="button" className="ghost" onClick={() => void load()}>목록 다시 불러오기</button>}
       {!loading && !error && lessons.length === 0 && <p className="hint">아직 만든 문제가 없어요. 첫 비교 묶음을 만들어 보세요.</p>}
       <DatedList items={lessons}>{(lesson) => (
-        <div className="session-row">
-          <button type="button" className="session-item" aria-label={`${lessonTitle(lesson)} 열기`} disabled={busy || loading} onClick={() => void open(lesson.id)}>
-            <HistoryItemContent title={lessonTitle(lesson)} description={lesson.content?.distinction}
-              meta={`${lessonStatus(lesson)} · ${formatMessageTime(lesson.createdAt)}`} />
-          </button>
-          <button type="button" className="ghost icon-btn session-delete" disabled={busy || loading} onClick={() => remove(lesson.id)} aria-label={`${lessonTitle(lesson)} 삭제`}>🗑</button>
-        </div>
+        <HistoryItem title={lessonTitle(lesson)} description={lesson.content?.distinction}
+          meta={`${lessonStatus(lesson)} · ${formatMessageTime(lesson.createdAt)}`}
+          onOpen={() => void open(lesson.id)} openLabel={`${lessonTitle(lesson)} 열기`}
+          onDelete={() => remove(lesson.id)} deleteLabel={`${lessonTitle(lesson)} 삭제`}
+          disabled={busy || loading} />
       )}</DatedList>
     </> : <>
       <button type="button" className="ghost nuance-list-back" onClick={back} disabled={busy}>← 목록으로</button>
