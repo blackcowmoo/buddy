@@ -5,8 +5,8 @@
 // inline path — see store.Turn's doc comment). Both kinds never run inline
 // with a learner's live conversation: sessions are queued when viewed (see
 // httpserver.sessionDetailHandler) and drained by asyncjob.Worker
-// (asyncjob.KindTranslation / asyncjob.KindCorrectionBackfill), so this work
-// never competes with or delays the interactive pipeline. Durability,
+// (asyncjob.KindTranslation / asyncjob.KindCorrectionBackfill). Their LLM
+// calls yield to waiting interactive calls between model invocations. Durability,
 // concurrent claiming across replicas, and crash recovery all come from
 // internal/asyncjob — this package only supplies the session-level job shape
 // and the handlers that do the actual translating/correcting.
@@ -139,6 +139,7 @@ func (w *Worker) Run(ctx context.Context) {
 // picked up again the next time its session is viewed and re-queued (see
 // httpserver.sessionDetailHandler).
 func translateSession(ctx context.Context, st store.Store, pipe *pipeline.Pipeline, userID, sessionID string) {
+	ctx = llm.WithBackgroundPriority(ctx)
 	ctx = workguard.BindStore(ctx, st, userID, sessionID)
 	turns, ok := loadSessionTurns(ctx, st, userID, sessionID)
 	if !ok {
@@ -251,6 +252,7 @@ func (w *CorrectionWorker) Run(ctx context.Context) {
 // picked up again the next time its session is viewed and re-queued (see
 // httpserver.sessionDetailHandler).
 func correctSession(ctx context.Context, st store.Store, pipe *pipeline.Pipeline, userID, sessionID string) {
+	ctx = llm.WithBackgroundPriority(ctx)
 	ctx = workguard.BindStore(ctx, st, userID, sessionID)
 	turns, ok := loadSessionTurns(ctx, st, userID, sessionID)
 	if !ok {

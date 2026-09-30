@@ -179,7 +179,13 @@ LLM calls are queued per model and endpoint, not per pipeline request. If one
 request is waiting for `llm2` (including a rate-limit retry), another request
 can still call `llm1`; only later calls targeting that same `llm2` wait behind
 it. This keeps the model's concurrency limit intact without making an
-unrelated model wait.
+unrelated model wait. Within each server's per-model queue, waiting interactive
+calls (including word lookup and quiz-answer checks) run before meaning-version
+migrations and legacy conversation/article backfills. Each priority retains FIFO
+order. A running call finishes normally; background work yields at the next model
+call, including between Chat, Analysis, and Judge stages, then resumes when no
+higher-priority call is waiting. The same policy applies to detached execution
+without Redis and to durable jobs recovered on another replica.
 
 The presentation policy depends on whether changing a visible result would
 break the interaction:

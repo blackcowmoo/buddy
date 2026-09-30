@@ -7,6 +7,7 @@ import (
 	"log"
 
 	"buddy/server/internal/asyncjob"
+	"buddy/server/internal/llm"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/wordreview"
 	"buddy/server/internal/workguard"
@@ -72,6 +73,7 @@ func runWordMeaningCleanup(ctx context.Context, pipe *pipeline.Pipeline, words w
 }
 
 func wordMeaningForCleanup(ctx context.Context, pipe *pipeline.Pipeline, word wordreview.Word) (string, error) {
+	ctx = llm.WithBackgroundPriority(ctx)
 	// Version 2 is already in flight. Enable the cheaper path only when a
 	// later meaning contract is deployed, without restarting today's work.
 	if word.MeaningTargetVersion >= wordreview.MeaningOptimizationVersion {

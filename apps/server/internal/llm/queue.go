@@ -3,12 +3,23 @@ package llm
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 )
 
+type backgroundPriorityKey struct{}
+
+// WithBackgroundPriority makes migration/backfill calls yield to ordinary
+// calls waiting for the same model. Set it in the execution path so detached
+// work and durable retries retain the policy. Running calls are not preempted.
+func WithBackgroundPriority(ctx context.Context) context.Context {
+	return context.WithValue(ctx, backgroundPriorityKey{}, true)
+}
+
 // CallQueue serializes calls independently for each key. A key normally
 // identifies one model behind one endpoint. Calls for different keys never
-// wait on one another, while calls for the same key run in FIFO order.
+// wait on one another. For the same key, ordinary calls precede background
+// calls; calls within each priority run in FIFO order.
 //
 // The queue lives above the Client interface so it also protects clients that
 // are not OpenAI implementations (for example, test doubles or another
@@ -24,8 +35,9 @@ type callLane struct {
 }
 
 type callWaiter struct {
-	ready   chan struct{}
-	started bool
+	ready      chan struct{}
+	started    bool
+	background bool
 }
 
 // NewCallQueue returns an empty per-key call queue.
@@ -73,7 +85,8 @@ func (q *CallQueue) acquire(ctx context.Context, key string) (*callLane, error) 
 	}
 
 	// A lane exists only while a call owns it, including during a handoff.
-	w := &callWaiter{ready: make(chan struct{})}
+	background, _ := ctx.Value(backgroundPriorityKey{}).(bool)
+	w := &callWaiter{ready: make(chan struct{}), background: background}
 	lane.waiters = append(lane.waiters, w)
 	q.mu.Unlock()
 
@@ -103,7 +116,7 @@ func (q *CallQueue) cancel(lane *callLane, w *callWaiter) bool {
 		if queued != w {
 			continue
 		}
-		lane.waiters = append(lane.waiters[:i], lane.waiters[i+1:]...)
+		lane.waiters = slices.Delete(lane.waiters, i, i+1)
 		break
 	}
 	return false
@@ -116,8 +129,17 @@ func (q *CallQueue) release(key string, lane *callLane) {
 		delete(q.lanes, key)
 		return
 	}
-	w := lane.waiters[0]
-	lane.waiters = lane.waiters[1:]
+	// The oldest background call runs only when no ordinary call is waiting.
+	// Check at every handoff so a multi-call migration yields between stages.
+	next := 0
+	for i, w := range lane.waiters {
+		if !w.background {
+			next = i
+			break
+		}
+	}
+	w := lane.waiters[next]
+	lane.waiters = slices.Delete(lane.waiters, next, next+1)
 	w.started = true
 	close(w.ready)
 }
