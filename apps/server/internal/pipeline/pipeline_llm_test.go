@@ -2,12 +2,89 @@ package pipeline
 
 import (
 	"context"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"buddy/server/internal/llm"
 )
+
+func TestBackgroundCascadeYieldsAtEveryModel(t *testing.T) {
+	for _, stage := range []string{"chat", "analysis", "judge"} {
+		for _, stream := range []bool{false, true} {
+			name := stage + "/complete"
+			if stream {
+				name = stage + "/stream"
+			}
+			t.Run(name, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					var calls []string
+					model := func(name string) *fakeLLM {
+						return &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+							calls = append(calls, name)
+							return "migration result", nil
+						}}
+					}
+					p := &Pipeline{
+						LLM: model("chat"), ChatModel: "chat",
+						Analysis: []Candidate{{LLM: model("analysis"), Model: "analysis"}},
+						Judge:    model("judge"), JudgeModel: "judge",
+					}
+					release := make(chan struct{})
+					unblock := sync.OnceFunc(func() { close(release) })
+					defer unblock()
+					go func() {
+						if err := p.modelCallQueue().Do(context.Background(), stage, func() error {
+							<-release
+							return nil
+						}); err != nil {
+							t.Errorf("occupy %s: %v", stage, err)
+						}
+					}()
+					synctest.Wait()
+					go func() {
+						got, err := p.analyze(llm.WithBackgroundPriority(context.Background()), "migration", "old entry", false)
+						if err != nil || got != "migration result" {
+							t.Errorf("migration = %q, %v", got, err)
+						}
+					}()
+					synctest.Wait()
+					interactive := &fakeLLM{
+						complete: func([]llm.Message) (string, error) {
+							calls = append(calls, "interactive")
+							return "answer", nil
+						},
+						chatReply: "answer",
+						onChat:    func([]llm.Message) { calls = append(calls, "interactive") },
+					}
+					go func() {
+						var got string
+						var err error
+						if stream {
+							got, err = p.chatStream(context.Background(), interactive, stage, nil, nil)
+						} else {
+							got, err = p.complete(context.Background(), interactive, stage, nil, false)
+						}
+						if err != nil || got != "answer" {
+							t.Errorf("interactive = %q, %v", got, err)
+						}
+					}()
+					synctest.Wait()
+					unblock()
+					synctest.Wait()
+					want := []string{"chat", "analysis", "judge"}
+					want = slices.Insert(want, slices.Index(want, stage), "interactive")
+					if !slices.Equal(calls, want) {
+						t.Errorf("model calls = %v, want %v", calls, want)
+					}
+				})
+			})
+		}
+	}
+}
 
 // TestAnalyzeQueuesEachModelIndependently reproduces the important request
 // interleaving: request A is holding llm2, request B must still enter llm1,

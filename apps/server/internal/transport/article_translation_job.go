@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"buddy/server/internal/llm"
 	"buddy/server/internal/newsarticle"
 	"buddy/server/internal/pipeline"
 	"buddy/server/internal/workguard"
@@ -14,6 +15,7 @@ import (
 // generated before translations were saved. Claiming is atomic in the store,
 // so repeated article polling is safe and only one local-LLM call is made.
 func RunArticleTranslationBackfill(ctx context.Context, pipe *pipeline.Pipeline, articles newsarticle.Store, articleID string) error {
+	ctx = llm.WithBackgroundPriority(ctx)
 	ctx = workguard.BindStore(ctx, articles, "", articleID)
 	backfiller, ok := articles.(newsarticle.ArticleTranslationBackfiller)
 	if !ok {

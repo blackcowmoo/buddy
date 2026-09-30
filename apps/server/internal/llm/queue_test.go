@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"testing"
@@ -16,7 +17,7 @@ func TestCallQueueIsIndependentPerKey(t *testing.T) {
 		unblock := sync.OnceFunc(func() { close(release) })
 		defer unblock()
 		go func() {
-			if err := q.Do(context.Background(), "llm2", func() error {
+			if err := q.Do(WithBackgroundPriority(context.Background()), "llm2", func() error {
 				<-release
 				return nil
 			}); err != nil {
@@ -52,69 +53,80 @@ func TestCallQueueIsIndependentPerKey(t *testing.T) {
 	})
 }
 
-func TestCallQueuePreservesFIFOThroughCancellation(t *testing.T) {
+func TestCallQueueOrdersCallsThroughCancellation(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		canceled int
+		name       string
+		background []bool
+		order      []int
 	}{
-		{"none", -1},
-		{"first waiter", 1},
-		{"middle waiter", 2},
-		{"last waiter", 3},
+		{"ordinary FIFO", []bool{false, false, false, false}, []int{0, 1, 2, 3}},
+		{"background FIFO", []bool{true, true, true, true}, []int{0, 1, 2, 3}},
+		{"mixed priorities", []bool{true, true, false, true, false}, []int{0, 2, 4, 1, 3}},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				var q CallQueue // The zero value must work as well as NewCallQueue.
-				release := make(chan struct{})
-				unblock := sync.OnceFunc(func() { close(release) })
-				defer unblock()
-				ctx, cancel := context.WithCancel(context.Background())
-				defer cancel()
-				var calls []int
-				var results [4]error
-				for i := range results {
-					callCtx := context.Background()
-					if i == tc.canceled {
-						callCtx = ctx
+		for canceled := -1; canceled < len(tc.background); canceled++ {
+			if canceled == 0 {
+				continue // The first call is already running, not a queued waiter.
+			}
+			t.Run(fmt.Sprintf("%s/canceled=%d", tc.name, canceled), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					var q CallQueue // The zero value must work as well as NewCallQueue.
+					release := make(chan struct{})
+					unblock := sync.OnceFunc(func() { close(release) })
+					defer unblock()
+					ctx, cancel := context.WithCancel(context.Background())
+					defer cancel()
+					var calls []int
+					results := make([]error, len(tc.background))
+					for i := range results {
+						callCtx := context.Background()
+						if i == canceled {
+							callCtx = ctx
+						}
+						if tc.background[i] {
+							callCtx = WithBackgroundPriority(callCtx)
+						}
+						go func() {
+							results[i] = q.Do(callCtx, "llm", func() error {
+								calls = append(calls, i)
+								if i == 0 {
+									<-release
+								}
+								return nil
+							})
+						}()
+						// Establish registration order without relying on scheduling or sleeps.
+						synctest.Wait()
 					}
-					go func() {
-						results[i] = q.Do(callCtx, "llm", func() error {
-							calls = append(calls, i)
-							if i == 0 {
-								<-release
-							}
-							return nil
-						})
-					}()
-					// Establish registration order without relying on scheduling or sleeps.
+					cancel()
 					synctest.Wait()
-				}
-				cancel()
-				synctest.Wait()
-				if !slices.Equal(calls, []int{0}) {
-					t.Fatalf("calls before release = %v, want [0]", calls)
-				}
-				unblock()
-				synctest.Wait()
+					if !slices.Equal(calls, []int{0}) {
+						t.Fatalf("calls before release = %v, want [0]", calls)
+					}
+					unblock()
+					synctest.Wait()
 
-				var want []int
-				for i, err := range results {
-					var wantErr error
-					if i == tc.canceled {
-						wantErr = context.Canceled
-					} else {
-						want = append(want, i)
+					for i, err := range results {
+						var wantErr error
+						if i == canceled {
+							wantErr = context.Canceled
+						}
+						if !errors.Is(err, wantErr) {
+							t.Errorf("call %d error = %v, want %v", i, err, wantErr)
+						}
 					}
-					if !errors.Is(err, wantErr) {
-						t.Errorf("call %d error = %v, want %v", i, err, wantErr)
+					var want []int
+					for _, i := range tc.order {
+						if i != canceled {
+							want = append(want, i)
+						}
 					}
-				}
-				if !slices.Equal(calls, want) {
-					t.Errorf("call order = %v, want %v", calls, want)
-				}
-				assertCallQueueEmpty(t, &q)
+					if !slices.Equal(calls, want) {
+						t.Errorf("call order = %v, want %v", calls, want)
+					}
+					assertCallQueueEmpty(t, &q)
+				})
 			})
-		})
+		}
 	}
 }
 
@@ -125,8 +137,8 @@ func TestCallQueueCancellationAfterHandoffKeepsOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := &callWaiter{ready: make(chan struct{})}
-	next := &callWaiter{ready: make(chan struct{})}
-	lane.waiters = append(lane.waiters, first, next)
+	next := &callWaiter{ready: make(chan struct{}), background: true}
+	lane.waiters = append(lane.waiters, next, first)
 	q.release("llm", lane)
 
 	// Drive the cancellation/handoff ordering explicitly: acquire must keep

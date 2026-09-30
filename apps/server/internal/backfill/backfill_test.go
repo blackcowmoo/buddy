@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"buddy/server/internal/testdocker"
@@ -370,6 +372,68 @@ func TestQueueEnqueueNilQueueIsNoop(t *testing.T) {
 }
 
 // ---- translateSession --------------------------------------------------
+
+func TestSessionBackfillsYieldToAnswerChecks(t *testing.T) {
+	for _, correction := range []bool{false, true} {
+		name := "translation"
+		if correction {
+			name = "correction"
+		}
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				release := make(chan struct{})
+				unblock := sync.OnceFunc(func() { close(release) })
+				defer unblock()
+				var calls []string
+				pipe := &pipeline.Pipeline{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+					switch {
+					case strings.Contains(msgs[len(msgs)-1].Content, "occupy model"):
+						calls = append(calls, "occupied")
+						<-release
+						return `{"correct":true}`, nil
+					case strings.Contains(msgs[0].Content, "You are grading"):
+						calls = append(calls, "answer")
+						return `{"correct":true}`, nil
+					default:
+						calls = append(calls, "backfill")
+						if correction {
+							return correctionJSON("I have a dog.", "개가 있어요."), nil
+						}
+						return "개가 있어요.", nil
+					}
+				}}, FeedbackLang: "ko"}
+				check := func(prompt string) {
+					correct, err := pipe.CheckQuizAnswer(context.Background(), prompt, "dog", nil, "hound")
+					if err != nil || !correct {
+						t.Errorf("answer check %q = %v, %v", prompt, correct, err)
+					}
+				}
+				st := newFakeStore()
+				st.seed("alex", "legacy", []store.Turn{{Turn: 1, Role: "user", Text: "I has a dog."}})
+				go check("occupy model")
+				synctest.Wait()
+				go func() {
+					if correction {
+						correctSession(context.Background(), st, pipe, "alex", "legacy")
+					} else {
+						translateSession(context.Background(), st, pipe, "alex", "legacy")
+					}
+				}()
+				synctest.Wait()
+				go check("I have a ___.")
+				synctest.Wait()
+				unblock()
+				synctest.Wait()
+				if !slices.Equal(calls, []string{"occupied", "answer", "backfill"}) {
+					t.Errorf("calls = %v, want answer before backfill", calls)
+				}
+				if len(st.saved) != 1 || st.saved[0].translation != "개가 있어요." || (correction && len(st.savedCorrections) != 1) {
+					t.Errorf("backfill did not persist: translations=%+v corrections=%+v", st.saved, st.savedCorrections)
+				}
+			})
+		})
+	}
+}
 
 func TestTranslateSessionTranslatesMissingTurnsWithAccumulatingContext(t *testing.T) {
 	ctx := context.Background()
