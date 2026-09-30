@@ -27,11 +27,10 @@ const (
 	// of just waiting for the one in flight to finish.
 	ReplyClaimTTL = 25 * time.Hour
 
-	// ReplyWorkerConcurrency is how many reply jobs one replica's
-	// background Worker pool runs at once — picking up jobs whose original
-	// replica died, or that lost the fast-path inline-claim race. Generous:
-	// reply jobs for different model keys can run independently; calls for the
-	// same model are serialized by Pipeline's per-model queue.
+	// ReplyWorkerConcurrency bounds active handler work on one replica.
+	// Model waits release that capacity so jobs recovered after a crash or
+	// a lost inline-claim race can reach other healthy model endpoints.
+	// Calls for the same model remain serialized by Pipeline's queue.
 	ReplyWorkerConcurrency = 16
 
 	// replyPollAttempts bounds the fallback poll a connection falls back to

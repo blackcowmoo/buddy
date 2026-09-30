@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"buddy/server/internal/workslot"
+
 	"github.com/redis/go-redis/v9"
 )
 
@@ -51,28 +53,23 @@ var FailureRetryBackoff = 2 * time.Minute
 // transient LLM capacity failures several chances to recover.
 var MaxAttempts = 5
 
-// Worker runs one job Kind's handler across concurrency goroutines, each
-// independently blocking on Redis to claim the next job. Unlike
-// internal/backfill's single cluster-wide-locked drainer, any number of
-// Workers — in this process or another replica — can claim and run
-// DIFFERENT jobs of the same kind at once: BLMove atomically hands each
-// queued job to exactly one caller, with no global lock serializing
-// unrelated jobs behind each other. Kinds that do need serialization at the
-// job level can construct their Worker with concurrency=1. LLM model-level
-// serialization is handled by the pipeline's per-model call queues, so a
-// translation worker pool can execute different requests concurrently
-// without reintroducing a global lock.
+// Worker limits active handler work while allowing jobs parked in LLM I/O
+// to retain their claims without consuming execution slots. Per-model queues
+// limit inference concurrency; a dead model must not prevent another job
+// from reaching a healthy model. Each handler still runs its stages in order.
 type Worker struct {
 	rdb         redis.UniversalClient
 	kind        Kind
 	handler     Handler
 	concurrency int
 	claimTTL    time.Duration
+	slots       *workslot.Pool
 }
 
-// NewWorker builds a Worker for kind. concurrency is how many jobs of this
-// kind this one Worker (i.e. this one replica) runs at once. claimTTL is the
-// kind-specific upper bound requested by the caller; the actual renewable
+// NewWorker builds a Worker for kind. concurrency bounds active jobs outside
+// workslot.Wait; parked jobs retain their goroutines, leases, and checkpoints.
+// Thus it is not a bound on resident jobs or a whole-job ordering guarantee.
+// claimTTL is the kind-specific upper bound requested by the caller; the renewable
 // Redis lease is capped by MaxClaimLeaseTTL. runWithLease keeps that shorter
 // lease alive for the full handler run, while a dead process becomes reapable
 // promptly instead of remaining hidden for a slow LLM's worst-case timeout.
@@ -80,23 +77,24 @@ func NewWorker(rdb redis.UniversalClient, kind Kind, concurrency int, claimTTL t
 	if concurrency < 1 {
 		concurrency = 1
 	}
-	return &Worker{rdb: rdb, kind: kind, handler: handler, concurrency: concurrency, claimTTL: claimTTL}
+	return &Worker{rdb: rdb, kind: kind, handler: handler, concurrency: concurrency, claimTTL: claimTTL, slots: workslot.New(concurrency)}
 }
 
 // Run blocks until ctx is canceled, running concurrency claim goroutines
-// plus one stale-claim reaper. A nil Worker or a nil rdb (Redis not
-// configured) makes this an immediate no-op, matching every other
+// plus one stale-claim reaper, then waits for all admitted jobs to finish.
+// A nil Worker or a nil rdb (Redis not configured) makes this an immediate
+// no-op, matching every other
 // optional-Redis-feature in this codebase (see cmd/server/main.go).
 func (w *Worker) Run(ctx context.Context) {
 	if w == nil || w.rdb == nil {
 		return
 	}
-	var wg sync.WaitGroup
+	var wg, jobs sync.WaitGroup
 	for i := 0; i < w.concurrency; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			w.claimLoop(ctx)
+			w.claimLoop(ctx, &jobs)
 		}()
 	}
 	wg.Add(1)
@@ -105,9 +103,10 @@ func (w *Worker) Run(ctx context.Context) {
 		w.reapLoop(ctx)
 	}()
 	wg.Wait()
+	jobs.Wait()
 }
 
-func (w *Worker) claimLoop(ctx context.Context) {
+func (w *Worker) claimLoop(ctx context.Context, jobs *sync.WaitGroup) {
 	for ctx.Err() == nil {
 		raw, err := w.rdb.BLMove(ctx, queueKey(w.kind), processingKey(w.kind), "RIGHT", "LEFT", claimBlockTimeout).Result()
 		if errors.Is(err, redis.Nil) {
@@ -120,7 +119,22 @@ func (w *Worker) claimLoop(ctx context.Context) {
 			log.Printf("asyncjob: %s: claim: %v", w.kind, err)
 			continue
 		}
-		w.run(raw)
+		// Admit another job as soon as this one parks in a model call. Waiting
+		// for its first yield (or completion) also bounds jobs preparing work
+		// or waiting for an active slot; only model waits can grow with backlog.
+		yielded := make(chan struct{})
+		yield := sync.OnceFunc(func() { close(yielded) })
+		jobs.Add(1)
+		go func() {
+			defer jobs.Done()
+			defer yield()
+			w.run(raw, yield)
+		}()
+		select {
+		case <-yielded:
+		case <-ctx.Done():
+			return
+		}
 	}
 }
 
@@ -128,7 +142,7 @@ func (w *Worker) claimLoop(ctx context.Context) {
 // entry, exactly as claimed). Uses context.Background(), not claimLoop's
 // ctx, so the handler isn't cut short by this Worker's own shutdown mid-job
 // — see Worker's package-level reasoning about durability across restarts.
-func (w *Worker) run(raw string) {
+func (w *Worker) run(raw string, onYield func()) {
 	var job Job
 	if err := json.Unmarshal([]byte(raw), &job); err != nil {
 		log.Printf("asyncjob: %s: bad job entry, dropping: %v", w.kind, err)
@@ -150,7 +164,9 @@ func (w *Worker) run(raw string) {
 		return
 	}
 	if handlerErr := runWithLease(context.Background(), w.rdb, w.kind, job.ID, token, w.claimTTL, func(ctx context.Context) error {
-		return w.handler(ctx, job)
+		return w.slots.Run(ctx, onYield, func(ctx context.Context) error {
+			return w.handler(ctx, job)
+		})
 	}); handlerErr != nil {
 		if job.Attempts+1 >= MaxAttempts {
 			log.Printf("asyncjob: %s: giving up job %s after %d attempts: %v", w.kind, job.ID, job.Attempts+1, handlerErr)

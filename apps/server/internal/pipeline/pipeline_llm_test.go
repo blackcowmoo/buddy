@@ -2,15 +2,263 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"buddy/server/internal/llm"
+	"buddy/server/internal/workguard"
+	"buddy/server/internal/workslot"
 )
+
+func startModelJob(t *testing.T, pool *workslot.Pool, p *Pipeline, ctx context.Context, client llm.Client, model string, stream bool) <-chan error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		done <- pool.Run(ctx, nil, func(ctx context.Context) error {
+			var text string
+			var err error
+			if stream {
+				text, err = p.chatStream(ctx, client, model, nil, nil)
+			} else {
+				text, err = p.complete(ctx, client, model, nil, false)
+			}
+			if err == nil && text != "result" {
+				t.Errorf("model result = %q, want result", text)
+			}
+			return err
+		})
+	}()
+	return done
+}
+
+func assertModelJobFinished(t *testing.T, done <-chan error, want error) {
+	t.Helper()
+	select {
+	case err := <-done:
+		if !errors.Is(err, want) {
+			t.Errorf("job error = %v, want %v", err, want)
+		}
+	default:
+		t.Fatal("job did not finish")
+	}
+}
+
+func TestModelWaitAllowsIndependentJobs(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		name := "complete"
+		if stream {
+			name = "stream"
+		}
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				pool := workslot.New(1)
+				p := &Pipeline{}
+				release := make(chan struct{})
+				unblock := sync.OnceFunc(func() { close(release) })
+				defer unblock()
+				blocked := &checkpointClient{
+					endpoint: "server",
+					complete: func(context.Context, []llm.Message) (string, error) {
+						<-release
+						return "result", nil
+					},
+					stream: func(context.Context, func(string)) (string, error) {
+						<-release
+						return "result", nil
+					},
+				}
+				blockedDone := startModelJob(t, pool, p, context.Background(), blocked, "blocked", stream)
+				synctest.Wait()
+				if blocked.calls.Load() != 1 {
+					t.Fatal("blocked model did not start")
+				}
+				queued := &checkpointClient{endpoint: "server"}
+				queuedDone := startModelJob(t, pool, p, context.Background(), queued, "blocked", stream)
+				synctest.Wait()
+				healthy := &checkpointClient{endpoint: "server"}
+				healthyDone := startModelJob(t, pool, p, context.Background(), healthy, "healthy", stream)
+				synctest.Wait()
+				assertModelJobFinished(t, healthyDone, nil)
+				if queued.calls.Load() != 0 {
+					t.Fatal("same-model call ran before its predecessor finished")
+				}
+				unblock()
+				synctest.Wait()
+				assertModelJobFinished(t, blockedDone, nil)
+				assertModelJobFinished(t, queuedDone, nil)
+				if queued.calls.Load() != 1 {
+					t.Fatal("queued model did not run after its predecessor finished")
+				}
+			})
+		})
+	}
+}
+
+func TestCanceledModelJobsReleaseTheirLane(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		name := "complete"
+		if stream {
+			name = "stream"
+		}
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				pool := workslot.New(1)
+				p := &Pipeline{}
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				blocked := &checkpointClient{
+					endpoint: "server",
+					complete: func(ctx context.Context, _ []llm.Message) (string, error) {
+						<-ctx.Done()
+						return "", ctx.Err()
+					},
+					stream: func(ctx context.Context, _ func(string)) (string, error) {
+						<-ctx.Done()
+						return "", ctx.Err()
+					},
+				}
+				blockedDone := startModelJob(t, pool, p, ctx, blocked, "model", stream)
+				synctest.Wait()
+				queuedCtx, cancelQueued := context.WithCancel(context.Background())
+				defer cancelQueued()
+				queued := &checkpointClient{endpoint: "server"}
+				queuedDone := startModelJob(t, pool, p, queuedCtx, queued, "model", stream)
+				synctest.Wait()
+				cancelQueued()
+				synctest.Wait()
+				assertModelJobFinished(t, queuedDone, context.Canceled)
+				if queued.calls.Load() != 0 || blocked.calls.Load() != 1 {
+					t.Fatalf("canceled queue entry reached model: queued = %d, running = %d", queued.calls.Load(), blocked.calls.Load())
+				}
+				following := &checkpointClient{endpoint: "server"}
+				followingDone := startModelJob(t, pool, p, context.Background(), following, "model", stream)
+				synctest.Wait()
+				if following.calls.Load() != 0 {
+					t.Fatal("following job ran before in-flight cancellation")
+				}
+				cancel()
+				synctest.Wait()
+				assertModelJobFinished(t, blockedDone, context.Canceled)
+				assertModelJobFinished(t, followingDone, nil)
+				if following.calls.Load() != 1 {
+					t.Fatal("cancellation stranded the following model call")
+				}
+			})
+		})
+	}
+}
+
+func TestModelWaitPreservesCascadeOrder(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		pool := workslot.New(1)
+		releaseChat := make(chan struct{})
+		releaseAnalysis := make(chan struct{})
+		unblockChat := sync.OnceFunc(func() { close(releaseChat) })
+		unblockAnalysis := sync.OnceFunc(func() { close(releaseAnalysis) })
+		defer unblockChat()
+		defer unblockAnalysis()
+		chat := &checkpointClient{endpoint: "server", complete: func(context.Context, []llm.Message) (string, error) {
+			<-releaseChat
+			return "result", nil
+		}}
+		analysis := &checkpointClient{endpoint: "server", complete: func(context.Context, []llm.Message) (string, error) {
+			<-releaseAnalysis
+			return "result", nil
+		}}
+		otherAnalysis := &checkpointClient{endpoint: "server"}
+		judge := &checkpointClient{endpoint: "server"}
+		p := &Pipeline{
+			LLM: chat, ChatModel: "chat",
+			Analysis: []Candidate{{LLM: analysis, Model: "analysis"}, {LLM: otherAnalysis, Model: "other-analysis"}},
+			Judge:    judge, JudgeModel: "judge",
+		}
+		done := make(chan error, 1)
+		go func() {
+			done <- pool.Run(context.Background(), nil, func(ctx context.Context) error {
+				text, err := p.analyze(ctx, "task", "input", false)
+				if err == nil && text != "result" {
+					t.Errorf("cascade result = %q, want result", text)
+				}
+				return err
+			})
+		}()
+		synctest.Wait()
+		assertCheckpointCalls(t, []*checkpointClient{chat, analysis, otherAnalysis, judge}, []int32{1, 0, 0, 0})
+		independent := &checkpointClient{endpoint: "server"}
+		independentDone := startModelJob(t, pool, p, context.Background(), independent, "analysis", false)
+		synctest.Wait()
+		assertModelJobFinished(t, independentDone, nil)
+		assertCheckpointCalls(t, []*checkpointClient{analysis, otherAnalysis, judge}, []int32{0, 0, 0})
+		unblockChat()
+		synctest.Wait()
+		assertCheckpointCalls(t, []*checkpointClient{chat, analysis, otherAnalysis, judge}, []int32{1, 1, 1, 0})
+		independentDone = startModelJob(t, pool, p, context.Background(), independent, "judge", false)
+		synctest.Wait()
+		assertModelJobFinished(t, independentDone, nil)
+		if judge.calls.Load() != 0 {
+			t.Fatal("judge ran before every analysis candidate finished")
+		}
+		unblockAnalysis()
+		synctest.Wait()
+		assertModelJobFinished(t, done, nil)
+		assertCheckpointCalls(t, []*checkpointClient{chat, analysis, otherAnalysis, judge}, []int32{1, 1, 1, 1})
+	})
+}
+
+func TestModelGuardCancelsWhileWaitingToResume(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		pool := workslot.New(1)
+		p := &Pipeline{}
+		var deleted atomic.Bool
+		ctx := workguard.Bind(context.Background(), func(context.Context) error {
+			if deleted.Load() {
+				return workguard.ErrDeleted
+			}
+			return nil
+		})
+		releaseModel := make(chan struct{})
+		unblockModel := sync.OnceFunc(func() { close(releaseModel) })
+		defer unblockModel()
+		client := &checkpointClient{complete: func(context.Context, []llm.Message) (string, error) {
+			<-releaseModel
+			return "result", nil
+		}}
+		done := startModelJob(t, pool, p, ctx, client, "model", false)
+		synctest.Wait()
+		releaseOther := make(chan struct{})
+		unblockOther := sync.OnceFunc(func() { close(releaseOther) })
+		defer unblockOther()
+		otherDone := make(chan error, 1)
+		go func() {
+			otherDone <- pool.Run(context.Background(), nil, func(context.Context) error {
+				<-releaseOther
+				return nil
+			})
+		}()
+		synctest.Wait()
+		unblockModel()
+		synctest.Wait()
+		select {
+		case err := <-done:
+			t.Fatalf("job resumed while another job held the worker slot: %v", err)
+		default:
+		}
+		deleted.Store(true)
+		// synctest advances its virtual clock to the guard's polling tick.
+		time.Sleep(time.Second)
+		synctest.Wait()
+		assertModelJobFinished(t, done, workguard.ErrDeleted)
+		unblockOther()
+		synctest.Wait()
+		assertModelJobFinished(t, otherDone, nil)
+	})
+}
 
 func TestBackgroundCascadeYieldsAtEveryModel(t *testing.T) {
 	for _, stage := range []string{"chat", "analysis", "judge"} {

@@ -311,7 +311,7 @@ func runCheckpointTestWorker(t *testing.T, worker *Worker) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	worker.run(raw)
+	worker.run(raw, nil)
 }
 
 func assertCheckpointJobCleaned(t *testing.T, rdb *redis.Client, job Job) {

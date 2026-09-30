@@ -236,18 +236,30 @@ func TestCompleteClearsProcessingClaimAndDedupe(t *testing.T) {
 	}
 
 	var calls int
+	called := make(chan struct{}, 1)
 	w := NewWorker(rdb, kind, 1, time.Minute, func(_ context.Context, job Job) error {
 		calls++
+		select {
+		case called <- struct{}{}:
+		default:
+		}
 		return nil
 	})
 	runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
 	done := make(chan struct{})
 	go func() { w.Run(runCtx); close(done) }()
+	stop := sync.OnceFunc(func() { cancel(); <-done })
+	defer stop()
 
-	waitForCondition(t, 3*time.Second, func() bool { return calls == 1 })
-	cancel()
-	<-done
+	select {
+	case <-called:
+	case <-time.After(3 * time.Second):
+		t.Fatal("handler did not run")
+	}
+	stop()
+	if calls != 1 {
+		t.Fatalf("handler calls = %d, want 1", calls)
+	}
 
 	if n, _ := rdb.LLen(ctx, queueKey(kind)).Result(); n != 0 {
 		t.Fatalf("queue should be empty, length = %d", n)
@@ -280,18 +292,30 @@ func TestHandlerErrorLeavesJobForReap(t *testing.T) {
 	}
 
 	var calls int
+	called := make(chan struct{}, 1)
 	w := NewWorker(rdb, kind, 1, time.Minute, func(_ context.Context, j Job) error {
 		calls++
+		select {
+		case called <- struct{}{}:
+		default:
+		}
 		return errFake
 	})
 	runCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
 	done := make(chan struct{})
 	go func() { w.Run(runCtx); close(done) }()
+	stop := sync.OnceFunc(func() { cancel(); <-done })
+	defer stop()
 
-	waitForCondition(t, 2*time.Second, func() bool { return calls == 1 })
-	cancel()
-	<-done
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not run")
+	}
+	stop()
+	if calls != 1 {
+		t.Fatalf("handler calls = %d, want 1", calls)
+	}
 
 	// Job stays claimed (not completed, not immediately requeued) —
 	// visible in processingKey with its claim key still present.
@@ -373,12 +397,9 @@ func TestFailedJobStopsAfterMaxAttempts(t *testing.T) {
 	q := NewQueue(rdb)
 	ctx := context.Background()
 
-	oldBackoff, oldMax := FailureRetryBackoff, MaxAttempts
-	FailureRetryBackoff = 10 * time.Millisecond
+	oldMax := MaxAttempts
 	MaxAttempts = 2
-	t.Cleanup(func() {
-		FailureRetryBackoff, MaxAttempts = oldBackoff, oldMax
-	})
+	t.Cleanup(func() { MaxAttempts = oldMax })
 
 	job, ok, err := q.Enqueue(ctx, kind, "terminal", 1)
 	if err != nil || !ok {
@@ -389,21 +410,32 @@ func TestFailedJobStopsAfterMaxAttempts(t *testing.T) {
 		calls++
 		return errFake
 	})
-	runCtx, cancel := context.WithCancel(ctx)
-	done := make(chan struct{})
-	go func() { defer close(done); w.Run(runCtx) }()
-	defer func() { cancel(); <-done }()
-
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if calls >= 1 {
-			time.Sleep(30 * time.Millisecond)
+	// Drive each attempt to completion before inspecting durable state. A
+	// handler-call notification alone precedes the worker's terminal cleanup.
+	for attempt := 0; attempt < MaxAttempts; attempt++ {
+		raw, err := rdb.RPopLPush(ctx, queueKey(kind), processingKey(kind)).Result()
+		if err != nil {
+			t.Fatalf("claim attempt %d: %v", attempt, err)
+		}
+		var claimed Job
+		if err := json.Unmarshal([]byte(raw), &claimed); err != nil {
+			t.Fatal(err)
+		}
+		if claimed.ID != job.ID || claimed.Attempts != attempt {
+			t.Fatalf("claimed job = %+v, want job %s attempt %d", claimed, job.ID, attempt)
+		}
+		w.run(raw, nil)
+		if attempt+1 < MaxAttempts {
+			if n, err := rdb.Exists(ctx, claimKey(kind, job.ID)).Result(); err != nil || n != 1 {
+				t.Fatalf("failed job lost its retry claim: exists=%d, err=%v", n, err)
+			}
+			// Expire the failed claim explicitly; this test is about retry
+			// limits, independent of Redis's wall clock and heartbeat timing.
+			if expired, err := rdb.PExpire(ctx, claimKey(kind, job.ID), 0).Result(); err != nil || !expired {
+				t.Fatalf("expire failed claim: expired=%v, err=%v", expired, err)
+			}
 			w.reapOnce(ctx)
 		}
-		if calls >= 2 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
 	}
 	if calls != 2 {
 		t.Fatalf("handler calls = %d, want exactly 2", calls)
@@ -413,6 +445,16 @@ func TestFailedJobStopsAfterMaxAttempts(t *testing.T) {
 	}
 	if n, _ := rdb.SIsMember(ctx, dedupeSetKey(kind), job.DedupeKey).Result(); n {
 		t.Fatal("terminal failure must release its dedupe key")
+	}
+	if n, _ := rdb.LLen(ctx, processingKey(kind)).Result(); n != 0 {
+		t.Fatalf("processing length = %d, want terminal failure removed", n)
+	}
+	if n, _ := rdb.Exists(ctx, claimKey(kind, job.ID)).Result(); n != 0 {
+		t.Fatal("terminal failure must release its claim")
+	}
+	w.reapOnce(ctx)
+	if n, _ := rdb.LLen(ctx, queueKey(kind)).Result(); n != 0 {
+		t.Fatalf("terminal job was requeued: queue length = %d", n)
 	}
 }
 
@@ -943,7 +985,7 @@ func TestDeletedJobsAreConsumedByFastPathAndWorker(t *testing.T) {
 					t.Fatal(err)
 				}
 				worker := NewWorker(rdb, kind, 1, time.Minute, handler)
-				worker.run(raw)
+				worker.run(raw, nil)
 			}
 			if n := rdb.LLen(ctx, processingKey(kind)).Val(); n != 0 {
 				t.Fatalf("retryable entries=%d", n)

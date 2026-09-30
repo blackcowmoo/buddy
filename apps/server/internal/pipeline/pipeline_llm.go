@@ -9,6 +9,7 @@ import (
 	"buddy/server/internal/checkpoint"
 	"buddy/server/internal/llm"
 	"buddy/server/internal/workguard"
+	"buddy/server/internal/workslot"
 )
 
 // runModelCall is the single concurrency boundary for LLM calls made by a
@@ -21,11 +22,16 @@ func (p *Pipeline) runModelCall(ctx context.Context, client llm.Client, model st
 	}
 	key := modelCallKey(client, model)
 	return workguard.Run(ctx, func(ctx context.Context) error {
-		return p.modelCallQueue().Do(ctx, key, func() error {
-			if err := workguard.Check(ctx); err != nil {
-				return err
-			}
-			return call(ctx)
+		// A slow endpoint must not occupy a worker slot while other jobs can
+		// use healthy models. Keep the guard running through slot reacquisition
+		// so deletion also cancels a job waiting to resume after the model call.
+		return workslot.Wait(ctx, func() error {
+			return p.modelCallQueue().Do(ctx, key, func() error {
+				if err := workguard.Check(ctx); err != nil {
+					return err
+				}
+				return call(ctx)
+			})
 		})
 	})
 }
