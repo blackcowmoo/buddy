@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as api from "../lib/nuance";
 import { nuanceFixture } from "../lib/nuance.testData";
@@ -58,6 +58,14 @@ afterEach(cleanup);
 it("draws five questions across all lessons and shows no word-set explanation header", async () => {
   render(<WordNuanceReview />);
   expect(await screen.findByText("이번 복습 5문제 · 남은 문제 5개")).toBeInTheDocument();
+  const review = screen.getByRole("region", { name: "오늘의 뉘앙스 복습" });
+  const back = screen.getByRole("link", { name: "학습 목록" });
+  expect(back).toHaveAttribute("href", "/nuance");
+  expect(back.compareDocumentPosition(review) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(within(review).getByRole("region", { name: /상황 0/ })).toBeInTheDocument();
+  expect(screen.getAllByRole("main")).toHaveLength(1);
+  expect(screen.getByRole("main")).toContainElement(review);
+  expect(screen.getAllByRole("banner")).toHaveLength(1);
   expect(api.startNuanceReview).toHaveBeenCalledOnce();
   expect(screen.queryByText("가격과 품질을 구분해요")).not.toBeInTheDocument();
   expect(screen.queryByText("cheap / inexpensive")).not.toBeInTheDocument();
@@ -66,8 +74,12 @@ it("draws five questions across all lessons and shows no word-set explanation he
   fireEvent.click(screen.getByRole("button", { name: "cheap" }));
   fireEvent.click(screen.getByRole("button", { name: "답안 확인" }));
   await screen.findByText("의도에 맞는 표현이에요");
-  fireEvent.click(screen.getByRole("button", { name: "다음 문맥" }));
+  const progress = within(review).getByRole("group", { name: "복습 진행" });
+  expect(within(progress).getByRole("button", { name: "맞혔지만 다시 복습" })).toBeEnabled();
+  fireEvent.click(within(progress).getByRole("button", { name: "다음 문맥" }));
   expect(await screen.findByRole("region", { name: /다른 묶음 상황 0/ })).toBeInTheDocument();
+  expect(screen.getAllByRole("main")).toHaveLength(1);
+  expect(screen.getAllByRole("banner")).toHaveLength(1);
 });
 
 it("restores the persisted batch from the URL without drawing another batch", async () => {
@@ -76,7 +88,7 @@ it("restores the persisted batch from the URL without drawing another batch", as
   window.history.replaceState(null, "", `/pr/14/nuance-review?${params}`);
   render(<WordNuanceReview />);
   expect(await screen.findByText("이번 복습 5문제 · 남은 문제 5개")).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "← 학습 목록" })).toHaveAttribute("href", "/pr/14/nuance");
+  expect(screen.getByRole("link", { name: "학습 목록" })).toHaveAttribute("href", "/pr/14/nuance");
   expect(api.fetchNuanceLessons).toHaveBeenCalledOnce();
   expect(api.startNuanceReview).not.toHaveBeenCalled();
 });

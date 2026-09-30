@@ -618,7 +618,7 @@ describe("WordReview page", () => {
     expect(screen.getByRole("textbox", { name: "정답 입력" })).toBeInTheDocument();
     page.scrollTop = 300;
 
-    await user.click(screen.getByRole("button", { name: "← 목록으로" }));
+    await user.click(screen.getByRole("button", { name: "목록으로" }));
 
     expect(page.scrollTop).toBe(0);
     expect(screen.getByRole("button", { name: "복습 시작" })).toBeEnabled();
@@ -1052,7 +1052,7 @@ describe("WordReview page", () => {
     expect(screen.getByText("정답이에요!")).toBeInTheDocument();
 
     if (action === "restart") {
-      await user.click(screen.getByRole("button", { name: "← 목록으로" }));
+      await user.click(screen.getByRole("button", { name: "목록으로" }));
       await user.click(screen.getByRole("button", { name: "복습 시작" }));
     } else {
       await user.click(screen.getByRole("button", { name: "다음 단어" }));
@@ -1454,8 +1454,20 @@ describe("WordReview page", () => {
 
   it("returns to the list from the quiz view", async () => {
     const user = await startQuiz();
-    await user.click(await screen.findByRole("button", { name: "← 목록으로" }));
+    const quiz = screen.getByRole("region", { name: "문장 속 단어 떠올리기" });
+    expect(within(quiz).getByRole("textbox", { name: "정답 입력" })).toBeInTheDocument();
+    expect(screen.getAllByRole("main")).toHaveLength(1);
+    expect(screen.getByRole("main")).toContainElement(quiz);
+    expect(screen.getAllByRole("banner")).toHaveLength(1);
+    await user.click(await screen.findByRole("button", { name: "목록으로" }));
 
-    expect(await screen.findByRole("button", { name: "복습 시작" })).toBeInTheDocument();
+    const actions = await screen.findByRole("group", { name: "주요 작업" });
+    expect(within(actions).getByRole("button", { name: "복습 시작" })).toBeEnabled();
+    const history = screen.getByRole("region", { name: "복습중인 단어" });
+    expect(within(history).getByText(dueWord.word)).toBeInTheDocument();
+    expect(actions.compareDocumentPosition(history) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "문장 속 단어 떠올리기" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("main")).toHaveLength(1);
+    expect(screen.getAllByRole("banner")).toHaveLength(1);
   });
 });

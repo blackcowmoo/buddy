@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -46,9 +46,18 @@ describe("InstantSessions page", () => {
     vi.stubGlobal("location", { assign });
     const user = userEvent.setup();
     render(<InstantSessions />);
-    await screen.findByText("previous conversation");
+    const history = screen.getByRole("region", { name: "나의 인스턴트 대화 기록" });
+    expect(await within(history).findByRole("link", { name: /previous conversation/ })).toHaveAttribute("href", ".#chat/i1");
+    const actions = screen.getByRole("group", { name: "주요 작업" });
+    const start = within(actions).getByRole("button", { name: "인스턴트 대화 시작" });
+    expect(start).toHaveAccessibleDescription("한 문장으로 가볍게 연습해요");
+    expect(actions.compareDocumentPosition(history) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getAllByRole("main")).toHaveLength(1);
+    expect(screen.getByRole("main")).toContainElement(actions);
+    expect(screen.getByRole("main")).toContainElement(history);
+    expect(screen.getAllByRole("banner")).toHaveLength(1);
 
-    await user.click(screen.getByRole("button", { name: "인스턴트 대화 시작" }));
+    await user.click(start);
 
     expect(assign).toHaveBeenCalledWith(".#instant/new");
   });

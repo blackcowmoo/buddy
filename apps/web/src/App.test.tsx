@@ -188,7 +188,7 @@ afterEach(() => {
 });
 
 function openMenu(user: ReturnType<typeof userEvent.setup>) {
-  return user.click(screen.getByRole("button", { name: "Menu" }));
+  return user.click(screen.getByRole("button", { name: "메뉴" }));
 }
 
 // Grammar feedback lives behind a per-message popover — open it (once
@@ -204,7 +204,7 @@ async function openGrammarPopover(user: ReturnType<typeof userEvent.setup>) {
 // a learner would: start a new chat.
 async function enterNewChat(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("button", { name: "+ 새 대화" }));
-  await screen.findByRole("button", { name: "Menu" });
+  await screen.findByRole("button", { name: "메뉴" });
 }
 
 // Composes enterNewChat + openMenu for the many chat-menu-item tests below
@@ -2426,7 +2426,7 @@ describe("feedback summary", () => {
 
   it("does not appear on the room list", async () => {
     render(<App />);
-    await screen.findByRole("button", { name: "Menu" });
+    await screen.findByRole("button", { name: "메뉴" });
     expect(screen.queryByRole("button", { name: "피드백 모아보기" })).not.toBeInTheDocument();
   });
 
@@ -2559,7 +2559,7 @@ describe("compaction info", () => {
 
   it("does not appear on the room list, nor before a room's id is known", async () => {
     render(<App />);
-    await screen.findByRole("button", { name: "Menu" });
+    await screen.findByRole("button", { name: "메뉴" });
     expect(
       screen.queryByRole("button", { name: "대화 압축 상태 보기" }),
     ).not.toBeInTheDocument();
@@ -3348,7 +3348,7 @@ describe("per-message translations", () => {
     render(<App />);
     await user.click(await screen.findByText("hello there"));
 
-    await screen.findByRole("button", { name: "Menu" });
+    await screen.findByRole("button", { name: "메뉴" });
     expect(screen.queryByRole("status", { name: "번역 중" })).not.toBeInTheDocument();
   });
 });

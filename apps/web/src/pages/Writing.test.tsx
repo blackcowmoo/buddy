@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -68,21 +68,33 @@ describe("Writing page list/detail flow", () => {
     const user = userEvent.setup();
     render(<Writing />);
 
-    const promptButton = await screen.findByRole("button", { name: /어제 영화를 봤어요/ });
+    const history = screen.getByRole("region", { name: "나의 작문 기록" });
+    const promptButton = await within(history).findByRole("button", { name: /어제 영화를 봤어요/ });
     expect(screen.getByRole("heading", { name: "한 문장부터 써 볼까요?" })).toBeInTheDocument();
-    const createButton = screen.getByRole("button", { name: /새 문제 만들기/ });
-    expect(createButton.compareDocumentPosition(promptButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const actions = screen.getByRole("group", { name: "주요 작업" });
+    expect(within(actions).getByRole("button", { name: /새 문제 만들기/ })).toBeEnabled();
+    expect(actions.compareDocumentPosition(history) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(promptButton).toHaveClass("session-item");
     expect(promptButton.closest(".session-row")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "작문 문제 삭제" })).toHaveClass("session-delete");
     await user.click(promptButton);
 
-    const heading = await screen.findByRole("heading", { name: "오늘의 한 문장" });
-    expect(heading.closest("section")).toHaveClass("quiz-panel", "writing-detail-card");
-    expect(screen.getByLabelText("영어 답안")).toBeInTheDocument();
+    const detail = await screen.findByRole("region", { name: "오늘의 한 문장" });
+    expect(within(detail).getByLabelText("영어 답안")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "한 문장부터 써 볼까요?" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "← 목록으로" })).toBeInTheDocument();
+    const back = screen.getByRole("button", { name: "목록으로" });
+    expect(back.compareDocumentPosition(detail) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryByRole("button", { name: /새 문제 만들기/ })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("main")).toHaveLength(1);
+    expect(screen.getByRole("main")).toContainElement(detail);
+    expect(screen.getAllByRole("banner")).toHaveLength(1);
+
+    await user.click(back);
+    const restoredHistory = await screen.findByRole("region", { name: "나의 작문 기록" });
+    expect(within(restoredHistory).getByRole("button", { name: /어제 영화를 봤어요/ })).toBeEnabled();
+    expect(screen.queryByRole("region", { name: "오늘의 한 문장" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("main")).toHaveLength(1);
+    expect(screen.getAllByRole("banner")).toHaveLength(1);
   });
 
   it("opens a newly created problem directly in the detail view", async () => {

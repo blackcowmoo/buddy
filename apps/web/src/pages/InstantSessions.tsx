@@ -5,6 +5,7 @@ import { deleteSession, fetchInstantSessions, type SessionSummary } from "../lib
 import { formatMessageTime } from "../lib/time";
 import { LoadingHint } from "../components/LoadingHint";
 import { LearningPage } from "../components/LearningPage";
+import { PageSection, PageToolbar } from "../components/PageLayout";
 import { DatedList } from "../components/DatedList";
 import { HistoryItem } from "../components/HistoryItem";
 import { newestFirst } from "../lib/listView";
@@ -41,7 +42,7 @@ export function InstantSessions() {
   return (
     <LearningPage title="인스턴트 대화">
       <LearningIntro eyebrow="짧게 연습하고, 차근차근 돌아보기" title="한 문장도 좋은 연습이에요" description="한 번씩 나눈 짧은 대화를 모았어요. 대화를 열어 답변과 피드백을 다시 살펴보세요." />
-      <div>
+      <PageToolbar>
         <button
           type="button"
           className="new-chat"
@@ -51,34 +52,36 @@ export function InstantSessions() {
           인스턴트 대화 시작
         </button>
         <p id="instant-start-description" className="action-description">한 문장으로 가볍게 연습해요</p>
-      </div>
-      {!loaded && <LoadingHint />}
-      {loaded && (
-        <p className="hint instant-sessions-hint">
-          지금까지 총 {sessions.length}번 했어요. 잘못 응답한 대화는 삭제하면 학습 데이터에서 제외돼요.
-        </p>
-      )}
-      {loaded && sessions.length === 0 && <EmptyState title="아직 인스턴트 대화가 없어요." description="위의 ‘인스턴트 대화 시작’을 눌러 문장 하나를 보내 보세요. 답변과 피드백을 받은 뒤 대화가 마무리돼요." />}
-      <DatedList items={sessions}>{(s) => (
-        <HistoryItem
-          title={s.title}
-          meta={formatMessageTime(s.createdAt)}
-          badges={<>
-            {s.quizCompleted && (
-              <span className="quiz-completed-badge" title="퀴즈까지 모두 완료했어요">✅</span>
-            )}
-            {!!s.unreadCorrections && (
-              <span className="correction-unread-badge" title={`읽지 않은 정밀 피드백 ${s.unreadCorrections}개`}>
-                새 피드백 {s.unreadCorrections}
-              </span>
-            )}
-          </>}
-          // Relative to the app root, including deployments under ROOT_PATH.
-          href={`.#chat/${encodeURIComponent(s.id)}`}
-          onDelete={() => void handleDelete(s.id)}
-          deleteLabel="인스턴트 대화 삭제"
-        />
-      )}</DatedList>
+      </PageToolbar>
+      <PageSection title="나의 인스턴트 대화 기록">
+        {!loaded && <LoadingHint />}
+        {loaded && (
+          <p className="hint instant-sessions-hint">
+            지금까지 총 {sessions.length}번 했어요. 잘못 응답한 대화는 삭제하면 학습 데이터에서 제외돼요.
+          </p>
+        )}
+        {loaded && sessions.length === 0 && <EmptyState title="아직 인스턴트 대화가 없어요." description="위의 ‘인스턴트 대화 시작’을 눌러 문장 하나를 보내 보세요. 답변과 피드백을 받은 뒤 대화가 마무리돼요." />}
+        <DatedList items={sessions}>{(s) => (
+          <HistoryItem
+            title={s.title}
+            meta={formatMessageTime(s.createdAt)}
+            badges={<>
+              {s.quizCompleted && (
+                <span className="quiz-completed-badge" title="퀴즈까지 모두 완료했어요">✅</span>
+              )}
+              {!!s.unreadCorrections && (
+                <span className="correction-unread-badge" title={`읽지 않은 정밀 피드백 ${s.unreadCorrections}개`}>
+                  새 피드백 {s.unreadCorrections}
+                </span>
+              )}
+            </>}
+            // Relative to the app root, including deployments under ROOT_PATH.
+            href={`.#chat/${encodeURIComponent(s.id)}`}
+            onDelete={() => void handleDelete(s.id)}
+            deleteLabel="인스턴트 대화 삭제"
+          />
+        )}</DatedList>
+      </PageSection>
     </LearningPage>
   );
 }

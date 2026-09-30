@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/wordReview", async () => {
@@ -79,8 +79,16 @@ describe("WordMatch page", () => {
   it("deals every word as a face-down word card and a face-down meaning card", async () => {
     vi.mocked(fetchWords).mockResolvedValue({ words: [w1, w2, w3], dueCount: 0 });
     render(<WordMatch />);
-    const cards = await screen.findAllByRole("button", { name: "카드 뒤집기" });
+    const round = screen.getByRole("region", { name: "이번 게임" });
+    const cards = await within(round).findAllByRole("button", { name: "카드 뒤집기" });
     expect(cards).toHaveLength(6);
+    const controls = within(round).getByRole("group", { name: "게임 조작" });
+    expect(within(controls).getByRole("button", { name: "다시 섞기" })).toBeEnabled();
+    expect(controls.compareDocumentPosition(cards[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(round).getByRole("status")).toHaveTextContent("시도 0번");
+    expect(screen.getAllByRole("main")).toHaveLength(1);
+    expect(screen.getByRole("main")).toContainElement(round);
+    expect(screen.getAllByRole("banner")).toHaveLength(1);
     for (const { word, meaning } of [w1, w2, w3]) {
       for (const label of [word, meaning]) {
         expect(screen.getByText(label)).not.toBeVisible();

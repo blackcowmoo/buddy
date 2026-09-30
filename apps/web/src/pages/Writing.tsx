@@ -3,6 +3,7 @@ import { EmptyState, LearningIntro } from "../components/LearningIntro";
 import type { Correction } from "../lib/protocol";
 import { LoadingHint } from "../components/LoadingHint";
 import { LearningPage } from "../components/LearningPage";
+import { BackButton, PageSection, PageToolbar } from "../components/PageLayout";
 import { DatedList } from "../components/DatedList";
 import { HistoryItem } from "../components/HistoryItem";
 import { WordSearchControl } from "../components/WordSearchControl";
@@ -98,31 +99,32 @@ export function Writing() {
     {!prompt && (
       <>
         <LearningIntro eyebrow="생각을 영어로 옮기는 연습" title="한 문장부터 써 볼까요?" description="한국어 문장을 나만의 영어로 표현해 보세요. 답안을 확인하며 더 자연스러운 표현을 익혀요." steps={["문제 만들기", "영어로 쓰기", "피드백 살펴보기"]} />
-        <button type="button" className="quiz-start-btn" onClick={() => void createPrompt()} disabled={creating}>
-          {creating ? "만드는 중…" : "＋ 새 문제 만들기"}
-        </button>
-        {state === "loading" && <LoadingHint />}
-        {state === "ready" && prompts.length === 0 && <EmptyState title="아직 만든 작문 문제가 없어요." description="‘새 문제 만들기’로 시작해 보세요. 모르는 단어는 답안 옆에서 찾아볼 수 있어요." />}
-        <DatedList items={prompts}>{(item) => (
-          <HistoryItem
-            title={item.korean || "문제를 만드는 중…"}
-            badges={item.status !== "done" && <span className="study-summary-pending-badge"><span className="spinning">⏳</span> 생성 중</span>}
-            meta={formatMessageTime(item.createdAt)}
-            onOpen={() => void openPrompt(item)}
-            onDelete={() => void deletePrompt(item.id)}
-            deleteLabel="작문 문제 삭제"
-          />
-        )}</DatedList>
+        <PageToolbar>
+          <button type="button" className="quiz-start-btn" onClick={() => void createPrompt()} disabled={creating}>
+            {creating ? "만드는 중…" : "＋ 새 문제 만들기"}
+          </button>
+        </PageToolbar>
+        <PageSection title="나의 작문 기록" description={state === "ready" ? `총 ${prompts.length}개 · 최근 기록부터` : undefined}>
+          {state === "loading" && <LoadingHint />}
+          {state === "ready" && prompts.length === 0 && <EmptyState title="아직 만든 작문 문제가 없어요." description="‘새 문제 만들기’로 시작해 보세요. 모르는 단어는 답안 옆에서 찾아볼 수 있어요." />}
+          <DatedList items={prompts}>{(item) => (
+            <HistoryItem
+              title={item.korean || "문제를 만드는 중…"}
+              badges={item.status !== "done" && <span className="study-summary-pending-badge"><span className="spinning">⏳</span> 생성 중</span>}
+              meta={formatMessageTime(item.createdAt)}
+              onOpen={() => void openPrompt(item)}
+              onDelete={() => void deletePrompt(item.id)}
+              deleteLabel="작문 문제 삭제"
+            />
+          )}</DatedList>
+        </PageSection>
       </>
     )}
 
     {prompt && (
-      <section className="quiz-panel writing-detail-card" aria-labelledby="writing-detail-title">
-        <button type="button" className="ghost quiz-back-btn" onClick={backToList}>← 목록으로</button>
-        <div className="writing-detail-header">
-          <p className="eyebrow">KOREAN → ENGLISH</p>
-          <h2 id="writing-detail-title">오늘의 한 문장</h2>
-        </div>
+      <>
+      <BackButton onClick={backToList} />
+      <PageSection title="오늘의 한 문장" description="한국어 문장을 영어로 표현해 보세요." className="page-card writing-detail-card">
         {loadingPrompt ? <p className="hint">문제를 불러오는 중이에요…</p> : error ? <>
           <p className="hint">문제를 불러오지 못했어요.</p>
           <button type="button" onClick={() => void openPrompt(prompt)}>다시 시도</button>
@@ -151,7 +153,8 @@ export function Writing() {
             {result.issues.map((issue, i) => <div className="writing-issue" key={i}><strong>{issue.suggestion}</strong><p>{issue.explanationTranslation || issue.explanation}</p></div>)}
           </section>}
         </>}
-      </section>
+      </PageSection>
+      </>
     )}
   </LearningPage>;
 }

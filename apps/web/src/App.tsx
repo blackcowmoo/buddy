@@ -40,6 +40,7 @@ import {
   type TurnMeta,
 } from "./lib/turns";
 import { TopBar } from "./components/TopBar";
+import { AppShell } from "./components/PageLayout";
 import { CompactionInfo } from "./components/CompactionInfo";
 import { EndConversationControl } from "./components/EndConversationControl";
 import { FeedbackSummary } from "./components/FeedbackSummary";
@@ -1202,7 +1203,7 @@ export function App() {
 
   if (view === "list") {
     return (
-      <div className="app">
+      <AppShell header={
         <TopBar
           brand={
             <>
@@ -1212,7 +1213,7 @@ export function App() {
           }
           {...topBarProps}
         />
-
+      }>
         <SessionList
           sessions={sessions}
           loading={sessionsLoading}
@@ -1225,12 +1226,12 @@ export function App() {
           onRetry={() => void refreshSessions()}
           onDismissError={() => setListActionError(null)}
         />
-      </div>
+      </AppShell>
     );
   }
 
   return (
-    <div className="app">
+    <AppShell header={
       <TopBar
         brand={
           <>
@@ -1273,7 +1274,23 @@ export function App() {
           onSetPlaybackRate: setPlaybackRate,
         }}
       />
-
+    } footer={
+      <MessageComposer
+        ended={ended}
+        quickMode={quickMode}
+        quickSent={quickSent}
+        mic={mic}
+        transcribing={transcribing}
+        text={text}
+        voiceDraft={voiceDraft}
+        textareaRef={textareaRef}
+        onToggleMic={() => void toggleMic()}
+        onSubmit={onComposerSubmit}
+        onKeyDown={onComposerKeyDown}
+        onTextChange={handleComposerTextChange}
+        onDiscardVoiceDraft={discardVoiceDraft}
+      />
+    }>
       <audio
         ref={audioRef}
         style={{ display: "none" }}
@@ -1325,22 +1342,6 @@ export function App() {
           </button>
         </div>
       )}
-
-      <MessageComposer
-        ended={ended}
-        quickMode={quickMode}
-        quickSent={quickSent}
-        mic={mic}
-        transcribing={transcribing}
-        text={text}
-        voiceDraft={voiceDraft}
-        textareaRef={textareaRef}
-        onToggleMic={() => void toggleMic()}
-        onSubmit={onComposerSubmit}
-        onKeyDown={onComposerKeyDown}
-        onTextChange={handleComposerTextChange}
-        onDiscardVoiceDraft={discardVoiceDraft}
-      />
-    </div>
+    </AppShell>
   );
 }

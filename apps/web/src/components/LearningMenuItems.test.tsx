@@ -32,4 +32,23 @@ describe("LearningMenuItems", () => {
     expect(screen.getByRole("menuitem", { name: "단어 복습" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "단어 뉘앙스" })).toBeInTheDocument();
   });
+
+  it.each([
+    ["/words", "단어 복습"],
+    ["/pr/14/article", "오늘의 아티클"],
+    ["/nuance-review", "단어 뉘앙스"],
+    ["/pr/14/nuance-review", "단어 뉘앙스"],
+  ])("identifies the current learning destination at %s", (path, label) => {
+    window.history.replaceState(null, "", path);
+    render(<div role="menu"><LearningMenuItems /></div>);
+
+    expect(screen.getByRole("menuitem", { name: label })).toHaveAttribute("aria-current", "page");
+    expect(screen.getAllByRole("menuitem", { current: "page" })).toHaveLength(1);
+  });
+
+  it("leaves all learning destinations unselected on the home page", () => {
+    window.history.replaceState(null, "", "/pr/14/");
+    render(<div role="menu"><LearningMenuItems /></div>);
+    expect(screen.queryByRole("menuitem", { current: "page" })).not.toBeInTheDocument();
+  });
 });
