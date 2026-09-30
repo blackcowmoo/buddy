@@ -40,6 +40,8 @@
   /* Extra horizontal breathing room keeps text clear of edge damage on
      phones whose left or right display area is partially unusable. */
   --layout-inline-padding: 21px;
+  --layout-section-gap: 24px;
+  --layout-content-gap: 12px;
   /* Safe-area insets: Dynamic Island (top) / home-indicator gesture bar
      (bottom) on notched iPhones. 0px fallback keeps this harmless elsewhere. */
   --sat: env(safe-area-inset-top, 0px);
@@ -89,8 +91,8 @@
 
 html, body {
   height: 100%;
-  /* Mobile-only app shell: the page itself never scrolls or rubber-bands —
-     only .convo does. Prevents an iOS Safari bounce revealing blank canvas. */
+  /* AppShell owns the viewport; PageContent or the transcript scrolls.
+     Prevents an iOS Safari bounce revealing blank canvas. */
   overflow: hidden;
   overscroll-behavior: none;
   -webkit-text-size-adjust: 100%;
@@ -121,7 +123,7 @@ body {
      .app's actual width so overflow is each row's problem to handle, not
      something that stretches the whole layout past the viewport. */
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   position: relative;
   isolation: isolate;
   background: var(--app-bg);
@@ -130,6 +132,16 @@ body {
   overflow-wrap: anywhere;
 }
 .app > * { min-width: 0; min-height: 0; }
+.skip-content {
+  position: absolute;
+  top: calc(8px + var(--sat));
+  left: var(--layout-inline-padding);
+  z-index: 50;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(calc(-100% - var(--sat) - 12px));
+}
+.skip-content:focus { transform: none; opacity: 1; pointer-events: auto; }
 
 @media (min-width: 481px) {
   .app {
@@ -471,11 +483,6 @@ a.menu-item {
 .quiz-preparing, .quiz-acknowledged { font-size: 13px; color: var(--muted); padding: 2px 4px; }
 .quiz-acknowledged { color: var(--ok); }
 .quiz-panel { display: flex; flex-direction: column; gap: 8px; }
-/* Article reading view header: title, then a small muted publish date (see
-   newsarticle.Article.PublishedAt) right above the summary — same small/
-   muted convention as .session-item .time and .recording-sub. */
-.article-meta { font-weight: 600; line-height: 1.4; }
-.article-date { font-size: 12px; color: var(--muted); margin-top: -4px; }
 .article-summary {
   overflow: visible;
   font-size: clamp(17px, 4.7vw, 20px);
@@ -580,15 +587,16 @@ a.menu-item {
   max-height: min(70vh, 320px);
 }
 .word-lookup-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.article-reading-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
 .article-result-search-history { display: flex; justify-content: flex-end; }
-.article-searched-words-control { position: relative; z-index: 12; margin-top: 2px; }
+.article-searched-words-control { position: relative; z-index: 12; margin-top: 2px; width: 100%; display: flex; justify-content: flex-end; }
 .article-searched-words-btn { min-height: 40px; padding: 8px 14px; border-radius: 999px; box-shadow: 0 8px 22px var(--accent-shadow); }
 .article-searched-words-panel {
   position: absolute;
   right: 0;
   bottom: calc(100% + 8px);
-  width: min(340px, calc(100vw - 32px));
+  /* Anchor to the full action row so wrapping the trigger cannot push the
+     popup outside a narrow card or the viewport. */
+  width: min(340px, 100%);
   max-height: min(55vh, 420px);
   overflow-y: auto;
   display: flex;
@@ -785,14 +793,56 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
 .pill.ok { color: var(--ok); }
 .pill.err { color: var(--err); }
 
-.session-list {
+.page-content {
   overflow-y: auto;
   overscroll-behavior-y: contain;
   -webkit-overflow-scrolling: touch;
   padding: 20px var(--layout-inline-padding);
+  padding-bottom: calc(var(--layout-section-gap) + var(--sab));
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--layout-section-gap);
+  background: radial-gradient(circle at 50% -12%, var(--accent-soft), transparent 32%);
+}
+.page-content:focus, .convo:focus { outline: none; }
+.page-content > *, .page-section-content > * { flex-shrink: 0; min-width: 0; }
+.page-section { min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+.page-section-content { display: flex; flex-direction: column; gap: var(--layout-content-gap); min-width: 0; }
+.section-heading { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 8px 12px; }
+.section-heading-copy { flex: 1 1 160px; min-width: 0; }
+.section-heading-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+.page-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.page-toolbar > * { min-width: 0; max-width: 100%; }
+.page-toolbar > :is(button, a) { flex: 1 1 140px; min-height: 44px; text-align: center; }
+.page-toolbar > .quiz-start-btn { margin-top: 0; }
+.page-toolbar > p { flex-basis: 100%; margin: 0; }
+.page-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: flex-start;
+  gap: 8px;
+  min-height: 44px;
+  max-width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  color: var(--text);
+  box-shadow: var(--shadow-xs);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
 }
 .new-chat {
   width: 100%;
@@ -987,15 +1037,6 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
   min-height: 32px;
   font-size: 13px;
 }
-/* LearningPage owns the scroll layout for every learning screen. Lists and
-   detail cards must retain their height when their content exceeds a page. */
-.learning-page {
-  justify-content: flex-start;
-}
-:is(.session-list, .learning-page) > * {
-  flex-shrink: 0;
-  min-width: 0;
-}
 .quiz-panel, .quiz-panel > *, .quiz-question, .nuance-comparison > * { min-width: 0; }
 .learning-intro {
   padding: 6px 0 18px;
@@ -1046,13 +1087,13 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
   color: var(--accent-strong);
   font-size: 11px;
 }
-.conversation-starts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.conversation-starts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .conversation-starts > div { min-width: 0; }
 .conversation-starts .new-chat { padding-inline: 8px; font-size: 14px; }
 .action-description { margin: 8px 0 0; font-size: 11px; color: var(--muted); text-align: center; }
 .section-heading h2 { margin: 0; font-size: 16px; font-weight: 650; }
 .section-heading p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
-.learning-paths { margin-block: 10px; }
+.learning-paths { min-width: 0; }
 .learning-path-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
 .learning-path {
   position: relative;
@@ -1069,11 +1110,14 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
   transition: border-color 0.18s ease, background-color 0.18s ease;
 }
 .learning-path:hover { border-color: var(--accent-border); background: var(--panel-2); }
+.learning-path-copy { min-width: 0; }
+.menu-item-icon { display: grid; place-items: center; flex: 0 0 24px; color: var(--muted); }
+a.menu-item[aria-current="page"] { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent-strong); }
+a.menu-item[aria-current="page"] .menu-item-icon { color: inherit; }
 .learning-path strong { display: block; font-size: 14px; font-weight: 650; }
 .learning-path-description { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
 .learning-path-icon { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 9px; background: var(--accent-soft); color: var(--accent-strong); font-size: 15px; font-weight: 600; }
 .learning-path-arrow { position: absolute; top: 14px; right: 14px; color: var(--muted); font-size: 13px; }
-.history-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
 .text-link { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; color: var(--accent-strong); font-size: 13px; text-underline-offset: 4px; }
 .empty-state {
   padding: 20px;
@@ -1098,9 +1142,7 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
   position: relative;
   gap: 16px;
 }
-.writing-detail-header { display: flex; flex-direction: column; gap: 2px; }
-.writing-detail-card h2 { margin: 0; font-size: 20px; letter-spacing: -0.025em; }
-.eyebrow { margin: 0; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .12em; }
+.page-card .section-heading h2 { font-size: 20px; letter-spacing: -0.025em; }
 .writing-prompt {
   margin: 0;
   padding: 16px;
@@ -1143,7 +1185,8 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
 .writing-issue { margin: 0; padding: 12px 14px; border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: var(--radius-sm); background: var(--panel-2); }
 .writing-issue p { margin: 5px 0 0; color: var(--muted); line-height: 1.55; }
 .hint { color: var(--muted); line-height: 1.65; font-size: 14px; }
-.session-list > .hint,
+.page-content > .hint,
+.page-section-content > .hint,
 .convo > .hint:not(.transcribing) {
   margin: 4px 0;
   padding: 14px 16px;
@@ -1167,7 +1210,6 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
 /* Word review uses the same history rows and quiz controls as the other
    learning pages. Keep all lists in the page's single scroll container. */
 .word-review-due-hint { margin: 0; }
-.word-list-section { display: flex; flex-direction: column; gap: 12px; }
 .word-list { display: flex; flex-direction: column; gap: 10px; list-style: none; margin: 0; padding: 0; }
 .word-list-item {
   flex-direction: column;
@@ -1220,13 +1262,9 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
 .article-sub-question { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; border-top: 1px solid var(--border-2); }
 .article-sub-question:first-of-type { border-top: none; padding-top: 0; }
 
-.nuance-lesson-heading h2 { margin: 5px 0 10px; font-size: 23px; letter-spacing: -0.5px; }
-.nuance-lesson-heading p { margin: 8px 0; line-height: 1.6; }
-.nuance-eyebrow { color: var(--accent-strong); font-size: 12px; font-weight: 650; }
-.nuance-progress, .nuance-translation { color: var(--muted); font-size: 12px; }
+.nuance-eyebrow { display: block; margin-bottom: 6px; color: var(--accent-strong); font-size: 12px; font-weight: 650; }
+.nuance-translation { color: var(--muted); font-size: 12px; }
 .nuance-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.nuance-list-back { align-self: flex-start; }
-.nuance-tabs, .nuance-review { display: flex; flex-wrap: wrap; gap: 10px; }
 .nuance-review-link, .ghost-link {
   min-height: 44px;
   padding: 10px 14px;
@@ -1256,8 +1294,6 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
 .nuance-feedback { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border-2); }
 .nuance-feedback strong { color: var(--accent-strong); font-size: 14px; }
 .nuance-feedback p:last-child { margin-bottom: 0; }
-.nuance-review { align-items: center; }
-.nuance-review p { width: 100%; margin: 0; font-size: 13px; color: var(--muted); }
 @media (max-width: 520px) {
   .nuance-comparison { grid-template-columns: minmax(0, 1fr); }
 }
@@ -1651,8 +1687,11 @@ button:active:not(:disabled) { filter: brightness(0.96); transform: translateY(1
 .theme-option.active { background: var(--accent-soft); color: var(--accent-strong); border-color: var(--accent-border); }
 
 /* History details, practice cards, and recordings share one surface. */
+.page-card,
 .learning-page > .quiz-panel,
 .learning-page > .word-match-won,
+.page-section-content > .quiz-panel,
+.page-section-content > .word-match-won,
 .nuance-word,
 .nuance-question,
 .recording-row {

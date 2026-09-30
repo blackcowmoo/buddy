@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LearningPage } from "../components/LearningPage";
-import { LearningIntro } from "../components/LearningIntro";
+import { BackButton, PageSection, PageToolbar } from "../components/PageLayout";
+import { EmptyState, LearningIntro } from "../components/LearningIntro";
 import { DatedList } from "../components/DatedList";
 import { HistoryItem } from "../components/HistoryItem";
 import { LoadingHint } from "../components/LoadingHint";
@@ -135,34 +136,36 @@ export function WordNuance() {
   const next = selected ? nextReview(selected) : null;
 
   return <LearningPage title="단어 뉘앙스" viewKey={selected?.id ?? "list"}>
-    {error && <p role="alert">{error}</p>}
-    {loading && <LoadingHint />}
     {!selected ? <>
       <LearningIntro eyebrow="같은 뜻, 미묘하게 다른 느낌" title="상황에 맞는 단어를 익혀요" description="서로 바꿔 써도 기본 뜻이 통하는 단어들을 비교해요. 상황과 의도에 따라 달라지는 말투와 느낌을 익혀 보세요." />
-      <p className="nuance-progress">{lessons.length}개 묶음 · 복습할 문맥 {due}개</p>
-      <div className="nuance-review">
+      <PageToolbar>
         <button type="button" onClick={create} disabled={busy || loading}>{busy ? "처리 중…" : "＋ 새 문제 만들기"}</button>
         {hasReview && <a className="nuance-review-link" aria-disabled={busy || loading} onClick={(event) => { if (busy || loading) event.preventDefault(); }} href={window.location.pathname.replace(/\/nuance\/?$/, "/nuance-review")}>복습 시작</a>}
-      </div>
-      {!loading && error && <button type="button" className="ghost" onClick={() => void load()}>목록 다시 불러오기</button>}
-      {!loading && !error && lessons.length === 0 && <p className="hint">아직 만든 문제가 없어요. 첫 비교 묶음을 만들어 보세요.</p>}
-      <DatedList items={lessons}>{(lesson) => (
-        <HistoryItem title={lessonTitle(lesson)} description={lesson.content?.distinction}
-          meta={`${lessonStatus(lesson)} · ${formatMessageTime(lesson.createdAt)}`}
-          onOpen={() => void open(lesson.id)} openLabel={`${lessonTitle(lesson)} 열기`}
-          onDelete={() => remove(lesson.id)} deleteLabel={`${lessonTitle(lesson)} 삭제`}
-          disabled={busy || loading} />
-      )}</DatedList>
+      </PageToolbar>
+      <PageSection title="나의 뉘앙스 학습 기록" description={`${lessons.length}개 묶음 · 복습할 문맥 ${due}개`}>
+        {error && <p role="alert">{error}</p>}
+        {loading && <LoadingHint />}
+        {!loading && error && <button type="button" className="ghost" onClick={() => void load()}>목록 다시 불러오기</button>}
+        {!loading && !error && lessons.length === 0 && <EmptyState title="아직 만든 문제가 없어요." description="첫 비교 묶음을 만들어 보세요." />}
+        <DatedList items={lessons}>{(lesson) => (
+          <HistoryItem title={lessonTitle(lesson)} description={lesson.content?.distinction}
+            meta={`${lessonStatus(lesson)} · ${formatMessageTime(lesson.createdAt)}`}
+            onOpen={() => void open(lesson.id)} openLabel={`${lessonTitle(lesson)} 열기`}
+            onDelete={() => remove(lesson.id)} deleteLabel={`${lessonTitle(lesson)} 삭제`}
+            disabled={busy || loading} />
+        )}</DatedList>
+      </PageSection>
     </> : <>
-      <button type="button" className="ghost nuance-list-back" onClick={back} disabled={busy}>← 목록으로</button>
+      <BackButton onClick={back} disabled={busy} />
+      {error && <p role="alert">{error}</p>}
+      {loading && <LoadingHint />}
       {generating(selected) && <section className="quiz-panel" aria-live="polite"><h2>새 비교 묶음을 만들고 있어요</h2><p>상황별 문제와 해설을 준비해요. 다른 화면에 다녀와도 계속 생성됩니다.</p></section>}
       {selected.status === "failed" && <section className="quiz-panel"><p>문제 생성에 실패했어요.</p><button type="button" disabled={busy} onClick={() => void run(async () => { const l = await retryNuanceLesson(selected.id); if (l) remember(l); else setError("다시 시도하지 못했어요."); })}>생성 다시 시도</button></section>}
-      {content && selected.status === "done" && <>
-        <div className="nuance-lesson-heading"><p className="nuance-eyebrow">{content.meaning}</p><h2 lang="en">{lessonTitle(selected)}</h2><p>{content.distinction}</p></div>
-        <div className="nuance-tabs" role="group" aria-label="학습 방식">
+      {content && selected.status === "done" && <PageSection title={lessonTitle(selected)} description={<><span className="nuance-eyebrow">{content.meaning}</span>{" "}<span>{content.distinction}</span></>}>
+        <PageToolbar className="nuance-tabs" label="학습 방식">
           <button type="button" className="ghost" aria-pressed={!practicing} onClick={() => setPracticing(false)}>차이 살펴보기</button>
           <button type="button" className="ghost" aria-pressed={practicing} disabled={busy} onClick={() => selected.state.queue.length ? setPracticing(true) : act("start")}>상황 연습</button>
-        </div>
+        </PageToolbar>
         {!practicing ? <>
           <div className="nuance-comparison">{content.words.map((word) => <article className="nuance-word" key={word.word}><h3 lang="en">{word.word}</h3><span className="nuance-tone">{word.tone}</span><p>{word.description}</p><p className="nuance-sentence" lang="en">{word.example}</p><p className="nuance-translation">{word.translation}</p></article>)}</div>
           <p className="nuance-caveat">{content.caveat}</p>
@@ -172,12 +175,12 @@ export function WordNuance() {
           {/* A saved attempt clears the draft even if the same missed
               question is immediately repeated. Failed saves retain it. */}
           <NuanceQuestionCard key={`${selected.id}-${question.id}-${selected.state.progress[question.id]?.attempts ?? 0}`} lesson={selected} question={question} busy={busy} onAnswer={(word) => act("answer", { questionId: question.id, selected: word })} />
-          {selected.state.feedback && <div className="nuance-review">
+          {selected.state.feedback && <PageToolbar label="복습 진행">
             <button type="button" disabled={busy} onClick={() => act("next")}>{busy ? "저장 중…" : "다음 문맥"}</button>
             {selected.state.feedback.correct && <button type="button" className="ghost" disabled={busy} onClick={() => act("next", { repeat: true })}>맞혔지만 다시 복습</button>}
-          </div>}
+          </PageToolbar>}
         </> : <section className="quiz-panel" aria-live="polite"><h3>이 묶음의 문맥을 모두 풀었어요</h3><p>맞힌 문제는 간격을 두고 다시 나와요.</p>{next !== null && <p className="hint">다음 복습: {formatAbsoluteDateTime(next)}</p>}<button type="button" className="ghost" onClick={back}>학습 목록 보기</button></section>}
-      </>}
+      </PageSection>}
     </>}
   </LearningPage>;
 }

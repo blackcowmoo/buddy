@@ -14,6 +14,7 @@ import {
 import { formatAbsoluteDate, formatMessageTime } from "../lib/time";
 import { QuizChoices } from "../components/QuizChoices";
 import { LearningPage } from "../components/LearningPage";
+import { BackButton, PageSection, PageToolbar } from "../components/PageLayout";
 import { DatedList } from "../components/DatedList";
 import { HistoryItem } from "../components/HistoryItem";
 import { ArticleReadAloud } from "../components/ArticleReadAloud";
@@ -566,52 +567,48 @@ export function ArticleQuiz() {
       {view === null && (
         <>
           <LearningIntro eyebrow="읽으며 넓어지는 영어" title="새로운 이야기를 읽어 봐요" description="아티클 속 단어를 눌러 뜻을 알아보고, 퀴즈로 읽은 내용을 되짚어 보세요." steps={["아티클 고르기", "읽고 단어 찾기", "퀴즈로 확인하기"]} />
-          <button type="button" className="quiz-start-btn" onClick={() => void handleDraw()} disabled={drawState === "drawing"}>
-            {drawState === "drawing" ? "가져오는 중…" : "새 아티클 뽑기"}
-          </button>
-          {drawFeedback}
-          <div className="section-heading history-heading">
-            <h2>나의 아티클 기록</h2>
-            {state === "ready" && <p>총 {instances.length}개 · 최근 기록부터</p>}
-          </div>
-          {state === "loading" && <LoadingHint />}
-          {state === "ready" && instances.length === 0 && (
-            <EmptyState title="아직 읽은 아티클이 없어요." description="‘새 아티클 뽑기’를 눌러 읽을거리를 만나 보세요. 읽던 글은 이 목록에서 다시 열 수 있어요." />
-          )}
-          <DatedList items={visibleInstances}>{(inst) => (
-            <HistoryItem
-              title={`[${inst.source}] ${inst.title}`}
-              badges={inst.status !== "done" && (
-                <span className="study-summary-pending-badge" title="아티클을 만드는 중">
-                  <span className="spinning">⏳</span> 생성 중
-                </span>
-              )}
-              meta={<>
-                {formatMessageTime(inst.createdAt)}
-                {inst.answered && (inst.correct ? " · 정답" : " · 오답")}
-              </>}
-              onOpen={() => void openInstance(inst.id)}
-              onDelete={() => void handleDelete(inst.id)}
-              deleteLabel="아티클 퀴즈 삭제"
-            />
-          )}</DatedList>
-
-          {visibleInstances.length < instances.length && (
-            <button type="button" className="ghost" onClick={loadOlderInstances}>
-              이전 아티클 더 보기
+          <PageToolbar>
+            <button type="button" className="quiz-start-btn" onClick={() => void handleDraw()} disabled={drawState === "drawing"}>
+              {drawState === "drawing" ? "가져오는 중…" : "새 아티클 뽑기"}
             </button>
-          )}
+          </PageToolbar>
+          {drawFeedback}
+          <PageSection title="나의 아티클 기록" description={state === "ready" ? `총 ${instances.length}개 · 최근 기록부터` : undefined}>
+            {state === "loading" && <LoadingHint />}
+            {state === "ready" && instances.length === 0 && (
+              <EmptyState title="아직 읽은 아티클이 없어요." description="‘새 아티클 뽑기’를 눌러 읽을거리를 만나 보세요. 읽던 글은 이 목록에서 다시 열 수 있어요." />
+            )}
+            <DatedList items={visibleInstances}>{(inst) => (
+              <HistoryItem
+                title={`[${inst.source}] ${inst.title}`}
+                badges={inst.status !== "done" && (
+                  <span className="study-summary-pending-badge" title="아티클을 만드는 중">
+                    <span className="spinning">⏳</span> 생성 중
+                  </span>
+                )}
+                meta={<>
+                  {formatMessageTime(inst.createdAt)}
+                  {inst.answered && (inst.correct ? " · 정답" : " · 오답")}
+                </>}
+                onOpen={() => void openInstance(inst.id)}
+                onDelete={() => void handleDelete(inst.id)}
+                deleteLabel="아티클 퀴즈 삭제"
+              />
+            )}</DatedList>
+
+            {visibleInstances.length < instances.length && (
+              <button type="button" className="ghost" onClick={loadOlderInstances}>
+                이전 아티클 더 보기
+              </button>
+            )}
+          </PageSection>
         </>
       )}
 
+      {view !== null && <BackButton onClick={backToList} disabled={submitting || drawState === "drawing"} />}
+
       {view === "reading" && draw && (
-        <div className="quiz-panel article-reading-panel">
-          <div className="article-meta">
-            [{draw.source}] {draw.title}
-          </div>
-          {draw.publishedAt > 0 && (
-            <div className="article-date">{formatAbsoluteDate(new Date(draw.publishedAt * 1000))}</div>
-          )}
+        <PageSection className="page-card" title={`[${draw.source}] ${draw.title}`} description={draw.publishedAt > 0 ? formatAbsoluteDate(new Date(draw.publishedAt * 1000)) : undefined}>
           {draw.status === "done" ? (
             <>
               {/* This container includes the block-level lookup popover for
@@ -619,9 +616,10 @@ export function ArticleQuiz() {
                   panel and browsers may re-parent it unpredictably. */}
               {searchableSummary}
               <ArticleReadAloud key={draw.id} articleId={draw.id} />
-              <button type="button" className="quiz-start-btn" onClick={startQuiz}>
-                문제풀기
-              </button>
+              <PageToolbar>
+                <button type="button" className="quiz-start-btn" onClick={startQuiz}>문제풀기</button>
+                {searchedWordsControl}
+              </PageToolbar>
             </>
           ) : (
             // Still generating (see asyncjob.KindArticleStudy) — this view
@@ -633,17 +631,11 @@ export function ArticleQuiz() {
               계속 진행돼요.
             </p>
           )}
-          <div className="article-reading-actions">
-            <button type="button" className="ghost quiz-back-btn" onClick={backToList}>
-              ← 목록으로
-            </button>
-            {searchedWordsControl}
-          </div>
-        </div>
+        </PageSection>
       )}
 
       {view === "quiz" && draw && (
-        <div className="quiz-panel">
+        <PageSection title="읽은 내용 확인하기" className="page-card">
           <div className="article-language-label">영어 원문</div>
           <p className="article-summary">{draw.summary}</p>
           <div className="quiz-prompt">이 문단의 내용과 일치하는 것을 각각 고르세요.</div>
@@ -659,19 +651,21 @@ export function ArticleQuiz() {
               />
             </div>
           ))}
-          <button
-            type="button"
-            className="quiz-start-btn"
-            onClick={() => void submitAnswers()}
-            disabled={!allAnswered || submitting}
-          >
-            {submitting ? "채점 중…" : "답안 확인"}
-          </button>
-        </div>
+          <PageToolbar>
+            <button
+              type="button"
+              className="quiz-start-btn"
+              onClick={() => void submitAnswers()}
+              disabled={!allAnswered || submitting}
+            >
+              {submitting ? "채점 중…" : "답안 확인"}
+            </button>
+          </PageToolbar>
+        </PageSection>
       )}
 
       {view === "result" && draw && result && (
-        <div className="quiz-panel">
+        <PageSection title="아티클 학습 결과" className="page-card">
           <div className={`quiz-result ${result.correct ? "correct" : "incorrect"}`} role="status">
             {result.correct ? "정답이에요!" : `아쉬워요, ${result.score}/${result.total} 정답이에요.`}
           </div>
@@ -702,19 +696,18 @@ export function ArticleQuiz() {
               <div className="article-explanation">{sub.explanation}</div>
             </div>
           ))}
-          <button
-            type="button"
-            className="quiz-start-btn"
-            onClick={() => void handleDraw()}
-            disabled={drawState === "drawing"}
-          >
-            {drawState === "drawing" ? "가져오는 중…" : "다른 아티클 뽑기"}
-          </button>
+          <PageToolbar>
+            <button
+              type="button"
+              className="quiz-start-btn"
+              onClick={() => void handleDraw()}
+              disabled={drawState === "drawing"}
+            >
+              {drawState === "drawing" ? "가져오는 중…" : "다른 아티클 뽑기"}
+            </button>
+          </PageToolbar>
           {drawFeedback}
-          <button type="button" className="ghost quiz-back-btn" onClick={backToList}>
-            ← 목록으로
-          </button>
-        </div>
+        </PageSection>
       )}
     </LearningPage>
   );

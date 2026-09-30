@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { QuizChoices } from "../components/QuizChoices";
 import { QuizBlankInput } from "../components/QuizBlankInput";
 import { WordMeaningReview } from "../components/WordMeaningReview";
@@ -26,6 +26,7 @@ import { formatAbsoluteDateTime } from "../lib/time";
 import { buildReviewQueue, currentQuestion, reshuffleRecognitionChoices, type QuizItem } from "../lib/wordReviewQuiz";
 import { checkQuizAnswer, normalizeQuizAnswer as normalizeAnswer } from "../lib/quizCheck";
 import { LearningPage } from "../components/LearningPage";
+import { BackButton, PageSection, PageToolbar } from "../components/PageLayout";
 import { usePollScaffold } from "../hooks/usePollScaffold";
 import { LoadingHint } from "../components/LoadingHint";
 import type { LoadState } from "../lib/loadState";
@@ -462,26 +463,28 @@ export function WordReview() {
 
       {state === "ready" && quizQueue === null && (
         <>
-          <p className="hint word-review-due-hint" role="status">
-            {availableDueCount > 0
-              ? `복습할 단어 ${availableDueCount}개가 있어요.`
-              : dueQuestionBackfillCount > 0
-                ? `복습 문제 ${dueQuestionBackfillCount}개를 새 버전으로 준비 중이에요.`
-                : "지금 복습할 단어가 없어요."}
-          </p>
-          {availableDueCount > 0 ? (
-            <button type="button" className="quiz-start-btn" onClick={startQuiz}>
-              복습 시작
-            </button>
-          ) : dueQuestionBackfillCount > 0 ? (
-            <button type="button" className="quiz-start-btn" disabled>
-              복습 문제 준비 중…
-            </button>
-          ) : (
-            <button type="button" className="quiz-start-btn" onClick={() => void handleAutoAdd()} disabled={autoAdding}>
-              {autoAdding ? "새 단어 찾는 중…" : "새 단어 추가로 학습하기"}
-            </button>
-          )}
+          <PageToolbar>
+            <p className="hint word-review-due-hint" role="status">
+              {availableDueCount > 0
+                ? `복습할 단어 ${availableDueCount}개가 있어요.`
+                : dueQuestionBackfillCount > 0
+                  ? `복습 문제 ${dueQuestionBackfillCount}개를 새 버전으로 준비 중이에요.`
+                  : "지금 복습할 단어가 없어요."}
+            </p>
+            {availableDueCount > 0 ? (
+              <button type="button" className="quiz-start-btn" onClick={startQuiz}>
+                복습 시작
+              </button>
+            ) : dueQuestionBackfillCount > 0 ? (
+              <button type="button" className="quiz-start-btn" disabled>
+                복습 문제 준비 중…
+              </button>
+            ) : (
+              <button type="button" className="quiz-start-btn" onClick={() => void handleAutoAdd()} disabled={autoAdding}>
+                {autoAdding ? "새 단어 찾는 중…" : "새 단어 추가로 학습하기"}
+              </button>
+            )}
+          </PageToolbar>
           {autoAdding && (
             <p className="hint">
               <span className="spinning">⏳</span> 새 단어를 찾는 중이에요. 이 화면을 나갔다 와도 계속 진행돼요.
@@ -538,13 +541,15 @@ export function WordReview() {
       )}
 
       {state === "ready" && quizQueue !== null && (
-        <section className="quiz-panel" aria-label="단어 복습 문제">
-          <button type="button" className="ghost quiz-back-btn" onClick={backToList}>
-            ← 목록으로
-          </button>
+        <>
+        <BackButton onClick={backToList} />
+        <PageSection
+          className="page-card"
+          title={current === null || currentItem === null ? "복습 결과" : currentItem.mode === "recall" ? "문장 속 단어 떠올리기" : "단어의 뜻 고르기"}
+          actions={current !== null && currentItem !== null && <span className="quiz-progress" aria-label="문제 진행">{index + 1} / {quizQueue.length}</span>}
+        >
           {current === null || currentItem === null ? (
             <div className="quiz-question">
-              <div className="section-heading"><h2>복습 결과</h2></div>
               <div className="quiz-score" role="status">
                 {quizQueue.length === 0
                   ? "복습할 단어가 없어요."
@@ -556,10 +561,6 @@ export function WordReview() {
             </div>
           ) : (
             <div className="quiz-question">
-              <div className="section-heading history-heading">
-                <h2>{currentItem.mode === "recall" ? "문장 속 단어 떠올리기" : "단어의 뜻 고르기"}</h2>
-                <span className="quiz-progress" aria-label="문제 진행">{index + 1} / {quizQueue.length}</span>
-              </div>
               <div className="quiz-progress" role="note">
                 마지막 복습: {formatReviewAge(current.lastReviewedAt)}
               </div>
@@ -649,7 +650,8 @@ export function WordReview() {
               )}
             </div>
           )}
-        </section>
+        </PageSection>
+        </>
       )}
     </LearningPage>
   );
@@ -665,14 +667,9 @@ function WordListSection({ title, words, count = words.length, rowClassName, ren
   onDelete: (id: string) => void;
   onLoadMore?: () => void;
 }) {
-  const titleId = useId();
   if (words.length === 0) return null;
   return (
-    <section className="word-list-section" aria-labelledby={titleId}>
-      <div className="section-heading history-heading">
-        <h2 id={titleId}>{title}</h2>
-        <p>{count}개</p>
-      </div>
+    <PageSection title={title} description={`${count}개`}>
       <ul className="word-list">
         {words.map((w) => (
           <li key={w.id} className="session-row">
@@ -694,6 +691,6 @@ function WordListSection({ title, words, count = words.length, rowClassName, ren
         ))}
       </ul>
       {onLoadMore && <button type="button" className="ghost" onClick={onLoadMore}>이전 단어 더 보기</button>}
-    </section>
+    </PageSection>
   );
 }

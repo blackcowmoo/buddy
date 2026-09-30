@@ -59,6 +59,9 @@ and TypeScript's `lib/protocol.ts`.
   and persistence rules in the owning store package.
 - Keep `App.tsx` focused on cross-view/session coordination. Put display-only
   trees in `components`, page workflows in `pages`, and API/pure logic in `lib`.
+- Follow `apps/web/README.md` for page composition. Reuse the shared shell,
+  header, sections, and action groups; register destinations in the shared
+  navigation catalog so new features keep the same layout and navigation.
 - Preserve explicit async state (`pending`, `processing`, `done`, `failed`) and
   explain concurrency, persistence, or legacy compatibility with `why`
   comments. Do not add comments that merely restate code.

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { MenuIcon } from "./MenuIcon";
+import { PageHeader } from "./PageHeader";
 import type { Theme } from "../lib/theme";
 import { NATIVE_RATE, RATE_PRESETS } from "../lib/ttsSettings";
 import { MAX_INTERLOCUTOR_STYLE_LEN } from "../lib/settings";
@@ -71,23 +71,9 @@ export function TopBar({
   menuRef: React.RefObject<HTMLDivElement | null>;
 } & React.ComponentProps<typeof MenuPanel>) {
   return (
-    <header className="topbar">
-      <div className="brand">{brand}</div>
-      <div className="menu" ref={menuRef}>
-        {actions}
-        <button
-          className="ghost icon-btn"
-          onClick={onToggleMenu}
-          aria-label="Menu"
-          aria-haspopup="true"
-          aria-expanded={menuOpen}
-          title="Menu"
-        >
-          <MenuIcon />
-        </button>
-        {menuOpen && <MenuPanel {...menuPanelProps} />}
-      </div>
-    </header>
+    <PageHeader brand={brand} actions={actions} menuOpen={menuOpen} onToggleMenu={onToggleMenu} menuRef={menuRef}>
+      <MenuPanel {...menuPanelProps} />
+    </PageHeader>
   );
 }
 
@@ -134,7 +120,7 @@ function MenuPanel({
   chat?: ChatMenuProps;
 }) {
   return (
-    <div className="menu-panel" role="menu">
+    <>
       <div className="menu-row user-info">
         <span className="user-email">{email ?? "익명 사용자"}</span>
       </div>
@@ -224,6 +210,6 @@ function MenuPanel({
         </div>
         {prError && <p className="path-error">숫자만 입력하세요 (비워두면 메인으로 이동)</p>}
       </form>
-    </div>
+    </>
   );
 }

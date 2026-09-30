@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -55,8 +55,14 @@ describe("Recordings page", () => {
     ]);
     render(<Recordings />);
 
-    expect(await screen.findByText(/1:30/)).toBeInTheDocument();
-    expect(screen.getByText(/120\.6 KB/)).toBeInTheDocument();
+    const history = screen.getByRole("region", { name: "나의 녹음 기록" });
+    expect(await within(history).findByText(/1:30/)).toBeInTheDocument();
+    expect(within(history).getByText(/120\.6 KB/)).toBeInTheDocument();
+    expect(within(history).getByText("총 1개 · 최근 기록부터")).toBeInTheDocument();
+    expect(within(history).getByRole("button", { name: "녹음 삭제" })).toBeEnabled();
+    expect(screen.getAllByRole("main")).toHaveLength(1);
+    expect(screen.getByRole("main")).toContainElement(history);
+    expect(screen.getAllByRole("banner")).toHaveLength(1);
   });
 
   it("shows the recording's creation time using the shared date/time formatter", async () => {

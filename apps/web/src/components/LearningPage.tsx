@@ -1,5 +1,5 @@
 import type { ReactNode, UIEventHandler } from "react";
-import { useViewScrollTop } from "../lib/listView";
+import { AppShell, PageContent } from "./PageLayout";
 import { SubPageHeader } from "./SubPageHeader";
 
 // Each learning page has one scroll surface. Only navigation resets it;
@@ -10,13 +10,11 @@ export function LearningPage({ title, viewKey = "list", onScroll, children }: {
   onScroll?: UIEventHandler<HTMLElement>;
   children: ReactNode;
 }) {
-  const pageRef = useViewScrollTop<HTMLElement>(viewKey);
   return (
-    <div className="app">
-      <SubPageHeader title={title} />
-      <main ref={pageRef} className="convo learning-page" onScroll={onScroll}>
+    <AppShell header={<SubPageHeader title={title} />}>
+      <PageContent viewKey={viewKey} className="learning-page" onScroll={onScroll}>
         {children}
-      </main>
-    </div>
+      </PageContent>
+    </AppShell>
   );
 }

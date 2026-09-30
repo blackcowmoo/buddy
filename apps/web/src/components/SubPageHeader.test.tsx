@@ -18,7 +18,8 @@ describe("SubPageHeader", () => {
   it("keeps the page title clear until the navigation menu is opened", () => {
     render(<SubPageHeader title="단어 복습" />);
     expect(screen.getByRole("heading", { name: "단어 복습" })).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "홈으로" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem")).not.toBeInTheDocument();
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 
@@ -34,6 +35,7 @@ describe("SubPageHeader", () => {
 
     const menu = screen.getByRole("menu");
     expect(menuButton).toHaveAttribute("aria-expanded", "true");
+    expect(menuButton).toHaveAttribute("aria-controls", menu.id);
     expect(menu).toBeInTheDocument();
     expect(screen.getAllByRole("menuitem")).toHaveLength(8);
     expect(screen.getByRole("menuitem", { name: "메인으로" })).toHaveAttribute("href", ".");

@@ -35,6 +35,7 @@ describe("guided home", () => {
     const destinations = [
       ["단어 뉘앙스", "nuance"], ["오늘의 작문", "writing"], ["단어 복습", "words"],
       ["오늘의 아티클", "article"], ["단어 매칭 게임", "match"], ["녹음 목록", "recordings"],
+      ["인스턴트 대화", "instant"],
     ];
     expect(within(nav).getAllByRole("link")).toHaveLength(destinations.length);
     for (const [title, path] of destinations) {
@@ -52,6 +53,8 @@ describe("guided home", () => {
     const actions = props();
     const user = userEvent.setup();
     render(<SessionList {...actions} sessions={[{ id: "s1", title: "My day", createdAt: 1, updatedAt: 2 }]} />);
+    const history = screen.getByRole("region", { name: "나의 대화 기록" });
+    expect(within(history).getByRole("button", { name: /My day/ })).toBeInTheDocument();
     expect(screen.queryByText("아직 대화 기록이 없어요")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /My day/ }));
     expect(actions.onOpen).toHaveBeenCalledWith("s1");

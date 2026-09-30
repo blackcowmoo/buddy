@@ -138,14 +138,17 @@ describe("ArticleQuiz page — list view", () => {
     const page = screen.getByRole("main");
     Object.defineProperty(page, "scrollHeight", { value: 1600 });
 
-    const oldRow = (await screen.findByText("[BBC] Old story")).closest(".session-row")!;
-    const newRow = screen.getByText("[NPR] New story").closest(".session-row")!;
+    const oldRow = (await screen.findByText("[BBC] Old story")).closest<HTMLElement>(".session-row")!;
+    const newRow = screen.getByText("[NPR] New story").closest<HTMLElement>(".session-row")!;
     const intro = screen.getByRole("heading", { name: "새로운 이야기를 읽어 봐요" });
-    const drawButton = screen.getByRole("button", { name: "새 아티클 뽑기" });
-    const history = screen.getByRole("heading", { name: "나의 아티클 기록" });
+    const actions = screen.getByRole("group", { name: "주요 작업" });
+    const drawButton = within(actions).getByRole("button", { name: "새 아티클 뽑기" });
+    const history = screen.getByRole("region", { name: "나의 아티클 기록" });
     expect(intro.compareDocumentPosition(drawButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(drawButton.compareDocumentPosition(history) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(history.compareDocumentPosition(newRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(history).toContainElement(newRow);
+    expect(history).toContainElement(oldRow);
     expect(newRow.compareDocumentPosition(oldRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByText("총 2개 · 최근 기록부터")).toBeInTheDocument();
     expect(page.scrollTop).toBe(0);
@@ -208,10 +211,17 @@ describe("ArticleQuiz page — list view", () => {
     expect(fetchArticleInstance).toHaveBeenCalledWith("i2");
     expect(await screen.findByText(articleSummaryMatcher(sampleDraw.summary))).toBeInTheDocument();
     expect(page.scrollTop).toBe(0);
+    const article = screen.getByRole("region", { name: "[BBC] Scientists make discovery" });
+    expect(page).toContainElement(article);
+    expect(screen.getAllByRole("main")).toHaveLength(1);
+    expect(screen.getAllByRole("banner")).toHaveLength(1);
 
     page.scrollTop = 500;
-    await user.click(screen.getByRole("button", { name: "← 목록으로" }));
-    expect(await screen.findByRole("heading", { name: "나의 아티클 기록" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "목록으로" }));
+    expect(await screen.findByRole("region", { name: "나의 아티클 기록" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "[BBC] Scientists make discovery" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("main")).toHaveLength(1);
+    expect(screen.getAllByRole("banner")).toHaveLength(1);
     expect(page.scrollTop).toBe(0);
     expect(screen.queryByText("[BBC] Story 0")).not.toBeInTheDocument();
   });
@@ -598,7 +608,7 @@ describe("ArticleQuiz page — draw / reading / quiz / result flow", () => {
     await act(async () => audioEl.dispatchEvent(new Event("playing")));
     expect(await screen.findByRole("button", { name: "재생 중…" })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "← 목록으로" }));
+    await user.click(screen.getByRole("button", { name: "목록으로" }));
     await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
 
     expect(await screen.findByRole("button", { name: "🔊 읽어주기" })).toBeInTheDocument();

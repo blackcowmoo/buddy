@@ -42,7 +42,7 @@ export function ConversationTranscript({
   onScroll,
 }: ConversationTranscriptProps) {
   return (
-    <main className="convo" ref={scrollRef} onScroll={onScroll}>
+    <main className="convo" ref={scrollRef} tabIndex={-1} onScroll={onScroll}>
       {!ended && status !== "open" && (
         <p
           className={`connection-notice ${status === "connecting" ? "" : "error"}`}
