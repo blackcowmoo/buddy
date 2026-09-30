@@ -134,13 +134,7 @@ interface WordAutoAddStatus {
 // depended on this request staying open. Returns null on any failure
 // (network error, non-200, bad JSON).
 export async function startAutoAddWords(): Promise<WordAutoAddStatus | null> {
-  try {
-    const res = await fetch("api/words/auto-add", { method: "POST" });
-    if (!res.ok) return null;
-    return (await res.json()) as WordAutoAddStatus;
-  } catch {
-    return null;
-  }
+  return fetchJSON<WordAutoAddStatus | null>("api/words/auto-add", null, { method: "POST" });
 }
 
 // Re-fetches the caller's own auto-add job status — the poll target for a

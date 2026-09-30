@@ -46,7 +46,7 @@ describe("fetchSessionDetail", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(fetchSessionDetail("weird id/1")).resolves.toEqual(detail);
-    expect(fetchMock).toHaveBeenCalledWith("api/sessions/weird%20id%2F1");
+    expect(fetchMock).toHaveBeenCalledWith("api/sessions/weird%20id%2F1", undefined);
   });
 
   it("returns null on a non-ok response (e.g. someone else's session id)", async () => {
@@ -64,7 +64,7 @@ describe("fetchSessionDetail", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await fetchSessionDetail("s1");
-    expect(fetchMock).toHaveBeenCalledWith("api/sessions/s1");
+    expect(fetchMock).toHaveBeenCalledWith("api/sessions/s1", undefined);
   });
 
   it("appends before/limit as query params when given", async () => {
@@ -72,7 +72,7 @@ describe("fetchSessionDetail", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await fetchSessionDetail("s1", { before: 12, limit: 30 });
-    expect(fetchMock).toHaveBeenCalledWith("api/sessions/s1?before=12&limit=30");
+    expect(fetchMock).toHaveBeenCalledWith("api/sessions/s1?before=12&limit=30", undefined);
   });
 
   it("sends an explicit limit: 0 as ?limit=0 rather than omitting it (pollMissingFeedback's whole-transcript request)", async () => {
@@ -80,7 +80,7 @@ describe("fetchSessionDetail", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await fetchSessionDetail("s1", { limit: 0 });
-    expect(fetchMock).toHaveBeenCalledWith("api/sessions/s1?limit=0");
+    expect(fetchMock).toHaveBeenCalledWith("api/sessions/s1?limit=0", undefined);
   });
 
   it("omits a zero/undefined before or limit from the query string", async () => {
@@ -88,7 +88,7 @@ describe("fetchSessionDetail", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await fetchSessionDetail("s1", { limit: 30 });
-    expect(fetchMock).toHaveBeenCalledWith("api/sessions/s1?limit=30");
+    expect(fetchMock).toHaveBeenCalledWith("api/sessions/s1?limit=30", undefined);
   });
 });
 
@@ -99,7 +99,7 @@ describe("fetchSessionCompaction", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(fetchSessionCompaction("weird id/1")).resolves.toEqual(compaction);
-    expect(fetchMock).toHaveBeenCalledWith("api/sessions/weird%20id%2F1/compaction");
+    expect(fetchMock).toHaveBeenCalledWith("api/sessions/weird%20id%2F1/compaction", undefined);
   });
 
   it("returns null on a non-ok response", async () => {

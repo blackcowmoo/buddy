@@ -1,4 +1,4 @@
-import type { FormEventHandler, KeyboardEventHandler, RefObject } from "react";
+import { useEffect, useRef } from "react";
 import { WordSearchControl } from "./WordSearchControl";
 
 interface MessageComposerProps {
@@ -9,10 +9,8 @@ interface MessageComposerProps {
   transcribing: boolean;
   text: string;
   voiceDraft: boolean;
-  textareaRef: RefObject<HTMLTextAreaElement | null>;
   onToggleMic: () => void;
-  onSubmit: FormEventHandler<HTMLFormElement>;
-  onKeyDown: KeyboardEventHandler<HTMLTextAreaElement>;
+  onSend: () => void;
   onTextChange: (value: string) => void;
   onDiscardVoiceDraft: () => void;
 }
@@ -28,13 +26,22 @@ export function MessageComposer({
   transcribing,
   text,
   voiceDraft,
-  textareaRef,
   onToggleMic,
-  onSubmit,
-  onKeyDown,
+  onSend,
   onTextChange,
   onDiscardVoiceDraft,
 }: MessageComposerProps) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const editable = !ended && !(quickMode && quickSent);
+
+  // CSS caps the height and provides scrolling once the draft grows beyond it.
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }, [text, editable]);
+
   if (ended) {
     return (
       <footer className="composer composer-ended">
@@ -75,7 +82,7 @@ export function MessageComposer({
           <span className="spinning">⏳</span>
         </p>
       )}
-      <form onSubmit={onSubmit}>
+      <form onSubmit={(event) => { event.preventDefault(); onSend(); }}>
         <div className="composer-field">
           {voiceDraft && (
             <span id="voice-draft-note" className="voice-draft-note" role="status">
@@ -87,7 +94,14 @@ export function MessageComposer({
             className={voiceDraft ? "voice-draft" : undefined}
             value={text}
             onChange={(event) => onTextChange(event.target.value)}
-            onKeyDown={onKeyDown}
+            onKeyDown={(event) => {
+              // Enter may confirm an IME composition instead of sending a message.
+              if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                onSend();
+              }
+            }}
             placeholder="영어로 편하게 이야기해 보세요"
             aria-label="영어 메시지"
             aria-describedby={voiceDraft ? "voice-draft-note" : undefined}

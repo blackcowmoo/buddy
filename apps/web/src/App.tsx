@@ -1104,30 +1104,6 @@ export function App() {
     if (quickModeRef.current) setQuickSent(true);
   }, [text, voiceDraft, activeSessionId]);
 
-  const onComposerSubmit = useCallback(
-    (e: React.FormEvent) => {
-      e.preventDefault();
-      submitText();
-    },
-    [submitText],
-  );
-
-  // Enter sends the message; Shift+Enter inserts a newline, matching the
-  // usual chat-app convention now that this is a multiline textarea.
-  const onComposerKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      // Enter confirms an in-progress IME composition on Korean/Japanese
-      // keyboards; treating that same keydown as "send" loses the final
-      // syllable and submits before the learner intended.
-      if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        submitText();
-      }
-    },
-    [submitText],
-  );
-
   const handleComposerTextChange = useCallback(
     (value: string) => {
       setText(value);
@@ -1136,18 +1112,6 @@ export function App() {
     },
     [activeSessionId, voiceDraft, discardVoiceDraft],
   );
-
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  // Grow the textarea to fit its content (up to the CSS max-height, which
-  // takes over with internal scrolling) so long messages stay fully visible
-  // while composing instead of scrolling inside a fixed-height box.
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
-  }, [text]);
 
   // Click-outside / Escape closes the menu, same as any dropdown.
   const closeMenu = useCallback(() => setMenuOpen(false), []);
@@ -1283,10 +1247,8 @@ export function App() {
         transcribing={transcribing}
         text={text}
         voiceDraft={voiceDraft}
-        textareaRef={textareaRef}
         onToggleMic={() => void toggleMic()}
-        onSubmit={onComposerSubmit}
-        onKeyDown={onComposerKeyDown}
+        onSend={submitText}
         onTextChange={handleComposerTextChange}
         onDiscardVoiceDraft={discardVoiceDraft}
       />

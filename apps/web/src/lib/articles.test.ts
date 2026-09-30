@@ -47,7 +47,7 @@ describe("fetchArticleInstance", () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(draw) });
     vi.stubGlobal("fetch", fetchMock);
     await expect(fetchArticleInstance("i1")).resolves.toEqual(draw);
-    expect(fetchMock).toHaveBeenCalledWith("api/articles/i1");
+    expect(fetchMock).toHaveBeenCalledWith("api/articles/i1", undefined);
   });
 
   it("returns null on a non-ok response", async () => {
@@ -64,7 +64,7 @@ describe("fetchArticleInstance", () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: false });
     vi.stubGlobal("fetch", fetchMock);
     await fetchArticleInstance("weird id/1");
-    expect(fetchMock).toHaveBeenCalledWith("api/articles/weird%20id%2F1");
+    expect(fetchMock).toHaveBeenCalledWith("api/articles/weird%20id%2F1", undefined);
   });
 });
 
