@@ -187,6 +187,16 @@ call, including between Chat, Analysis, and Judge stages, then resumes when no
 higher-priority call is waiting. The same policy applies to detached execution
 without Redis and to durable jobs recovered on another replica.
 
+Durable workers release their execution slot while a job waits for a model
+queue or HTTP response. A stalled endpoint therefore cannot fill the worker
+pool and prevent later jobs from reaching a healthy endpoint. The waiting job
+keeps its renewable claim, deduplication entry, and completed checkpoints;
+after the call returns, it reacquires a slot and continues its existing stage
+order. Cancellation releases queued model requests and running HTTP calls so
+the next request for that model can proceed. Worker concurrency bounds active
+handler work, while per-model queues bound inference. Waiting jobs remain in
+memory, so the number of parked jobs can grow with the backlog.
+
 The presentation policy depends on whether changing a visible result would
 break the interaction:
 
