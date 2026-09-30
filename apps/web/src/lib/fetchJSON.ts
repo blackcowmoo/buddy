@@ -3,9 +3,9 @@
 // Returns fallback on any failure — network error, non-200, or bad JSON —
 // so callers can degrade (empty list, null, anonymous label) instead of
 // throwing.
-export async function fetchJSON<T>(url: string, fallback: T): Promise<T> {
+export async function fetchJSON<T>(url: string, fallback: T, init?: RequestInit): Promise<T> {
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, init);
     if (!res.ok) return fallback;
     return (await res.json()) as T;
   } catch {
@@ -18,14 +18,13 @@ export async function fetchJSON<T>(url: string, fallback: T): Promise<T> {
 // endpoints in this app share.
 export async function postJSON<T>(url: string, body: unknown, fallback: T): Promise<T> {
   try {
-    const res = await fetch(url, {
+    return fetchJSON(url, fallback, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!res.ok) return fallback;
-    return (await res.json()) as T;
   } catch {
+    // Serialization can fail before the request reaches fetchJSON.
     return fallback;
   }
 }

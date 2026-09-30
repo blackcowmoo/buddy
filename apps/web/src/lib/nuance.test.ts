@@ -12,7 +12,7 @@ it("uses account API endpoints and sends the progress revision, never a client v
   await startNuanceReview();
   expect(fetch).toHaveBeenLastCalledWith("api/nuance/review", expect.objectContaining({ method: "POST" }));
   await fetchNuanceLesson("a/b");
-  expect(fetch).toHaveBeenLastCalledWith("api/nuance/a%2Fb");
+  expect(fetch).toHaveBeenLastCalledWith("api/nuance/a%2Fb", undefined);
   const action = { kind: "answer" as const, revision: 3, questionId: "q0", selected: "cheap" };
   await practiceNuance("a/b", action);
   expect(fetch).toHaveBeenLastCalledWith("api/nuance/a%2Fb/practice", expect.objectContaining({ body: JSON.stringify(action) }));
