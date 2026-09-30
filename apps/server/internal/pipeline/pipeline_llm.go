@@ -67,6 +67,7 @@ func (p *Pipeline) complete(ctx context.Context, client llm.Client, model string
 	return checkpoint.DoIf(ctx, modelCheckpointKey(client, model, msgs, jsonMode, false), func() (text string, err error) {
 		err = p.runModelCall(ctx, client, model, func(ctx context.Context) error {
 			text, err = client.Complete(ctx, model, msgs, jsonMode)
+			text = llm.CorrectOutput(text)
 			return err
 		})
 		return text, err
@@ -80,9 +81,10 @@ func (p *Pipeline) chatStream(ctx context.Context, client llm.Client, model stri
 		err = p.runModelCall(ctx, client, model, func(ctx context.Context) error {
 			text, err = client.ChatStream(ctx, model, msgs, func(token string) {
 				if ctx.Err() == nil && onToken != nil {
-					onToken(token)
+					onToken(llm.CorrectOutput(token))
 				}
 			})
+			text = llm.CorrectOutput(text)
 			return err
 		})
 		return text, err

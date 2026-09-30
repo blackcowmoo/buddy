@@ -16,6 +16,22 @@ import (
 	"buddy/server/internal/workslot"
 )
 
+func TestModelOutputsCorrectKnownTypos(t *testing.T) {
+	client := &fakeLLM{
+		chatReply: "뉤앙스가 보여요.",
+		complete:  func([]llm.Message) (string, error) { return "뉤앙스가 설명입니다.", nil },
+	}
+	p := &Pipeline{}
+
+	if got, err := p.complete(context.Background(), client, "model", nil, false); err != nil || got != "뉘앙스가 설명입니다." {
+		t.Fatalf("complete() = %q, %v", got, err)
+	}
+	var streamed string
+	if got, err := p.chatStream(context.Background(), client, "model", nil, func(token string) { streamed += token }); err != nil || got != "뉘앙스가 보여요." || streamed != "뉘앙스가 보여요." {
+		t.Fatalf("chatStream() = %q, streamed %q, %v", got, streamed, err)
+	}
+}
+
 func startModelJob(t *testing.T, pool *workslot.Pool, p *Pipeline, ctx context.Context, client llm.Client, model string, stream bool) <-chan error {
 	t.Helper()
 	done := make(chan error, 1)
