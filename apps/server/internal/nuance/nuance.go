@@ -20,7 +20,6 @@ const (
 	StatusProcessing = "processing"
 	StatusDone       = "done"
 	StatusFailed     = "failed"
-	ReviewBatchSize  = 5
 )
 
 var (
@@ -219,7 +218,7 @@ func (l *Lesson) Apply(a Action, now time.Time) error {
 		}
 		// Opening one comparison is deliberate practice, not the scheduled
 		// cross-lesson review. Include every saved context here; StartReview
-		// separately applies due dates and the five-question batch limit.
+		// separately applies due dates across all lessons.
 		for _, q := range l.Content.Questions {
 			l.State.Queue = append(l.State.Queue, q.ID)
 		}

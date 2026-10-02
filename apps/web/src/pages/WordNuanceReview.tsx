@@ -130,7 +130,7 @@ export function WordNuanceReview() {
       {!loading && !current && !error && <section className="quiz-panel" aria-live="polite">
         <h2>{order.length ? `이번 ${order.length}문제 복습을 마쳤어요` : "지금 복습할 문제가 없어요"}</h2>
         <p>모든 비교 묶음의 문맥을 섞어서 복습했어요.</p>
-        {due > 0 && <button type="button" disabled={busy} onClick={() => void begin()}>{busy ? "준비 중…" : "다음 5문제 복습"}</button>}
+        {due > 0 && <button type="button" disabled={busy} onClick={() => void begin()}>{busy ? "준비 중…" : "지금 나온 문제 모두 복습"}</button>}
         <a className="ghost-link" href={nuanceListPath()}>학습 목록 보기</a>
       </section>}
     </PageSection>

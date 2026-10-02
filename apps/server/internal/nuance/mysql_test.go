@@ -180,7 +180,7 @@ func TestMySQLAddsMissingAnswerQuestionsWithoutResettingProgress(t *testing.T) {
 	}
 }
 
-func TestMySQLStartsOneRandomReviewBatchAcrossLessons(t *testing.T) {
+func TestMySQLStartsReviewWithEveryDueQuestionAcrossLessons(t *testing.T) {
 	st := requireDB(t)
 	ctx := context.Background()
 	first := persistedLesson(t, st)
@@ -189,11 +189,13 @@ func TestMySQLStartsOneRandomReviewBatchAcrossLessons(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Ten due contexts exist across two lessons; the whole queue must be
+	// drawn at once instead of a five-question batch.
 	batch, err := st.StartReview(ctx, first.UserID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(batch.Items) != ReviewBatchSize || len(batch.Lessons) != 2 {
+	if len(batch.Items) != 10 || len(batch.Lessons) != 2 {
 		t.Fatalf("batch = %+v, lessons = %d", batch.Items, len(batch.Lessons))
 	}
 	wantQueues := map[string][]string{}
@@ -208,8 +210,8 @@ func TestMySQLStartsOneRandomReviewBatchAcrossLessons(t *testing.T) {
 		}
 		queued += len(lesson.State.Queue)
 	}
-	if queued != ReviewBatchSize {
-		t.Fatalf("persisted %d queued questions, want %d", queued, ReviewBatchSize)
+	if queued != 10 {
+		t.Fatalf("persisted %d queued questions, want 10", queued)
 	}
 
 	firstItem := batch.Items[0]
@@ -232,6 +234,31 @@ func TestMySQLStartsOneRandomReviewBatchAcrossLessons(t *testing.T) {
 	resumed, err := st.StartReview(ctx, first.UserID)
 	if err != nil || len(resumed.Items) == 0 || resumed.Items[0] != firstItem {
 		t.Fatalf("saved reveal was not resumed first: items=%+v err=%v", resumed.Items, err)
+	}
+
+	// Acknowledging the reveal reschedules that question beyond its next due
+	// date, so the next draw holds every other due question but not it.
+	var revealed Lesson
+	for _, lesson := range resumed.Lessons {
+		if lesson.ID == firstItem.LessonID {
+			revealed = lesson
+			break
+		}
+	}
+	if _, err = st.Act(ctx, first.UserID, revealed.ID, Action{Kind: "next", Revision: revealed.Revision}); err != nil {
+		t.Fatal(err)
+	}
+	again, err := st.StartReview(ctx, first.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Items) != 9 {
+		t.Fatalf("remaining due questions = %+v, want 9", again.Items)
+	}
+	for _, item := range again.Items {
+		if item == firstItem {
+			t.Fatalf("answered question reappeared before its due date: %+v", again.Items)
+		}
 	}
 }
 func TestMySQLConcurrentAnswerCommitsOnce(t *testing.T) {
