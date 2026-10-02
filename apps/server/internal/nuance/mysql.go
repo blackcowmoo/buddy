@@ -185,9 +185,10 @@ func checkLegacyComparisons(ctx context.Context, tx *sql.Tx, userID string, key 
 	return rows.Err()
 }
 
-// StartReview draws one durable five-question batch from every due context,
-// regardless of which generated comparison owns it. The row locks make the
-// draw and all per-lesson queues one atomic operation across tabs/replicas.
+// StartReview durably queues every due question from every due context,
+// regardless of which generated comparison owns it, so one sitting can finish
+// the whole queue. The row locks make the draw and all per-lesson queues one
+// atomic operation across tabs/replicas.
 func (s *MySQLStore) StartReview(ctx context.Context, userID string) (ReviewBatch, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -250,9 +251,6 @@ func (s *MySQLStore) StartReview(ctx context.Context, userID string) (ReviewBatc
 		return ReviewBatch{}, err
 	}
 	candidates = append(reveals, candidates...)
-	if len(candidates) > ReviewBatchSize {
-		candidates = candidates[:ReviewBatchSize]
-	}
 	queues := map[string][]string{}
 	for _, item := range candidates {
 		queues[item.LessonID] = append(queues[item.LessonID], item.QuestionID)
