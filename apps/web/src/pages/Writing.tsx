@@ -152,8 +152,8 @@ export function Writing() {
           {prompt.status === "failed" && <p className="hint">문제 생성에 실패했어요. 잠시 후 다시 확인해 주세요.</p>}
           {prompt.status === "done" && <>
             <div className="writing-stage">
-              <p className="writing-label">한글 문제</p>
-              <p className="writing-prompt" lang="ko">{prompt.korean}</p>
+              <div className="language-label">한글 문제</div>
+              <p className="translation-quote writing-prompt" lang="ko">{prompt.korean}</p>
             </div>
             {!result && <>
               {checkError && <p className="writing-check-error" role="alert">답안을 확인하지 못했어요. 연결 상태를 확인한 뒤 다시 시도해 주세요.</p>}
@@ -166,7 +166,7 @@ export function Writing() {
                 <WordSearchControl placement="below" />
               </div>
               <form className="writing-answer-form" onSubmit={submit}>
-                <label className="writing-label" htmlFor="writing-answer">영어 답안</label>
+                <label className="language-label" htmlFor="writing-answer">영어 답안</label>
                 <textarea id="writing-answer" value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="영어로 한 문장을 써보세요" rows={4} disabled={checking} />
                 <button type="submit" disabled={checking || !answer.trim()}>{checking ? "검사 중…" : "답안 확인"}</button>
               </form>
@@ -177,11 +177,11 @@ export function Writing() {
               </div>
               <div className="writing-compare">
                 <div className="writing-compare-item">
-                  <p className="writing-label">내가 쓴 문장</p>
+                  <div className="language-label">내가 쓴 문장</div>
                   <p className="writing-original">{result.original || answer}</p>
                 </div>
                 <div className="writing-compare-item">
-                  <p className="writing-label">더 자연스러운 문장</p>
+                  <div className="language-label">더 자연스러운 문장</div>
                   <p className="writing-corrected" lang="en">{result.corrected}</p>
                 </div>
               </div>

@@ -81,6 +81,11 @@ describe("Writing page list/detail flow", () => {
 
     const detail = await screen.findByRole("region", { name: "오늘의 한 문장" });
     expect(within(detail).getByLabelText("영어 답안")).toBeInTheDocument();
+    // The Korean prompt reads with the article page's shared label+quote
+    // presentation rather than a bespoke writing-only box.
+    const koreanPrompt = within(detail).getByText("어제 영화를 봤어요.");
+    expect(koreanPrompt).toHaveClass("translation-quote");
+    expect(koreanPrompt.previousElementSibling).toHaveClass("language-label");
     expect(screen.queryByRole("heading", { name: "한 문장부터 써 볼까요?" })).not.toBeInTheDocument();
     const back = screen.getByRole("button", { name: "목록으로" });
     expect(back.compareDocumentPosition(detail) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -194,6 +199,7 @@ describe("Writing feedback stage", () => {
 
     const feedback = await screen.findByRole("region", { name: "답안 피드백" });
     expect(screen.getByRole("status")).toHaveTextContent("조금 다듬어 볼까요?");
+    expect(within(feedback).getByText("내가 쓴 문장")).toHaveClass("language-label");
     expect(within(feedback).getByText("내가 쓴 문장")).toBeInTheDocument();
     expect(within(feedback).getByText("I meet my friend yesterday.")).toBeInTheDocument();
     expect(within(feedback).getByText("더 자연스러운 문장")).toBeInTheDocument();
