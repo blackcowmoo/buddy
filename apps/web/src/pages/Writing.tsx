@@ -13,10 +13,21 @@ import { newestFirst } from "../lib/listView";
 
 type LoadState = "loading" | "ready";
 
-// The writing page follows the same two-level flow as ArticleQuiz: the root
-// view is the learner's problem history, and opening/drawing a problem moves
-// to a focused answer view. Keeping these states separate makes it possible
-// to browse old prompts without putting the answer form beside the list.
+// Issue.type comes from the Judge's correction schema (lib/protocol.ts);
+// an unknown value falls back to the generic label so a new server-side
+// type never renders as an empty badge.
+const issueTypeLabels: Record<string, string> = {
+  grammar: "문법",
+  vocabulary: "어휘",
+  phrasing: "표현",
+  context: "맥락",
+};
+const issueTypeLabel = (type: string) => issueTypeLabels[type] ?? "교정";
+
+// The writing page follows ArticleQuiz's staged flow: the root view is the
+// learner's problem history, opening/drawing a problem shows the answer
+// editor, and a checked answer swaps the editor for the feedback stage —
+// one focus per screen, the same shape the other exercise pages use.
 export function Writing() {
   const [state, setState] = useState<LoadState>("loading");
   const [prompts, setPrompts] = useState<WritingPrompt[]>([]);
@@ -26,6 +37,7 @@ export function Writing() {
   const [loadingPrompt, setLoadingPrompt] = useState(false);
   const [creating, setCreating] = useState(false);
   const [checking, setChecking] = useState(false);
+  const [checkError, setCheckError] = useState(false);
   const [error, setError] = useState(false);
 
   const loadPrompts = useCallback(async () => {
@@ -42,6 +54,7 @@ export function Writing() {
     setError(false);
     setResult(null);
     setAnswer("");
+    setCheckError(false);
     const next = await fetchWritingPrompt(item.id);
     if (next) setPrompt(next); else setError(true);
     setLoadingPrompt(false);
@@ -64,6 +77,7 @@ export function Writing() {
     setError(false);
     setResult(null);
     setAnswer("");
+    setCheckError(false);
     const next = await drawWritingPrompt();
     if (next) {
       setPrompts((items) => newestFirst([...items, next], (item) => item.createdAt));
@@ -83,6 +97,7 @@ export function Writing() {
     setPrompt(null);
     setResult(null);
     setAnswer("");
+    setCheckError(false);
     setError(false);
     void loadPrompts();
   };
@@ -91,7 +106,11 @@ export function Writing() {
     e.preventDefault();
     if (!prompt?.korean || !answer.trim() || checking) return;
     setChecking(true);
-    setResult(await checkWriting(prompt.korean, answer, prompt.id));
+    setCheckError(false);
+    const next = await checkWriting(prompt.korean, answer, prompt.id);
+    // A null response means the check itself failed: keep the draft in the
+    // editor and say so, instead of silently redrawing the same empty form.
+    if (next) setResult(next); else setCheckError(true);
     setChecking(false);
   };
 
@@ -132,26 +151,59 @@ export function Writing() {
           {prompt.status === "pending" && <p className="hint">문제를 만드는 중이에요…</p>}
           {prompt.status === "failed" && <p className="hint">문제 생성에 실패했어요. 잠시 후 다시 확인해 주세요.</p>}
           {prompt.status === "done" && <>
-            <p className="writing-prompt">{prompt.korean}</p>
-            {/* Keep the word search beside the answer form, not inside it:
-                WordSearchControl owns its own search <form>, and nested
-                forms make Enter in that field submit the writing answer in
-                some browsers. */}
-            <div className="writing-answer-tools">
-              <span className="hint">모르는 단어가 있으면 검색해 보세요.</span>
-              <WordSearchControl placement="below" />
+            <div className="writing-stage">
+              <div className="language-label">한글 문제</div>
+              <p className="translation-quote writing-prompt" lang="ko">{prompt.korean}</p>
             </div>
-            <form className="writing-answer-form" onSubmit={submit}>
-              <label className="writing-answer-label" htmlFor="writing-answer">영어 답안</label>
-              <textarea id="writing-answer" value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="영어로 한 문장을 써보세요" rows={4} disabled={checking} />
-              <button type="submit" disabled={checking || !answer.trim()}>{checking ? "검사 중…" : "답안 확인"}</button>
-            </form>
+            {!result && <>
+              {checkError && <p className="writing-check-error" role="alert">답안을 확인하지 못했어요. 연결 상태를 확인한 뒤 다시 시도해 주세요.</p>}
+              {/* Keep the word search beside the answer form, not inside it:
+                  WordSearchControl owns its own search <form>, and nested
+                  forms make Enter in that field submit the writing answer in
+                  some browsers. */}
+              <div className="writing-answer-tools">
+                <span className="hint">모르는 단어가 있으면 검색해 보세요.</span>
+                <WordSearchControl placement="below" />
+              </div>
+              <form className="writing-answer-form" onSubmit={submit}>
+                <label className="language-label" htmlFor="writing-answer">영어 답안</label>
+                <textarea id="writing-answer" value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="영어로 한 문장을 써보세요" rows={4} disabled={checking} />
+                <button type="submit" disabled={checking || !answer.trim()}>{checking ? "검사 중…" : "답안 확인"}</button>
+              </form>
+            </>}
+            {result && <section className="writing-feedback" aria-label="답안 피드백" aria-live="polite">
+              <div className={`quiz-result ${result.issues.length ? "similar" : "correct"}`} role="status">
+                {result.issues.length ? "조금 다듬어 볼까요?" : "아주 좋아요!"}
+              </div>
+              <div className="writing-compare">
+                <div className="writing-compare-item">
+                  <div className="language-label">내가 쓴 문장</div>
+                  <p className="writing-original">{result.original || answer}</p>
+                </div>
+                <div className="writing-compare-item">
+                  <div className="language-label">더 자연스러운 문장</div>
+                  <p className="writing-corrected" lang="en">{result.corrected}</p>
+                </div>
+              </div>
+              {result.issues.length > 0 && <ul className="writing-issues">
+                {result.issues.map((issue, i) => (
+                  <li className="writing-issue" key={i}>
+                    <div className="writing-issue-head">
+                      <span className="writing-issue-badge">{issueTypeLabel(issue.type)}</span>
+                      <p className="writing-issue-swap"><span className="writing-issue-from">{issue.span}</span> <span aria-hidden="true">→</span> <strong>{issue.suggestion}</strong></p>
+                    </div>
+                    <p className="writing-issue-note">{issue.explanationTranslation || issue.explanation}</p>
+                  </li>
+                ))}
+              </ul>}
+              <PageToolbar label="답안 관리">
+                <button type="button" className="ghost" onClick={() => setResult(null)}>다시 수정하기</button>
+                <button type="button" className="quiz-start-btn" onClick={() => void createPrompt()} disabled={creating}>
+                  {creating ? "만드는 중…" : "다른 문장 받기"}
+                </button>
+              </PageToolbar>
+            </section>}
           </>}
-          {result && <section className="writing-feedback" aria-live="polite">
-            <h3>{result.issues.length ? "조금 다듬어 볼까요?" : "아주 좋아요!"}</h3>
-            <p className="writing-corrected">{result.corrected}</p>
-            {result.issues.map((issue, i) => <div className="writing-issue" key={i}><strong>{issue.suggestion}</strong><p>{issue.explanationTranslation || issue.explanation}</p></div>)}
-          </section>}
         </>}
       </PageSection>
       </>
