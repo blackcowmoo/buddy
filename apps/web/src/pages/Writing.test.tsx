@@ -166,3 +166,90 @@ it("associates a submitted answer with the selected prompt", async () => {
  await user.click(screen.getByRole("button", { name: "답안 확인" }));
  expect(checkWriting).toHaveBeenCalledWith(oldPrompt.korean, "I watched a movie.", oldPrompt.id);
 });
+
+const correction = {
+  original: "I meet my friend yesterday.",
+  corrected: "I met my friend yesterday.",
+  issues: [{
+    type: "grammar",
+    span: "meet",
+    suggestion: "met",
+    explanation: "Past tense is required after 'yesterday'.",
+    explanationTranslation: "'어제'가 있으므로 과거형 'met'을 써야 해요.",
+  }],
+};
+
+async function submitAnswer(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole("button", { name: /어제 영화를 봤어요/ }));
+  await user.type(await screen.findByLabelText("영어 답안"), "I meet my friend yesterday.");
+  await user.click(screen.getByRole("button", { name: "답안 확인" }));
+}
+
+describe("Writing feedback stage", () => {
+  it("replaces the editor with a feedback stage showing the correction and issues", async () => {
+    const user = userEvent.setup();
+    vi.mocked(checkWriting).mockResolvedValue(correction);
+    render(<Writing />);
+    await submitAnswer(user);
+
+    const feedback = await screen.findByRole("region", { name: "답안 피드백" });
+    expect(screen.getByRole("status")).toHaveTextContent("조금 다듬어 볼까요?");
+    expect(within(feedback).getByText("내가 쓴 문장")).toBeInTheDocument();
+    expect(within(feedback).getByText("I meet my friend yesterday.")).toBeInTheDocument();
+    expect(within(feedback).getByText("더 자연스러운 문장")).toBeInTheDocument();
+    expect(within(feedback).getByText("I met my friend yesterday.")).toBeInTheDocument();
+    expect(within(feedback).getByText("문법")).toBeInTheDocument();
+    expect(within(feedback).getByText("meet")).toBeInTheDocument();
+    expect(within(feedback).getByText("met")).toBeInTheDocument();
+    expect(within(feedback).getByText("'어제'가 있으므로 과거형 'met'을 써야 해요.")).toBeInTheDocument();
+    // The editor yields the screen to the feedback until the learner edits again.
+    expect(screen.queryByLabelText("영어 답안")).not.toBeInTheDocument();
+    expect(screen.getByRole("main")).toContainElement(feedback);
+  });
+
+  it("celebrates an answer without issues", async () => {
+    const user = userEvent.setup();
+    vi.mocked(checkWriting).mockResolvedValue({ ...correction, issues: [] });
+    render(<Writing />);
+    await submitAnswer(user);
+
+    const feedback = await screen.findByRole("region", { name: "답안 피드백" });
+    expect(screen.getByRole("status")).toHaveTextContent("아주 좋아요!");
+    expect(within(feedback).queryByText("문법")).not.toBeInTheDocument();
+  });
+
+  it("returns to the editor from the feedback stage with the draft intact", async () => {
+    const user = userEvent.setup();
+    vi.mocked(checkWriting).mockResolvedValue(correction);
+    render(<Writing />);
+    await submitAnswer(user);
+
+    await user.click(await screen.findByRole("button", { name: "다시 수정하기" }));
+    expect(screen.queryByRole("region", { name: "답안 피드백" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("영어 답안")).toHaveValue("I meet my friend yesterday.");
+  });
+
+  it("draws a new problem from the feedback stage", async () => {
+    const user = userEvent.setup();
+    vi.mocked(checkWriting).mockResolvedValue(correction);
+    render(<Writing />);
+    await submitAnswer(user);
+
+    await user.click(await screen.findByRole("button", { name: "다른 문장 받기" }));
+    expect(drawWritingPrompt).toHaveBeenCalledOnce();
+    expect(await screen.findByText("오늘은 책을 읽어요.")).toBeInTheDocument();
+    expect(screen.getByLabelText("영어 답안")).toHaveValue("");
+    expect(screen.queryByRole("region", { name: "답안 피드백" })).not.toBeInTheDocument();
+  });
+
+  it("reports a failed answer check and keeps the draft for a retry", async () => {
+    const user = userEvent.setup();
+    vi.mocked(checkWriting).mockResolvedValue(null);
+    render(<Writing />);
+    await submitAnswer(user);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("답안을 확인하지 못했어요.");
+    expect(screen.queryByRole("region", { name: "답안 피드백" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("영어 답안")).toHaveValue("I meet my friend yesterday.");
+  });
+});
