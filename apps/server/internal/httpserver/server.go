@@ -35,6 +35,7 @@ type JobQueues struct {
 	StudyQuiz         *asyncjob.Queue
 	ProfileRegenerate *asyncjob.Queue
 	ArticleStudy      *asyncjob.Queue
+	ArticlePhrases    *asyncjob.Queue
 	Writing           *asyncjob.Queue
 	Nuance            *asyncjob.Queue
 	WordAutoAdd       *asyncjob.Queue
@@ -81,6 +82,7 @@ func New(cfg config.Config, deps Dependencies) *http.Server {
 	studyQuizQueue := deps.Queues.StudyQuiz
 	profileRegenerateQueue := deps.Queues.ProfileRegenerate
 	articleStudyQueue := deps.Queues.ArticleStudy
+	articlePhrasesQueue := deps.Queues.ArticlePhrases
 	writingQueue := deps.Queues.Writing
 	wordAutoAddQueue := deps.Queues.WordAutoAdd
 	wordDefineQueue := deps.Queues.WordDefine
@@ -147,8 +149,9 @@ func New(cfg config.Config, deps Dependencies) *http.Server {
 	mux.HandleFunc("GET /api/recordings/{id}/audio", recordingAudioHandler(ident, recordings))
 	mux.HandleFunc("DELETE /api/recordings/{id}", recordingDeleteHandler(ident, audio, recordings))
 	mux.HandleFunc("GET /api/articles", articleInstancesListHandler(ident, articles))
-	mux.HandleFunc("POST /api/articles/draw", articleDrawHandler(ident, articles, pipe, newsfeed.FetchCandidates, articleStudyQueue, articleAudio))
-	mux.HandleFunc("GET /api/articles/{id}", articleInstanceHandler(ident, articles, pipe, articleStudyQueue, articleAudio))
+	mux.HandleFunc("POST /api/articles/draw", articleDrawHandler(ident, articles, pipe, newsfeed.FetchCandidates, articleStudyQueue, articlePhrasesQueue, articleAudio))
+	mux.HandleFunc("GET /api/articles/{id}", articleInstanceHandler(ident, articles, pipe, articleStudyQueue, articlePhrasesQueue, articleAudio))
+	mux.HandleFunc("GET /api/articles/{id}/phrases", articlePhrasesHandler(ident, articles, pipe, articlePhrasesQueue))
 	mux.HandleFunc("GET /api/articles/{id}/audio", articleAudioHandler(ident, articles, articleAudio))
 	mux.HandleFunc("POST /api/articles/{id}/answer", articleAnswerHandler(ident, articles))
 	mux.HandleFunc("POST /api/articles/{id}/words/define", articleWordDefineHandler(ident, articles, pipe, rdb, wordDefineQueue))

@@ -133,7 +133,7 @@ func toNewsArticleSubQuestions(qs []protocol.ArticleSubQuestion) []newsarticle.S
 	return out
 }
 
-func runArticleStudy(ctx context.Context, pipe *pipeline.Pipeline, articles newsarticle.Store, audio *ArticleAudio, articleID, source, title, description string) error {
+func runArticleStudy(ctx context.Context, pipe *pipeline.Pipeline, articles newsarticle.Store, audio *ArticleAudio, phrasesQueue *asyncjob.Queue, articleID, source, title, description string) error {
 	ctx = workguard.BindStore(ctx, articles, "", articleID)
 	target, ok, err := articles.GetArticle(ctx, articleID)
 	if err != nil {
@@ -172,6 +172,18 @@ func runArticleStudy(ctx context.Context, pipe *pipeline.Pipeline, articles news
 	if _, err := articles.CompleteArticle(ctx, articleID, study.Summary, study.Translation, toNewsArticleSubQuestions(study.SubQuestions)); err != nil {
 		return fmt.Errorf("article study: complete: %w", err)
 	}
+	// Key phrases are the reading aid generated right here so a learner
+	// opening the finished article already has suggestions (see
+	// newsarticle.Article.KeyPhrases). Dispatched, not run inline: with
+	// Redis this rides the durable queue deduped by article ID, so httpserver's
+	// phrases GET can see it via queue.Pending and never kick off a second
+	// generation; without Redis both paths share articlePhrasesInlineJobs.
+	// Swallow-and-log like audio.generate below — a failed dispatch only
+	// costs the lazy-on-read backfill a little later, it must never fail the
+	// study job whose article is already complete.
+	if err := DispatchArticlePhrases(ctx, phrasesQueue, pipe, articles, articleID); err != nil {
+		log.Printf("article study: phrases dispatch %s: %v", articleID, err)
+	}
 	audio.generate(ctx, articleID, study.Summary)
 	return nil
 }
@@ -179,9 +191,11 @@ func runArticleStudy(ctx context.Context, pipe *pipeline.Pipeline, articles news
 // ArticleStudyJobHandler builds the asyncjob.Handler that runs one queued
 // article-study job, independent of any connection or its context — see
 // StudySummaryJobHandler's doc comment for the shared durability rationale.
-func ArticleStudyJobHandler(pipe *pipeline.Pipeline, articles newsarticle.Store, audio *ArticleAudio) asyncjob.Handler {
+// phrasesQueue is the queue key phrase generation is dispatched onto after
+// completion (see runArticleStudy); nil runs it in-process instead.
+func ArticleStudyJobHandler(pipe *pipeline.Pipeline, articles newsarticle.Store, audio *ArticleAudio, phrasesQueue *asyncjob.Queue) asyncjob.Handler {
 	return asyncjob.DecodePayloadHandler(asyncjob.KindArticleStudy, func(ctx context.Context, payload articleStudyJobPayload) error {
-		return runArticleStudy(ctx, pipe, articles, audio, payload.ArticleID, payload.Source, payload.Title, payload.Description)
+		return runArticleStudy(ctx, pipe, articles, audio, phrasesQueue, payload.ArticleID, payload.Source, payload.Title, payload.Description)
 	})
 }
 
@@ -189,26 +203,27 @@ func ArticleStudyJobHandler(pipe *pipeline.Pipeline, articles newsarticle.Store,
 // synchronously — mirrors RunWordVerifyInline; the caller is expected to run
 // this on a detached context.Background() goroutine of its own so a slow
 // LLM call never blocks the draw response.
-func RunArticleStudyInline(ctx context.Context, pipe *pipeline.Pipeline, articles newsarticle.Store, audio *ArticleAudio, articleID, source, title, description string) error {
-	return runArticleStudy(ctx, pipe, articles, audio, articleID, source, title, description)
+func RunArticleStudyInline(ctx context.Context, pipe *pipeline.Pipeline, articles newsarticle.Store, audio *ArticleAudio, phrasesQueue *asyncjob.Queue, articleID, source, title, description string) error {
+	return runArticleStudy(ctx, pipe, articles, audio, phrasesQueue, articleID, source, title, description)
 }
 
 // EnqueueArticleStudyJob durably queues study generation for a
 // just-reserved pending article — mirrors EnqueueWordVerifyJob. Deduped by
 // articleID, so multiple learners drawing the same brand-new URL at once
 // (each reserving/observing the same StatusPending row) only ever trigger
-// one actual generation.
-func EnqueueArticleStudyJob(ctx context.Context, queue *asyncjob.Queue, pipe *pipeline.Pipeline, articles newsarticle.Store, audio *ArticleAudio, articleID, source, title, description string) error {
+// one actual generation. phrasesQueue is threaded through to the handler so
+// the immediate-run path completes phrase generation too.
+func EnqueueArticleStudyJob(ctx context.Context, queue *asyncjob.Queue, pipe *pipeline.Pipeline, articles newsarticle.Store, audio *ArticleAudio, phrasesQueue *asyncjob.Queue, articleID, source, title, description string) error {
 	payload := articleStudyJobPayload{ArticleID: articleID, Source: source, Title: title, Description: description}
 	return queue.EnqueueAndRunInBackground(ctx, asyncjob.KindArticleStudy, articleID,
-		articleID, payload, ArticleStudyClaimTTL, ArticleStudyJobHandler(pipe, articles, audio))
+		articleID, payload, ArticleStudyClaimTTL, ArticleStudyJobHandler(pipe, articles, audio, phrasesQueue))
 }
 
 // SweepStaleArticleStudies recovers unfinished articles from the database.
 // With Redis, enqueue deduplication and lease ownership preserve live work
 // and completed checkpoints; orphan rows without a job get a new durable job.
 // Without Redis, the database claim gates the detached inline recovery.
-func SweepStaleArticleStudies(ctx context.Context, queue *asyncjob.Queue, pipe *pipeline.Pipeline, articles newsarticle.Store, audio *ArticleAudio) error {
+func SweepStaleArticleStudies(ctx context.Context, queue *asyncjob.Queue, phrasesQueue *asyncjob.Queue, pipe *pipeline.Pipeline, articles newsarticle.Store, audio *ArticleAudio) error {
 	stale, err := articles.StalePending(ctx, ArticleStudyStaleAfter)
 	if err != nil {
 		return fmt.Errorf("article study: sweep: list stale: %w", err)
@@ -237,7 +252,7 @@ func SweepStaleArticleStudies(ctx context.Context, queue *asyncjob.Queue, pipe *
 		}
 		log.Printf("article study: sweep: resuming abandoned generation %s", a.ID)
 		go func(article newsarticle.Article) {
-			if err := RunArticleStudyInline(context.Background(), pipe, articles, audio, article.ID, article.Source, article.Title, article.Description); err != nil {
+			if err := RunArticleStudyInline(context.Background(), pipe, articles, audio, phrasesQueue, article.ID, article.Source, article.Title, article.Description); err != nil {
 				log.Printf("articles: sweep study %s: %v", article.ID, err)
 			}
 		}(a)
@@ -248,7 +263,7 @@ func SweepStaleArticleStudies(ctx context.Context, queue *asyncjob.Queue, pipe *
 // RunArticleStudySweepLoop runs SweepStaleArticleStudies every
 // ArticleStudySweepInterval until ctx is canceled. It also runs with Redis
 // enabled to recover rows whose process died before enqueueing their job.
-func RunArticleStudySweepLoop(ctx context.Context, queue *asyncjob.Queue, pipe *pipeline.Pipeline, articles newsarticle.Store, audio *ArticleAudio) {
+func RunArticleStudySweepLoop(ctx context.Context, queue *asyncjob.Queue, phrasesQueue *asyncjob.Queue, pipe *pipeline.Pipeline, articles newsarticle.Store, audio *ArticleAudio) {
 	ticker := time.NewTicker(ArticleStudySweepInterval)
 	defer ticker.Stop()
 	for {
@@ -256,7 +271,7 @@ func RunArticleStudySweepLoop(ctx context.Context, queue *asyncjob.Queue, pipe *
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := SweepStaleArticleStudies(context.Background(), queue, pipe, articles, audio); err != nil {
+			if err := SweepStaleArticleStudies(context.Background(), queue, phrasesQueue, pipe, articles, audio); err != nil {
 				log.Printf("article study: sweep: %v", err)
 			}
 		}

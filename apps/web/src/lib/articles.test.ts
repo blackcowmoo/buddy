@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { answerArticle, deleteArticleInstance, drawArticle, fetchArticleInstance, fetchArticleInstances } from "./articles";
+import {
+  answerArticle,
+  deleteArticleInstance,
+  drawArticle,
+  fetchArticleInstance,
+  fetchArticleInstances,
+  fetchArticlePhrases,
+} from "./articles";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -147,5 +154,70 @@ describe("deleteArticleInstance", () => {
   it("returns false when fetch rejects", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
     await expect(deleteArticleInstance("i1")).resolves.toBe(false);
+  });
+});
+
+describe("fetchArticlePhrases", () => {
+  it("passes through a done response with usable phrases", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ status: "done", phrases: ["in spite of", "made headway"] }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(fetchArticlePhrases("i1")).resolves.toEqual({ status: "done", phrases: ["in spite of", "made headway"] });
+    expect(fetchMock).toHaveBeenCalledWith("api/articles/i1/phrases");
+  });
+
+  it("drops non-string and blank entries from a done response", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ status: "done", phrases: ["made headway", 42, null, "   ", {}] }),
+    }));
+    await expect(fetchArticlePhrases("i1")).resolves.toEqual({ status: "done", phrases: ["made headway"] });
+  });
+
+  // The server never persists an empty suggestion list, and any hiccup must
+  // keep the caller polling rather than end the watch on a false verdict —
+  // so every other shape, however it arose, reports pending.
+  it("reports pending when done carries an empty or fully-unusable list", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ status: "done", phrases: [] }),
+    }));
+    await expect(fetchArticlePhrases("i1")).resolves.toEqual({ status: "pending" });
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ status: "done", phrases: [null, ""] }),
+    }));
+    await expect(fetchArticlePhrases("i1")).resolves.toEqual({ status: "pending" });
+  });
+
+  it("reports pending on the server's explicit pending answer", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ status: "pending" }),
+    }));
+    await expect(fetchArticlePhrases("i1")).resolves.toEqual({ status: "pending" });
+  });
+
+  it("reports pending on a non-ok response (409 article still generating, 500, …)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 409 }));
+    await expect(fetchArticlePhrases("i1")).resolves.toEqual({ status: "pending" });
+  });
+
+  it("reports pending when fetch rejects or the body is not JSON", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
+    await expect(fetchArticlePhrases("i1")).resolves.toEqual({ status: "pending" });
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: () => Promise.reject(new Error("bad json")) }));
+    await expect(fetchArticlePhrases("i1")).resolves.toEqual({ status: "pending" });
+  });
+
+  it("url-encodes the instance id", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false });
+    vi.stubGlobal("fetch", fetchMock);
+    await fetchArticlePhrases("weird id/1");
+    expect(fetchMock).toHaveBeenCalledWith("api/articles/weird%20id%2F1/phrases");
   });
 });

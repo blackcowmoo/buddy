@@ -77,7 +77,7 @@ func TestArticlePollingStillReturnsUnfinishedInstances(t *testing.T) {
 			r := httptest.NewRequest(http.MethodGet, "/", nil)
 			r.SetPathValue("id", "draw")
 			w := httptest.NewRecorder()
-			articleInstanceHandler(fakeIdentifier{id: "alex", ok: true}, st, &pipeline.Pipeline{}, nil, nil)(w, r)
+			articleInstanceHandler(fakeIdentifier{id: "alex", ok: true}, st, &pipeline.Pipeline{}, nil, nil, nil)(w, r)
 			requireStatus(t, w, http.StatusOK)
 			if !strings.Contains(w.Body.String(), `"status":"`+status+`"`) {
 				t.Fatalf("poll response lost status %q: %s", status, w.Body.String())

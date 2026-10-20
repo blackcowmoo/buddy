@@ -157,6 +157,24 @@ func (f *fakeArticleStore) FailArticle(ctx context.Context, id string) error {
 	return nil
 }
 
+// SetArticlePhrases mirrors MySQLStore.SetArticlePhrases's first-writer-wins
+// no-op conditions (see newsarticle.Store.SetArticlePhrases).
+func (f *fakeArticleStore) SetArticlePhrases(ctx context.Context, id string, phrases []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(phrases) == 0 {
+		return nil
+	}
+	for url, a := range f.byURL {
+		if a.ID != id || a.Status != newsarticle.StatusDone || strings.TrimSpace(a.Summary) == "" || len(a.KeyPhrases) > 0 {
+			continue
+		}
+		a.KeyPhrases = phrases
+		f.byURL[url] = a
+	}
+	return nil
+}
+
 func (f *fakeArticleStore) GetArticle(ctx context.Context, id string) (newsarticle.Article, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -344,7 +362,7 @@ func TestArticleDrawHandlerReservesPendingAndCompletesInBackground(t *testing.T)
 	st := &fakeArticleStore{}
 	pipe := fakeArticlePipeline(fakeStudyJSON)
 	fetch := fetchOneCandidate(newsfeed.Candidate{Source: "BBC", Title: "Headline", URL: "https://example.com/a", Description: "snippet"})
-	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil, nil)
+	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil, nil, nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
@@ -384,7 +402,7 @@ func TestArticleDrawHandlerCarriesPublishedAtFromTheCandidate(t *testing.T) {
 	pipe := fakeArticlePipeline(fakeStudyJSON)
 	published := time.Date(2024, 3, 15, 9, 30, 0, 0, time.UTC)
 	fetch := fetchOneCandidate(newsfeed.Candidate{Source: "BBC", Title: "Headline", URL: "https://example.com/a", Description: "snippet", PublishedAt: published})
-	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil, nil)
+	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil, nil, nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
@@ -411,7 +429,7 @@ func TestArticleDrawHandlerReusesCachedArticleWithoutCallingLLM(t *testing.T) {
 		return fakeStudyJSON, nil
 	}}}}}
 	fetch := fetchOneCandidate(newsfeed.Candidate{Source: "BBC", Title: "Headline", URL: "https://example.com/a", Description: "snippet"})
-	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil, nil)
+	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil, nil, nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
@@ -450,7 +468,7 @@ func TestArticleDrawHandlerRegeneratesAPreMigrationDoneArticleWithNoSubQuestions
 		return fakeStudyJSON, nil
 	}}}}}
 	fetch := fetchOneCandidate(newsfeed.Candidate{Source: "BBC", Title: "Headline", URL: "https://example.com/a", Description: "snippet"})
-	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil, nil)
+	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, fetch, nil, nil, nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
@@ -509,7 +527,7 @@ func TestArticleDrawHandlerPicksFirstUnusedCandidate(t *testing.T) {
 			}
 			before := len(st.byUser["alex"])
 			fetch := func(context.Context) ([]newsfeed.Candidate, error) { return candidates[:tc.candidateCount], nil }
-			h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, fetch, nil, nil)
+			h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, st, nil, fetch, nil, nil, nil)
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
 
@@ -533,14 +551,14 @@ func TestArticleDrawHandlerPicksFirstUnusedCandidate(t *testing.T) {
 }
 
 func TestArticleDrawHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
-	h := articleDrawHandler(fakeIdentifier{ok: false}, &fakeArticleStore{}, fakeArticlePipeline(fakeStudyJSON), fetchOneCandidate(newsfeed.Candidate{URL: "https://example.com/a"}), nil, nil)
+	h := articleDrawHandler(fakeIdentifier{ok: false}, &fakeArticleStore{}, fakeArticlePipeline(fakeStudyJSON), fetchOneCandidate(newsfeed.Candidate{URL: "https://example.com/a"}), nil, nil, nil)
 
 	assertUnauthorized(t, h, httptest.NewRequest("POST", "/api/articles/draw", nil))
 }
 
 func TestArticleDrawHandlerInternalErrorOnFetchFailure(t *testing.T) {
 	fetch := func(context.Context) ([]newsfeed.Candidate, error) { return nil, errors.New("all feeds down") }
-	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, &fakeArticleStore{}, fakeArticlePipeline(fakeStudyJSON), fetch, nil, nil)
+	h := articleDrawHandler(fakeIdentifier{id: "alex", ok: true}, &fakeArticleStore{}, fakeArticlePipeline(fakeStudyJSON), fetch, nil, nil, nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/articles/draw", nil))
@@ -657,7 +675,7 @@ func TestArticleInstanceHandlerReturnsCurrentStatus(t *testing.T) {
 	st := &fakeArticleStore{byUser: map[string][]newsarticle.Instance{
 		"alex": {{ID: "i1", UserID: "alex", Article: newsarticle.Article{Source: "BBC", Title: "t", Status: newsarticle.StatusPending}, CreatedAt: time.Now()}},
 	}}
-	h := articleInstanceHandler(fakeIdentifier{id: "alex", ok: true}, st, fakeArticlePipeline(fakeStudyJSON), nil, nil)
+	h := articleInstanceHandler(fakeIdentifier{id: "alex", ok: true}, st, fakeArticlePipeline(fakeStudyJSON), nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/api/articles/i1", nil)
 	req.SetPathValue("id", "i1")
@@ -698,7 +716,7 @@ func TestArticleInstanceHandlerSelfHealsAPreMigrationDoneArticleWithNoSubQuestio
 		calls++
 		return fakeStudyJSON, nil
 	}}}}}
-	h := articleInstanceHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, nil, nil)
+	h := articleInstanceHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/api/articles/i1", nil)
 	req.SetPathValue("id", "i1")
@@ -735,7 +753,7 @@ func TestArticleInstanceHandlerSelfHealsAPreMigrationDoneArticleWithNoSubQuestio
 }
 
 func TestArticleInstanceHandlerNotFoundForMissingOrOtherUsersInstance(t *testing.T) {
-	h := articleInstanceHandler(fakeIdentifier{id: "alex", ok: true}, &fakeArticleStore{}, fakeArticlePipeline(fakeStudyJSON), nil, nil)
+	h := articleInstanceHandler(fakeIdentifier{id: "alex", ok: true}, &fakeArticleStore{}, fakeArticlePipeline(fakeStudyJSON), nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/api/articles/missing", nil)
 	req.SetPathValue("id", "missing")
@@ -746,7 +764,7 @@ func TestArticleInstanceHandlerNotFoundForMissingOrOtherUsersInstance(t *testing
 }
 
 func TestArticleInstanceHandlerUnauthorizedWhenIdentifyFails(t *testing.T) {
-	h := articleInstanceHandler(fakeIdentifier{ok: false}, &fakeArticleStore{}, fakeArticlePipeline(fakeStudyJSON), nil, nil)
+	h := articleInstanceHandler(fakeIdentifier{ok: false}, &fakeArticleStore{}, fakeArticlePipeline(fakeStudyJSON), nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/api/articles/i1", nil)
 	req.SetPathValue("id", "i1")
@@ -918,4 +936,127 @@ func TestArticleDeleteHandlerRemovesInstance(t *testing.T) {
 	if len(st.byUser["alex"]) != 0 {
 		t.Fatalf("instance still present after delete: %+v", st.byUser["alex"])
 	}
+}
+
+// ---- articlePhrasesHandler ---------------------------------------------------
+
+func phrasesRequest(id string) *http.Request {
+	req := httptest.NewRequest("GET", "/api/articles/"+id+"/phrases", nil)
+	req.SetPathValue("id", id)
+	return req
+}
+
+// TestArticlePhrasesHandlerReturnsCachedPhrases guards the read path's whole
+// point: once a shared Article row carries its phrase list, every reader is
+// served straight from the cache row — the LLM is never re-consulted.
+func TestArticlePhrasesHandlerReturnsCachedPhrases(t *testing.T) {
+	st := &fakeArticleStore{byUser: map[string][]newsarticle.Instance{
+		"alex": {{ID: "i1", UserID: "alex", Article: newsarticle.Article{
+			ID: "a1", Summary: "The two sides agreed to talk again after months of silence.",
+			Status: newsarticle.StatusDone, KeyPhrases: []string{"agreed to", "months of"},
+		}}},
+	}}
+	llmCalls := 0
+	pipe := &pipeline.Pipeline{LLM: &fakeArticleLLM{complete: func(msgs []llm.Message) (string, error) {
+		llmCalls++
+		return `{"phrases":["should not run"]}`, nil
+	}}, ChatModel: "m"}
+	h := articlePhrasesHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, nil)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, phrasesRequest("i1"))
+
+	requireStatus(t, rec, http.StatusOK)
+	var got articlePhrasesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Status != "done" || strings.Join(got.Phrases, "|") != "agreed to|months of" {
+		t.Fatalf("got %+v, want the cached phrase list served as done", got)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if llmCalls != 0 {
+		t.Fatalf("LLM calls = %d, want 0 (cached phrases must be reused)", llmCalls)
+	}
+}
+
+// TestArticlePhrasesHandlerGeneratesOnceForArticleWithoutPhrases guards the
+// lazy path for a done article whose list never landed (the shape every
+// pre-feature article row is in): the first read reports "pending" and
+// dispatches generation; the generated list lands on the shared row so a
+// later poll is served "done" — and a second reader never re-pays the call.
+func TestArticlePhrasesHandlerGeneratesOnceForArticleWithoutPhrases(t *testing.T) {
+	// The shared row lives in byURL (what GetArticle/SetArticlePhrases read
+	// and write, mirroring the real instance→article join); the instance
+	// picks it up through refreshArticleLocked.
+	st := &fakeArticleStore{
+		byURL: map[string]newsarticle.Article{"u1": {
+			ID: "a1", Summary: "The two sides agreed to talk again after months of silence.", Status: newsarticle.StatusDone,
+		}},
+		byUser: map[string][]newsarticle.Instance{
+			"alex": {{ID: "i1", UserID: "alex", Article: newsarticle.Article{
+				ID: "a1", Summary: "The two sides agreed to talk again after months of silence.", Status: newsarticle.StatusDone,
+			}}},
+		},
+	}
+	llmCalls := 0
+	pipe := &pipeline.Pipeline{LLM: &fakeArticleLLM{complete: func(msgs []llm.Message) (string, error) {
+		llmCalls++
+		return `{"phrases":["agreed to","months of"]}`, nil
+	}}, ChatModel: "m"}
+	h := articlePhrasesHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, nil)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, phrasesRequest("i1"))
+	requireStatus(t, rec, http.StatusOK)
+	var first articlePhrasesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &first); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if first.Status != "pending" || len(first.Phrases) != 0 {
+		t.Fatalf("first response = %+v, want pending with no phrases yet", first)
+	}
+
+	waitForCondition(t, 2*time.Second, func() bool {
+		a, ok, err := st.GetArticle(context.Background(), "a1")
+		return err == nil && ok && len(a.KeyPhrases) == 2
+	})
+
+	rec2 := httptest.NewRecorder()
+	h.ServeHTTP(rec2, phrasesRequest("i1"))
+	var second articlePhrasesResponse
+	if err := json.Unmarshal(rec2.Body.Bytes(), &second); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if second.Status != "done" || strings.Join(second.Phrases, "|") != "agreed to|months of" {
+		t.Fatalf("second response = %+v, want the generated list served as done", second)
+	}
+	if llmCalls != 1 {
+		t.Fatalf("LLM calls = %d, want exactly 1 (cached result reused on the next read)", llmCalls)
+	}
+}
+
+// TestArticlePhrasesHandlerRejectsPendingArticle guards that a still-
+// generating article 409s instead of dispatching extraction against its
+// empty summary: the study job itself dispatches phrase generation right
+// after completing the article.
+func TestArticlePhrasesHandlerRejectsPendingArticle(t *testing.T) {
+	st := &fakeArticleStore{byUser: map[string][]newsarticle.Instance{
+		"alex": {{ID: "i1", UserID: "alex", Article: newsarticle.Article{ID: "a1", Status: newsarticle.StatusPending}}},
+	}}
+	h := articlePhrasesHandler(fakeIdentifier{id: "alex", ok: true}, st, fakeArticlePipeline(fakeStudyJSON), nil)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, phrasesRequest("i1"))
+
+	requireStatus(t, rec, http.StatusConflict)
+}
+
+func TestArticlePhrasesHandlerNotFoundForMissingInstance(t *testing.T) {
+	h := articlePhrasesHandler(fakeIdentifier{id: "alex", ok: true}, &fakeArticleStore{}, fakeArticlePipeline(fakeStudyJSON), nil)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, phrasesRequest("missing"))
+
+	requireStatus(t, rec, http.StatusNotFound)
 }

@@ -235,6 +235,20 @@ func (s *fakeNewsArticleStore) FailArticle(ctx context.Context, id string) error
 	return nil
 }
 
+// SetArticlePhrases mirrors MySQLStore.SetArticlePhrases's first-writer-wins
+// no-op conditions (see newsarticle.Store.SetArticlePhrases).
+func (s *fakeNewsArticleStore) SetArticlePhrases(ctx context.Context, id string, phrases []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.articles[id]
+	if !ok || a.Status != newsarticle.StatusDone || strings.TrimSpace(a.Summary) == "" || len(a.KeyPhrases) > 0 || len(phrases) == 0 {
+		return nil
+	}
+	a.KeyPhrases = phrases
+	s.articles[id] = a
+	return nil
+}
+
 func (s *fakeNewsArticleStore) GetArticle(ctx context.Context, id string) (newsarticle.Article, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -277,7 +291,7 @@ func TestRunArticleStudyCompletesAPendingArticle(t *testing.T) {
 	}
 	articles := newFakeNewsArticleStore(newsarticle.Article{ID: "a1", Source: "BBC", Title: "Headline", URL: "https://example.com/a", Status: newsarticle.StatusPending})
 
-	if err := RunArticleStudyInline(context.Background(), pipe, articles, nil, "a1", "BBC", "Headline", "snippet"); err != nil {
+	if err := RunArticleStudyInline(context.Background(), pipe, articles, nil, nil, "a1", "BBC", "Headline", "snippet"); err != nil {
 		t.Fatalf("RunArticleStudyInline() error = %v", err)
 	}
 	if got := articles.status("a1"); got != newsarticle.StatusDone {
@@ -322,7 +336,7 @@ func TestRunArticleStudyGeneratesAndCachesReadAloudAudio(t *testing.T) {
 	cache := &fakeCache{}
 	audio := &ArticleAudio{Client: speaker, Cache: cache}
 
-	if err := RunArticleStudyInline(context.Background(), pipe, articles, audio, "a1", "BBC", "Headline", "snippet"); err != nil {
+	if err := RunArticleStudyInline(context.Background(), pipe, articles, audio, nil, "a1", "BBC", "Headline", "snippet"); err != nil {
 		t.Fatalf("RunArticleStudyInline() error = %v", err)
 	}
 
@@ -350,7 +364,7 @@ func TestRunArticleStudySkipsGenerationWhenAudioIsNil(t *testing.T) {
 	}
 	articles := newFakeNewsArticleStore(newsarticle.Article{ID: "a1", Source: "BBC", Title: "Headline", URL: "https://example.com/a", Status: newsarticle.StatusPending})
 
-	if err := RunArticleStudyInline(context.Background(), pipe, articles, nil, "a1", "BBC", "Headline", "snippet"); err != nil {
+	if err := RunArticleStudyInline(context.Background(), pipe, articles, nil, nil, "a1", "BBC", "Headline", "snippet"); err != nil {
 		t.Fatalf("RunArticleStudyInline() error = %v, want nil audio to be a no-op, not a failure", err)
 	}
 	if got := articles.status("a1"); got != newsarticle.StatusDone {
@@ -370,7 +384,7 @@ func TestRunArticleStudySucceedsEvenWhenTTSGenerationFails(t *testing.T) {
 	articles := newFakeNewsArticleStore(newsarticle.Article{ID: "a1", Source: "BBC", Title: "Headline", URL: "https://example.com/a", Status: newsarticle.StatusPending})
 	audio := &ArticleAudio{Client: &fakeSpeaker{failWith: fmt.Errorf("tts server unreachable")}, Cache: &fakeCache{}}
 
-	if err := RunArticleStudyInline(context.Background(), pipe, articles, audio, "a1", "BBC", "Headline", "snippet"); err != nil {
+	if err := RunArticleStudyInline(context.Background(), pipe, articles, audio, nil, "a1", "BBC", "Headline", "snippet"); err != nil {
 		t.Fatalf("RunArticleStudyInline() error = %v, want a TTS failure to be swallowed", err)
 	}
 	if got := articles.status("a1"); got != newsarticle.StatusDone {
@@ -427,7 +441,7 @@ func TestRunArticleStudyPropagatesErrorAndMarksFailed(t *testing.T) {
 	}
 	articles := newFakeNewsArticleStore(newsarticle.Article{ID: "a1", Source: "BBC", Title: "Headline", URL: "https://example.com/a", Status: newsarticle.StatusPending})
 
-	if err := RunArticleStudyInline(context.Background(), pipe, articles, nil, "a1", "BBC", "Headline", "snippet"); err == nil {
+	if err := RunArticleStudyInline(context.Background(), pipe, articles, nil, nil, "a1", "BBC", "Headline", "snippet"); err == nil {
 		t.Fatal("expected an error when the LLM call fails")
 	}
 	if got := articles.status("a1"); got != newsarticle.StatusFailed {
@@ -448,7 +462,7 @@ func TestRunArticleStudyRetriesAPreviouslyFailedArticle(t *testing.T) {
 		Analysis: []pipeline.Candidate{{Model: "m", LLM: countingLLM{&calls, fakeArticleStudyJSON}}},
 	}
 
-	if err := RunArticleStudyInline(context.Background(), pipe, articles, nil, "a1", "BBC", "Headline", "snippet"); err != nil {
+	if err := RunArticleStudyInline(context.Background(), pipe, articles, nil, nil, "a1", "BBC", "Headline", "snippet"); err != nil {
 		t.Fatalf("retry failed: %v", err)
 	}
 	if got := articles.status("a1"); got != newsarticle.StatusDone {
@@ -475,7 +489,7 @@ func TestRunArticleStudyIsNoopForAlreadyDoneArticle(t *testing.T) {
 		},
 	})
 
-	if err := RunArticleStudyInline(context.Background(), pipe, articles, nil, "a1", "BBC", "Headline", "snippet"); err != nil {
+	if err := RunArticleStudyInline(context.Background(), pipe, articles, nil, nil, "a1", "BBC", "Headline", "snippet"); err != nil {
 		t.Fatalf("RunArticleStudyInline() error = %v", err)
 	}
 	if calls != 0 {
@@ -489,7 +503,7 @@ func TestRunArticleStudyIsNoopForMissingArticle(t *testing.T) {
 	pipe := &pipeline.Pipeline{}
 	articles := newFakeNewsArticleStore()
 
-	if err := RunArticleStudyInline(context.Background(), pipe, articles, nil, "does-not-exist", "BBC", "Headline", "snippet"); err != nil {
+	if err := RunArticleStudyInline(context.Background(), pipe, articles, nil, nil, "does-not-exist", "BBC", "Headline", "snippet"); err != nil {
 		t.Fatalf("RunArticleStudyInline() error = %v, want nil for a missing article", err)
 	}
 }
@@ -508,7 +522,7 @@ func TestSweepStaleArticleStudiesResumesAbandonedGeneration(t *testing.T) {
 	})
 	articles.markStale("a-stale")
 
-	if err := SweepStaleArticleStudies(context.Background(), nil, pipe, articles, nil); err != nil {
+	if err := SweepStaleArticleStudies(context.Background(), nil, nil, pipe, articles, nil); err != nil {
 		t.Fatalf("SweepStaleArticleStudies() error = %v", err)
 	}
 	// Recovery runs on a detached goroutine so the sweep loop is not blocked by
@@ -533,7 +547,7 @@ func TestSweepStaleArticleStudiesSkipsNonStalePending(t *testing.T) {
 		ID: "a-fresh", Source: "BBC", Title: "Headline", URL: "https://example.com/fresh", Status: newsarticle.StatusPending,
 	})
 
-	if err := SweepStaleArticleStudies(context.Background(), nil, pipe, articles, nil); err != nil {
+	if err := SweepStaleArticleStudies(context.Background(), nil, nil, pipe, articles, nil); err != nil {
 		t.Fatalf("SweepStaleArticleStudies() error = %v", err)
 	}
 	if calls != 0 {
@@ -602,7 +616,7 @@ func TestSweepStaleArticleStudiesPreservesDurableJobs(t *testing.T) {
 				}
 			}
 			sweep := func() error {
-				if err := SweepStaleArticleStudies(ctx, queue, &pipeline.Pipeline{}, articles, nil); err != nil {
+				if err := SweepStaleArticleStudies(ctx, queue, nil, &pipeline.Pipeline{}, articles, nil); err != nil {
 					return err
 				}
 				stale, err := articles.StalePending(ctx, ArticleStudyStaleAfter)
@@ -686,7 +700,7 @@ func TestSweepStaleArticleStudiesEnqueueFailureKeepsOrphanVisible(t *testing.T) 
 	}
 	articles := newFakeNewsArticleStore(newsarticle.Article{ID: "orphan", Status: newsarticle.StatusPending})
 	articles.markStale("orphan")
-	err := SweepStaleArticleStudies(context.Background(), asyncjob.NewQueue(rdb), &pipeline.Pipeline{}, articles, nil)
+	err := SweepStaleArticleStudies(context.Background(), asyncjob.NewQueue(rdb), nil, &pipeline.Pipeline{}, articles, nil)
 	if !errors.Is(err, redis.ErrClosed) {
 		t.Fatalf("sweep error = %v, want enqueue failure", err)
 	}
@@ -697,7 +711,7 @@ func TestSweepStaleArticleStudiesEnqueueFailureKeepsOrphanVisible(t *testing.T) 
 }
 
 func TestArticleStudyJobHandlerBadPayload(t *testing.T) {
-	handler := ArticleStudyJobHandler(&pipeline.Pipeline{}, newFakeNewsArticleStore(), nil)
+	handler := ArticleStudyJobHandler(&pipeline.Pipeline{}, newFakeNewsArticleStore(), nil, nil)
 	job := asyncjob.Job{Kind: asyncjob.KindArticleStudy, Payload: json.RawMessage(`not json`)}
 	if err := handler(context.Background(), job); err == nil {
 		t.Fatalf("handler(bad payload) error = nil, want an unmarshal error")
@@ -714,7 +728,7 @@ func TestEnqueueArticleStudyJobRunsInBackgroundAndPersists(t *testing.T) {
 	}
 	articles := newFakeNewsArticleStore(newsarticle.Article{ID: "a-enqueue", Source: "BBC", Title: "Headline", URL: "https://example.com/enqueue", Status: newsarticle.StatusPending})
 
-	if err := EnqueueArticleStudyJob(context.Background(), queue, pipe, articles, nil, "a-enqueue", "BBC", "Headline", "snippet"); err != nil {
+	if err := EnqueueArticleStudyJob(context.Background(), queue, pipe, articles, nil, nil, "a-enqueue", "BBC", "Headline", "snippet"); err != nil {
 		t.Fatalf("EnqueueArticleStudyJob() error = %v", err)
 	}
 

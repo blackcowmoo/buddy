@@ -45,6 +45,20 @@ type Article struct {
 	// Explanation are never sent before they answer — see httpserver's
 	// handlers. Empty while Status is StatusPending.
 	SubQuestions []SubQuestion
+	// KeyPhrases are the multi-word expressions (collocations, phrasal
+	// verbs, idioms) that pipeline.SuggestArticlePhrases extracted verbatim
+	// from Summary — the "which parts of this text are phrases worth
+	// looking up?" answer a learner can't be expected to spot on their own.
+	// Generated once per shared Article (by the article study job right
+	// after CompleteArticle, or lazily by httpserver's phrases handler on a
+	// later read) and stored here so every future reader of the same story
+	// reuses this exact list instead of re-paying the LLM call. Empty while
+	// Status is StatusPending, and — unlike Summary — also empty for an
+	// already-done Article whose phrase generation hasn't run or hasn't
+	// succeeded yet; empty therefore means "not generated", never "checked
+	// and there were none" (the prompt always finds at least one phrase in a
+	// real paragraph, and generation returns an error otherwise).
+	KeyPhrases []string
 	// Description is the feed's own short snippet (newsfeed.Candidate.
 	// Description) that pipeline.GenerateArticleStudy needs as input,
 	// persisted here — not just held transiently in the draw request — so
@@ -189,6 +203,18 @@ type Store interface {
 	// with) — the caller must not redispatch generation in that case. A
 	// no-op for any Article that already has real SubQuestions.
 	ReopenIncompleteArticle(ctx context.Context, id string) (bool, error)
+	// SetArticlePhrases persists the KeyPhrases list generated for a
+	// StatusDone Article (see Article.KeyPhrases). First-writer-wins: the
+	// write only lands while the stored list is still empty, so a racing
+	// second generator (e.g. the study job's own post-completion pass and a
+	// learner's lazily-triggered read of a legacy article) can never churn
+	// the shared cached answer once one has landed. A no-op — never an
+	// error — if the row is gone, no longer StatusDone, has lost its last
+	// instance, or already has phrases. An empty phrases list is never
+	// persisted: empty must keep meaning "not generated yet" (see
+	// Article.KeyPhrases), and generation failures are retried by the next
+	// read rather than cached as "this paragraph has no phrases".
+	SetArticlePhrases(ctx context.Context, id string, phrases []string) error
 
 	// UsedURLs returns every Article URL userID has already drawn an
 	// Instance for — the exclusion set httpserver's draw handler filters

@@ -824,3 +824,139 @@ func TestLastConsumerDeletionStopsSharedArticleWork(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// ---- SetArticlePhrases -------------------------------------------------------
+
+func TestSchemaIncludesArticleKeyPhrasesColumn(t *testing.T) {
+	st := requireStore(t)
+	var count int
+	err := st.ro.QueryRowContext(context.Background(), `
+		SELECT COUNT(*) FROM information_schema.columns
+		WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?
+	`, articlesTable, "key_phrases_json").Scan(&count)
+	if err != nil {
+		t.Fatalf("check key_phrases_json schema: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("key_phrases_json column count = %d, want 1", count)
+	}
+}
+
+// TestSetArticlePhrasesRoundTripAndFirstWriterWins guards the storage half
+// of "generate once, everyone reuses": the list survives GetArticle and the
+// instance join, a second writer's UPDATE matches nothing, and an empty
+// write is dropped so empty keeps meaning "not generated".
+func TestSetArticlePhrasesRoundTripAndFirstWriterWins(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	article := mustSaveArticle(t, st, "https://example.com/phrases-roundtrip")
+
+	if err := st.SetArticlePhrases(ctx, article.ID, []string{"reach a deal", "in response to"}); err != nil {
+		t.Fatalf("SetArticlePhrases() error = %v", err)
+	}
+	found, ok, err := st.GetArticle(ctx, article.ID)
+	if err != nil || !ok {
+		t.Fatalf("GetArticle() = (%+v, %v, %v)", found, ok, err)
+	}
+	if len(found.KeyPhrases) != 2 || found.KeyPhrases[0] != "reach a deal" {
+		t.Fatalf("KeyPhrases = %v, want the persisted list back", found.KeyPhrases)
+	}
+
+	// The instance join must surface the same list — that's what the
+	// phrases GET handler serves from without a second query.
+	instances, err := st.List(ctx, "study-fixture")
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	var drawn *Instance
+	for i := range instances {
+		if instances[i].Article.ID == article.ID {
+			drawn = &instances[i]
+		}
+	}
+	if drawn == nil {
+		t.Fatal("mustSaveArticle's instance not found in List()")
+	}
+	if len(drawn.Article.KeyPhrases) != 2 {
+		t.Fatalf("instance join KeyPhrases = %v, want the persisted list", drawn.Article.KeyPhrases)
+	}
+
+	// Second writer: no-op, first answer stands.
+	if err := st.SetArticlePhrases(ctx, article.ID, []string{"clobbered"}); err != nil {
+		t.Fatalf("second SetArticlePhrases() error = %v", err)
+	}
+	found, _, err = st.GetArticle(ctx, article.ID)
+	if err != nil {
+		t.Fatalf("GetArticle() error = %v", err)
+	}
+	if found.KeyPhrases[0] != "reach a deal" {
+		t.Fatalf("KeyPhrases = %v, want first writer's list to win", found.KeyPhrases)
+	}
+
+	// Empty write: dropped, list (and "not generated" for others) intact.
+	if err := st.SetArticlePhrases(ctx, article.ID, nil); err != nil {
+		t.Fatalf("empty SetArticlePhrases() error = %v", err)
+	}
+	found, _, err = st.GetArticle(ctx, article.ID)
+	if err != nil {
+		t.Fatalf("GetArticle() error = %v", err)
+	}
+	if len(found.KeyPhrases) != 2 {
+		t.Fatalf("KeyPhrases = %v after empty write, want the original list", found.KeyPhrases)
+	}
+}
+
+// TestSetArticlePhrasesNoOpGuards covers the two states where the UPDATE's
+// WHERE clause must match nothing: an article still generating (no finished
+// summary to have extracted from) and a done article whose last reader
+// deleted their instance (nobody left to serve, so don't spend a write).
+func TestSetArticlePhrasesNoOpGuards(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+
+	pending, err := st.ReserveArticle(ctx, "BBC", "Pending", "https://example.com/phrases-pending", "snippet", time.Time{})
+	if err != nil {
+		t.Fatalf("ReserveArticle() error = %v", err)
+	}
+	if err := st.SetArticlePhrases(ctx, pending.ID, []string{"a phrase"}); err != nil {
+		t.Fatalf("SetArticlePhrases() on pending error = %v", err)
+	}
+	found, _, err := st.GetArticle(ctx, pending.ID)
+	if err != nil {
+		t.Fatalf("GetArticle() error = %v", err)
+	}
+	if len(found.KeyPhrases) != 0 {
+		t.Fatalf("pending article KeyPhrases = %v, want empty (write must not land)", found.KeyPhrases)
+	}
+
+	// Done but with no instance left (the learner deleted the only one):
+	// also a no-op. CompleteArticle itself refuses to finish an undrawn
+	// article, so the orphan state can only arise this way.
+	orphan := mustSaveArticle(t, st, "https://example.com/phrases-orphan")
+	instances, err := st.List(ctx, "study-fixture")
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	orphanInstanceID := ""
+	for _, inst := range instances {
+		if inst.Article.ID == orphan.ID {
+			orphanInstanceID = inst.ID
+		}
+	}
+	if orphanInstanceID == "" {
+		t.Fatal("mustSaveArticle's instance not found in List()")
+	}
+	if err := st.Delete(ctx, "study-fixture", orphanInstanceID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if err := st.SetArticlePhrases(ctx, orphan.ID, []string{"a phrase"}); err != nil {
+		t.Fatalf("SetArticlePhrases() on orphan error = %v", err)
+	}
+	found, _, err = st.GetArticle(ctx, orphan.ID)
+	if err != nil {
+		t.Fatalf("GetArticle() error = %v", err)
+	}
+	if len(found.KeyPhrases) != 0 {
+		t.Fatalf("orphan article KeyPhrases = %v, want empty (write must not land without an instance)", found.KeyPhrases)
+	}
+}

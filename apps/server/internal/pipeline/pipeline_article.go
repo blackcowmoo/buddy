@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"strings"
+	"unicode"
 
 	"buddy/server/internal/protocol"
 )
@@ -166,4 +167,108 @@ func renderArticleStudyInput(source, title, description string) string {
 	fmt.Fprintf(&b, "Headline: %s\n", title)
 	fmt.Fprintf(&b, "Snippet: %s\n", description)
 	return b.String()
+}
+
+// articlePhrasesMax caps one summary's suggestion list — a reading aid a
+// learner skims once, not a vocabulary deck; past a dozen chips the panel
+// stops being skimmable, and it bounds what one stray "list every phrase"
+// LLM answer can store on the shared Article row.
+const articlePhrasesMax = 12
+
+// SuggestArticlePhrases extracts the multi-word expressions (collocations,
+// phrasal verbs, idioms) worth looking up from one finished article
+// summary — the answer to "which parts of this text are phrases?", which a
+// learner can't be expected to know on their own. Deliberately chatJSON
+// (Chat model only, no Analysis/Judge cascade): this is a convenience list
+// beside the latency-sensitive reading path, not a graded learning
+// artifact, so it gets the same fast single-call treatment as DefineWord.
+// The result is persisted once per shared Article (see
+// newsarticle.Article.KeyPhrases) and every later reader reuses it.
+func (p *Pipeline) SuggestArticlePhrases(ctx context.Context, summary string) ([]string, error) {
+	return chatJSON(ctx, p, articlePhrasesSystemPrompt(p.FeedbackLang), summary, func(raw string) ([]string, error) {
+		return parseArticlePhrases(raw, summary)
+	})
+}
+
+func articlePhrasesSystemPrompt(lang string) string {
+	native := languageName(lang)
+	return fmt.Sprintf(`You help a %[1]s-speaking intermediate English learner reading one news
+study paragraph. Pick out the multi-word English expressions in it that a
+learner at this level would plausibly NOT already know as whole units:
+collocations (e.g. "reach a deal", "in response to"), phrasal verbs (e.g.
+"pull out of"), and idioms (e.g. "back to the drawing board").
+Rules:
+ - Every phrase MUST appear word-for-word, in the same order, in the
+   paragraph below. Never invent, re-order, or "correct" wording — a phrase
+   that is not verbatim in the paragraph must not be returned.
+ - Only multi-word expressions (2+ words). Single words are not phrases;
+   the learner taps those directly.
+ - Prefer expressions whose overall meaning is not obvious from the
+   individual words, over literal word combinations.
+ - Return between 3 and %[2]d phrases (fewer only if the paragraph truly
+   has fewer candidates), most worth learning first, no duplicates.
+Return STRICT JSON only, no prose, in exactly this shape:
+{"phrases":["<expression 1>","<expression 2>",...]}`, native, articlePhrasesMax)
+}
+
+// parseArticlePhrases enforces the two rules the persisted list is only
+// safe to display because of: every entry appears verbatim in the summary
+// (bounded word match, case/punctuation-insensitive — a hallucinated
+// "phrase" the learner then can't find in the text would erode trust in
+// every suggestion), and every entry is multi-word. Invalid entries are
+// dropped rather than failing the whole call (LLMs occasionally pad a good
+// answer with one near-miss); zero surviving entries is an error, so the
+// durable job retries instead of caching an empty list (empty means "not
+// generated" — see newsarticle.Article.KeyPhrases).
+func parseArticlePhrases(raw, summary string) ([]string, error) {
+	parsed, err := parseJSON[struct {
+		Phrases []string `json:"phrases"`
+	}](raw, "article phrases")
+	if err != nil {
+		return nil, err
+	}
+	normalizedSummary := normalizePhraseMatch(summary)
+	seen := make(map[string]bool)
+	var out []string
+	for _, phrase := range parsed.Phrases {
+		// Edge punctuation first: models routinely return the sentence's
+		// trailing comma/period as part of the last phrase, and storing
+		// "agreed to talk again," would make the chip a query the learner
+		// can never type back or find in the text.
+		compact := strings.TrimFunc(strings.Join(strings.Fields(phrase), " "), func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+		})
+		if compact == "" || !strings.Contains(compact, " ") {
+			continue
+		}
+		// Match with the exact same folding applied to the summary, so the
+		// verbatim rule tolerates case and punctuation on either side.
+		key := normalizePhraseMatch(compact)
+		if seen[key] || !strings.Contains(normalizedSummary, key) {
+			continue
+		}
+		seen[key] = true
+		out = append(out, compact)
+		if len(out) == articlePhrasesMax {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("article phrases: no suggested phrase appears verbatim in the summary")
+	}
+	return out, nil
+}
+
+// normalizePhraseMatch folds case and punctuation to spaces and collapses
+// whitespace, so a phrase quoted without the sentence's trailing comma
+// still matches the summary at a word boundary. Apostrophes stay letters
+// ("don't", "one's" must keep matching).
+func normalizePhraseMatch(s string) string {
+	folded := strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) || r == '\'' {
+			return r
+		}
+		return ' '
+	}, strings.ToLower(s))
+	return " " + strings.Join(strings.Fields(folded), " ") + " "
 }
