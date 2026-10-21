@@ -196,3 +196,96 @@ func TestShuffleSubQuestionsPreservesCorrectAnswer(t *testing.T) {
 		t.Error("shuffleSubQuestions() always left CorrectOptionIndex at 0 across 50 runs — shuffling isn't actually happening")
 	}
 }
+
+// ---- SuggestArticlePhrases ---------------------------------------------------
+
+const phrasesTestSummary = "The two sides finally agreed to talk again in spite of months of silence, though analysts say they may go back to the drawing board."
+
+// TestSuggestArticlePhrasesUsesChatModelOnly guards the pipeline-stage rule:
+// phrase suggestions are a reading aid, not a graded artifact, so they must
+// ride the fast Chat-model-only path (like DefineWord) and never engage the
+// Analysis/Judge cascade.
+func TestSuggestArticlePhrasesUsesChatModelOnly(t *testing.T) {
+	var gotSystem, gotUser string
+	cascadeCalls := 0
+	cascade := &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		cascadeCalls++
+		return "cascade must not run", nil
+	}}
+	p := &Pipeline{
+		LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			gotSystem, gotUser = msgs[0].Content, msgs[len(msgs)-1].Content
+			return `{"phrases":["in spite of","go back to the drawing board"]}`, nil
+		}},
+		ChatModel:  "chat",
+		Analysis:   []Candidate{{Model: "analysis", LLM: cascade}},
+		Judge:      cascade,
+		JudgeModel: "judge",
+	}
+	got, err := p.SuggestArticlePhrases(context.Background(), phrasesTestSummary)
+	if err != nil {
+		t.Fatalf("SuggestArticlePhrases() error = %v", err)
+	}
+	if strings.Join(got, "|") != "in spite of|go back to the drawing board" {
+		t.Fatalf("got %v", got)
+	}
+	if cascadeCalls != 0 {
+		t.Fatalf("Analysis/Judge calls = %d, want 0 (phrase extraction is chat-only)", cascadeCalls)
+	}
+	if !strings.Contains(gotUser, phrasesTestSummary) {
+		t.Fatalf("user message does not carry the summary: %q", gotUser)
+	}
+	if !strings.Contains(gotSystem, "verbatim") {
+		t.Fatalf("system prompt must state the verbatim rule: %q", gotSystem)
+	}
+}
+
+// TestSuggestArticlePhrasesDropsInvalidEntries guards the persisted list's
+// two safety rules — verbatim-in-summary and multi-word — are enforced by
+// dropping entries rather than trusting the model: a phrase the learner
+// then can't find in the paragraph would undermine every suggestion.
+func TestSuggestArticlePhrasesDropsInvalidEntries(t *testing.T) {
+	raw := `{"phrases":[
+		"in Spite OF",
+		"in spite of",
+		"agreed to talk again,",
+		"silence",
+		"a phrase never written here",
+		"months  of  silence"
+	]}`
+	got, err := parseArticlePhrases(raw, phrasesTestSummary)
+	if err != nil {
+		t.Fatalf("parseArticlePhrases() error = %v", err)
+	}
+	want := []string{"in Spite OF", "agreed to talk again", "months of silence"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("got %v, want %v (deduped case-insensitively, whitespace-collapsed, punctuation-insensitive, single words and non-verbatim entries dropped)", got, want)
+	}
+}
+
+// TestSuggestArticlePhrasesCapsAtMax bounds what one stray "list every
+// phrase" model answer can store on the shared Article row.
+func TestSuggestArticlePhrasesCapsAtMax(t *testing.T) {
+	summary := "one two three four five six seven eight nine ten eleven twelve thirteen fourteen"
+	raw := `{"phrases":["one two","two three","three four","four five","five six","six seven","seven eight","eight nine","nine ten","ten eleven","eleven twelve","twelve thirteen","thirteen fourteen"]}`
+	got, err := parseArticlePhrases(raw, summary)
+	if err != nil {
+		t.Fatalf("parseArticlePhrases() error = %v", err)
+	}
+	if len(got) != articlePhrasesMax {
+		t.Fatalf("len(got) = %d, want cap %d", len(got), articlePhrasesMax)
+	}
+}
+
+// TestSuggestArticlePhrasesErrorsWhenNothingSurvives guards the retry
+// contract: an answer with no usable phrase is an error (so the durable job
+// retries) rather than an empty list, because empty means "not generated" —
+// never "checked and found none".
+func TestSuggestArticlePhrasesErrorsWhenNothingSurvives(t *testing.T) {
+	if _, err := parseArticlePhrases(`{"phrases":["solitude","not in the text"]}`, phrasesTestSummary); err == nil {
+		t.Fatal("want error when every candidate is dropped, so generation retries instead of caching empty")
+	}
+	if _, err := parseArticlePhrases(`not json`, phrasesTestSummary); err == nil {
+		t.Fatal("want error on unparseable output")
+	}
+}

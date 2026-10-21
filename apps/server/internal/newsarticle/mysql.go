@@ -123,6 +123,14 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 		{Version: 7, Name: "articles.translation_claimed_at", Up: func(ctx context.Context, db *sql.DB) error {
 			return addColumn(ctx, db, `ALTER TABLE `+articlesTable+` ADD COLUMN translation_claimed_at BIGINT NOT NULL DEFAULT 0`, "translation_claimed_at")
 		}},
+		// key_phrases_json backs Article.KeyPhrases — one shared LLM result
+		// per URL like summary/sub_questions_json, so pre-existing rows
+		// simply get NULL ("not generated") and are backfilled on the next
+		// read (see httpserver's phrases handler) rather than needing a data
+		// migration.
+		{Version: 9, Name: "articles.key_phrases_json", Up: func(ctx context.Context, db *sql.DB) error {
+			return addColumn(ctx, db, `ALTER TABLE `+articlesTable+` ADD COLUMN key_phrases_json TEXT NULL`, "key_phrases_json")
+		}},
 	}
 	if err := migration.ApplyLegacy(ctx, rw, "newsarticle", steps); err != nil {
 		return nil, fmt.Errorf("newsarticle: migrations: %w", err)
@@ -175,7 +183,7 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
-const articleColumns = `id, source, title, url, summary, translation, sub_questions_json, description, status, created_at, published_at`
+const articleColumns = `id, source, title, url, summary, translation, sub_questions_json, description, status, created_at, published_at, key_phrases_json`
 
 // decodeSubQuestions decodes sub_questions_json — nil for SQL NULL or an
 // empty string (a pre-existing row predating this column, or one whose
@@ -193,19 +201,39 @@ func decodeSubQuestions(ns sql.NullString) ([]SubQuestion, error) {
 	return qs, nil
 }
 
+// decodeKeyPhrases decodes key_phrases_json — nil for SQL NULL or any of
+// the empty shapes (see Article.KeyPhrases: empty always means "not
+// generated", never a stored empty list, so no distinction is preserved).
+func decodeKeyPhrases(ns sql.NullString) ([]string, error) {
+	if !ns.Valid || ns.String == "" || ns.String == "[]" || ns.String == "null" {
+		return nil, nil
+	}
+	var phrases []string
+	if err := json.Unmarshal([]byte(ns.String), &phrases); err != nil {
+		return nil, fmt.Errorf("decode key_phrases_json: %w", err)
+	}
+	return phrases, nil
+}
+
 func scanArticle(row scanner) (Article, error) {
 	var a Article
 	var subQuestionsJSON sql.NullString
 	var translation sql.NullString
+	var keyPhrasesJSON sql.NullString
 	var createdAt, publishedAt int64
-	if err := row.Scan(&a.ID, &a.Source, &a.Title, &a.URL, &a.Summary, &translation, &subQuestionsJSON, &a.Description, &a.Status, &createdAt, &publishedAt); err != nil {
+	if err := row.Scan(&a.ID, &a.Source, &a.Title, &a.URL, &a.Summary, &translation, &subQuestionsJSON, &a.Description, &a.Status, &createdAt, &publishedAt, &keyPhrasesJSON); err != nil {
 		return Article{}, err
 	}
 	subQuestions, err := decodeSubQuestions(subQuestionsJSON)
 	if err != nil {
 		return Article{}, err
 	}
+	keyPhrases, err := decodeKeyPhrases(keyPhrasesJSON)
+	if err != nil {
+		return Article{}, err
+	}
 	a.SubQuestions = subQuestions
+	a.KeyPhrases = keyPhrases
 	a.Translation = translation.String
 	a.CreatedAt = time.Unix(createdAt, 0)
 	if publishedAt > 0 {
@@ -321,6 +349,31 @@ func (s *MySQLStore) ReopenIncompleteArticle(ctx context.Context, id string) (bo
 	return n == 1, nil
 }
 
+// SetArticlePhrases implements Store.SetArticlePhrases. The WHERE clause
+// carries all three no-op conditions (not StatusDone, phrases already
+// stored, no remaining instance) so first-writer-wins is enforced by the
+// row itself, race-free, without a separate claim step — a losing racer's
+// UPDATE simply matches nothing. Mirrors CompleteArticleTranslation's
+// same-shape "only write while still empty + instance still exists" guard.
+func (s *MySQLStore) SetArticlePhrases(ctx context.Context, id string, phrases []string) error {
+	if len(phrases) == 0 {
+		return nil
+	}
+	encoded, err := json.Marshal(phrases)
+	if err != nil {
+		return fmt.Errorf("newsarticle: encode key phrases: %w", err)
+	}
+	if _, err := s.rw.ExecContext(ctx, `
+		UPDATE `+articlesTable+` SET key_phrases_json = ?
+		WHERE id = ? AND status = ? AND summary <> ''
+		  AND (key_phrases_json IS NULL OR key_phrases_json IN ('', '[]', 'null'))
+		  AND EXISTS (SELECT 1 FROM `+instancesTable+` i WHERE i.article_id = `+articlesTable+`.id)
+	`, string(encoded), id, StatusDone); err != nil {
+		return fmt.Errorf("newsarticle: set article phrases: %w", err)
+	}
+	return nil
+}
+
 func (s *MySQLStore) CompleteArticle(ctx context.Context, id, summary, translation string, subQuestions []SubQuestion) (Article, error) {
 	subQuestionsJSON, err := json.Marshal(subQuestions)
 	if err != nil {
@@ -428,7 +481,7 @@ func (s *MySQLStore) CreateInstance(ctx context.Context, userID, articleID strin
 }
 
 const instanceColumns = `i.id, i.answered, i.selected_options_json, i.correct, i.created_at, ` +
-	`a.id, a.source, a.title, a.url, a.summary, a.translation, a.sub_questions_json, a.description, a.status, a.created_at, a.published_at`
+	`a.id, a.source, a.title, a.url, a.summary, a.translation, a.sub_questions_json, a.description, a.status, a.created_at, a.published_at, a.key_phrases_json`
 
 // decodeSelectedOptions decodes selected_options_json the same "NULL/empty
 // means nil, not an error" way decodeSubQuestions treats
@@ -453,13 +506,13 @@ func scanInstance(row scanner, userID string) (Instance, error) {
 	var inst Instance
 	var answered, correct int
 	var instCreatedAt int64
-	var selectedOptionsJSON, translation, subQuestionsJSON sql.NullString
+	var selectedOptionsJSON, translation, subQuestionsJSON, keyPhrasesJSON sql.NullString
 	var articleCreatedAt, articlePublishedAt int64
 	if err := row.Scan(
 		&inst.ID, &answered, &selectedOptionsJSON, &correct, &instCreatedAt,
 		&inst.Article.ID, &inst.Article.Source, &inst.Article.Title, &inst.Article.URL, &inst.Article.Summary,
 		&translation,
-		&subQuestionsJSON, &inst.Article.Description, &inst.Article.Status, &articleCreatedAt, &articlePublishedAt,
+		&subQuestionsJSON, &inst.Article.Description, &inst.Article.Status, &articleCreatedAt, &articlePublishedAt, &keyPhrasesJSON,
 	); err != nil {
 		return Instance{}, err
 	}
@@ -471,8 +524,13 @@ func scanInstance(row scanner, userID string) (Instance, error) {
 	if err != nil {
 		return Instance{}, err
 	}
+	keyPhrases, err := decodeKeyPhrases(keyPhrasesJSON)
+	if err != nil {
+		return Instance{}, err
+	}
 	inst.SelectedOptions = selectedOptions
 	inst.Article.SubQuestions = subQuestions
+	inst.Article.KeyPhrases = keyPhrases
 	inst.Article.Translation = translation.String
 	inst.UserID = userID
 	inst.Answered = answered != 0

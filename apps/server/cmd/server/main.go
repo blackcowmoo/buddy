@@ -172,6 +172,13 @@ func main() {
 	wordVerifyQueue := startWorker(rdb, jobsCtx, asyncjob.KindWordVerify, transport.WordVerifyWorkerConcurrency, transport.WordVerifyClaimTTL,
 		transport.WordVerifyJobHandler(pipe, wordReviews))
 
+	// Article key-phrase generation: extracts the cached "배울 표현" list for
+	// one finished article with the Chat model alone (see
+	// pipeline.SuggestArticlePhrases). Built before articleStudyQueue below,
+	// which dispatches onto it right after completing an article.
+	articlePhrasesQueue := startWorker(rdb, jobsCtx, asyncjob.KindArticlePhrases, transport.ArticlePhrasesWorkerConcurrency, transport.ArticlePhrasesClaimTTL,
+		transport.ArticlePhrasesJobHandler(pipe, articles))
+
 	// Article-study generation: summarizes + quizzes a freshly drawn "오늘의
 	// 아티클" story in the background (see httpserver.articleDrawHandler),
 	// same "optional durable queue, inline-goroutine fallback when Redis
@@ -179,11 +186,11 @@ func main() {
 	// lets the draw survive the learner navigating away before generation
 	// finishes.
 	articleStudyQueue := startWorker(rdb, jobsCtx, asyncjob.KindArticleStudy, transport.ArticleStudyWorkerConcurrency, transport.ArticleStudyClaimTTL,
-		transport.ArticleStudyJobHandler(pipe, articles, articleAudio))
+		transport.ArticleStudyJobHandler(pipe, articles, articleAudio, articlePhrasesQueue))
 	// The database sweep also recovers rows abandoned before Redis enqueue.
 	// With Redis it preserves existing leases and checkpoints; without Redis
 	// it reclaims orphan rows for detached inline generation.
-	go transport.RunArticleStudySweepLoop(jobsCtx, articleStudyQueue, pipe, articles, articleAudio)
+	go transport.RunArticleStudySweepLoop(jobsCtx, articleStudyQueue, articlePhrasesQueue, pipe, articles, articleAudio)
 
 	// Word auto-add generation: generates a batch of new words fit to the
 	// learner's profile in the background (see httpserver.wordAutoAddHandler),
@@ -293,6 +300,7 @@ func main() {
 			StudyQuiz:         studyQuizQueue,
 			ProfileRegenerate: profileRegenerateQueue,
 			ArticleStudy:      articleStudyQueue,
+			ArticlePhrases:    articlePhrasesQueue,
 			Writing:           writingQueue,
 			Nuance:            nuanceQueue,
 			WordAutoAdd:       wordAutoAddQueue,

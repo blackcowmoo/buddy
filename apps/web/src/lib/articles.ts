@@ -122,6 +122,39 @@ export async function fetchArticleInstances(): Promise<ArticleInstance[]> {
   return fetchJSON<ArticleInstance[]>("api/articles", []);
 }
 
+// Mirrors httpserver's articlePhrasesResponse — the shared Article row IS
+// the cache, so once the chat LLM has suggested this article's key phrases
+// every reader answers from MySQL alone. "pending" means generation hasn't
+// landed yet: this very GET dispatches it (transport.DispatchArticlePhrases,
+// deduped per article), so the caller's retry loop drives it to completion.
+// Anything unreadable — 409 (article summary still generating), a transient
+// 5xx, bad JSON — also reports "pending": the durable job recovers on its
+// own and the poll simply checks again.
+export type ArticlePhrasesResult =
+  | { status: "done"; phrases: string[] }
+  | { status: "pending" };
+
+const phrasesPending: ArticlePhrasesResult = { status: "pending" };
+
+export async function fetchArticlePhrases(id: string): Promise<ArticlePhrasesResult> {
+  try {
+    const res = await fetch(`api/articles/${encodeURIComponent(id)}/phrases`);
+    if (!res.ok) return phrasesPending;
+    const body = (await res.json()) as { status?: unknown; phrases?: unknown };
+    // The server never persists an empty suggestion list (empty means "not
+    // generated yet"), so a "done" answer with nothing usable left after
+    // defensive filtering is treated as still pending rather than a real
+    // verdict that would stop the caller's polling.
+    if (body.status === "done" && Array.isArray(body.phrases)) {
+      const phrases = body.phrases.filter((phrase): phrase is string => typeof phrase === "string" && phrase.trim() !== "");
+      if (phrases.length > 0) return { status: "done", phrases };
+    }
+    return phrasesPending;
+  } catch {
+    return phrasesPending;
+  }
+}
+
 // Records the caller's choices (one per sub-question, in order) for one of
 // their own article-quiz instances and returns the reveal — correctness is
 // always computed server-side against the stored answer key, never trusting

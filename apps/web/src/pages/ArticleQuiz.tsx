@@ -7,10 +7,17 @@ import {
   drawArticle,
   fetchArticleInstance,
   fetchArticleInstances,
+  fetchArticlePhrases,
   type ArticleAnswerResult,
   type ArticleDraw,
   type ArticleInstance,
 } from "../lib/articles";
+import {
+  freeTextEntryKey,
+  normalizePhraseQuery,
+  phraseLookupPosition,
+  segmentArticleSummary,
+} from "../lib/phraseSearch";
 import { formatAbsoluteDate, formatMessageTime } from "../lib/time";
 import { QuizChoices } from "../components/QuizChoices";
 import { LearningPage } from "../components/LearningPage";
@@ -57,6 +64,12 @@ type TrackedWordStatus = WordReviewStatus | "saving";
 type SearchedWord = {
   key: number;
   word: string;
+  // Position sent to the define endpoint; the durable lookup cache is keyed
+  // by (article, word, position). Taps use the token's split index as both
+  // key and position; free-text searches get a negative key (see
+  // phraseSearch.ts's freeTextEntryKey) with its own position, so a typed
+  // query can never overwrite a tapped token's entry.
+  position: number;
   result: WordSuggestion | null;
   loading: boolean;
   definitionVersion?: number;
@@ -93,7 +106,10 @@ function loadSearchedWords(articleID: string): SearchedWord[] {
       return typeof value.key === "number" && typeof value.word === "string" && (value.result === null || typeof value.result === "object");
     }).map((item) => {
       const result = item.definitionVersion === definitionVersion ? item.result : null;
-      return { ...item, result, loading: result === null };
+      // Entries stored before phrase search never carried a position; they
+      // were all taps, whose position always equaled their key.
+      const position = typeof item.position === "number" ? item.position : item.key;
+      return { ...item, position, result, loading: result === null };
     });
   }, []);
 }
@@ -137,6 +153,19 @@ export function ArticleQuiz() {
   const [centerWordLookup, setCenterWordLookup] = useState(false);
   const [searchedWords, setSearchedWords] = useState<SearchedWord[]>([]);
   const [searchedWordsOpen, setSearchedWordsOpen] = useState(false);
+  // Phrase-search surface (search box + suggested-phrase chips below the
+  // paragraph, reading view only). Its result renders inline here rather
+  // than anchored to a word — a typed query has no single anchor token.
+  // Same entry shape as the popover so the shared lookup caches and
+  // searched-words history drive both surfaces with one set of plumbing.
+  const [phraseSearch, setPhraseSearch] = useState<{
+    key: number;
+    text: string;
+    loading: boolean;
+    failed: boolean;
+    result: WordSuggestion | null;
+  } | null>(null);
+  const [phraseQuery, setPhraseQuery] = useState("");
   // The article's local search history only records what was looked up. The
   // vocabulary list is the durable source of truth for whether that exact
   // word+meaning is already tracked, including after a reload or on another
@@ -158,15 +187,15 @@ export function ArticleQuiz() {
   const resumedStoredLookupsRef = useRef(new Set<string>());
   useDismiss(wordLookup !== null, wordLookupRef, () => setWordLookup(null));
 
-  const updateSearchedWord = useCallback((key: number, word: string, update: Partial<SearchedWord>) => {
+  const updateSearchedWord = useCallback((key: number, word: string, position: number, update: Partial<SearchedWord>) => {
     if (update.result) update = { ...update, definitionVersion };
     setSearchedWords((prev) => {
       const existing = prev.find((item) => item.key === key);
       const next = existing
         ? prev.map((item) => (item.key === key ? { ...item, ...update } : item))
-        : [...prev, { key, word, result: null, loading: false, ...update }];
+        : [...prev, { key, word, position, result: null, loading: false, ...update }];
       if (draw) {
-        writeStored(searchedWordsStorageKey(draw.id), JSON.stringify(next.map(({ key: itemKey, word: itemWord, result, definitionVersion }) => ({ key: itemKey, word: itemWord, result, definitionVersion }))));
+        writeStored(searchedWordsStorageKey(draw.id), JSON.stringify(next.map(({ key: itemKey, word: itemWord, position: itemPosition, result, definitionVersion }) => ({ key: itemKey, word: itemWord, position: itemPosition, result, definitionVersion }))));
       }
       return next;
     });
@@ -199,6 +228,17 @@ export function ArticleQuiz() {
   // watching.
   const { tokenRef: pollTokenRef, startPoll } = usePollScaffold();
 
+  // A second, independent scaffold for the key-phrases watch below: the
+  // study poll above shares one tokenRef per instance, so reusing it here
+  // would make every study-poll restart invalidate the phrases watch too.
+  const { tokenRef: phrasesTokenRef, startPoll: startPhrasesPoll } = usePollScaffold();
+  // Server-suggested key phrases for the article being read. Drives both the
+  // in-text phrase grouping (see phraseSearch.ts's segmentArticleSummary)
+  // and the chip row, because learners can't always tell which runs of words
+  // are idioms.
+  const [phrases, setPhrases] = useState<string[]>([]);
+  const phrasesWatchedRef = useRef<string | null>(null);
+
   // Polls one draw's status until it leaves "pending"/"failed" — started
   // right after a fresh draw, or when reopening a still-generating row from
   // the list (see openInstance). "failed" keeps polling rather than giving
@@ -216,6 +256,30 @@ export function ArticleQuiz() {
     }),
     [startPoll],
   );
+
+  // Once an article's own summary is ready, watch for its suggested key
+  // phrases. The GET itself dispatches generation on a cache miss (see
+  // lib/articles.ts's fetchArticlePhrases), and anything that isn't a real
+  // phrase list reports "pending", so the poll simply keeps checking until
+  // the durable job lands. Navigating away stops watching only.
+  useEffect(() => {
+    if (!draw || draw.status !== "done") return;
+    if (phrasesWatchedRef.current === draw.id) return;
+    phrasesWatchedRef.current = draw.id;
+    const token = {};
+    phrasesTokenRef.current = token;
+    startPhrasesPoll(token, {
+      intervalMs: articleStudyPollIntervalMs,
+      fetchResult: () => fetchArticlePhrases(draw.id),
+      onResult: (result) => {
+        if (result.status === "done") {
+          setPhrases(result.phrases);
+          return false;
+        }
+        return true;
+      },
+    });
+  }, [draw, phrasesTokenRef, startPhrasesPoll]);
 
   const loadInstances = useCallback(() => {
     fetchArticleInstances().then((list) => {
@@ -256,6 +320,10 @@ export function ArticleQuiz() {
     setWordLookup(null);
     setSearchedWords(loadSearchedWords(next.id));
     setSearchedWordsOpen(false);
+    setPhrases([]);
+    phrasesWatchedRef.current = null;
+    setPhraseSearch(null);
+    setPhraseQuery("");
   }, []);
 
   const handleDraw = useCallback(async () => {
@@ -290,17 +358,25 @@ export function ArticleQuiz() {
     [pollDraw, showDraw],
   );
 
-  const followWordLookup = useCallback((articleID: string, key: number, word: string) => {
+  // Starts (or joins) one durable define job and mirrors its progress into
+  // both lookup surfaces — the anchored popover and the inline phrase-search
+  // panel — whichever currently shows this key. `position` is what the
+  // server cache keys on together with the word text (taps pass the token's
+  // split index; free-text queries pass phraseSearch.ts's
+  // phraseLookupPosition), while `key` only identifies the UI entry.
+  const followWordLookup = useCallback((articleID: string, key: number, word: string, position: number) => {
     const lookupKey = `${articleID}:${key}`;
     const existing = pendingWordLookupsRef.current.get(lookupKey);
     if (existing) {
       setWordLookup((prev) => (prev && prev.key === key ? { ...prev, loading: true, failed: false } : prev));
+      setPhraseSearch((prev) => (prev && prev.key === key ? { ...prev, loading: true, failed: false } : prev));
       return;
     }
 
     setWordLookup((prev) => (prev && prev.key === key ? { ...prev, loading: true, failed: false } : prev));
-    updateSearchedWord(key, word, { loading: true });
-    const lookup = defineWord(articleID, word, key);
+    setPhraseSearch((prev) => (prev && prev.key === key ? { ...prev, loading: true, failed: false } : prev));
+    updateSearchedWord(key, word, position, { loading: true });
+    const lookup = defineWord(articleID, word, position);
     pendingWordLookupsRef.current.set(lookupKey, lookup);
     void lookup.then((result) => {
       pendingWordLookupsRef.current.delete(lookupKey);
@@ -310,8 +386,11 @@ export function ArticleQuiz() {
       } else {
         failedWordLookupsRef.current.add(lookupKey);
       }
-      updateSearchedWord(key, word, { loading: false, result });
+      updateSearchedWord(key, word, position, { loading: false, result });
       setWordLookup((prev) =>
+        prev && prev.key === key ? { ...prev, loading: false, failed: result === null, result } : prev,
+      );
+      setPhraseSearch((prev) =>
         prev && prev.key === key ? { ...prev, loading: false, failed: result === null, result } : prev,
       );
     });
@@ -327,7 +406,7 @@ export function ArticleQuiz() {
       const lookupKey = `${draw.id}:${item.key}`;
       if (!item.result && !resumedStoredLookupsRef.current.has(lookupKey)) {
         resumedStoredLookupsRef.current.add(lookupKey);
-        followWordLookup(draw.id, item.key, item.word);
+        followWordLookup(draw.id, item.key, item.word, item.position);
       }
     }
   }, [draw, followWordLookup, searchedWords]);
@@ -341,7 +420,9 @@ export function ArticleQuiz() {
       if (!draw) return;
       setCenterWordLookup(false);
       const lookupKey = `${draw.id}:${key}`;
-      const localResult = wordLookupCacheRef.current.get(lookupKey) ?? searchedWords.find((item) => item.key === key)?.result ?? null;
+      const localResult = wordLookupCacheRef.current.get(lookupKey)
+        ?? searchedWords.find((item) => item.key === key && item.word === word)?.result
+        ?? null;
       const pending = pendingWordLookupsRef.current.has(lookupKey);
       setWordLookup({
         key,
@@ -352,9 +433,10 @@ export function ArticleQuiz() {
       });
 
       if (localResult || pending || failedWordLookupsRef.current.has(lookupKey)) return;
+      // A tap's position is its split index, which is also its key.
       void checkDefinedWordStatus(draw.id, word, key).then((response) => {
         if (response?.status === "pending") {
-          followWordLookup(draw.id, key, word);
+          followWordLookup(draw.id, key, word, key);
           return;
         }
         const serverResult = response?.status === "done" ? response.result ?? null : null;
@@ -364,7 +446,7 @@ export function ArticleQuiz() {
           // the server already has a cached definition. Without this, the
           // popover shows the meaning while the overlay still has a null
           // result and incorrectly renders the failure message.
-          updateSearchedWord(key, word, { loading: false, result: serverResult });
+          updateSearchedWord(key, word, key, { loading: false, result: serverResult });
         }
         setWordLookup((prev) =>
           prev && prev.key === key
@@ -382,8 +464,40 @@ export function ArticleQuiz() {
   const requestWordLookup = useCallback(() => {
     if (!draw || !wordLookup || wordLookup.loading) return;
     const { key, word } = wordLookup;
-    followWordLookup(draw.id, key, word);
+    followWordLookup(draw.id, key, word, key);
   }, [draw, followWordLookup, wordLookup]);
+
+  // Runs a phrase/idiom search typed into the reading view's search box (or
+  // tapped as a suggested-phrase chip). The query may contain spaces — the
+  // whole run of words is sent to the same durable define job the word taps
+  // use; only the identity differs: a negative hashed key (never colliding
+  // with a tap's split-index key) and phraseLookupPosition's position.
+  // Submitting the search IS the explicit request to define, so unlike a
+  // word tap there's no checkDefinedWordStatus round-trip and "찾기"
+  // confirmation — a miss goes straight to the job.
+  const runPhraseSearch = useCallback((raw: string) => {
+    if (!draw) return;
+    const query = normalizePhraseQuery(raw);
+    if (!query) return;
+    setWordLookup(null);
+    setPhraseQuery("");
+    const key = freeTextEntryKey(query);
+    const lookupKey = `${draw.id}:${key}`;
+    const cached = wordLookupCacheRef.current.get(lookupKey)
+      ?? searchedWords.find((item) => item.key === key && item.word === query)?.result
+      ?? null;
+    if (cached) {
+      setPhraseSearch({ key, text: query, loading: false, failed: false, result: cached });
+      return;
+    }
+    // Re-submitting a failed query retries it (the learner may have fixed
+    // spelling, or the earlier job may have died server-side).
+    failedWordLookupsRef.current.delete(lookupKey);
+    const pending = pendingWordLookupsRef.current.has(lookupKey);
+    setPhraseSearch({ key, text: query, loading: pending, failed: false, result: null });
+    if (pending) return;
+    followWordLookup(draw.id, key, query, phraseLookupPosition(draw.summary, query));
+  }, [draw, followWordLookup, searchedWords]);
 
   const learnWord = useCallback((item: Pick<SearchedWord, "word" | "result">) => {
     if (!item.result || trackedWords === null) return;
@@ -433,6 +547,8 @@ export function ArticleQuiz() {
 
   const backToList = useCallback(() => {
     pollTokenRef.current = null; // stop watching; generation itself keeps going server-side
+    phrasesTokenRef.current = null; // ditto for the key-phrases watch
+    phrasesWatchedRef.current = null;
     setView(null);
     setDraw(null);
     setResult(null);
@@ -440,8 +556,11 @@ export function ArticleQuiz() {
     setDrawState("idle");
     setWordLookup(null);
     setSearchedWordsOpen(false);
+    setPhrases([]);
+    setPhraseSearch(null);
+    setPhraseQuery("");
     loadInstances();
-  }, [loadInstances]);
+  }, [loadInstances, phrasesTokenRef]);
 
   const handleDelete = (id: string) =>
     confirmThenDelete("이 아티클 퀴즈를 삭제할까요?", deleteArticleInstance, id, setInstances);
@@ -471,21 +590,39 @@ export function ArticleQuiz() {
   // lookup state, per-position cache, and persisted searched-word history
   // therefore continue across the quiz instead of the result view becoming
   // a separate, non-interactive copy of the English passage.
+  //
+  // segmentArticleSummary keeps single words tappable exactly as before, but
+  // groups server-suggested key phrases into ONE tappable unit each — the
+  // learner can't be expected to know that "in spite of" is one expression
+  // rather than three unrelated words. A phrase tap sends the whitespace-
+  // collapsed, edge-punctuation-stripped substring (a phrase spanning text
+  // like "talk, again" is looked up as "talk again"; the definition comes
+  // from this paragraph's context either way).
   const searchableSummary = draw && (
     <div className="article-summary">
-      {draw.summary.split(/([A-Za-z']+)/g).map((part, i) =>
-        /^[A-Za-z']+$/.test(part) ? (
-          <span className="article-word-anchor" key={i} ref={wordLookup?.key === i ? wordLookupAnchorRef : undefined}>
+      {segmentArticleSummary(draw.summary, phrases).map((segment, i) =>
+        segment.type === "gap" ? (
+          <span key={i}>{segment.text}</span>
+        ) : (
+          <span
+            className={segment.type === "phrase" ? "article-phrase-anchor" : "article-word-anchor"}
+            key={i}
+            ref={wordLookup?.key === segment.key ? wordLookupAnchorRef : undefined}
+          >
             <button
               type="button"
-              className={wordLookup?.key === i ? "article-word selected" : "article-word"}
-              onClick={() => openWordLookup(i, part)}
+              className={
+                segment.type === "phrase"
+                  ? wordLookup?.key === segment.key ? "article-word article-phrase selected" : "article-word article-phrase"
+                  : wordLookup?.key === segment.key ? "article-word selected" : "article-word"
+              }
+              onClick={() => openWordLookup(segment.key, segment.type === "phrase" ? normalizePhraseQuery(segment.text) : segment.text)}
               aria-haspopup="menu"
-              aria-expanded={wordLookup?.key === i}
+              aria-expanded={wordLookup?.key === segment.key}
             >
-              {part}
+              {segment.text}
             </button>
-            {wordLookup?.key === i && (
+            {wordLookup?.key === segment.key && (
               <div
                 className={`word-lookup-panel${centerWordLookup ? " word-lookup-panel-centered" : ""}`}
                 role="menu"
@@ -497,7 +634,7 @@ export function ArticleQuiz() {
                     type="button"
                     className="ghost icon-btn"
                     onClick={() => setWordLookup(null)}
-                    aria-label="단어 뜻 닫기"
+                    aria-label="표현 뜻 닫기"
                   >
                     ✕
                   </button>
@@ -521,8 +658,6 @@ export function ArticleQuiz() {
               </div>
             )}
           </span>
-        ) : (
-          <span key={i}>{part}</span>
         ),
       )}
     </div>
@@ -531,10 +666,10 @@ export function ArticleQuiz() {
   const searchedWordsControl = draw?.status === "done" && searchedWords.length > 0 && (
     <div className="article-searched-words-control">
       {searchedWordsOpen && (
-        <div className="article-searched-words-panel" role="dialog" aria-label="검색한 단어 목록">
+        <div className="article-searched-words-panel" role="dialog" aria-label="검색한 표현 목록">
           <div className="word-lookup-header">
-            <strong>검색한 단어</strong>
-            <button type="button" className="ghost icon-btn" onClick={() => setSearchedWordsOpen(false)} aria-label="검색한 단어 목록 닫기">✕</button>
+            <strong>검색한 표현</strong>
+            <button type="button" className="ghost icon-btn" onClick={() => setSearchedWordsOpen(false)} aria-label="검색한 표현 목록 닫기">✕</button>
           </div>
           {searchedWords.map((item) => (
             <div className="searched-word-row" key={item.key}>
@@ -548,7 +683,7 @@ export function ArticleQuiz() {
         </div>
       )}
       <button type="button" className="article-searched-words-btn" onClick={() => setSearchedWordsOpen((open) => !open)} aria-expanded={searchedWordsOpen}>
-        🔎 검색한 단어 {searchedWords.length}
+        🔎 검색한 표현 {searchedWords.length}
       </button>
     </div>
   );
@@ -615,6 +750,75 @@ export function ArticleQuiz() {
                   the selected token. A <p> cannot legally contain that
                   panel and browsers may re-parent it unpredictably. */}
               {searchableSummary}
+              {/* Phrase lookup for text the learner suspects is an idiom but
+                  that isn't among the suggested phrases (or before they've
+                  loaded). A free-text query may contain spaces — the whole
+                  run of words goes to the same durable define job word taps
+                  use. Results render inline instead of anchored: a typed
+                  query has no single anchor token to hang a popover from. */}
+              <div className="article-phrase-search">
+                <form
+                  className="article-phrase-form"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    runPhraseSearch(phraseQuery);
+                  }}
+                >
+                  <input
+                    type="text"
+                    className="article-phrase-input"
+                    value={phraseQuery}
+                    onChange={(event) => setPhraseQuery(event.target.value)}
+                    placeholder="표현 검색 (예: in spite of)"
+                    aria-label="표현 검색"
+                    maxLength={255}
+                  />
+                  <button type="submit" className="quiz-start-btn" disabled={!normalizePhraseQuery(phraseQuery)}>
+                    검색
+                  </button>
+                </form>
+                {phrases.length > 0 && (
+                  <div className="article-phrase-chips" role="group" aria-label="이 아티클의 주요 표현">
+                    <span className="article-phrase-chips-label">이 아티클의 주요 표현</span>
+                    {phrases.map((phrase) => (
+                      <button
+                        type="button"
+                        key={phrase}
+                        className={`article-phrase-chip${phraseSearch?.text === normalizePhraseQuery(phrase) ? " active" : ""}`}
+                        onClick={() => runPhraseSearch(phrase)}
+                      >
+                        {phrase}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {phraseSearch && (
+                  <div className="article-phrase-result">
+                    <div className="word-lookup-header">
+                      <span className="word-search-word">{phraseSearch.text}</span>
+                      <button
+                        type="button"
+                        className="ghost icon-btn"
+                        onClick={() => setPhraseSearch(null)}
+                        aria-label="표현 검색 결과 닫기"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                    {phraseSearch.loading && <div className="word-search-status">찾는 중…</div>}
+                    {!phraseSearch.loading && phraseSearch.failed && (
+                      <div className="word-search-status">뜻을 가져오지 못했어요. 다시 검색해 보세요.</div>
+                    )}
+                    {!phraseSearch.loading && !phraseSearch.failed && phraseSearch.result && (
+                      <>
+                        <span className="word-search-meaning">{phraseSearch.result.meaning}</span>
+                        <span className="word-search-example">{phraseSearch.result.example}</span>
+                        {learnWordButton({ word: phraseSearch.text, result: phraseSearch.result })}
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
               <ArticleReadAloud key={draw.id} articleId={draw.id} />
               <PageToolbar>
                 <button type="button" className="quiz-start-btn" onClick={startQuiz}>문제풀기</button>

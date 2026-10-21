@@ -12,6 +12,7 @@ vi.mock("../lib/articles", async () => {
     ...actual,
     fetchArticleInstances: vi.fn(),
     fetchArticleInstance: vi.fn(),
+    fetchArticlePhrases: vi.fn(),
     drawArticle: vi.fn(),
     answerArticle: vi.fn(),
     deleteArticleInstance: vi.fn(),
@@ -36,10 +37,12 @@ import {
   drawArticle,
   fetchArticleInstance,
   fetchArticleInstances,
+  fetchArticlePhrases,
   type ArticleDraw,
   type ArticleInstance,
 } from "../lib/articles";
 import { formatAbsoluteDate, formatDateDivider } from "../lib/time";
+import { phraseLookupPosition } from "../lib/phraseSearch";
 import { checkDefinedWordStatus, defineWord } from "../lib/wordSearch";
 import { fetchWords, saveWord } from "../lib/wordReview";
 
@@ -50,6 +53,10 @@ beforeEach(() => {
   HTMLMediaElement.prototype.pause = vi.fn();
   vi.mocked(checkDefinedWordStatus).mockResolvedValue(null);
   vi.mocked(fetchWords).mockResolvedValue({ words: [], dueCount: 0 });
+  // Default: this article simply has no suggested phrases, so the phrase
+  // watch resolves on its first poll and tests don't have to advance timers
+  // unless they exercise phrase delivery itself.
+  vi.mocked(fetchArticlePhrases).mockResolvedValue({ status: "done", phrases: [] });
 });
 
 afterEach(() => {
@@ -748,7 +755,7 @@ describe("ArticleQuiz page — word lookup while reading", () => {
 
     // Reopening the same token uses the successful result immediately, so
     // there is no second confirmation or lookup request.
-    await user.click(screen.getByRole("button", { name: "단어 뜻 닫기" }));
+    await user.click(screen.getByRole("button", { name: "표현 뜻 닫기" }));
     await user.click(screen.getByRole("button", { name: "discovery" }));
     expect(screen.queryByRole("button", { name: "찾기" })).not.toBeInTheDocument();
     expect(screen.getByText("발견")).toBeInTheDocument();
@@ -779,9 +786,9 @@ describe("ArticleQuiz page — word lookup while reading", () => {
 
     // A cached result must also populate the searched-words overlay; the
     // popover and the overlay represent the same lookup.
-    const searchedWordsButton = screen.getByRole("button", { name: /검색한 단어 1/ });
+    const searchedWordsButton = screen.getByRole("button", { name: /검색한 표현 1/ });
     await user.click(searchedWordsButton);
-    const searchedWordsPanel = screen.getByRole("dialog", { name: "검색한 단어 목록" });
+    const searchedWordsPanel = screen.getByRole("dialog", { name: "검색한 표현 목록" });
     expect(within(searchedWordsPanel).getByText("발견")).toBeInTheDocument();
     expect(within(searchedWordsPanel).queryByText("뜻을 가져오지 못했어요.")).not.toBeInTheDocument();
   });
@@ -829,15 +836,15 @@ describe("ArticleQuiz page — word lookup while reading", () => {
 
     await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
     await user.click(screen.getByRole("button", { name: "discovery" }));
-    expect(screen.queryByRole("button", { name: /검색한 단어/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /검색한 표현/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "찾기" }));
     expect(await screen.findByText("발견")).toBeInTheDocument();
 
-    const searchedWordsButton = screen.getByRole("button", { name: /검색한 단어 1/ });
+    const searchedWordsButton = screen.getByRole("button", { name: /검색한 표현 1/ });
     expect(searchedWordsButton).toBeInTheDocument();
     await user.click(searchedWordsButton);
-    expect(screen.getByRole("dialog", { name: "검색한 단어 목록" })).toBeInTheDocument();
-    const searchedWordsPanel = screen.getByRole("dialog", { name: "검색한 단어 목록" });
+    expect(screen.getByRole("dialog", { name: "검색한 표현 목록" })).toBeInTheDocument();
+    const searchedWordsPanel = screen.getByRole("dialog", { name: "검색한 표현 목록" });
     expect(within(searchedWordsPanel).getByText("discovery")).toBeInTheDocument();
     expect(within(searchedWordsPanel).getAllByText("발견").length).toBeGreaterThan(0);
 
@@ -865,11 +872,11 @@ describe("ArticleQuiz page — word lookup while reading", () => {
     await screen.findByText("발견");
 
     const showView = async (view: "popover" | "history") => {
-      const closeLookup = screen.queryByRole("button", { name: "단어 뜻 닫기" });
+      const closeLookup = screen.queryByRole("button", { name: "표현 뜻 닫기" });
       if (closeLookup) await user.click(closeLookup);
-      const closeHistory = screen.queryByRole("button", { name: "검색한 단어 목록 닫기" });
+      const closeHistory = screen.queryByRole("button", { name: "검색한 표현 목록 닫기" });
       if (closeHistory) await user.click(closeHistory);
-      await user.click(screen.getByRole("button", { name: view === "popover" ? "discovery" : /검색한 단어 1/ }));
+      await user.click(screen.getByRole("button", { name: view === "popover" ? "discovery" : /검색한 표현 1/ }));
     };
     await showView(origin);
     await user.click(screen.getByRole("button", { name: "학습하기" }));
@@ -892,7 +899,7 @@ describe("ArticleQuiz page — word lookup while reading", () => {
     await showView(origin);
     expect(screen.getByRole("button", { name: "✓ 확인 중" })).toBeDisabled();
     expect(JSON.parse(localStorage.getItem("buddy.article.searched-words.i1") ?? "[]"))
-      .toEqual([{ key: 9, word: "discovery", result: suggestion, definitionVersion: 2 }]);
+      .toEqual([{ key: 9, word: "discovery", position: 9, result: suggestion, definitionVersion: 2 }]);
   });
 
   it("keeps the same word lookup and search history available while reviewing the answer", async () => {
@@ -930,17 +937,17 @@ describe("ArticleQuiz page — word lookup while reading", () => {
     await user.click(screen.getByRole("button", { name: "답안 확인" }));
 
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
-    const historyButton = screen.getByRole("button", { name: /검색한 단어 1/ });
+    const historyButton = screen.getByRole("button", { name: /검색한 표현 1/ });
     await user.click(historyButton);
-    const history = screen.getByRole("dialog", { name: "검색한 단어 목록" });
+    const history = screen.getByRole("dialog", { name: "검색한 표현 목록" });
     expect(within(history).getByText("discovery")).toBeInTheDocument();
     expect(within(history).getByText("발견")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "검색한 단어 목록 닫기" }));
+    await user.click(screen.getByRole("button", { name: "검색한 표현 목록 닫기" }));
     await user.click(screen.getByRole("button", { name: "Scientists" }));
     await user.click(await screen.findByRole("button", { name: "찾기" }));
     expect(await screen.findByText("과학자들")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /검색한 단어 2/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /검색한 표현 2/ })).toBeInTheDocument();
 
     expect(JSON.parse(localStorage.getItem("buddy.article.searched-words.i1") ?? "[]"))
       .toEqual(expect.arrayContaining([
@@ -972,8 +979,8 @@ describe("ArticleQuiz page — word lookup while reading", () => {
     render(<ArticleQuiz />);
 
     await user.click(await screen.findByText("[BBC] Scientists make discovery"));
-    await user.click(screen.getByRole("button", { name: /검색한 단어 1/ }));
-    const panel = screen.getByRole("dialog", { name: "검색한 단어 목록" });
+    await user.click(screen.getByRole("button", { name: /검색한 표현 1/ }));
+    const panel = screen.getByRole("dialog", { name: "검색한 표현 목록" });
     expect(within(panel).getByText("discovery")).toBeInTheDocument();
     expect(within(panel).getAllByText("발견").length).toBeGreaterThan(0);
   });
@@ -1014,9 +1021,9 @@ describe("ArticleQuiz page — word lookup while reading", () => {
     render(<ArticleQuiz />);
 
     await user.click(await screen.findByText("[BBC] Scientists make discovery"));
-    await user.click(screen.getByRole("button", { name: /검색한 단어 1/ }));
+    await user.click(screen.getByRole("button", { name: /검색한 표현 1/ }));
 
-    const panel = screen.getByRole("dialog", { name: "검색한 단어 목록" });
+    const panel = screen.getByRole("dialog", { name: "검색한 표현 목록" });
     const learnedButton = await within(panel).findByRole("button", { name: "✓ 학습 중" });
     expect(learnedButton).toBeDisabled();
     await user.click(learnedButton);
@@ -1047,9 +1054,9 @@ describe("ArticleQuiz page — word lookup while reading", () => {
 
     await user.click(await screen.findByText("[BBC] Scientists make discovery"));
     await vi.waitFor(() => expect(defineWord).toHaveBeenCalledWith(sampleDraw.id, "discovery", 9));
-    await user.click(screen.getByRole("button", { name: /검색한 단어 1/ }));
+    await user.click(screen.getByRole("button", { name: /검색한 표현 1/ }));
 
-    expect(within(screen.getByRole("dialog", { name: "검색한 단어 목록" })).getByText("발견")).toBeInTheDocument();
+    expect(within(screen.getByRole("dialog", { name: "검색한 표현 목록" })).getByText("발견")).toBeInTheDocument();
   });
 
   it("refreshes legacy definitions without losing the article's search history", async () => {
@@ -1067,8 +1074,8 @@ describe("ArticleQuiz page — word lookup while reading", () => {
     render(<ArticleQuiz />);
     await user.click(await screen.findByText("[BBC] Scientists make discovery"));
     await vi.waitFor(() => expect(defineWord).toHaveBeenCalledWith(sampleDraw.id, "discovery", 9));
-    await user.click(screen.getByRole("button", { name: /검색한 단어 1/ }));
-    const panel = screen.getByRole("dialog", { name: "검색한 단어 목록" });
+    await user.click(screen.getByRole("button", { name: /검색한 표현 1/ }));
+    const panel = screen.getByRole("dialog", { name: "검색한 표현 목록" });
     expect(await within(panel).findByText("발견")).toBeInTheDocument();
     expect(within(panel).queryByText("맥락상 발견을 의미함")).not.toBeInTheDocument();
     expect(JSON.parse(localStorage.getItem("buddy.article.searched-words.i1") ?? "[]"))
@@ -1087,7 +1094,7 @@ describe("ArticleQuiz page — word lookup while reading", () => {
     await user.click(screen.getByRole("button", { name: "찾기" }));
 
     expect(await screen.findByText("뜻을 가져오지 못했어요.")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "단어 뜻 닫기" }));
+    await user.click(screen.getByRole("button", { name: "표현 뜻 닫기" }));
     await user.click(screen.getByRole("button", { name: "discovery" }));
     expect(screen.getByText("뜻을 가져오지 못했어요.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "찾기" })).not.toBeInTheDocument();
@@ -1108,7 +1115,7 @@ describe("ArticleQuiz page — word lookup while reading", () => {
     await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
     await user.click(screen.getByRole("button", { name: "discovery" }));
     await user.click(screen.getByRole("button", { name: "찾기" }));
-    await user.click(screen.getByRole("button", { name: "단어 뜻 닫기" }));
+    await user.click(screen.getByRole("button", { name: "표현 뜻 닫기" }));
     await user.click(screen.getByRole("button", { name: "discovery" }));
 
     expect(screen.getByText("찾는 중…")).toBeInTheDocument();
@@ -1116,5 +1123,192 @@ describe("ArticleQuiz page — word lookup while reading", () => {
 
     resolveLookup({ word: "discovery", meaning: "발견", example: "A new discovery." });
     expect(await screen.findByText("발견")).toBeInTheDocument();
+  });
+});
+
+describe("ArticleQuiz page — phrase search while reading", () => {
+  // Suggested phrases arrive through their own 3000ms watch (see the second
+  // usePollScaffold instance in ArticleQuiz.tsx), and its first request fires
+  // only after one interval — so the draw must be opened while fake timers
+  // are already running for the watch to be controllable.
+  const openDoneArticle = async (user: ReturnType<typeof userEvent.setup>) => {
+    await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
+  };
+
+  it("groups a suggested phrase into one tappable unit in the paragraph", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    vi.mocked(fetchArticlePhrases).mockResolvedValue({ status: "done", phrases: ["announced a new discovery"] });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ delay: null });
+    render(<ArticleQuiz />);
+    await openDoneArticle(user);
+
+    // Before the suggestions land, every word is its own tap target.
+    const summary = screen.getByText(articleSummaryMatcher(sampleDraw.summary));
+    expect(within(summary).getByRole("button", { name: "announced" })).toBeInTheDocument();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+
+    // One expression button replaces its four word buttons, while the other
+    // words stay individually tappable and the paragraph text is unchanged.
+    expect(within(summary).queryByRole("button", { name: "announced" })).not.toBeInTheDocument();
+    expect(within(summary).queryByRole("button", { name: "discovery" })).not.toBeInTheDocument();
+    const phraseButton = within(summary).getByRole("button", { name: "announced a new discovery" });
+    expect(phraseButton).toHaveClass("article-phrase");
+    expect(within(summary).getByRole("button", { name: "Scientists" })).toBeInTheDocument();
+    expect(within(summary).getByRole("button", { name: "today" })).toBeInTheDocument();
+  });
+
+  it("looks up a tapped phrase span through the same anchored popover", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    vi.mocked(fetchArticlePhrases).mockResolvedValue({ status: "done", phrases: ["announced a new discovery"] });
+    vi.mocked(defineWord).mockResolvedValue({
+      word: "announced a new discovery",
+      meaning: "새로운 발견을 발표했다",
+      example: "Scientists announced a new discovery today.",
+    });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ delay: null });
+    render(<ArticleQuiz />);
+    await openDoneArticle(user);
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+
+    const summary = screen.getByText(articleSummaryMatcher(sampleDraw.summary));
+    await user.click(within(summary).getByRole("button", { name: "announced a new discovery" }));
+
+    // A span tap checks the server cache first, at the phrase's first word's
+    // split index (3 in the sample summary) — same protocol as a word tap.
+    expect(checkDefinedWordStatus).toHaveBeenCalledWith(sampleDraw.id, "announced a new discovery", 3);
+    expect(await screen.findByRole("button", { name: "찾기" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "찾기" }));
+
+    expect(defineWord).toHaveBeenCalledWith(sampleDraw.id, "announced a new discovery", 3);
+    expect(await screen.findByText("새로운 발견을 발표했다")).toBeInTheDocument();
+    expect(screen.getByRole("menu").closest(".article-phrase-anchor")).toBeInTheDocument();
+  });
+
+  it("sends a suggested-phrase chip straight to the define job without confirmation", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    vi.mocked(fetchArticlePhrases).mockResolvedValue({ status: "done", phrases: ["announced a new discovery"] });
+    vi.mocked(defineWord).mockResolvedValue({
+      word: "announced a new discovery",
+      meaning: "새로운 발견을 발표했다",
+      example: "Scientists announced a new discovery today.",
+    });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ delay: null });
+    render(<ArticleQuiz />);
+    await openDoneArticle(user);
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+
+    const chips = screen.getByRole("group", { name: "이 아티클의 주요 표현" });
+    await user.click(within(chips).getByRole("button", { name: "announced a new discovery" }));
+
+    // Submitting a phrase IS the explicit request: no server-cache round
+    // trip and no “찾기” step. The position matches the in-text span's (3),
+    // so one durable definition serves both surfaces.
+    expect(defineWord).toHaveBeenCalledWith(sampleDraw.id, "announced a new discovery", 3);
+    expect(screen.queryByRole("button", { name: "찾기" })).not.toBeInTheDocument();
+    expect(await screen.findByText("새로운 발견을 발표했다")).toBeInTheDocument();
+    expect(within(chips).getByRole("button", { name: "announced a new discovery" })).toHaveClass("active");
+  });
+
+  it("accepts a free-text query containing spaces", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    vi.mocked(defineWord).mockResolvedValue({
+      word: "announced a new discovery",
+      meaning: "새로운 발견을 발표했다",
+      example: "Scientists announced a new discovery today.",
+    });
+    const user = userEvent.setup({ delay: null });
+    render(<ArticleQuiz />);
+    await openDoneArticle(user);
+
+    // The whole run of words — spaces included — goes to the define job,
+    // keyed at the in-text position of its first word.
+    await user.type(screen.getByRole("textbox", { name: "표현 검색" }), "announced a new discovery");
+    await user.click(screen.getByRole("button", { name: "검색" }));
+
+    expect(defineWord).toHaveBeenCalledWith(sampleDraw.id, "announced a new discovery", 3);
+    expect(await screen.findByText("새로운 발견을 발표했다")).toBeInTheDocument();
+    // The input clears after submitting so the next query starts fresh.
+    expect(screen.getByRole("textbox", { name: "표현 검색" })).toHaveValue("");
+  });
+
+  it("keeps an off-text query's lookup cached across repeated searches", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    vi.mocked(defineWord).mockResolvedValue({
+      word: "strong economic growth",
+      meaning: "강한 경제 성장",
+      example: "The country saw strong economic growth.",
+    });
+    const query = "strong economic growth";
+    // Off-text queries fall back to a deterministic hash position inside the
+    // server's accepted range — stable so re-searching is always a cache hit.
+    const expectedPosition = phraseLookupPosition(sampleDraw.summary, query);
+    expect(expectedPosition).toBeGreaterThanOrEqual(0);
+    expect(expectedPosition).toBeLessThanOrEqual(100000);
+
+    const user = userEvent.setup({ delay: null });
+    render(<ArticleQuiz />);
+    await openDoneArticle(user);
+
+    await user.type(screen.getByRole("textbox", { name: "표현 검색" }), query);
+    await user.click(screen.getByRole("button", { name: "검색" }));
+    expect(defineWord).toHaveBeenCalledWith(sampleDraw.id, query, expectedPosition);
+    expect(await screen.findByText("강한 경제 성장")).toBeInTheDocument();
+
+    // A second search for the same text is served from the session cache.
+    await user.type(screen.getByRole("textbox", { name: "표현 검색" }), query);
+    await user.click(screen.getByRole("button", { name: "검색" }));
+    expect(defineWord).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("강한 경제 성장")).toBeInTheDocument();
+  });
+
+  it("keeps watching for the article's suggested phrases until they land", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    vi.mocked(fetchArticlePhrases)
+      .mockResolvedValueOnce({ status: "pending" })
+      .mockResolvedValue({ status: "done", phrases: ["a new discovery"] });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ delay: null });
+    render(<ArticleQuiz />);
+    await openDoneArticle(user);
+
+    // The watch's first request fires after one interval, not on open.
+    expect(fetchArticlePhrases).not.toHaveBeenCalled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(fetchArticlePhrases).toHaveBeenCalledWith(sampleDraw.id);
+    expect(screen.queryByRole("group", { name: "이 아티클의 주요 표현" })).not.toBeInTheDocument();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    const chips = screen.getByRole("group", { name: "이 아티클의 주요 표현" });
+    expect(within(chips).getByRole("button", { name: "a new discovery" })).toBeInTheDocument();
+  });
+
+  it("does not ask for suggested phrases until the article itself is done", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: pendingDraw });
+    vi.mocked(fetchArticleInstance).mockResolvedValue(sampleDraw);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ delay: null });
+    render(<ArticleQuiz />);
+    await openDoneArticle(user);
+    expect(fetchArticlePhrases).not.toHaveBeenCalled();
+
+    // The study poll reports done at t=3000; the phrase watch is only
+    // scheduled then, so it fires no earlier than t=6000.
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(fetchArticleInstance).toHaveBeenCalledWith(pendingDraw.id);
+    expect(fetchArticlePhrases).not.toHaveBeenCalled();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(fetchArticlePhrases).toHaveBeenCalledWith(sampleDraw.id);
   });
 });

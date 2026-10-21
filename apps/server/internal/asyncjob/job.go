@@ -137,6 +137,18 @@ const (
 	KindWordResearch  Kind = "word-research"
 	KindWritingPrompt Kind = "writing-prompt"
 	KindNuance        Kind = "nuance"
+	// KindArticlePhrases generates the cached key-phrase suggestion list for
+	// one article (payload: {ArticleID} — see
+	// transport.DispatchArticlePhrases), extracted by the Chat-model-only
+	// pipeline.SuggestArticlePhrases and stored on the shared Article row
+	// (see newsarticle.Article.KeyPhrases). Two producers share the one
+	// DedupeKey (the article ID): the article study job dispatches right
+	// after CompleteArticle (so a fresh article is usually cached before
+	// anyone reads it), and httpserver's phrases GET dispatches on a read of
+	// a done article whose list never landed (legacy rows, or a failed
+	// first attempt) — the dedupe keeps those two, and every concurrent
+	// reader, collapsed into a single generation.
+	KindArticlePhrases Kind = "article-phrases"
 )
 
 // Job is the durable Redis envelope for one unit of background work.

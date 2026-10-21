@@ -556,6 +556,76 @@ a.menu-item {
   display: inline-block;
   max-width: 100%;
 }
+/* A server-suggested key phrase grouped into one tappable unit inside the
+   paragraph (see lib/phraseSearch.ts's segmentArticleSummary). Unlike
+   .article-word-anchor this stays display:inline: a multi-word expression
+   must wrap naturally mid-phrase on narrow screens, and an absolutely
+   positioned popover still anchors to the phrase's first line box when the
+   wrapper is inline. The dotted underline reads as "one searchable
+   expression" rather than several adjacent words. */
+.article-phrase-anchor {
+  position: relative;
+  display: inline;
+}
+.article-word.article-phrase {
+  text-decoration: underline dotted var(--accent-border);
+  text-underline-offset: 0.22em;
+}
+.article-word.article-phrase.selected { text-decoration-color: var(--accent-strong); }
+/* Phrase lookup surface under the paragraph (see ArticleQuiz.tsx's reading
+   view): free-text search box, suggested-phrase chips, and the inline
+   result. Input sizing follows .word-search-panel (16px iOS zoom
+   threshold, same border tokens). */
+.article-phrase-search {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 12px 0 4px;
+}
+.article-phrase-form { display: flex; gap: 8px; align-items: stretch; }
+.article-phrase-input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 16px; /* iOS Safari zoom threshold, same as .composer input */
+  background: var(--panel-2);
+  border: 1px solid var(--border-2);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  min-height: 40px;
+}
+/* Same input-height alignment note as .word-search-panel form button. */
+.article-phrase-form button[type="submit"] {
+  flex-shrink: 0;
+  min-height: 40px;
+  padding: 0 16px;
+  border-radius: var(--radius-sm);
+}
+.article-phrase-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.article-phrase-chips-label { width: 100%; font-size: 12px; color: var(--muted); }
+.article-phrase-chip {
+  min-height: 32px;
+  padding: 4px 12px;
+  border: 1px solid var(--accent-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  font-weight: 500;
+  box-shadow: none;
+}
+.article-phrase-chip:hover:not(:disabled),
+.article-phrase-chip:focus-visible { background: var(--accent-soft); color: var(--accent-strong); box-shadow: none; }
+.article-phrase-chip.active { background: var(--accent-soft); color: var(--accent-strong); border-color: var(--accent-strong); }
+.article-phrase-result {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--overlay);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
 /* Word-lookup result, opened by tapping a word in .article-summary. It is
    anchored to the selected word and overlays the paragraph, so its position
    does not push the rest of a long article down or strand the controls below

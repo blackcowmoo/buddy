@@ -98,7 +98,7 @@ func TestItemJobsDiscardDeletionDuringModelCall(t *testing.T) {
 				articles := &guardedArticleStore{newFakeNewsArticleStore(a), owner}
 				speaker := &fakeSpeaker{}
 				if kind == "article" {
-					err = runArticleStudy(ctx, pipe, articles, &ArticleAudio{Client: speaker}, "item", "s", "t", "d")
+					err = runArticleStudy(ctx, pipe, articles, &ArticleAudio{Client: speaker}, nil, "item", "s", "t", "d")
 				} else {
 					err = RunArticleTranslationBackfill(ctx, pipe, articles, "item")
 				}

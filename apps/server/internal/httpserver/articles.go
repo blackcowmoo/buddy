@@ -237,16 +237,17 @@ func selfHealIncompleteArticle(ctx context.Context, articles newsarticle.Store, 
 // dispatchArticleStudy enqueues (or runs inline, if no queue is configured)
 // article-study generation for a StatusPending article — the shared body of
 // articleDrawHandler's first-draw dispatch and articleInstanceHandler's
-// self-heal re-dispatch.
-func dispatchArticleStudy(ctx context.Context, queue *asyncjob.Queue, pipe *pipeline.Pipeline, articles newsarticle.Store, audio *transport.ArticleAudio, a newsarticle.Article, logSuffix string) {
+// self-heal re-dispatch. phrasesQueue is threaded to the study job so the
+// key-phrase list is dispatched right after completion (see runArticleStudy).
+func dispatchArticleStudy(ctx context.Context, queue *asyncjob.Queue, phrasesQueue *asyncjob.Queue, pipe *pipeline.Pipeline, articles newsarticle.Store, audio *transport.ArticleAudio, a newsarticle.Article, logSuffix string) {
 	asyncjob.EnqueueOrRunInline(queue, ctx,
 		"articles: enqueue study"+logSuffix+" "+a.ID,
 		func(ctx context.Context) error {
-			return transport.EnqueueArticleStudyJob(ctx, queue, pipe, articles, audio, a.ID, a.Source, a.Title, a.Description)
+			return transport.EnqueueArticleStudyJob(ctx, queue, pipe, articles, audio, phrasesQueue, a.ID, a.Source, a.Title, a.Description)
 		},
 		"articles: study"+logSuffix+" "+a.ID,
 		func(ctx context.Context) error {
-			return transport.RunArticleStudyInline(ctx, pipe, articles, audio, a.ID, a.Source, a.Title, a.Description)
+			return transport.RunArticleStudyInline(ctx, pipe, articles, audio, phrasesQueue, a.ID, a.Source, a.Title, a.Description)
 		},
 	)
 }
@@ -276,7 +277,7 @@ func dispatchArticleStudy(ctx context.Context, queue *asyncjob.Queue, pipe *pipe
 // taking it as a parameter, rather than calling the package function
 // directly, is what lets handler tests substitute a fake feed without
 // reaching the real internet.
-func articleDrawHandler(ident identity.Identifier, articles newsarticle.Store, pipe *pipeline.Pipeline, fetchCandidates func(context.Context) ([]newsfeed.Candidate, error), articleStudyQueue *asyncjob.Queue, audio *transport.ArticleAudio) http.HandlerFunc {
+func articleDrawHandler(ident identity.Identifier, articles newsarticle.Store, pipe *pipeline.Pipeline, fetchCandidates func(context.Context) ([]newsfeed.Candidate, error), articleStudyQueue *asyncjob.Queue, phrasesQueue *asyncjob.Queue, audio *transport.ArticleAudio) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)
 		if !ok {
@@ -321,7 +322,7 @@ func articleDrawHandler(ident identity.Identifier, articles newsarticle.Store, p
 			return
 		}
 		if article.Status == newsarticle.StatusPending {
-			dispatchArticleStudy(r.Context(), articleStudyQueue, pipe, articles, audio, article, "")
+			dispatchArticleStudy(r.Context(), articleStudyQueue, phrasesQueue, pipe, articles, audio, article, "")
 		}
 		writeJSON(w, toArticleDraw(inst))
 	}
@@ -343,7 +344,7 @@ func articleDrawHandler(ident identity.Identifier, articles newsarticle.Store, p
 // not just on Status being "pending" — this handler is polled every few
 // seconds by a normally-generating draw, and re-enqueuing on every one of
 // those ticks would be wasteful/duplicative).
-func articleInstanceHandler(ident identity.Identifier, articles newsarticle.Store, pipe *pipeline.Pipeline, articleStudyQueue *asyncjob.Queue, audio *transport.ArticleAudio) http.HandlerFunc {
+func articleInstanceHandler(ident identity.Identifier, articles newsarticle.Store, pipe *pipeline.Pipeline, articleStudyQueue *asyncjob.Queue, phrasesQueue *asyncjob.Queue, audio *transport.ArticleAudio) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)
 		if !ok {
@@ -355,7 +356,7 @@ func articleInstanceHandler(ident identity.Identifier, articles newsarticle.Stor
 		}
 		if healed, reopened := selfHealIncompleteArticle(r.Context(), articles, inst.Article); reopened {
 			inst.Article = healed
-			dispatchArticleStudy(r.Context(), articleStudyQueue, pipe, articles, audio, healed, " (reopen)")
+			dispatchArticleStudy(r.Context(), articleStudyQueue, phrasesQueue, pipe, articles, audio, healed, " (reopen)")
 		}
 		if inst.Article.Status == newsarticle.StatusDone && inst.Article.Translation == "" {
 			articleID := inst.Article.ID
@@ -366,6 +367,74 @@ func articleInstanceHandler(ident identity.Identifier, articles newsarticle.Stor
 			}()
 		}
 		writeJSON(w, toArticleDraw(inst))
+	}
+}
+
+// articlePhrasesResponse mirrors the two-state read of one article's cached
+// key-phrase list (see newsarticle.Article.KeyPhrases): "done" carries the
+// list, "pending" means generation was just (or already is) dispatched for
+// it and the learner's next poll should find it — same shape rationale as
+// articleWordLookupResponse.
+type articlePhrasesResponse struct {
+	Status  string   `json:"status"`
+	Phrases []string `json:"phrases"`
+}
+
+// articlePhrasesHandler returns the caller's article key-phrase suggestions.
+// The shared Article row IS the cache, so a populated row answers from MySQL
+// alone — every reader after the first never touches the LLM. On a done
+// article whose list never landed (completed before this feature existed,
+// or the study job's own dispatch failed) it dispatches generation —
+// deduped by article ID through the same transport.DispatchArticlePhrases
+// the study job uses, behind the same queue.Pending + re-read dance
+// articleWordDefineHandler uses, so a learner's polling loop can't stack up
+// duplicate generations — and answers "pending". A pending article 409s via
+// requireReadyArticleInstance: there is no summary to extract phrases from
+// yet, and the study job will dispatch this itself on completion.
+func articlePhrasesHandler(ident identity.Identifier, articles newsarticle.Store, pipe *pipeline.Pipeline, phrasesQueue *asyncjob.Queue) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := requireUser(w, r, ident)
+		if !ok {
+			return
+		}
+		inst, ok := requireReadyArticleInstance(w, r, articles, userID, "articles: get phrases")
+		if !ok {
+			return
+		}
+		if len(inst.Article.KeyPhrases) > 0 {
+			writeJSON(w, articlePhrasesResponse{Status: "done", Phrases: inst.Article.KeyPhrases})
+			return
+		}
+		if phrasesQueue != nil {
+			articleID := inst.Article.ID
+			pending, err := phrasesQueue.Pending(r.Context(), asyncjob.KindArticlePhrases, articleID)
+			if err != nil {
+				serverError(w, "articles: phrases pending status", err)
+				return
+			}
+			if pending {
+				writeJSON(w, articlePhrasesResponse{Status: "pending"})
+				return
+			}
+			// Completion writes the phrases before clearing the queue's
+			// dedupe marker. Re-read after observing no pending job to close
+			// the race where both changed between the instance read above
+			// and Pending.
+			fresh, exists, err := articles.GetArticle(r.Context(), articleID)
+			if err != nil {
+				serverError(w, "articles: phrases re-read", err)
+				return
+			}
+			if exists && len(fresh.KeyPhrases) > 0 {
+				writeJSON(w, articlePhrasesResponse{Status: "done", Phrases: fresh.KeyPhrases})
+				return
+			}
+		}
+		if err := transport.DispatchArticlePhrases(r.Context(), phrasesQueue, pipe, articles, inst.Article.ID); err != nil {
+			serverError(w, "articles: dispatch phrases "+inst.Article.ID, err)
+			return
+		}
+		writeJSON(w, articlePhrasesResponse{Status: "pending"})
 	}
 }
 
