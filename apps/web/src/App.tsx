@@ -6,7 +6,7 @@ import type {
 } from "./lib/protocol";
 import { PCMRecorder } from "./audio/recorder";
 import { requestAmbientAudioSession } from "./lib/audioSession";
-import { prPath } from "./lib/rootPath";
+import { currentPrNumber, prPath } from "./lib/rootPath";
 import { useDismiss } from "./hooks/useDismiss";
 import { usePollScaffold } from "./hooks/usePollScaffold";
 import { useUserPreferences } from "./hooks/useUserPreferences";
@@ -1152,6 +1152,11 @@ export function App() {
     prInput,
     onPrInputChange: handlePrInputChange,
     prError,
+    // The PR number of this deployment when served under a "/pr/<n>"
+    // ROOT_PATH (see httpserver.withRootPath); the menu's PR-preview field
+    // shows it as its placeholder. The pathname only changes via full page
+    // loads, so reading it per render is enough — no listener needed.
+    currentPr: currentPrNumber(window.location.pathname),
     onGoToPath: goToPath,
     wordDueCount,
     nuanceDueCount,

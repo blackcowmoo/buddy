@@ -10,3 +10,12 @@ export function prPath(input: string): string | null {
   if (!/^\d+$/.test(trimmed)) return null;
   return `/pr/${trimmed}/`;
 }
+
+// The inverse direction: which PR-preview deployment the app is currently
+// served from. The mount prefix is visible in the page URL ("/pr/14/...",
+// see httpserver.withRootPath), so a leading "/pr/<n>" segment is the PR
+// number being previewed; anything else (the root deployment) returns null.
+export function currentPrNumber(pathname: string): string | null {
+  const match = /^\/pr\/(\d+)(?:\/|$)/.exec(pathname);
+  return match ? match[1] : null;
+}

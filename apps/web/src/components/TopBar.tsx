@@ -87,6 +87,7 @@ function MenuPanel({
   prInput,
   onPrInputChange,
   prError,
+  currentPr,
   onGoToPath,
   wordDueCount,
   nuanceDueCount,
@@ -106,6 +107,7 @@ function MenuPanel({
   prInput: string;
   onPrInputChange: (v: string) => void;
   prError: boolean;
+  currentPr: string | null;
   onGoToPath: (e: React.FormEvent) => void;
   wordDueCount: number;
   nuanceDueCount: number;
@@ -202,7 +204,7 @@ function MenuPanel({
             id="pr-path"
             value={prInput}
             onChange={(e) => onPrInputChange(e.target.value)}
-            placeholder="PR 번호 (예: 14)"
+            placeholder={currentPr ? `현재 PR: ${currentPr}` : "PR 번호 (예: 14)"}
             inputMode="numeric"
             autoComplete="off"
           />
