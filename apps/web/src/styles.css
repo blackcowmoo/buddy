@@ -580,28 +580,58 @@ a.menu-item {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  margin: 12px 0 4px;
+  margin: 16px 0 8px;
 }
-.article-phrase-form { display: flex; gap: 8px; align-items: stretch; }
+.article-phrase-trigger {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  column-gap: 10px;
+  width: 100%;
+  min-height: 52px;
+  padding: 9px 14px;
+  text-align: left;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+  box-shadow: none;
+}
+.article-phrase-trigger > span:first-child { grid-row: span 2; color: var(--accent-strong); font-size: 22px; }
+.article-phrase-trigger-hint { color: var(--muted); font-size: 12px; }
+.article-phrase-trigger:hover, .article-phrase-trigger:focus-visible { border-color: var(--accent-border); background: var(--accent-soft); box-shadow: none; }
+.article-phrase-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 8px 6px 12px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.article-phrase-search-icon { color: var(--accent-strong); font-size: 21px; line-height: 1; }
 .article-phrase-input {
   flex: 1;
   min-width: 0;
   font: inherit;
   font-size: 16px; /* iOS Safari zoom threshold, same as .composer input */
-  background: var(--panel-2);
-  border: 1px solid var(--border-2);
+  background: transparent;
+  border: 0;
   color: var(--text);
-  border-radius: var(--radius-sm);
-  padding: 8px 12px;
-  min-height: 40px;
+  padding: 8px 2px;
+  min-height: 36px;
+  outline: none;
 }
-/* Same input-height alignment note as .word-search-panel form button. */
-.article-phrase-form button[type="submit"] {
+.article-phrase-submit {
   flex-shrink: 0;
-  min-height: 40px;
-  padding: 0 16px;
+  min-height: 36px;
+  padding: 0 14px;
   border-radius: var(--radius-sm);
 }
+.article-phrase-close { flex: 0 0 auto; padding: 6px; color: var(--muted); background: transparent; border: 0; box-shadow: none; }
+.article-phrase-close:hover, .article-phrase-close:focus-visible { color: var(--text); background: transparent; box-shadow: none; }
 .article-phrase-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .article-phrase-chips-label { width: 100%; font-size: 12px; color: var(--muted); }
 .article-phrase-chip {

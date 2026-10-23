@@ -1230,6 +1230,7 @@ describe("ArticleQuiz page — phrase search while reading", () => {
 
     // The whole run of words — spaces included — goes to the define job,
     // keyed at the in-text position of its first word.
+    await user.click(screen.getByRole("button", { name: /모르는 표현 찾기/ }));
     await user.type(screen.getByRole("textbox", { name: "표현 검색" }), "announced a new discovery");
     await user.click(screen.getByRole("button", { name: "검색" }));
 
@@ -1258,6 +1259,7 @@ describe("ArticleQuiz page — phrase search while reading", () => {
     render(<ArticleQuiz />);
     await openDoneArticle(user);
 
+    await user.click(screen.getByRole("button", { name: /모르는 표현 찾기/ }));
     await user.type(screen.getByRole("textbox", { name: "표현 검색" }), query);
     await user.click(screen.getByRole("button", { name: "검색" }));
     expect(defineWord).toHaveBeenCalledWith(sampleDraw.id, query, expectedPosition);
