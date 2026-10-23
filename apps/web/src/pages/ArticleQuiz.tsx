@@ -166,6 +166,7 @@ export function ArticleQuiz() {
     result: WordSuggestion | null;
   } | null>(null);
   const [phraseQuery, setPhraseQuery] = useState("");
+  const [phraseSearchOpen, setPhraseSearchOpen] = useState(false);
   // The article's local search history only records what was looked up. The
   // vocabulary list is the durable source of truth for whether that exact
   // word+meaning is already tracked, including after a reload or on another
@@ -324,6 +325,7 @@ export function ArticleQuiz() {
     phrasesWatchedRef.current = null;
     setPhraseSearch(null);
     setPhraseQuery("");
+    setPhraseSearchOpen(false);
   }, []);
 
   const handleDraw = useCallback(async () => {
@@ -756,27 +758,37 @@ export function ArticleQuiz() {
                   run of words goes to the same durable define job word taps
                   use. Results render inline instead of anchored: a typed
                   query has no single anchor token to hang a popover from. */}
-              <div className="article-phrase-search">
-                <form
+              <div className={`article-phrase-search${phraseSearchOpen ? " is-open" : ""}`}>
+                {!phraseSearchOpen && (
+                  <button type="button" className="article-phrase-trigger" onClick={() => setPhraseSearchOpen(true)}>
+                    <span aria-hidden="true">⌕</span>
+                    <span>모르는 표현 찾기</span>
+                    <span className="article-phrase-trigger-hint">문장 속 표현도 검색할 수 있어요</span>
+                  </button>
+                )}
+                {phraseSearchOpen && <form
                   className="article-phrase-form"
                   onSubmit={(event) => {
                     event.preventDefault();
                     runPhraseSearch(phraseQuery);
                   }}
                 >
+                  <span className="article-phrase-search-icon" aria-hidden="true">⌕</span>
                   <input
                     type="text"
                     className="article-phrase-input"
                     value={phraseQuery}
                     onChange={(event) => setPhraseQuery(event.target.value)}
-                    placeholder="표현 검색 (예: in spite of)"
+                    placeholder="예: in spite of"
                     aria-label="표현 검색"
                     maxLength={255}
+                    autoFocus
                   />
-                  <button type="submit" className="quiz-start-btn" disabled={!normalizePhraseQuery(phraseQuery)}>
+                  <button type="submit" className="article-phrase-submit" disabled={!normalizePhraseQuery(phraseQuery)}>
                     검색
                   </button>
-                </form>
+                  <button type="button" className="article-phrase-close" onClick={() => setPhraseSearchOpen(false)} aria-label="표현 검색 닫기">✕</button>
+                </form>}
                 {phrases.length > 0 && (
                   <div className="article-phrase-chips" role="group" aria-label="이 아티클의 주요 표현">
                     <span className="article-phrase-chips-label">이 아티클의 주요 표현</span>
