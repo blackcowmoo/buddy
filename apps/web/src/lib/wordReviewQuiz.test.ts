@@ -6,7 +6,7 @@ function word(id: string, changes: Partial<WordReviewItem> = {}): WordReviewItem
   return {
     id, word: id, meaning: `${id}의 뜻`, example: `This is ${id}.`,
     status: "verified", researchStatus: "confirmed", stage: 0, reviewCount: 0, nextReviewAt: 100,
-    reviewQuestion: { version: 2, prompt: "This is ___.", answers: [id] },
+    reviewQuestion: { version: 3, prompt: "This is ___.", answers: [id] },
     ...changes,
   };
 }
@@ -18,16 +18,20 @@ describe("review question compatibility", () => {
   it.each([
     undefined,
     { version: 1, prompt: "This is ___.", answers: ["old"] },
-    { version: 2, prompt: "This is ___." },
-    { version: 2, prompt: "This is ___.", answers: [] },
-    { version: 2, prompt: "This is ___ and ___.", answers: ["one"] },
-    { version: 2, prompt: "This is ___.", answers: [" "] },
+    // Version 2 predates the unambiguous-answer contract: this sentence
+    // fits both "goes" and "went", so it must stay hidden until the server
+    // regenerates it at the current version.
+    { version: 2, prompt: "He ___ home.", answers: ["goes"] },
+    { version: 3, prompt: "This is ___." },
+    { version: 3, prompt: "This is ___.", answers: [] },
+    { version: 3, prompt: "This is ___ and ___.", answers: ["one"] },
+    { version: 3, prompt: "This is ___.", answers: [" "] },
   ])("defers an incomplete or legacy question: %j", (question) => {
     expect(currentQuestion(word("example", { reviewQuestion: question as WordReviewQuestion | undefined }))).toBeNull();
   });
 
   it("keeps complete grammatical answers and supports multiple blanks and future versions", () => {
-    const question = { version: 3, prompt: "They ___ their ___ yesterday.", answers: ["did", "best"] };
+    const question = { version: 4, prompt: "They ___ their ___ yesterday.", answers: ["did", "best"] };
     expect(currentQuestion(word("do one's best", { reviewQuestion: question }))).toBe(question);
   });
 });

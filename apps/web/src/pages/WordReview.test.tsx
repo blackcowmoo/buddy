@@ -73,7 +73,7 @@ const dueWord: WordReviewItem = {
   nextReviewAt: Math.floor(testNow / 1000) - 3600, // 1 hour ago: due
   status: "verified",
   researchStatus: "confirmed",
-  reviewQuestion: { version: 2, prompt: "She was ___.", answers: ["ecstatic"] },
+  reviewQuestion: { version: 3, prompt: "She was ___.", answers: ["ecstatic"] },
 };
 
 describe("validated research selection", () => {
@@ -419,7 +419,7 @@ const idiomWord: WordReviewItem = {
   status: "verified",
   researchStatus: "confirmed",
   reviewQuestion: {
-    version: 2,
+    version: 3,
     prompt: "Even though the task was complicated, he promised to ___ his ___ for the sake of the team.",
     answers: ["do", "best"],
   },
@@ -435,7 +435,7 @@ const optimizeWord: WordReviewItem = {
   nextReviewAt: Math.floor(testNow / 1000) - 3600, // 1 hour ago: due
   status: "verified",
   researchStatus: "confirmed",
-  reviewQuestion: { version: 2, prompt: "We are ___ the search algorithm for faster results.", answers: ["optimizing"] },
+  reviewQuestion: { version: 3, prompt: "We are ___ the search algorithm for faster results.", answers: ["optimizing"] },
 };
 
 const organizeWord: WordReviewItem = {
@@ -449,7 +449,7 @@ const organizeWord: WordReviewItem = {
   status: "verified",
   researchStatus: "confirmed",
   reviewQuestion: {
-    version: 2,
+    version: 3,
     prompt: "The criminals planned the attack in a highly ___ manner.",
     answers: ["organized"],
   },
@@ -1025,7 +1025,7 @@ describe("WordReview page", () => {
     expect(reviewWord).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "결과 보기" }));
-    expect(reviewWord).toHaveBeenCalledWith("w1", true, false, 2);
+    expect(reviewWord).toHaveBeenCalledWith("w1", true, false, 3);
     expect(await screen.findByText("1개 중 1개 맞혔어요!")).toBeInTheDocument();
   });
 
@@ -1043,7 +1043,7 @@ describe("WordReview page", () => {
     vi.mocked(reviewWord).mockResolvedValue(null);
     const second = {
       ...dueWord, id: "w-second", word: "calm", meaning: "차분한",
-      reviewQuestion: { version: 2, prompt: "He felt ___.", answers: ["calm"] },
+      reviewQuestion: { version: 3, prompt: "He felt ___.", answers: ["calm"] },
     };
     const user = await startQuiz([dueWord, second]);
     await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "thrilled{Enter}");
@@ -1072,8 +1072,8 @@ describe("WordReview page", () => {
     await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "calm{Enter}");
     await user.click(screen.getByRole("button", { name: "결과 보기" }));
     expect(screen.getByText("2개 중 2개 맞혔어요!")).toBeInTheDocument();
-    expect(reviewWord).toHaveBeenNthCalledWith(1, "w1", true, false, 2);
-    expect(reviewWord).toHaveBeenNthCalledWith(2, "w-second", true, false, 2);
+    expect(reviewWord).toHaveBeenNthCalledWith(1, "w1", true, false, 3);
+    expect(reviewWord).toHaveBeenNthCalledWith(2, "w-second", true, false, 3);
   });
 
   it("supports submitting, advancing, and completing a recall quiz by keyboard", async () => {
@@ -1090,7 +1090,7 @@ describe("WordReview page", () => {
     expect(screen.getByRole("button", { name: "완료" })).toHaveFocus();
     await user.keyboard("{Enter}");
     expect(screen.getByRole("heading", { name: "배운 표현을 내 것으로 만들어요" })).toBeInTheDocument();
-    expect(reviewWord).toHaveBeenCalledExactlyOnceWith("w1", true, false, 2);
+    expect(reviewWord).toHaveBeenCalledExactlyOnceWith("w1", true, false, 3);
   });
 
   it("does not submit an answer while the keyboard is composing text", async () => {
@@ -1151,7 +1151,7 @@ describe("WordReview page", () => {
     const forcedBtn = screen.getByRole("button", { name: "😅 억지로 맞춘 것 같아요" });
     await user.click(forcedBtn);
 
-    expect(reviewWord).toHaveBeenCalledWith("w1", true, true, 2);
+    expect(reviewWord).toHaveBeenCalledWith("w1", true, true, 3);
     expect(await screen.findByText("1개 중 1개 맞혔어요!")).toBeInTheDocument();
   });
 
@@ -1279,7 +1279,7 @@ describe("WordReview page", () => {
     await user.click(screen.getByRole("button", { name: "답안 확인" }));
 
     expect(await screen.findByText(/아쉬워요\. 정답: ecstatic/)).toBeInTheDocument();
-    expect(reviewWord).toHaveBeenCalledWith("w1", false, false, 2);
+    expect(reviewWord).toHaveBeenCalledWith("w1", false, false, 3);
 
     // Missing the only word in the queue doesn't end the session -- it's
     // requeued for a same-day retry, so there's another question to go.
@@ -1329,7 +1329,7 @@ describe("WordReview page", () => {
     expect(reviewWord).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "결과 보기" }));
-    expect(reviewWord).toHaveBeenCalledWith("w1", true, false, 2);
+    expect(reviewWord).toHaveBeenCalledWith("w1", true, false, 3);
   });
 
   it("lets learners revise a meaning before explicitly checking it", async () => {
@@ -1373,7 +1373,7 @@ describe("WordReview page", () => {
     await user.click(screen.getByRole("button", { name: "잘 모르겠어요" }));
 
     expect(screen.getByRole("status")).toHaveTextContent("아쉬워요. 정답:");
-    expect(reviewWord).toHaveBeenCalledExactlyOnceWith("w1", false, false, 2);
+    expect(reviewWord).toHaveBeenCalledExactlyOnceWith("w1", false, false, 3);
     await user.click(screen.getByRole("button", { name: "다음 단어" }));
     expect(reviewWord).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: "답안 확인" })).toBeDisabled();
@@ -1392,7 +1392,7 @@ describe("WordReview page", () => {
     await user.click(screen.getByRole("button", { name: "답안 확인" }));
 
     expect(await screen.findByText(/아쉬워요\. 정답: 매우 행복한/)).toBeInTheDocument();
-    expect(reviewWord).toHaveBeenCalledWith("w1", false, false, 2);
+    expect(reviewWord).toHaveBeenCalledWith("w1", false, false, 3);
   });
 
   it("reshuffles recognition choices when a missed word is retried", async () => {
@@ -1420,7 +1420,7 @@ describe("WordReview page", () => {
 
     await user.click(screen.getByRole("button", { name: "잘 모르겠어요" }));
     expect(await screen.findByText(/아쉬워요\. 정답: 매우 행복한/)).toBeInTheDocument();
-    expect(reviewWord).toHaveBeenCalledWith("w1", false, false, 2);
+    expect(reviewWord).toHaveBeenCalledWith("w1", false, false, 3);
 
     // "모르겠어요" resets the word and puts it back at the end of the
     // session for an immediate day-1 retry.
@@ -1428,7 +1428,7 @@ describe("WordReview page", () => {
     await user.click(screen.getByRole("button", { name: "매우 행복한" }));
     await user.click(screen.getByRole("button", { name: "답안 확인" }));
     await user.click(screen.getByRole("button", { name: "결과 보기" }));
-    expect(reviewWord).toHaveBeenLastCalledWith("w1", true, false, 2);
+    expect(reviewWord).toHaveBeenLastCalledWith("w1", true, false, 3);
   });
 
   it("treats 모르겠어요 as an incorrect answer even when the retry is answered correctly", async () => {
@@ -1440,7 +1440,7 @@ describe("WordReview page", () => {
 
     await user.click(screen.getByRole("button", { name: "잘 모르겠어요" }));
     expect(await screen.findByText(/아쉬워요\. 정답: 매우 행복한/)).toBeInTheDocument();
-    expect(reviewWord).toHaveBeenCalledWith("w1", false, false, 2);
+    expect(reviewWord).toHaveBeenCalledWith("w1", false, false, 3);
 
     await user.click(screen.getByRole("button", { name: "다음 단어" }));
     await user.click(screen.getByRole("button", { name: "매우 행복한" }));
@@ -1449,7 +1449,7 @@ describe("WordReview page", () => {
     expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "😅 억지로 맞춘 것 같아요" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "결과 보기" }));
-    expect(reviewWord).toHaveBeenLastCalledWith("w1", true, false, 2);
+    expect(reviewWord).toHaveBeenLastCalledWith("w1", true, false, 3);
   });
 
   it("returns to the list from the quiz view", async () => {

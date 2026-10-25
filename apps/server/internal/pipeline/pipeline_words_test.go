@@ -345,6 +345,25 @@ func TestGenerateWordReviewQuestionRejectsMalformedQuestion(t *testing.T) {
 	}
 }
 
+// TestWordReviewQuestionPromptRequiresUnambiguousTenseContext guards the
+// version-3 contract in the generation prompt itself: a bare sentence like
+// "He ___ home." fits both "goes" and "went", leaving the correct tense
+// undetermined. The prompt must demand exactly one correct completion per
+// blank and an explicit timeline cue that pins the tense from the sentence.
+func TestWordReviewQuestionPromptRequiresUnambiguousTenseContext(t *testing.T) {
+	prompt := wordReviewQuestionSystemPrompt("ko")
+	for _, want := range []string{
+		"exactly one correct completion",
+		`both "goes" and "went" fit`,
+		`"He usually ___ home before sunrise."`,
+		"timeline cue",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("system prompt does not require unambiguous tense context (missing %q): %q", want, prompt)
+		}
+	}
+}
+
 // ---- VerifyWord() -----------------------------------------------------------
 
 func TestVerifyWordUsesOrderedCascadeAndReturnsJudgeVerdict(t *testing.T) {
