@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -747,7 +748,7 @@ func TestWordsListRecoversReviewQuestionsInBackground(t *testing.T) {
 				requireStatus(t, rec, http.StatusOK)
 				if !strings.Contains(rec.Body.String(), `"answers":["organized"]`) ||
 					!strings.Contains(rec.Body.String(), `"answer":"organized"`) ||
-					!strings.Contains(rec.Body.String(), `"version":2`) {
+					!strings.Contains(rec.Body.String(), fmt.Sprintf(`"version":%d`, wordreview.CurrentQuestionVersion)) {
 					t.Fatalf("regenerated current question missing from response: %s", rec.Body.String())
 				}
 			})

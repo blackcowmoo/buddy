@@ -98,6 +98,13 @@ the input refers to a different word or sense.`
 // placeholders in dictionary phrases stay visible: "do one's best" produces
 // "___ his ___" and tests only "do" and "best".
 //
+// The sentence must also pin down the form it asks for: "He ___ home." fits
+// both "goes" and "went", so the prompt requires an explicit timeline cue
+// (a time expression, frequency adverb, or framing clause) wherever more
+// than one tense would otherwise read as correct. That requirement is part
+// of the CurrentQuestionVersion-3 contract, so questions generated before
+// it no longer count as ready and the list backfill regenerates them.
+//
 // Questions are versioned in application code rather than trusted to the
 // model. The caller persists this value with the prompt and answers so legacy
 // questions can be regenerated and stale workers can be rejected atomically.
@@ -199,7 +206,20 @@ Return STRICT JSON only, no prose, in exactly this shape:
 {"prompt":"<one natural English sentence with one or more ___ blanks>","answers":["<exact text for the first blank>"]}
 Rules:
 - Test the supplied dictionary word/phrase in the supplied meaning.
-- The sentence must make the required grammatical form clear from context.
+- Each blank MUST have exactly one correct completion: the sentence must
+  make the required grammatical form clear from context, and no other word
+  form may fit both grammatically and sensibly.
+- A verb answer needs an explicit timeline cue. If two tenses (for example
+  present and past) would each make a correct sentence, the sentence MUST
+  include a time expression, adverb of frequency, or surrounding clause
+  that forces exactly one tense, so the learner can determine it from the
+  sentence alone.
+  Wrong: "He ___ home." — both "goes" and "went" fit, so the answer is a
+  coin flip. Right: "He usually ___ home before sunrise." (only present
+  works) or "He ___ home long after midnight last night." (only past
+  works).
+- Do not rely on the tested word's meaning to imply a tense the sentence
+  itself never establishes.
 - Each item in "answers" MUST use the complete grammatical form required by
   its corresponding blank, including tense, aspect, subject agreement, or
   number. It does NOT have to equal the dictionary form. For example, use
@@ -213,8 +233,9 @@ Rules:
   "He promised to ___ his ___." with answers ["do","best"], never one blank
   whose answer is "do his best" and never a blank for "his".
 - Use one blank for an ordinary word or phrase with no dictionary placeholder.
-- The completed sentence must be natural and unambiguous. You may rewrite the
-  existing example when it does not satisfy these rules.
+- The completed sentence must be natural and unambiguous. If the existing
+  example leaves the tense, number, or any other required form
+  undetermined, rewrite it with enough context to decide before blanking.
 - Keep the prompt and every answer in English.`, native)
 }
 

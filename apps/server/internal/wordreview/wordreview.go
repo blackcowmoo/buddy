@@ -147,9 +147,13 @@ const (
 // that only have Word/Meaning/Example. Version 1 stored one whole surface
 // phrase in one blank; version 2 stores one answer per lexical blank so
 // context-only words such as the "his" in "do his best" can remain visible.
-// Bump this whenever the generation prompt or persisted question shape
-// changes in a way that requires old questions to be regenerated.
-const CurrentQuestionVersion = 2
+// Version 3 additionally requires every sentence to carry enough context
+// that each blank has exactly one correct completion: a version-2 sentence
+// like "He ___ home." accepts both "goes" and "went", so the learner had to
+// guess the tense instead of recalling it. Bump this whenever the generation
+// prompt or persisted question shape changes in a way that requires old
+// questions to be regenerated.
+const CurrentQuestionVersion = 3
 
 // Question is the persisted recall question for one vocabulary entry.
 // Answers has one exact surface form for each ___ in Prompt, in order. A

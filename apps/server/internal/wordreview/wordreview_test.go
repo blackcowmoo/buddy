@@ -35,6 +35,31 @@ func TestQuestionReadyRequiresOneAnswerPerBlank(t *testing.T) {
 	}
 }
 
+// TestQuestionReadyRejectsTheTenseAmbiguousVersion2Contract guards the
+// version-3 contract bump: version-2 sentences could ask for a verb form
+// the sentence never disambiguated ("He ___ home." fits both "goes" and
+// "went"), so version-2 rows must stop counting as ready. That makes them
+// invisible to DueCount and queues them through the list backfill for
+// regeneration under the unambiguous-answer contract.
+func TestQuestionReadyRejectsTheTenseAmbiguousVersion2Contract(t *testing.T) {
+	if CurrentQuestionVersion < 3 {
+		t.Fatalf("CurrentQuestionVersion = %d, want >= 3 so version-2 questions are regenerated", CurrentQuestionVersion)
+	}
+	legacy := Word{ReviewQuestion: Question{
+		Version: 2,
+		Prompt:  "He ___ home.",
+		Answers: []string{"goes"},
+	}}
+	if QuestionReady(legacy) {
+		t.Fatal("QuestionReady() = true for a version-2 question under the version-3 contract")
+	}
+	upgraded := legacy
+	upgraded.ReviewQuestion.Version = CurrentQuestionVersion
+	if !QuestionReady(upgraded) {
+		t.Fatal("QuestionReady() = false for a question at the current contract version")
+	}
+}
+
 func TestNextScheduleAdvancesStageOnCorrectAnswer(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 

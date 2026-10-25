@@ -1,7 +1,11 @@
 import { wordStudyStatus, type WordReviewItem, type WordReviewQuestion } from "./wordReview";
 import { shuffled } from "./shuffle";
 
-const currentReviewQuestionVersion = 2;
+// Mirrors wordreview.CurrentQuestionVersion on the server. Version 2
+// allowed sentences whose required tense was undetermined ("He ___ home."
+// fits both "goes" and "went"); version 3 requires each blank to have
+// exactly one correct completion.
+const currentReviewQuestionVersion = 3;
 const minRecognitionDistractors = 7;
 
 export type QuizItem =
