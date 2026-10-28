@@ -20,60 +20,63 @@ func TestGenerationRetryRegeneratesInvalidTerminalOutput(t *testing.T) {
 	}
 	issues := []StudyIssue{{Text: "He go.", Issue: protocol.Issue{Type: "grammar"}}}
 	for _, tc := range []struct {
-		name        string
-		invalid     string
-		valid       string
-		repairFails bool
-		generate    func(context.Context, *Pipeline) error
+		name string
+		// clarityAudits counts Judge calls the nuance clarity audit adds to
+		// the successful run; other generations have none.
+		clarityAudits int
+		invalid       string
+		valid         string
+		repairFails   bool
+		generate      func(context.Context, *Pipeline) error
 	}{
-		{"writing malformed JSON", `not json`, `{"korean":"새 문장"}`, false, func(ctx context.Context, p *Pipeline) error {
+		{"writing malformed JSON", 0, `not json`, `{"korean":"새 문장"}`, false, func(ctx context.Context, p *Pipeline) error {
 			_, err := p.GenerateWritingPrompt(ctx, "profile", nil, "draw")
 			return err
 		}},
-		{"writing empty sentence", `{"korean":" "}`, `{"korean":"새 문장"}`, false, func(ctx context.Context, p *Pipeline) error {
+		{"writing empty sentence", 0, `{"korean":" "}`, `{"korean":"새 문장"}`, false, func(ctx context.Context, p *Pipeline) error {
 			_, err := p.GenerateWritingPrompt(ctx, "profile", nil, "draw")
 			return err
 		}},
-		{"article missing fields", `{"summary":"Summary"}`, fakeArticleStudyJSON, false, func(ctx context.Context, p *Pipeline) error {
+		{"article missing fields", 0, `{"summary":"Summary"}`, fakeArticleStudyJSON, false, func(ctx context.Context, p *Pipeline) error {
 			_, err := p.GenerateArticleStudy(ctx, "source", "title", "description")
 			return err
 		}},
-		{"study summary empty", `{"sentences":[]}`, `{"sentences":[{"english":"Practice agreement.","translation":"수일치를 연습하세요."}]}`, false, func(ctx context.Context, p *Pipeline) error {
+		{"study summary empty", 0, `{"sentences":[]}`, `{"sentences":[{"english":"Practice agreement.","translation":"수일치를 연습하세요."}]}`, false, func(ctx context.Context, p *Pipeline) error {
 			sentences, err := p.GenerateStudySummary(ctx, issues)
 			if err == nil && len(sentences) == 0 {
 				return errors.New("transport rejects an empty summary for flagged issues")
 			}
 			return err
 		}},
-		{"study quiz malformed questions", `{"questions":7}`, `{"questions":[{"prompt":"He ___ home.","answer":"goes"}]}`, false, func(ctx context.Context, p *Pipeline) error {
+		{"study quiz malformed questions", 0, `{"questions":7}`, `{"questions":[{"prompt":"He ___ home.","answer":"goes"}]}`, false, func(ctx context.Context, p *Pipeline) error {
 			_, err := p.GenerateStudyQuiz(ctx, issues)
 			return err
 		}},
-		{"word question incomplete blank", `{"prompt":"He ___s home.","answers":["go"]}`, `{"prompt":"He ___ home.","answers":["goes"]}`, false, func(ctx context.Context, p *Pipeline) error {
+		{"word question incomplete blank", 0, `{"prompt":"He ___s home.","answers":["go"]}`, `{"prompt":"He ___ home.","answers":["goes"]}`, false, func(ctx context.Context, p *Pipeline) error {
 			_, err := p.GenerateWordReviewQuestion(ctx, "go", "가다", "He goes home.")
 			return err
 		}},
-		{"word verification missing verdict", `{"reason":"No verdict"}`, `{"valid":true}`, false, func(ctx context.Context, p *Pipeline) error {
+		{"word verification missing verdict", 0, `{"reason":"No verdict"}`, `{"valid":true}`, false, func(ctx context.Context, p *Pipeline) error {
 			_, _, err := p.VerifyWord(ctx, "go", "가다", "He goes home.")
 			return err
 		}},
-		{"word meaning uncertain", `{"sameSense":false,"meaning":""}`, `{"sameSense":true,"meaning":"가다"}`, false, func(ctx context.Context, p *Pipeline) error {
+		{"word meaning uncertain", 0, `{"sameSense":false,"meaning":""}`, `{"sameSense":true,"meaning":"가다"}`, false, func(ctx context.Context, p *Pipeline) error {
 			_, err := p.NormalizeWordMeaning(ctx, "go", "가다", "He goes home.")
 			return err
 		}},
-		{"word suggestions malformed entry", `{"suggestions":[{"word":7}]}`, `{"suggestions":[{"word":"go","meaning":"가다","example":"He goes home."}]}`, false, func(ctx context.Context, p *Pipeline) error {
+		{"word suggestions malformed entry", 0, `{"suggestions":[{"word":7}]}`, `{"suggestions":[{"word":"go","meaning":"가다","example":"He goes home."}]}`, false, func(ctx context.Context, p *Pipeline) error {
 			_, err := p.SuggestNewWords(ctx, "profile", nil)
 			return err
 		}},
-		{"word meanings malformed entry", `{"suggestions":[{"word":7}]}`, `{"suggestions":[{"word":"go","meaning":"가다","example":"He goes home."}]}`, false, func(ctx context.Context, p *Pipeline) error {
+		{"word meanings malformed entry", 0, `{"suggestions":[{"word":7}]}`, `{"suggestions":[{"word":"go","meaning":"가다","example":"He goes home."}]}`, false, func(ctx context.Context, p *Pipeline) error {
 			_, err := p.generateWordMeanings(ctx, `{"word":"go","previous":{"example":"He goes home."}}`)
 			return err
 		}},
-		{"correction malformed issues", `{"issues":7}`, `{"corrected":"He goes.","issues":[]}`, false, func(ctx context.Context, p *Pipeline) error {
+		{"correction malformed issues", 0, `{"issues":7}`, `{"corrected":"He goes.","issues":[]}`, false, func(ctx context.Context, p *Pipeline) error {
 			_, _, _, err := p.AnalyzeCorrection(ctx, "He go.", "")
 			return err
 		}},
-		{"nuance invalid lesson with interrupted repair", `{}`, string(nuanceData), true, func(ctx context.Context, p *Pipeline) error {
+		{"nuance invalid lesson with interrupted repair", 1, `{}`, string(nuanceData), true, func(ctx context.Context, p *Pipeline) error {
 			_, err := p.GenerateNuance(ctx, "profile", nil, "draw")
 			return err
 		}},
@@ -112,7 +115,7 @@ func TestGenerationRetryRegeneratesInvalidTerminalOutput(t *testing.T) {
 			if err := tc.generate(checkpoint.Bind(context.Background(), &saved), newPipeline()); err != nil {
 				t.Fatalf("replaying the successful generation failed: %v", err)
 			}
-			wantJudgements := 2
+			wantJudgements := 2 + tc.clarityAudits
 			if tc.repairFails {
 				wantJudgements++
 			}

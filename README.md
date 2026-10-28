@@ -81,7 +81,9 @@ the same core meaning in every exercise sentence; the preferred answer depends
 on tone, register, or speaker attitude. Shared Korean translations alone do not
 qualify a word set. Explanations compare the feeling of each substitution, and
 the model checks all substitutions before returning the lesson. These semantic
-criteria are prompt instructions; server validation checks the response structure.
+criteria are prompt instructions; server validation checks the response structure,
+and a Judge clarity audit enforces the context cues that make the intended answer
+identifiable (below).
 Recent comparisons are passed as exclusions. MySQL rejects a saved
 word combination already present in the same account, ignoring word order,
 case, and spacing, including lessons created before duplicate protection was
@@ -98,6 +100,15 @@ gets one focused repair call with the exact validation error; Buddy does not
 repay the full Chat → Analysis → Judge cascade. A second structurally invalid
 result becomes a persisted `failed` lesson for explicit retry, while transient
 model/network/storage errors retain the durable queue's automatic retry path.
+
+Every structurally valid lesson and supplement then receives one Judge
+clarity-audit call, which flags questions whose context could read as equally
+natural with a wrong option, whose explanation contradicts the recorded answer,
+or that are missing required fields. Flagged questions go to one focused repair
+call rewriting them in place; questions the repaired result drops or duplicates
+are filled back from the audited candidate. The step is best-effort: an audit,
+repair, or decode that fails keeps the audited candidate rather than failing a
+job that already holds a valid lesson.
 
 Generation persists `pending` / `processing` / `done` / `failed` in MySQL.
 With Redis, `asyncjob.KindNuance` keeps generating across navigation and worker
