@@ -36,6 +36,13 @@ export interface WordReviewItem {
   researchRevision?: number;
   researchResults?: (WordSuggestion & { verified?: boolean })[];
   reviewQuestion?: WordReviewQuestion;
+  /**
+   * True while the server is regenerating this word's question because its
+   * stored contract version predates the current one (or none exists yet).
+   * The question served meanwhile is the older version — still solvable.
+   * Mirrors httpserver wordItem.questionUpgrading.
+   */
+  questionUpgrading?: boolean;
   meaningStatus?: "pending" | "done" | "failed" | "confirmed";
   meaningVersion?: number;
   meaningTargetVersion?: number;
@@ -158,9 +165,11 @@ export async function fetchWords(): Promise<{ words: WordReviewItem[]; dueCount:
 // it's next due. repeat marks a correct-but-forced-guess answer (the "억지로
 // 맞췄어요" button in WordReview.tsx) — the word gets rescheduled at the same
 // interval it just came from instead of advancing; meaningless when correct
-// is false. questionVersion binds the answer to the exact persisted problem
-// the learner saw, so a stale/cached problem is rejected during a rolling
-// deployment. Returns null on any failure.
+// is false. questionVersion binds the answer to the question the learner
+// actually saw. An older version is still accepted when the server has since
+// replaced the question through a background contract upgrade — the upgrade
+// never invalidates an attempt in progress — but a version the server never
+// served (or a cleared question) is rejected. Returns null on any failure.
 export async function reviewWord(id: string, correct: boolean, repeat = false, questionVersion = 0): Promise<WordReviewItem | null> {
   return postJSON<WordReviewItem | null>(`api/words/${encodeURIComponent(id)}/review`, { correct, repeat, questionVersion }, null);
 }

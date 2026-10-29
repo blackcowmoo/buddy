@@ -565,12 +565,25 @@ describe("WordReview page", () => {
     expect(screen.getByRole("button", { name: "복습 시작" })).toBeInTheDocument();
   });
 
-  it("ignores a due legacy question while its current version is regenerated", async () => {
-    const legacy = {
+  it("keeps a due older-version question answerable while its upgrade runs in the background", async () => {
+    const upgrading = {
       ...dueWord,
       reviewQuestion: { version: 1, prompt: "She was ___.", answers: ["ecstatic"] },
+      questionUpgrading: true,
     };
-    vi.mocked(fetchWords).mockResolvedValue({ words: [legacy], dueCount: 0 });
+    vi.mocked(fetchWords).mockResolvedValue({ words: [upgrading], dueCount: 1 });
+    render(<WordReview />);
+
+    // The upgrade never interrupts review: the old question serves as the
+    // learner's question until the regenerated one lands.
+    expect(await screen.findByText("복습할 단어 1개가 있어요.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "복습 시작" })).toBeEnabled();
+    expect(screen.queryByText(/새 버전으로 준비 중/)).not.toBeInTheDocument();
+  });
+
+  it("shows the preparing notice only when a due word has no solvable question yet", async () => {
+    const noQuestion = { ...dueWord, reviewQuestion: undefined, questionUpgrading: true };
+    vi.mocked(fetchWords).mockResolvedValue({ words: [noQuestion], dueCount: 0 });
     render(<WordReview />);
 
     expect(await screen.findByText("복습 문제 1개를 새 버전으로 준비 중이에요.")).toBeInTheDocument();
@@ -1027,6 +1040,28 @@ describe("WordReview page", () => {
     await user.click(screen.getByRole("button", { name: "결과 보기" }));
     expect(reviewWord).toHaveBeenCalledWith("w1", true, false, 3);
     expect(await screen.findByText("1개 중 1개 맞혔어요!")).toBeInTheDocument();
+  });
+
+  // The question-logic upgrade must not interrupt the attempt: the learner
+  // solves the older-version question they were served, and the submission
+  // binds to that version — the server accepts it even if its background
+  // regeneration already replaced the question.
+  it("answers and submits an older-version question served during a background upgrade", async () => {
+    const upgrading: WordReviewItem = {
+      ...dueWord,
+      reviewQuestion: { version: 1, prompt: "She was ___.", answers: ["ecstatic"] },
+      questionUpgrading: true,
+    };
+    vi.mocked(reviewWord).mockResolvedValue({ ...upgrading, stage: 1, reviewCount: 1 });
+    const user = await startQuiz([upgrading]);
+
+    expect(await screen.findByText("매우 행복한")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox", { name: "정답 입력" }), "ecstatic");
+    await user.click(screen.getByRole("button", { name: "답안 확인" }));
+    expect(await screen.findByText("정답이에요!")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "결과 보기" }));
+    expect(reviewWord).toHaveBeenCalledWith("w1", true, false, 1);
   });
 
   it("focuses the first blank as soon as a recall question appears", async () => {

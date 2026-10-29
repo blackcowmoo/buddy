@@ -145,12 +145,15 @@ export function WordReview() {
   // Research jobs and review-question regeneration are persisted server-side.
   // Polling the normal word list makes either completion visible without a
   // manual reload. The backend deduplicates these refresh-triggered jobs.
+  // questionUpgrading covers the contract-upgrade window: the word shows (and
+  // stays answerable as) its old-version question until the new one arrives.
   useEffect(() => {
     const timer = window.setInterval(() => {
       const hasPendingWork = words.some((w) =>
         w.status === "pending" ||
         w.meaningStatus === "pending" ||
         w.researchStatus === "pending" ||
+        w.questionUpgrading === true ||
         (w.status === "verified" && currentQuestion(w) === null),
       );
       if (!hasPendingWork) return;

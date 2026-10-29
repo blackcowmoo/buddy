@@ -69,6 +69,18 @@ result still requires a choice, even if the latest cleanup leaves that result
 unchanged. Confirmation preserves review progress and prevents the same version
 from being queued again. No new meaning migration is triggered by this change.
 
+Bumping `wordreview.CurrentQuestionVersion` upgrades stored questions the same
+way and never interrupts an attempt. Opening the word list queues background
+regeneration for every verified entry whose question predates the constant,
+while the old complete question stays fully usable: it remains in the list and
+the due badge, and answers are graded normally. The replacement swaps in
+atomically only once it exists, so the learner keeps solving the old-version
+question while the upgrade runs, and an attempt still counts if the swap lands
+between showing the question and submitting the answer — submissions are
+accepted for any version from 1 through the stored version. The server flags a
+verified word whose question is still below the current version with
+`questionUpgrading`, and the page keeps polling until regeneration finishes.
+
 ## Word nuance practice
 
 Open **단어 뉘앙스** from the menu (`nuance`, also under a `ROOT_PATH`

@@ -173,7 +173,13 @@ func TestSaveQuestionPersistsVersionedSurfaceFormAndRejectsOlderOverwrite(t *tes
 	}
 }
 
-func TestReviewVersionedRejectsQuestionThatWasReplaced(t *testing.T) {
+// TestReviewVersionedCountsAttemptsOnQuestionsReplacedByUpgrade pins the
+// no-interruption upgrade policy: a learner solving an older-contract
+// question must not lose the attempt just because the background upgrade
+// replaced it (or was ever generated at a different version), as long as the
+// submitted version is one the server actually served for this word. Only a
+// version the server never had — newer than what is persisted — is rejected.
+func TestReviewVersionedCountsAttemptsOnQuestionsReplacedByUpgrade(t *testing.T) {
 	st := requireStore(t)
 	ctx := context.Background()
 	saved, err := st.Save(ctx, "alex-versioned-review", "organize", "정리하다", "They organized the files.")
@@ -191,18 +197,43 @@ func TestReviewVersionedRejectsQuestionThatWasReplaced(t *testing.T) {
 		t.Fatalf("SaveQuestion() error = %v", err)
 	}
 
-	if _, err := st.ReviewVersioned(ctx, "alex-versioned-review", saved.ID, question.Version-1, true, false, time.Now()); !errors.Is(err, ErrQuestionVersion) {
-		t.Fatalf("ReviewVersioned(stale) error = %v, want ErrQuestionVersion", err)
+	// A never-served version (below what this word has always persisted) and
+	// a version above the persisted one are both rejected without advancing
+	// the schedule.
+	if _, err := st.ReviewVersioned(ctx, "alex-versioned-review", saved.ID, 0, true, false, time.Now()); !errors.Is(err, ErrQuestionVersion) {
+		t.Fatalf("ReviewVersioned(0) error = %v, want ErrQuestionVersion", err)
+	}
+	if _, err := st.ReviewVersioned(ctx, "alex-versioned-review", saved.ID, question.Version+1, true, false, time.Now()); !errors.Is(err, ErrQuestionVersion) {
+		t.Fatalf("ReviewVersioned(future) error = %v, want ErrQuestionVersion", err)
 	}
 	got, err := st.Get(ctx, "alex-versioned-review", saved.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.ReviewCount != 0 {
-		t.Fatalf("ReviewCount = %d after stale submission, want 0", got.ReviewCount)
+		t.Fatalf("ReviewCount = %d after rejected submissions, want 0", got.ReviewCount)
+	}
+
+	// The upgrade lands (as a newer deployment's worker would) while the
+	// learner is still answering the question they were shown. Their answer
+	// to the replaced question still counts.
+	replacement := Question{Version: CurrentQuestionVersion + 1, Prompt: "She finally ___ the old files.", Answers: []string{"organized"}}
+	if _, _, err := st.SaveQuestion(ctx, "alex-versioned-review", saved.ID, replacement); err != nil {
+		t.Fatalf("SaveQuestion(replacement) error = %v", err)
 	}
 	if _, err := st.ReviewVersioned(ctx, "alex-versioned-review", saved.ID, question.Version, true, false, time.Now()); err != nil {
-		t.Fatalf("ReviewVersioned(current) error = %v", err)
+		t.Fatalf("ReviewVersioned(replaced-by-upgrade) error = %v, want the in-flight attempt counted", err)
+	}
+	got, err = st.Get(ctx, "alex-versioned-review", saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ReviewCount != 1 {
+		t.Fatalf("ReviewCount = %d, want 1 after the replaced-question attempt counted", got.ReviewCount)
+	}
+	// And the upgraded question itself reviews normally.
+	if _, err := st.ReviewVersioned(ctx, "alex-versioned-review", saved.ID, replacement.Version, true, false, time.Now()); err != nil {
+		t.Fatalf("ReviewVersioned(upgraded) error = %v", err)
 	}
 }
 
@@ -546,6 +577,10 @@ func TestDueCountOnlyCountsVerifiedWordsPastDue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Save(stale question) error = %v", err)
 	}
+	upgrading, err := st.Save(ctx, "alex-due", "leverage", "활용하다", "They leveraged the data.")
+	if err != nil {
+		t.Fatalf("Save(upgrading) error = %v", err)
+	}
 
 	// overdue and notYet are both verified; overdue is additionally
 	// backdated into the past via Review to simulate it coming due, while
@@ -568,6 +603,9 @@ func TestDueCountOnlyCountsVerifiedWordsPastDue(t *testing.T) {
 	}{
 		{overdue.ID, Question{Version: CurrentQuestionVersion, Prompt: "A ___ smile crossed her face.", Answers: []string{"wistful"}}},
 		{notYet.ID, Question{Version: CurrentQuestionVersion, Prompt: "A ___ tune played.", Answers: []string{"melancholy"}}},
+		// An older-contract question stays due while the background upgrade
+		// replaces it, so a version bump never empties the badge mid-upgrade.
+		{upgrading.ID, Question{Version: CurrentQuestionVersion - 1, Prompt: "They ___ the data.", Answers: []string{"leveraged"}}},
 	} {
 		if _, _, err := st.SaveQuestion(ctx, "alex-due", word.id, word.question); err != nil {
 			t.Fatalf("SaveQuestion(%s) error = %v", word.id, err)
@@ -588,14 +626,23 @@ func TestDueCountOnlyCountsVerifiedWordsPastDue(t *testing.T) {
 	if _, err := st.ConfirmResearch(ctx, "alex-due", staleQuestion.ID); err != nil {
 		t.Fatalf("ConfirmResearch(staleQuestion) error = %v", err)
 	}
+	if _, err := st.MarkVerified(ctx, "alex-due", upgrading.ID, now); err != nil {
+		t.Fatalf("MarkVerified(upgrading) error = %v", err)
+	}
+	if _, err := st.Review(ctx, "alex-due", upgrading.ID, false, false, now.Add(-48*time.Hour)); err != nil {
+		t.Fatalf("Review(upgrading) error = %v", err)
+	}
+	if _, err := st.ConfirmResearch(ctx, "alex-due", upgrading.ID); err != nil {
+		t.Fatalf("ConfirmResearch(upgrading) error = %v", err)
+	}
 	_ = stillPending
 
 	count, err := st.DueCount(ctx, "alex-due", now)
 	if err != nil {
 		t.Fatalf("DueCount() error = %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("DueCount() = %d, want 1 (only the backdated, verified word with a current question)", count)
+	if count != 2 {
+		t.Fatalf("DueCount() = %d, want 2 (the backdated word with a current question, plus the backdated word whose older-contract question is being upgraded)", count)
 	}
 }
 

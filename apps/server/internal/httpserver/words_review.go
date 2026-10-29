@@ -16,8 +16,12 @@ import (
 	"buddy/server/internal/wordreview"
 )
 
-// wordItem is the frontend projection of a tracked word. Legacy or partially
-// generated questions stay hidden until they satisfy the current contract.
+// wordItem is the frontend projection of a tracked word. A question from an
+// older contract keeps being served (so the learner can finish solving it)
+// while its regeneration runs in the background; only words without a
+// solvable question yet are sent without one. QuestionUpgrading marks words
+// whose stored question predates the current contract so the page keeps
+// polling until the upgraded question arrives.
 type wordItem struct {
 	ID                   string                          `json:"id"`
 	Word                 string                          `json:"word"`
@@ -34,6 +38,7 @@ type wordItem struct {
 	ResearchRevision     int                             `json:"researchRevision"`
 	ResearchResults      []wordreview.ResearchSuggestion `json:"researchResults,omitempty"`
 	ReviewQuestion       *wordreview.Question            `json:"reviewQuestion,omitempty"`
+	QuestionUpgrading    bool                            `json:"questionUpgrading,omitempty"`
 	MeaningStatus        string                          `json:"meaningStatus,omitempty"`
 	MeaningVersion       int                             `json:"meaningVersion"`
 	MeaningTargetVersion int                             `json:"meaningTargetVersion"`
@@ -69,10 +74,14 @@ func toWordItem(word wordreview.Word) wordItem {
 		MeaningError:         word.MeaningError,
 		PreviousMeaning:      word.PreviousMeaning,
 	}
-	if wordreview.QuestionReady(word) {
+	if wordreview.QuestionSolvable(word) {
 		question := word.ReviewQuestion
 		item.ReviewQuestion = &question
 	}
+	// Verified words still missing a question, or carrying one from an older
+	// contract, are being (re)generated in the background by this handler's
+	// backfill loop; the flag keeps the page polling until it lands.
+	item.QuestionUpgrading = word.Status == wordreview.StatusVerified && !wordreview.QuestionReady(word)
 	return item
 }
 
@@ -113,7 +122,10 @@ func wordSaveHandler(ident identity.Identifier, words wordreview.Store, pipe *pi
 }
 
 // wordsListHandler returns the study list and due count in one round trip. It
-// also schedules versioned meaning refreshes and backfills legacy questions.
+// also schedules versioned meaning refreshes and question backfills, which
+// double as the contract-upgrade path: verified words whose question predates
+// CurrentQuestionVersion are regenerated in the background while the response
+// keeps serving the old question, so the upgrade never interrupts a review.
 func wordsListHandler(ident identity.Identifier, words wordreview.Store, pipe *pipeline.Pipeline, wordVerifyQueue *asyncjob.Queue, resumeMeanings ...func(context.Context, string)) http.HandlerFunc {
 	// Redis deduplicates across replicas; the inline runner suppresses repeated
 	// polling work inside a no-Redis process.

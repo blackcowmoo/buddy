@@ -38,9 +38,9 @@ func TestQuestionReadyRequiresOneAnswerPerBlank(t *testing.T) {
 // TestQuestionReadyRejectsTheTenseAmbiguousVersion2Contract guards the
 // version-3 contract bump: version-2 sentences could ask for a verb form
 // the sentence never disambiguated ("He ___ home." fits both "goes" and
-// "went"), so version-2 rows must stop counting as ready. That makes them
-// invisible to DueCount and queues them through the list backfill for
-// regeneration under the unambiguous-answer contract.
+// "went"), so version-2 rows must stop counting as ready. That queues them
+// through the list backfill for regeneration under the unambiguous-answer
+// contract.
 func TestQuestionReadyRejectsTheTenseAmbiguousVersion2Contract(t *testing.T) {
 	if CurrentQuestionVersion < 3 {
 		t.Fatalf("CurrentQuestionVersion = %d, want >= 3 so version-2 questions are regenerated", CurrentQuestionVersion)
@@ -57,6 +57,32 @@ func TestQuestionReadyRejectsTheTenseAmbiguousVersion2Contract(t *testing.T) {
 	upgraded.ReviewQuestion.Version = CurrentQuestionVersion
 	if !QuestionReady(upgraded) {
 		t.Fatal("QuestionReady() = false for a question at the current contract version")
+	}
+}
+
+// TestQuestionSolvableKeepsOlderContractQuestionsAnswerable pins the
+// upgrade policy split: QuestionSolvable (the serving gate) accepts any
+// complete question regardless of contract version, so bumping
+// CurrentQuestionVersion never hides the question the learner is solving,
+// while QuestionReady (the regeneration gate) still reports the older one as
+// stale so the background backfill replaces it.
+func TestQuestionSolvableKeepsOlderContractQuestionsAnswerable(t *testing.T) {
+	older := Word{ReviewQuestion: Question{
+		Version: CurrentQuestionVersion - 1,
+		Prompt:  "They ___ the files yesterday.",
+		Answers: []string{"organized"},
+	}}
+	if !QuestionSolvable(older) {
+		t.Fatal("QuestionSolvable() = false for a complete older-contract question")
+	}
+	if QuestionReady(older) {
+		t.Fatal("QuestionReady() = true for a question below CurrentQuestionVersion; it must still be regenerated")
+	}
+	if QuestionSolvable(Word{ReviewQuestion: Question{Version: 0, Prompt: "They ___ the files.", Answers: []string{"organize"}}}) {
+		t.Fatal("QuestionSolvable() = true for a version-0 (no real question) row")
+	}
+	if QuestionSolvable(Word{ReviewQuestion: Question{Version: CurrentQuestionVersion, Prompt: "They ___ and ___ it.", Answers: []string{"did"}}}) {
+		t.Fatal("QuestionSolvable() = true when answer count does not match blank count")
 	}
 }
 
