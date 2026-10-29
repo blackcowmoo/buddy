@@ -17,17 +17,26 @@ afterEach(() => { vi.restoreAllMocks(); });
 describe("review question compatibility", () => {
   it.each([
     undefined,
-    { version: 1, prompt: "This is ___.", answers: ["old"] },
-    // Version 2 predates the unambiguous-answer contract: this sentence
-    // fits both "goes" and "went", so it must stay hidden until the server
-    // regenerates it at the current version.
-    { version: 2, prompt: "He ___ home.", answers: ["goes"] },
+    // Version 0 is the "no real question yet" legacy marker — never solvable.
+    { version: 0, prompt: "This is ___.", answers: ["none"] },
     { version: 3, prompt: "This is ___." },
     { version: 3, prompt: "This is ___.", answers: [] },
     { version: 3, prompt: "This is ___ and ___.", answers: ["one"] },
     { version: 3, prompt: "This is ___.", answers: [" "] },
-  ])("defers an incomplete or legacy question: %j", (question) => {
+  ])("defers an incomplete question: %j", (question) => {
     expect(currentQuestion(word("example", { reviewQuestion: question as WordReviewQuestion | undefined }))).toBeNull();
+  });
+
+  // The server keeps serving an older-contract question while it regenerates
+  // one under the current contract in the background, so any complete older
+  // question must stay answerable — a version bump never interrupts the
+  // question the learner is solving.
+  it.each([
+    { version: 1, prompt: "This is ___.", answers: ["old"] },
+    { version: 2, prompt: "He ___ home.", answers: ["goes"] },
+    { version: 3, prompt: "They ___ their ___ yesterday.", answers: ["did", "best"] },
+  ])("keeps an older complete question answerable during an upgrade: %j", (question) => {
+    expect(currentQuestion(word("example", { reviewQuestion: question }))).toBe(question);
   });
 
   it("keeps complete grammatical answers and supports multiple blanks and future versions", () => {
@@ -37,15 +46,17 @@ describe("review question compatibility", () => {
 });
 
 describe("review queue", () => {
-  it("includes only due, confirmed words with current questions without mutating the source", () => {
+  it("includes only due, confirmed words with solvable questions without mutating the source", () => {
     const source = [
       word("due"), word("overdue", { nextReviewAt: 99 }), word("future", { nextReviewAt: 101 }),
       word("pending", { status: "pending" }), word("rejected", { status: "rejected" }),
       word("unconfirmed", { researchStatus: "done" }), word("legacy", { reviewQuestion: undefined }),
+      // An older-version question awaiting its background upgrade is due too.
+      word("upgrading", { reviewQuestion: { version: 2, prompt: "He ___ home.", answers: ["goes"] } }),
     ];
     const original = structuredClone(source);
     const queue = buildReviewQueue(source, 100);
-    expect(queue.map(({ word }) => word.id).sort()).toEqual(["due", "overdue"]);
+    expect(queue.map(({ word }) => word.id).sort()).toEqual(["due", "overdue", "upgrading"]);
     expect(queue.every((item) => item.mode === "recall")).toBe(true);
     expect(source).toEqual(original);
   });

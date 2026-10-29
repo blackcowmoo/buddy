@@ -1,22 +1,25 @@
 import { wordStudyStatus, type WordReviewItem, type WordReviewQuestion } from "./wordReview";
 import { shuffled } from "./shuffle";
 
-// Mirrors wordreview.CurrentQuestionVersion on the server. Version 2
-// allowed sentences whose required tense was undetermined ("He ___ home."
-// fits both "goes" and "went"); version 3 requires each blank to have
-// exactly one correct completion.
-const currentReviewQuestionVersion = 3;
+// The server decides which contract version it is upgrading to; a question
+// stays servable at any version as long as it is complete and gradeable.
+// The server only sends questions it considers solvable (see
+// wordreview.QuestionSolvable) and regenerates older-version ones in the
+// background, so this only re-validates the shape, never the version number.
+const minQuestionVersion = 1;
 const minRecognitionDistractors = 7;
 
 export type QuizItem =
   | { word: WordReviewItem; mode: "recall" }
   | { word: WordReviewItem; mode: "recognition"; choices: string[] };
 
-// Rolling deployments can serve legacy rows or omit the answers array.
-// Only complete, current questions can be shown or submitted for review.
+// A question can be shown and submitted whenever every "___" blank has one
+// non-blank answer. An older-version question stays answerable while the
+// server upgrades it; its stored version is sent back with the answer so the
+// server can bind the attempt to the question the learner actually saw.
 export function currentQuestion(word: WordReviewItem): WordReviewQuestion | null {
   const question = word.reviewQuestion;
-  if (!question || question.version < currentReviewQuestionVersion) return null;
+  if (!question || question.version < minQuestionVersion) return null;
   if (!Array.isArray(question.answers)) return null;
   if (question.answers.length === 0 || question.prompt.split("___").length !== question.answers.length + 1) return null;
   if (question.answers.some((answer) => !answer.trim())) return null;

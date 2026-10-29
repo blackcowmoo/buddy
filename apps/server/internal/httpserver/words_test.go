@@ -296,7 +296,7 @@ func (f *fakeWordStore) DueCount(ctx context.Context, userID string, now time.Ti
 	}
 	n := 0
 	for _, w := range f.byUser[userID] {
-		if w.Status == wordreview.StatusVerified && w.ResearchStatus == wordreview.ResearchConfirmed && wordreview.QuestionReady(w) && !w.NextReviewAt.After(now) {
+		if w.Status == wordreview.StatusVerified && w.ResearchStatus == wordreview.ResearchConfirmed && wordreview.QuestionSolvable(w) && !w.NextReviewAt.After(now) {
 			n++
 		}
 	}
@@ -791,7 +791,7 @@ func (s *versionedReviewStore) ReviewVersioned(ctx context.Context, userID, id s
 	if err != nil || word.ID == "" {
 		return word, err
 	}
-	if !wordreview.QuestionReady(word) || word.ReviewQuestion.Version != questionVersion {
+	if !wordreview.QuestionSolvable(word) || questionVersion < 1 || questionVersion > word.ReviewQuestion.Version {
 		return wordreview.Word{}, wordreview.ErrQuestionVersion
 	}
 	return s.Review(ctx, userID, id, correct, repeat, now)
@@ -816,6 +816,78 @@ func TestWordReviewRejectsSubmissionFromStaleQuestionVersion(t *testing.T) {
 	defer base.mu.Unlock()
 	if base.byUser["alex"][0].ReviewCount != 0 {
 		t.Fatalf("ReviewCount = %d, want stale submission ignored", base.byUser["alex"][0].ReviewCount)
+	}
+}
+
+// TestWordsListServesOlderQuestionWhileUpgrading pins the contract-upgrade
+// window: a verified word whose stored question predates the current version
+// keeps being served that question (and stays due) while the list backfill
+// regenerates it, and questionUpgrading tells the page to keep polling until
+// the upgraded question lands. The upgrade must never blank the learner's
+// question out from under them.
+func TestWordsListServesOlderQuestionWhileUpgrading(t *testing.T) {
+	now := time.Now()
+	store := &fakeWordStore{byUser: map[string][]wordreview.Word{
+		"alex": {{
+			ID: "w1", UserID: "alex", Word: "organize", Status: wordreview.StatusVerified,
+			ResearchStatus: wordreview.ResearchConfirmed, NextReviewAt: now.Add(-time.Hour),
+			ReviewQuestion: wordreview.Question{Version: wordreview.CurrentQuestionVersion - 1, Prompt: "They ___ it.", Answers: []string{"organized"}},
+		}},
+	}}
+	h := wordsListHandler(fakeIdentifier{id: "alex", ok: true}, store, &pipeline.Pipeline{}, nil)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/words", nil))
+	requireStatus(t, rec, http.StatusOK)
+	var body struct {
+		Words []struct {
+			ID                string               `json:"id"`
+			ReviewQuestion    *wordreview.Question `json:"reviewQuestion"`
+			QuestionUpgrading bool                 `json:"questionUpgrading"`
+		} `json:"words"`
+		DueCount int `json:"dueCount"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("bad JSON body: %v", err)
+	}
+	if len(body.Words) != 1 || body.Words[0].ReviewQuestion == nil {
+		t.Fatalf("words = %s, want the older-contract question still served", rec.Body.String())
+	}
+	if got := body.Words[0].ReviewQuestion.Version; got != wordreview.CurrentQuestionVersion-1 {
+		t.Fatalf("served question version = %d, want the stored older version", got)
+	}
+	if !body.Words[0].QuestionUpgrading {
+		t.Fatal("questionUpgrading = false, want true while the older question is being regenerated")
+	}
+	if body.DueCount != 1 {
+		t.Fatalf("dueCount = %d, want 1 (an older-version question stays due during the upgrade)", body.DueCount)
+	}
+}
+
+// TestWordReviewCountsAttemptOnQuestionReplacedByUpgrade mirrors the
+// mid-attempt upgrade at the HTTP layer: an answer bound to the older
+// question version the learner was shown succeeds even though the server has
+// already persisted a newer one, and the response carries the upgraded
+// question for what comes next.
+func TestWordReviewCountsAttemptOnQuestionReplacedByUpgrade(t *testing.T) {
+	base := &fakeWordStore{byUser: map[string][]wordreview.Word{
+		"alex": {{
+			ID: "w1", UserID: "alex", Word: "organize", Status: wordreview.StatusVerified,
+			ResearchStatus: wordreview.ResearchConfirmed,
+			ReviewQuestion: wordreview.Question{Version: wordreview.CurrentQuestionVersion, Prompt: "They ___ it yesterday.", Answers: []string{"organized"}},
+		}},
+	}}
+	h := wordReviewHandler(fakeIdentifier{id: "alex", ok: true}, &versionedReviewStore{fakeWordStore: base})
+	req := httptest.NewRequest("POST", "/api/words/w1/review", strings.NewReader(`{"correct":true,"questionVersion":`+fmt.Sprint(wordreview.CurrentQuestionVersion-1)+`}`))
+	req.SetPathValue("id", "w1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	requireStatus(t, rec, http.StatusOK)
+	base.mu.Lock()
+	defer base.mu.Unlock()
+	if base.byUser["alex"][0].ReviewCount != 1 {
+		t.Fatalf("ReviewCount = %d, want the attempt on the previously served question counted", base.byUser["alex"][0].ReviewCount)
 	}
 }
 

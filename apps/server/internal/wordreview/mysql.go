@@ -183,7 +183,10 @@ func scanWord(row scanner, userID string) (Word, error) {
 	); err != nil {
 		return Word{}, err
 	}
-	if w.ReviewQuestion.Version >= CurrentQuestionVersion && len(reviewAnswers) > 0 {
+	// Decode answers for every version that has them, not just the current
+	// contract's: an older-version question must stay solvable (see
+	// QuestionSolvable) while the background upgrade replaces it.
+	if len(reviewAnswers) > 0 {
 		if err := json.Unmarshal(reviewAnswers, &w.ReviewQuestion.Answers); err != nil {
 			return Word{}, fmt.Errorf("wordreview: decode question answers: %w", err)
 		}
@@ -267,11 +270,15 @@ func (s *MySQLStore) DueCount(ctx context.Context, userID string, now time.Time)
 	var n int
 	// A meaning choice can immediately return a word to review. Read from the
 	// same primary as List so replica lag cannot hide that newly due word.
+	// Any solvable question counts as due, including one from an older
+	// contract version being upgraded: the learner keeps reviewing it (with
+	// regeneration running in the background), so the badge must not drop
+	// the moment CurrentQuestionVersion is bumped.
 	err := s.rw.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM `+table+` WHERE user_id = ? AND status = ? AND research_status = ?
 			AND meaning_status NOT IN ('pending', 'done', 'failed')
-			AND review_question_version >= ? AND review_prompt <> '' AND review_answers IS NOT NULL AND next_review_at <= ?
-	`, userID, StatusVerified, ResearchConfirmed, CurrentQuestionVersion, now.Unix()).Scan(&n)
+			AND review_question_version > 0 AND review_prompt <> '' AND review_answers IS NOT NULL AND next_review_at <= ?
+	`, userID, StatusVerified, ResearchConfirmed, now.Unix()).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("wordreview: due count: %w", err)
 	}
@@ -378,7 +385,13 @@ func (s *MySQLStore) ReviewVersioned(ctx context.Context, userID, id string, que
 	if err != nil {
 		return Word{}, fmt.Errorf("wordreview: versioned review: lookup: %w", err)
 	}
-	if w.Status != StatusVerified || w.ResearchStatus != ResearchConfirmed || MeaningNeedsReview(w) || !QuestionReady(w) || w.ReviewQuestion.Version != questionVersion {
+	// The question must be solvable, and the submitted version must be one
+	// the learner could actually have been shown: the persisted version, or
+	// an older one it replaced during a background contract upgrade (the
+	// swap landing between list load and answer must not discard the
+	// attempt). A newer-than-persisted version was never served to anyone.
+	if w.Status != StatusVerified || w.ResearchStatus != ResearchConfirmed || MeaningNeedsReview(w) || !QuestionSolvable(w) ||
+		questionVersion < 1 || questionVersion > w.ReviewQuestion.Version {
 		return Word{}, ErrQuestionVersion
 	}
 	return s.applyReview(ctx, w, questionVersion, true, correct, repeat, now)
@@ -397,7 +410,12 @@ func (s *MySQLStore) applyReview(ctx context.Context, w Word, questionVersion in
 		WHERE id = ? AND user_id = ?`
 	args := []any{newStage, streak, nextReviewAt.Unix(), now.Unix(), w.ID, w.UserID}
 	if enforceVersion {
-		query += ` AND status = ? AND research_status = ? AND review_question_version = ?`
+		// >= not =: the question may have been upgraded past the version the
+		// learner answered between the read above and this write; that's the
+		// background upgrade finishing mid-attempt, not an invalid answer. A
+		// cleared question (research replacement resets to version 0) still
+		// fails this guard.
+		query += ` AND status = ? AND research_status = ? AND review_question_version >= ?`
 		query += ` AND meaning_status NOT IN ('pending', 'done', 'failed')`
 		args = append(args, StatusVerified, ResearchConfirmed, questionVersion)
 	}

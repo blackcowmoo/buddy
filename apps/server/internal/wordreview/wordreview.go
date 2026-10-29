@@ -153,6 +153,13 @@ const (
 // guess the tense instead of recalling it. Bump this whenever the generation
 // prompt or persisted question shape changes in a way that requires old
 // questions to be regenerated.
+//
+// A bump never interrupts a learner mid-question: a complete question from
+// an older contract stays servable and answerable (see QuestionSolvable)
+// while opening the word list enqueues its regeneration in the background,
+// and SaveQuestion swaps the replacement in atomically only once it exists.
+// Until then the learner keeps seeing — and can still correctly answer — the
+// old-version question.
 const CurrentQuestionVersion = 3
 
 // Question is the persisted recall question for one vocabulary entry.
@@ -172,11 +179,14 @@ type Question struct {
 	Answer string `json:"answer,omitempty"`
 }
 
-// QuestionReady reports whether w has a complete question produced under the
-// current-or-newer contract. Accepting a future version keeps an older replica
-// from hiding a compatible question already written by a newer replica.
-func QuestionReady(w Word) bool {
-	if w.ReviewQuestion.Version < CurrentQuestionVersion || len(w.ReviewQuestion.Answers) == 0 ||
+// QuestionSolvable reports whether w carries a complete, gradeable question
+// the learner can attempt right now, regardless of which contract version
+// generated it: at least one non-blank answer, one per "___" in the prompt.
+// This is the serving gate: an older-version question keeps being shown and
+// accepted while the background upgrade regenerates it under the current
+// contract, so a version bump never interrupts an attempt in progress.
+func QuestionSolvable(w Word) bool {
+	if w.ReviewQuestion.Version < 1 || len(w.ReviewQuestion.Answers) == 0 ||
 		strings.Count(w.ReviewQuestion.Prompt, "___") != len(w.ReviewQuestion.Answers) {
 		return false
 	}
@@ -186,6 +196,17 @@ func QuestionReady(w Word) bool {
 		}
 	}
 	return true
+}
+
+// QuestionReady reports whether w has a complete question produced under the
+// current-or-newer contract — the regeneration gate (wordsListHandler's
+// backfill and the word-verify worker skip ready words). A question that is
+// solvable but not ready is the upgrade-in-flight state: served and graded
+// as-is until SaveQuestion replaces it. Accepting a future version keeps an
+// older replica from hiding a compatible question already written by a newer
+// replica.
+func QuestionReady(w Word) bool {
+	return QuestionSolvable(w) && w.ReviewQuestion.Version >= CurrentQuestionVersion
 }
 
 // Word is one word/phrase/idiom the learner chose to study, plus its review
@@ -329,9 +350,11 @@ type Store interface {
 	// one response rather than requiring a second call.
 	List(ctx context.Context, userID string) ([]Word, error)
 	// DueCount is how many of userID's StatusVerified words have
-	// nextReviewAt in the past and a current versioned review question — cheap
-	// enough to call on every app load for the menu badge. Pending/rejected or
-	// legacy-question words are never due.
+	// nextReviewAt in the past and a solvable review question — cheap
+	// enough to call on every app load for the menu badge. Pending/rejected
+	// or question-less words are never due; a word whose question predates
+	// the current contract stays due while it is regenerated in the
+	// background, so a version bump never empties the badge mid-upgrade.
 	DueCount(ctx context.Context, userID string, now time.Time) (int, error)
 	// MarkVerified transitions a StatusPending word to StatusVerified once
 	// pipeline.Pipeline.VerifyWord's model cascade passes it,
@@ -372,10 +395,13 @@ type QuestionStore interface {
 	SaveQuestion(ctx context.Context, userID, id string, question Question, expected ...Word) (word Word, saved bool, err error)
 }
 
-// VersionedReviewer records an answer only when it belongs to the exact
-// persisted question version the learner saw. The HTTP layer uses this when
-// available so a cached old frontend cannot submit an obsolete question to a
-// newer server during a rolling deployment.
+// VersionedReviewer records an answer only for a question the learner could
+// genuinely have been shown: one whose version matches the persisted question,
+// or an older version that the persisted one replaced through a contract
+// upgrade while the attempt was in flight (the upgrade must not invalidate
+// the question the learner is solving). Future versions, cleared questions
+// (research replacement), and structurally incomplete ones are rejected with
+// ErrQuestionVersion.
 type VersionedReviewer interface {
 	ReviewVersioned(ctx context.Context, userID, id string, questionVersion int, correct, repeat bool, now time.Time) (Word, error)
 }
