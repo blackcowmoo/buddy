@@ -130,8 +130,16 @@ func TestValidateModelContent(t *testing.T) {
 				c.Questions[i].Answer = "cheap"
 			}
 		},
-		"no caveat":           func(c *Content) { c.Caveat = "" },
-		"duplicate word":      func(c *Content) { c.Words[1].Word = "CHEAP" },
+		"no caveat":      func(c *Content) { c.Caveat = "" },
+		"duplicate word": func(c *Content) { c.Words[1].Word = "CHEAP" },
+		"uppercase word": func(c *Content) {
+			c.Words[1].Word = "Affordable"
+			for i := range c.Questions {
+				if c.Questions[i].Answer == "inexpensive" {
+					c.Questions[i].Answer = "Affordable"
+				}
+			}
+		},
 		"only four questions": func(c *Content) { c.Questions = c.Questions[:4] },
 	}
 	for name, mutate := range cases {
@@ -142,6 +150,24 @@ func TestValidateModelContent(t *testing.T) {
 				t.Fatal("invalid generated lesson accepted")
 			}
 		})
+	}
+}
+
+func TestContentLowercase(t *testing.T) {
+	c := testContent()
+	c.Words[1].Word = " Inexpensive "
+	c.Questions[1].Answer = "CHEAP"
+	if !c.Lowercase() {
+		t.Fatal("mixed-case content reported unchanged")
+	}
+	if c.Words[1].Word != "inexpensive" || c.Questions[1].Answer != "cheap" {
+		t.Fatalf("Lowercase() words[1]=%q questions[1].answer=%q", c.Words[1].Word, c.Questions[1].Answer)
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("lowercased content rejected: %v", err)
+	}
+	if c.Lowercase() {
+		t.Fatal("already-lowercase content reported changed")
 	}
 }
 

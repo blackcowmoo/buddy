@@ -8,7 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
+
+	"buddy/server/internal/migration"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
@@ -18,7 +21,80 @@ import (
 // resurrect an old question or overwrite a newer cross-device revision.
 type MySQLStore struct{ db *sql.DB }
 
-func NewMySQL(db *sql.DB) *MySQLStore { return &MySQLStore{db: db} }
+func NewMySQL(ctx context.Context, db *sql.DB) (*MySQLStore, error) {
+	steps := []migration.Step{
+		{Version: 1, Name: "nuance_lessons.lowercase_words", Up: lowercaseStoredWords},
+	}
+	if err := migration.ApplyLegacy(ctx, db, "nuance", steps); err != nil {
+		return nil, fmt.Errorf("nuance: migrations: %w", err)
+	}
+	return &MySQLStore{db: db}, nil
+}
+
+// lowercaseStoredWords rewrites lessons saved before words were normalized to
+// lowercase so every quiz choice and answer displays lowercase. It also
+// lowercases a pending feedback selection, which the review screen echoes
+// back. The practice revision stays untouched: casing is presentation, not a
+// progress change, so an in-flight answer remains valid. Rows already stored
+// lowercase are not rewritten.
+func lowercaseStoredWords(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, `SELECT id,content_json,state_json FROM buddy_nuance_lessons WHERE content_json IS NOT NULL`)
+	if err != nil {
+		return err
+	}
+	type rewrite struct {
+		id      string
+		columns []string
+		args    []any
+	}
+	rewrites := []rewrite{}
+	for rows.Next() {
+		var id string
+		var content, state []byte
+		if err = rows.Scan(&id, &content, &state); err != nil {
+			rows.Close()
+			return err
+		}
+		var c Content
+		if err = json.Unmarshal(content, &c); err != nil {
+			rows.Close()
+			return fmt.Errorf("lesson %s: %w", id, err)
+		}
+		r := rewrite{id: id}
+		if c.Lowercase() {
+			rewritten, _ := json.Marshal(c)
+			r.columns = append(r.columns, `content_json=?`)
+			r.args = append(r.args, string(rewritten))
+		}
+		var s State
+		if err = json.Unmarshal(state, &s); err != nil {
+			rows.Close()
+			return fmt.Errorf("lesson %s: %w", id, err)
+		}
+		if s.Feedback != nil {
+			if lower := strings.ToLower(s.Feedback.Selected); lower != s.Feedback.Selected {
+				s.Feedback.Selected = lower
+				rewritten, _ := json.Marshal(s)
+				r.columns = append(r.columns, `state_json=?`)
+				r.args = append(r.args, string(rewritten))
+			}
+		}
+		if len(r.columns) > 0 {
+			rewrites = append(rewrites, r)
+		}
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, r := range rewrites {
+		if _, err = db.ExecContext(ctx, `UPDATE buddy_nuance_lessons SET `+strings.Join(r.columns, ",")+` WHERE id=?`, append(r.args, r.id)...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 const columns = `id,user_id,status,created_at,revision,content_json,state_json`
 
@@ -75,6 +151,9 @@ func (s *MySQLStore) SetStatus(ctx context.Context, id, status string) error {
 	return err
 }
 func (s *MySQLStore) Complete(ctx context.Context, id string, c Content) error {
+	// Enforce the storage contract even when a caller bypassed pipeline
+	// normalization, so no non-lowercase word can reach the review rotation.
+	c.Lowercase()
 	if err := c.Validate(); err != nil {
 		return err
 	}

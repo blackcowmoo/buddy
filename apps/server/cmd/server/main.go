@@ -150,8 +150,7 @@ func main() {
 	defer articles.Close()
 	writingStore := buildWritingStore(context.Background(), st)
 	defer writingStore.Close()
-	nuanceDB, _ := st.DB()
-	nuanceStore := nuance.NewMySQL(nuanceDB)
+	nuanceStore := buildNuanceStore(context.Background(), st)
 	nuanceQueue := startWorker(rdb, jobsCtx, asyncjob.KindNuance, 1, transport.NuanceClaimTTL, transport.NuanceJobHandler(pipe, nuanceStore, st.GetLearnerProfile))
 
 	writingQueue := startWorker(rdb, jobsCtx, asyncjob.KindWritingPrompt, transport.WritingWorkerConcurrency, transport.WritingClaimTTL,
@@ -469,6 +468,18 @@ func buildWritingStore(ctx context.Context, st *store.MySQLStore) *writing.MySQL
 		log.Fatalf("writing store: %v", err)
 	}
 	return result
+}
+
+// buildNuanceStore builds the word-nuance comparison store
+// (internal/nuance). Same MySQL-only convention as buildWritingStore;
+// NewMySQL also applies the component's pending data migrations.
+func buildNuanceStore(ctx context.Context, st *store.MySQLStore) *nuance.MySQLStore {
+	rw, _ := st.DB()
+	lessons, err := nuance.NewMySQL(ctx, rw)
+	if err != nil {
+		log.Fatalf("nuance store: %v", err)
+	}
+	return lessons
 }
 
 // buildSTT builds the STT ensemble for pipeline.Pipeline.STT: one Recognizer

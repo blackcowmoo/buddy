@@ -2,6 +2,7 @@ package nuance
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,7 +54,7 @@ func runTests(m *testing.M) int {
 	}
 	defer st.Close()
 	db, _ := st.DB()
-	integrationStore = NewMySQL(db)
+	integrationStore, integrationErr = NewMySQL(context.Background(), db)
 	return m.Run()
 }
 func requireDB(t *testing.T) *MySQLStore {
@@ -432,6 +433,104 @@ func TestMySQLRejectsLegacyComparisonsBeyondRecentPromptHistory(t *testing.T) {
 	if err := st.Complete(ctx, next.ID, comparisonContent("curious", "nosy")); err != nil {
 		t.Fatalf("legacy history blocked a different comparison: %v", err)
 	}
+}
+
+func TestMySQLMigratesStoredWordsToLowercase(t *testing.T) {
+	st := requireDB(t)
+	ctx := context.Background()
+	db := st.db
+
+	// Seed rows stored before words were normalized to lowercase: a lesson
+	// with capitalized words, answers, and a pending feedback selection; one
+	// already-lowercase lesson; and a pending lesson without content.
+	mixed := testContent()
+	mixed.Words[0].Word = "Cheap"
+	mixed.Words[1].Word = "INEXPENSIVE"
+	for i := range mixed.Questions {
+		if mixed.Questions[i].Answer == "cheap" {
+			mixed.Questions[i].Answer = "CHEAP"
+		} else {
+			mixed.Questions[i].Answer = "Inexpensive"
+		}
+	}
+	feedbackState := State{
+		Progress: map[string]Progress{"q0": {Stage: 1, Attempts: 1, NextReviewAt: 123}},
+		Queue:    []string{"q0"},
+		Feedback: &Feedback{QuestionID: "q0", Selected: "CHEAP", Correct: false, PreviousStage: 1, AnswerRevision: 4},
+	}
+	mixedContent, _ := json.Marshal(mixed)
+	feedbackJSON, _ := json.Marshal(feedbackState)
+	// A distinct user so the already-lowercase lesson seeded below does not
+	// collide with this lesson's comparison pair.
+	legacy := pendingLesson(t, st, t.Name()+"-legacy")
+	if _, err := db.ExecContext(ctx, `UPDATE buddy_nuance_lessons SET content_json=?,state_json=?,status=? WHERE id=?`, string(mixedContent), string(feedbackJSON), StatusDone, legacy.ID); err != nil {
+		t.Fatal(err)
+	}
+	lower := persistedLesson(t, st)
+	pending := pendingLesson(t, st, t.Name()+"-pending")
+	// Snapshot MySQL-normalized JSON so "unchanged" compares like with like.
+	lowerContentBefore, lowerStateBefore := rawLessonJSON(t, db, lower.ID)
+
+	// Re-apply the component migration like a version upgrade does.
+	if _, err := db.ExecContext(ctx, `DELETE FROM buddy_schema_migrations WHERE component='nuance' AND version=1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewMySQL(ctx, db); err != nil {
+		t.Fatalf("re-applying migrations: %v", err)
+	}
+
+	got, err := st.Get(ctx, legacy.UserID, legacy.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Content.Words[0].Word != "cheap" || got.Content.Words[1].Word != "inexpensive" {
+		t.Fatalf("migrated words = %+v", got.Content.Words)
+	}
+	for _, q := range got.Content.Questions {
+		if q.Answer != "cheap" && q.Answer != "inexpensive" {
+			t.Fatalf("migrated answer = %q", q.Answer)
+		}
+	}
+	if got.Content.Meaning != mixed.Meaning || got.Revision != 0 {
+		t.Fatalf("migration changed unrelated lesson data: %+v", got)
+	}
+	if got.State.Feedback == nil || got.State.Feedback.Selected != "cheap" || got.State.Feedback.Correct {
+		t.Fatalf("feedback after migration = %+v", got.State.Feedback)
+	}
+	if got.State.Progress["q0"].NextReviewAt != 123 || fmt.Sprint(got.State.Queue) != "[q0]" {
+		t.Fatalf("progress after migration = %+v", got.State)
+	}
+	lowerContentAfter, lowerStateAfter := rawLessonJSON(t, db, lower.ID)
+	if lowerContentAfter != lowerContentBefore || lowerStateAfter != lowerStateBefore {
+		t.Fatalf("already-lowercase lesson was rewritten: %q/%q -> %q/%q", lowerContentBefore, lowerStateBefore, lowerContentAfter, lowerStateAfter)
+	}
+	untouchedPending, err := st.Get(ctx, pending.UserID, pending.ID)
+	if err != nil || untouchedPending.Status != StatusPending || untouchedPending.Content != nil {
+		t.Fatalf("pending lesson changed: %+v %v", untouchedPending, err)
+	}
+
+	// The recorded marker keeps the one-time step from running again.
+	if _, err := db.ExecContext(ctx, `UPDATE buddy_nuance_lessons SET content_json=? WHERE id=?`, string(mixedContent), legacy.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewMySQL(ctx, db); err != nil {
+		t.Fatalf("reopening store: %v", err)
+	}
+	reopened, err := st.Get(ctx, legacy.UserID, legacy.ID)
+	if err != nil || reopened.Content.Words[0].Word != "Cheap" {
+		t.Fatalf("migration ran twice: %+v %v", reopened.Content, err)
+	}
+}
+
+// rawLessonJSON returns one lesson's stored JSON columns exactly as MySQL
+// returns them, so a test can prove an unchanged row stays byte-identical.
+func rawLessonJSON(t *testing.T, db *sql.DB, id string) (string, string) {
+	t.Helper()
+	var content, state []byte
+	if err := db.QueryRowContext(context.Background(), `SELECT content_json,state_json FROM buddy_nuance_lessons WHERE id=?`, id).Scan(&content, &state); err != nil {
+		t.Fatal(err)
+	}
+	return string(content), string(state)
 }
 
 func TestMySQLConcurrentDrawsSaveComparisonOnce(t *testing.T) {
