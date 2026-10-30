@@ -52,6 +52,28 @@ type Content struct {
 	Questions   []Question `json:"questions"`
 }
 
+// Lowercase normalizes every compared word and question answer to lowercase so
+// storage and all display paths show one consistent casing regardless of how
+// the model capitalized its output. Comparison keys were already
+// case-insensitive, so deduplication is unaffected. It reports whether
+// anything changed, letting the startup migration skip rows already lowercase.
+func (c *Content) Lowercase() bool {
+	changed := false
+	for i := range c.Words {
+		if want := strings.ToLower(strings.TrimSpace(c.Words[i].Word)); want != c.Words[i].Word {
+			c.Words[i].Word = want
+			changed = true
+		}
+	}
+	for i := range c.Questions {
+		if want := strings.ToLower(strings.TrimSpace(c.Questions[i].Answer)); want != c.Questions[i].Answer {
+			c.Questions[i].Answer = want
+			changed = true
+		}
+	}
+	return changed
+}
+
 // A comparison is the complete word set, independent of order, case, or spacing.
 func (c Content) comparisonKey() [32]byte {
 	words := make([]string, len(c.Words))
@@ -78,10 +100,11 @@ func (c Content) Validate() error {
 	}
 	words := map[string]bool{}
 	for _, w := range c.Words {
-		if !nonempty(w.Word, w.Tone, w.Description, w.Example, w.Translation) || words[strings.ToLower(w.Word)] || utf8.RuneCountInString(w.Word) > 255 || w.Word != strings.TrimSpace(w.Word) {
+		// Words are stored and displayed lowercase (see Lowercase).
+		if !nonempty(w.Word, w.Tone, w.Description, w.Example, w.Translation) || words[w.Word] || utf8.RuneCountInString(w.Word) > 255 || w.Word != strings.TrimSpace(w.Word) || w.Word != strings.ToLower(w.Word) {
 			return fmt.Errorf("%w: invalid word", ErrInvalid)
 		}
-		words[strings.ToLower(w.Word)] = true
+		words[w.Word] = true
 	}
 	ids, sentences, used := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, q := range c.Questions {

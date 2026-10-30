@@ -118,6 +118,42 @@ func TestGenerateNuanceAcceptsWrappedJSONAndOwnsQuestionIDs(t *testing.T) {
 	}
 }
 
+func TestGenerateNuanceLowercasesModelCasing(t *testing.T) {
+	data, err := os.ReadFile("../nuance/testdata/lesson.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	upper := strings.NewReplacer(`"word": "cheap"`, `"word": "Cheap"`, `"word": "inexpensive"`, `"word": "INEXPENSIVE"`, `"answer": "cheap"`, `"answer": "CHEAP"`, `"answer": "inexpensive"`, `"answer": "Inexpensive"`).Replace(string(data))
+	if upper == string(data) {
+		t.Fatal("fixture no longer contains lowercase word/answer fields")
+	}
+	var system string
+	p := &Pipeline{Analysis: []Candidate{{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+		system = msgs[0].Content
+		return upper, nil
+	}}}}}
+	c, err := p.GenerateNuance(context.Background(), "", nil, "id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range c.Words {
+		if w.Word != strings.ToLower(w.Word) {
+			t.Fatalf("generated word kept model casing: %q", w.Word)
+		}
+	}
+	for _, q := range c.Questions {
+		if q.Answer != strings.ToLower(q.Answer) {
+			t.Fatalf("generated answer kept model casing: %q", q.Answer)
+		}
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("lowercased lesson rejected: %v", err)
+	}
+	if !strings.Contains(system, "in lowercase") {
+		t.Fatal("system prompt missing lowercase word instruction")
+	}
+}
+
 func TestGenerateNuanceRepairsInvalidFinalWithOneDirectJudgeCall(t *testing.T) {
 	data, err := os.ReadFile("../nuance/testdata/lesson.json")
 	if err != nil {
