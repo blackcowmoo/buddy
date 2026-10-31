@@ -53,6 +53,12 @@ func (s *nuanceHTTPStore) StartReview(_ context.Context, user string) (nuance.Re
 		Lessons: []nuance.Lesson{s.lesson},
 	}, nil
 }
+func (s *nuanceHTTPStore) ReviewState(_ context.Context, user string) (nuance.ReviewBatch, error) {
+	if user != s.lesson.UserID {
+		return nuance.ReviewBatch{}, nuance.ErrNotFound
+	}
+	return s.StartReview(context.Background(), user)
+}
 func (s *nuanceHTTPStore) Delete(_ context.Context, user, id string) error {
 	if user == s.lesson.UserID && id == s.lesson.ID {
 		s.lesson = nuance.Lesson{}
@@ -101,6 +107,8 @@ func TestNuanceRoutesGradeOnServerAndProtectOwnership(t *testing.T) {
 	}{
 		{"list", "alex", "GET", "/api/nuance", "", true, 200},
 		{"review", "alex", "POST", "/api/nuance/review", `{}`, true, 200},
+		{"saved review", "alex", "GET", "/api/nuance/review", "", true, 200},
+		{"other saved review", "other", "GET", "/api/nuance/review", "", true, 404},
 		{"detail", "alex", "GET", "/api/nuance/lesson", "", true, 200},
 		{"answer", "alex", "POST", "/api/nuance/lesson/practice", `{"kind":"answer","revision":1,"questionId":"q0","selected":"inexpensive","correct":true}`, true, 200},
 		{"stale", "alex", "POST", "/api/nuance/lesson/practice", `{"kind":"answer","revision":0,"questionId":"q0","selected":"cheap"}`, true, 409},
@@ -114,6 +122,7 @@ func TestNuanceRoutesGradeOnServerAndProtectOwnership(t *testing.T) {
 		{"anonymous", "alex", "GET", "/api/nuance", "", false, 401},
 		{"anonymous draw", "alex", "POST", "/api/nuance/draw", "{}", false, 401},
 		{"anonymous review", "alex", "POST", "/api/nuance/review", "{}", false, 401},
+		{"anonymous saved review", "alex", "GET", "/api/nuance/review", "", false, 401},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st := &nuanceHTTPStore{lesson: nuance.Lesson{ID: "lesson", UserID: "alex", Status: nuance.StatusDone, Revision: 1, Content: &c, State: nuance.State{Queue: []string{"q0"}, Progress: map[string]nuance.Progress{}}}}

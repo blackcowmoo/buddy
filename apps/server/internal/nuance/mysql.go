@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"slices"
 	"strings"
 	"time"
 
@@ -267,7 +268,9 @@ func checkLegacyComparisons(ctx context.Context, tx *sql.Tx, userID string, key 
 // StartReview durably queues every due question from every due context,
 // regardless of which generated comparison owns it, so one sitting can finish
 // the whole queue. The row locks make the draw and all per-lesson queues one
-// atomic operation across tabs/replicas.
+// atomic operation across tabs/replicas. The shuffled cross-lesson order is
+// persisted in buddy_nuance_reviews so a reload resumes the same batch without
+// the browser ever holding (or tampering with) the item list.
 func (s *MySQLStore) StartReview(ctx context.Context, userID string) (ReviewBatch, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -347,10 +350,108 @@ func (s *MySQLStore) StartReview(ctx context.Context, userID string) (ReviewBatc
 			return ReviewBatch{}, err
 		}
 	}
+	if err = saveReviewBatch(ctx, tx, userID, candidates); err != nil {
+		return ReviewBatch{}, err
+	}
 	if err = tx.Commit(); err != nil {
 		return ReviewBatch{}, err
 	}
 	return ReviewBatch{Items: candidates, Lessons: lessons}, nil
+}
+
+// saveReviewBatch stores the drawn order for one account, replacing any
+// earlier batch. An empty draw clears the saved batch so a reopen starts fresh
+// instead of replaying a finished one.
+func saveReviewBatch(ctx context.Context, tx *sql.Tx, userID string, items []ReviewItem) error {
+	if len(items) == 0 {
+		_, err := tx.ExecContext(ctx, `DELETE FROM buddy_nuance_reviews WHERE user_id=?`, userID)
+		return err
+	}
+	encoded, err := json.Marshal(items)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO buddy_nuance_reviews (user_id,items_json) VALUES (?,?)
+		ON DUPLICATE KEY UPDATE items_json=VALUES(items_json)`, userID, string(encoded))
+	return err
+}
+
+// ReviewState replays the saved batch from the database: the server, never the
+// browser, defines the order. Items whose lesson was deleted or whose question
+// no longer waits in that lesson's queue drop out; finished items stay listed
+// so the page keeps showing the same batch size after a reload.
+func (s *MySQLStore) ReviewState(ctx context.Context, userID string) (ReviewBatch, error) {
+	var raw []byte
+	err := s.db.QueryRowContext(ctx, `SELECT items_json FROM buddy_nuance_reviews WHERE user_id=?`, userID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ReviewBatch{}, nil
+	}
+	if err != nil {
+		return ReviewBatch{}, err
+	}
+	var saved []ReviewItem
+	if err = json.Unmarshal(raw, &saved); err != nil {
+		return ReviewBatch{}, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+columns+` FROM buddy_nuance_lessons WHERE user_id=? AND status=? ORDER BY id`, userID, StatusDone)
+	if err != nil {
+		return ReviewBatch{}, err
+	}
+	defer rows.Close()
+	byID := map[string]Lesson{}
+	lessons := []Lesson{}
+	for rows.Next() {
+		l, scanErr := scan(rows)
+		if scanErr != nil {
+			return ReviewBatch{}, scanErr
+		}
+		byID[l.ID] = l
+		lessons = append(lessons, l)
+	}
+	if err = rows.Err(); err != nil {
+		return ReviewBatch{}, err
+	}
+	items := []ReviewItem{}
+	for _, item := range saved {
+		l, ok := byID[item.LessonID]
+		if !ok || !slices.Contains(l.State.Queue, item.QuestionID) {
+			continue
+		}
+		items = append(items, item)
+	}
+	return ReviewBatch{Items: items, Lessons: lessons}, nil
+}
+
+// moveMissedReviewItemToEnd keeps the saved batch order aligned with what the
+// learner actually sees: acknowledging a missed reveal sends that question to
+// the end of the batch, mirroring how it re-enters the lesson queue.
+func moveMissedReviewItemToEnd(ctx context.Context, tx *sql.Tx, userID, lessonID, questionID string) error {
+	var raw []byte
+	err := tx.QueryRowContext(ctx, `SELECT items_json FROM buddy_nuance_reviews WHERE user_id=? FOR UPDATE`, userID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var items []ReviewItem
+	if err = json.Unmarshal(raw, &items); err != nil {
+		return err
+	}
+	index := slices.IndexFunc(items, func(item ReviewItem) bool {
+		return item.LessonID == lessonID && item.QuestionID == questionID
+	})
+	if index < 0 || index == len(items)-1 {
+		return nil
+	}
+	moved := items[index]
+	items = append(append(items[:index], items[index+1:]...), moved)
+	encoded, err := json.Marshal(items)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE buddy_nuance_reviews SET items_json=? WHERE user_id=?`, string(encoded), userID)
+	return err
 }
 
 func (s *MySQLStore) Act(ctx context.Context, userID, id string, a Action) (Lesson, error) {
@@ -373,6 +474,10 @@ func (s *MySQLStore) Act(ctx context.Context, userID, id string, a Action) (Less
 		_, err = tx.ExecContext(ctx, `INSERT INTO buddy_nuance_attempts (lesson_id,revision,question_id,selected_word,correct,reviewed_at) VALUES (?,?,?,?,?,?)`, id, l.Revision, f.QuestionID, f.Selected, f.Correct, now.Unix())
 	} else if a.Kind == "next" && a.Repeat && previousFeedback.Correct {
 		_, err = tx.ExecContext(ctx, `UPDATE buddy_nuance_attempts SET repeat_review=TRUE WHERE lesson_id=? AND revision=?`, id, previousFeedback.AnswerRevision)
+	} else if a.Kind == "next" && !previousFeedback.Correct {
+		// The server owns the batch order, so the missed question's move to the
+		// end of the review batch is persisted here, not left to the browser.
+		err = moveMissedReviewItemToEnd(ctx, tx, userID, id, previousFeedback.QuestionID)
 	}
 	if err != nil {
 		return Lesson{}, err

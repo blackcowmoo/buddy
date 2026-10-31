@@ -8,11 +8,12 @@ import { WordNuanceReview } from "./WordNuanceReview";
 
 vi.mock("../lib/nuance", async (original) => ({
   ...await original<typeof api>(),
-  fetchNuanceLessons: vi.fn(), fetchNuanceLesson: vi.fn(), practiceNuance: vi.fn(), startNuanceReview: vi.fn(),
+  fetchNuanceReview: vi.fn(), fetchNuanceLesson: vi.fn(), practiceNuance: vi.fn(), startNuanceReview: vi.fn(),
 }));
 
 let lessons: api.NuanceLesson[];
 let items: api.NuanceReviewItem[];
+let savedItems: api.NuanceReviewItem[] | null;
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -34,12 +35,16 @@ beforeEach(() => {
   second.state.queue = ["q0", "q1", "q2"];
   first.revision++; second.revision++;
   lessons = [first, second];
+  savedItems = null;
+  vi.mocked(api.fetchNuanceReview).mockImplementation(async () => savedItems
+    ? { items: structuredClone(savedItems), lessons: structuredClone(lessons) }
+    : { items: [], lessons: [] });
   vi.mocked(api.startNuanceReview).mockImplementation(async () => {
     for (const lesson of lessons) lesson.state.queue = [];
     for (const item of items) lessons.find((lesson) => lesson.id === item.lessonId)!.state.queue.push(item.questionId);
+    savedItems = structuredClone(items);
     return { items: structuredClone(items), lessons: structuredClone(lessons) };
   });
-  vi.mocked(api.fetchNuanceLessons).mockImplementation(async () => structuredClone(lessons));
   vi.mocked(api.fetchNuanceLesson).mockImplementation(async (id) => structuredClone(lessons.find((lesson) => lesson.id === id)!));
   vi.mocked(api.practiceNuance).mockImplementation(async (id, action) => {
     const lesson = lessons.find((candidate) => candidate.id === id)!;
@@ -61,7 +66,7 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
-it("draws every question of the review batch across all lessons and shows no word-set explanation header", async () => {
+it("draws every question of the review batch across all lessons without putting items in the URL", async () => {
   render(<WordNuanceReview />);
   expect(await screen.findByText("이번 복습 7문제 · 남은 문제 7개")).toBeInTheDocument();
   const review = screen.getByRole("region", { name: "오늘의 뉘앙스 복습" });
@@ -72,7 +77,9 @@ it("draws every question of the review batch across all lessons and shows no wor
   expect(screen.getAllByRole("main")).toHaveLength(1);
   expect(screen.getByRole("main")).toContainElement(review);
   expect(screen.getAllByRole("banner")).toHaveLength(1);
+  expect(api.fetchNuanceReview).toHaveBeenCalledOnce();
   expect(api.startNuanceReview).toHaveBeenCalledOnce();
+  expect(window.location.search).toBe("");
   expect(screen.queryByText("가격과 품질을 구분해요")).not.toBeInTheDocument();
   expect(screen.queryByText("cheap / inexpensive")).not.toBeInTheDocument();
   expect(screen.getByRole("region", { name: /상황 0/ })).toBeInTheDocument();
@@ -86,17 +93,18 @@ it("draws every question of the review batch across all lessons and shows no wor
   expect(await screen.findByRole("region", { name: /다른 묶음 상황 0/ })).toBeInTheDocument();
   expect(screen.getAllByRole("main")).toHaveLength(1);
   expect(screen.getAllByRole("banner")).toHaveLength(1);
+  expect(window.location.search).toBe("");
 });
 
-it("restores the persisted batch from the URL without drawing another batch", async () => {
-  const params = new URLSearchParams();
-  for (const item of items) params.append("item", JSON.stringify([item.lessonId, item.questionId]));
-  window.history.replaceState(null, "", `/pr/14/nuance-review?${params}`);
+it("restores the server-owned batch without drawing another batch or touching the URL", async () => {
+  window.history.replaceState(null, "", "/pr/14/nuance-review");
+  savedItems = items;
   render(<WordNuanceReview />);
   expect(await screen.findByText("이번 복습 7문제 · 남은 문제 7개")).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "학습 목록" })).toHaveAttribute("href", "/pr/14/nuance");
-  expect(api.fetchNuanceLessons).toHaveBeenCalledOnce();
+  expect(api.fetchNuanceReview).toHaveBeenCalledOnce();
   expect(api.startNuanceReview).not.toHaveBeenCalled();
+  expect(window.location.search).toBe("");
 });
 
 it("finishes the whole batch in one sitting and redraws every remaining due question", async () => {
@@ -120,4 +128,5 @@ it("finishes the whole batch in one sitting and redraws every remaining due ques
   fireEvent.click(redraw);
   expect(await screen.findByText("이번 복습 7문제 · 남은 문제 7개")).toBeInTheDocument();
   expect(api.startNuanceReview).toHaveBeenCalledTimes(2);
+  expect(window.location.search).toBe("");
 });
