@@ -59,6 +59,10 @@ interface NuanceReviewBatch {
 export const fetchNuanceLessons = () => fetchJSON<NuanceLesson[] | null>("api/nuance", null);
 export const fetchNuanceLesson = (id: string) => fetchJSON<NuanceLesson | null>(`api/nuance/${encodeURIComponent(id)}`, null);
 export const drawNuanceLesson = () => postJSON<NuanceLesson | null>("api/nuance/draw", {}, null);
+// The server owns the review batch: GET replays the saved batch, POST draws a
+// fresh one. Items never travel through the URL, so large batches cannot
+// overflow the browser and the order cannot be tampered with.
+export const fetchNuanceReview = () => fetchJSON<NuanceReviewBatch | null>("api/nuance/review", null);
 export const startNuanceReview = () => postJSON<NuanceReviewBatch | null>("api/nuance/review", {}, null);
 export const retryNuanceLesson = (id: string) => postJSON<NuanceLesson | null>(`api/nuance/${encodeURIComponent(id)}/retry`, {}, null);
 export const practiceNuance = (id: string, action: NuanceAction) => postJSON<NuanceLesson | null>(`api/nuance/${encodeURIComponent(id)}/practice`, action, null);

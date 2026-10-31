@@ -4,27 +4,7 @@ import { NuanceQuestionCard } from "../components/NuanceQuestionCard";
 import { LearningIntro } from "../components/LearningIntro";
 import { LearningPage } from "../components/LearningPage";
 import { BackButton, PageSection, PageToolbar } from "../components/PageLayout";
-import { dueQuestions, fetchNuanceLesson, fetchNuanceLessons, practiceNuance, startNuanceReview, type NuanceAction, type NuanceLesson, type NuanceReviewItem } from "../lib/nuance";
-
-const reviewItemParam = "item";
-
-function readNuanceReviewOrder(search = window.location.search): NuanceReviewItem[] {
-  const items: NuanceReviewItem[] = [];
-  for (const raw of new URLSearchParams(search).getAll(reviewItemParam)) {
-    try {
-      const [lessonId, questionId] = JSON.parse(raw) as unknown[];
-      if (typeof lessonId === "string" && typeof questionId === "string") items.push({ lessonId, questionId });
-    } catch { /* Ignore a malformed bookmark and draw a fresh batch. */ }
-  }
-  return items;
-}
-
-function replaceNuanceReviewOrder(items: NuanceReviewItem[]) {
-  const url = new URL(window.location.href);
-  url.searchParams.delete(reviewItemParam);
-  for (const item of items) url.searchParams.append(reviewItemParam, JSON.stringify([item.lessonId, item.questionId]));
-  window.history.replaceState(null, "", url);
-}
+import { dueQuestions, fetchNuanceLesson, fetchNuanceReview, practiceNuance, startNuanceReview, type NuanceAction, type NuanceLesson, type NuanceReviewItem } from "../lib/nuance";
 
 function nuanceListPath() {
   return window.location.pathname.replace(/\/nuance-review\/?$/, "/nuance");
@@ -32,7 +12,7 @@ function nuanceListPath() {
 
 export function WordNuanceReview() {
   const [lessons, setLessons] = useState<NuanceLesson[]>([]);
-  const [order, setOrder] = useState<NuanceReviewItem[]>(() => readNuanceReviewOrder());
+  const [order, setOrder] = useState<NuanceReviewItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -51,18 +31,22 @@ export function WordNuanceReview() {
     if (!batch) { setError("복습 문제를 준비하지 못했어요. 다시 시도해 주세요."); return; }
     setLessons(batch.lessons);
     setOrder(batch.items);
-    replaceNuanceReviewOrder(batch.items);
   }, []);
 
   useEffect(() => {
     if (started.current) return;
     started.current = true;
-    const saved = readNuanceReviewOrder();
-    if (!saved.length) { void begin(); return; }
-    void fetchNuanceLessons().then((items) => {
-      setLoading(false);
-      if (items) setLessons(items);
-      else setError("복습 진행을 불러오지 못했어요. 다시 시도해 주세요.");
+    // The server owns the review batch, so a reopen replays the saved batch
+    // instead of reading question lists back from the URL. Only when no batch
+    // is active does the page draw a new one.
+    void fetchNuanceReview().then((saved) => {
+      if (saved && saved.items.length) {
+        setLessons(saved.lessons);
+        setOrder(saved.items);
+        setLoading(false);
+        return;
+      }
+      return begin();
     });
   }, [begin]);
 
@@ -92,13 +76,9 @@ export function WordNuanceReview() {
     void practiceNuance(lesson.id, { ...extra, kind, revision: lesson.revision }).then(async (updated) => {
       if (updated) {
         remember(updated);
-        if (missed) {
-          setOrder((items) => {
-            const next = [...items.filter((candidate) => candidate !== item), item];
-            replaceNuanceReviewOrder(next);
-            return next;
-          });
-        }
+        // Mirrors the server's persisted move of a missed question to the end
+        // of the batch; the response stays authoritative on the next load.
+        if (missed) setOrder((items) => [...items.filter((candidate) => candidate !== item), item]);
         return;
       }
       const restored = await fetchNuanceLesson(lesson.id);

@@ -262,6 +262,106 @@ func TestMySQLStartsReviewWithEveryDueQuestionAcrossLessons(t *testing.T) {
 		}
 	}
 }
+
+func TestMySQLReviewBatchResumesFromServerWithoutBrowserItems(t *testing.T) {
+	st := requireDB(t)
+	ctx := context.Background()
+	first := persistedLesson(t, st)
+	second := pendingLesson(t, st, first.UserID)
+	if err := st.Complete(ctx, second.ID, comparisonContent("affordable", "budget-friendly")); err != nil {
+		t.Fatal(err)
+	}
+
+	empty, err := st.ReviewState(ctx, first.UserID)
+	if err != nil || len(empty.Items) != 0 {
+		t.Fatalf("before a draw: items=%+v err=%v", empty.Items, err)
+	}
+	batch, err := st.StartReview(ctx, first.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch.Items) != 10 {
+		t.Fatalf("batch = %+v", batch.Items)
+	}
+	resumed, err := st.ReviewState(ctx, first.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(resumed.Items) != fmt.Sprint(batch.Items) {
+		t.Fatalf("replayed order = %+v, want %+v", resumed.Items, batch.Items)
+	}
+	if len(resumed.Lessons) != 2 {
+		t.Fatalf("replayed lessons = %d, want 2", len(resumed.Lessons))
+	}
+
+	// Acknowledging a missed question moves it to the end of the saved order,
+	// so the browser never has to (and cannot) carry or forge that reorder.
+	firstItem := batch.Items[0]
+	var selected Lesson
+	for _, lesson := range batch.Lessons {
+		if lesson.ID == firstItem.LessonID {
+			selected = lesson
+			break
+		}
+	}
+	answer, wrong := "", ""
+	for _, question := range selected.Content.Questions {
+		if question.ID == firstItem.QuestionID {
+			answer = question.Answer
+		}
+	}
+	for _, word := range selected.Content.Words {
+		if word.Word != answer {
+			wrong = word.Word
+		}
+	}
+	missed, err := st.Act(ctx, first.UserID, selected.ID, Action{Kind: "answer", Revision: selected.Revision, QuestionID: firstItem.QuestionID, Selected: wrong})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.Act(ctx, first.UserID, selected.ID, Action{Kind: "next", Revision: missed.Revision}); err != nil {
+		t.Fatal(err)
+	}
+	wantMoved := append(append([]ReviewItem{}, batch.Items[1:]...), firstItem)
+	moved, err := st.ReviewState(ctx, first.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(moved.Items) != fmt.Sprint(wantMoved) {
+		t.Fatalf("order after a missed reveal = %+v, want %+v", moved.Items, wantMoved)
+	}
+
+	// A deleted lesson drops its items; the rest of the batch keeps its order.
+	if err = st.Delete(ctx, first.UserID, firstItem.LessonID); err != nil {
+		t.Fatal(err)
+	}
+	afterDelete, err := st.ReviewState(ctx, first.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range afterDelete.Items {
+		if item.LessonID == firstItem.LessonID {
+			t.Fatalf("deleted lesson still in batch: %+v", afterDelete.Items)
+		}
+	}
+
+	// A fresh draw replaces the saved batch, and another account sees nothing.
+	fresh, err := st.StartReview(ctx, first.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := st.ReviewState(ctx, first.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(restarted.Items) != fmt.Sprint(fresh.Items) {
+		t.Fatalf("restarted order = %+v, want %+v", restarted.Items, fresh.Items)
+	}
+	foreign, err := st.ReviewState(ctx, "someone-else")
+	if err != nil || len(foreign.Items) != 0 {
+		t.Fatalf("other account batch = %+v err=%v", foreign.Items, err)
+	}
+}
 func TestMySQLConcurrentAnswerCommitsOnce(t *testing.T) {
 	st := requireDB(t)
 	ctx := context.Background()
