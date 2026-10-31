@@ -138,6 +138,14 @@ data, so another device can resume. Row locks and revisions prevent duplicate
 submissions from advancing progress twice. Choices move on each retry and stay
 stable during feedback. Deleting a lesson also deletes its attempts.
 
+The review batch itself is server-owned. A draw stores the shuffled
+cross-lesson question order in the account's `buddy_nuance_reviews` row, and
+reopening the review page replays that saved batch via `GET /api/nuance/review`
+instead of reading question lists back from the URL: a large due backlog can
+never overflow the browser, and the browser cannot forge or edit the batch.
+Acknowledging a missed question persists its move to the end of the saved
+order, deleted lessons drop out of the batch, and drawing again replaces it.
+
 The previous static curriculum's browser-only answers are not imported into
 generated lessons: those are different questions. New progress does not use
 local storage.

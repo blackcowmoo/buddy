@@ -307,5 +307,9 @@ type Store interface {
 	Complete(context.Context, string, Content) error
 	AddQuestions(context.Context, string, string, []Question) error
 	StartReview(context.Context, string) (ReviewBatch, error)
+	// ReviewState replays the durably saved review batch. The browser never
+	// carries or defines the order; a reload resumes exactly what the server
+	// drew, filtered to items that are still pending.
+	ReviewState(context.Context, string) (ReviewBatch, error)
 	Act(context.Context, string, string, Action) (Lesson, error)
 }

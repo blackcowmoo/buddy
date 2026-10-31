@@ -26,6 +26,16 @@ func nuanceError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 }
 
+func writeReviewBatch(w http.ResponseWriter, batch nuance.ReviewBatch) {
+	if batch.Items == nil {
+		batch.Items = []nuance.ReviewItem{}
+	}
+	if batch.Lessons == nil {
+		batch.Lessons = []nuance.Lesson{}
+	}
+	writeJSON(w, batch)
+}
+
 func registerNuance(mux *http.ServeMux, ident identity.Identifier, st nuance.Store, pipe *pipeline.Pipeline, profile storeProfile, q *asyncjob.Queue) {
 	enqueue := func(ctx context.Context, l nuance.Lesson) error {
 		if err := transport.EnqueueNuance(ctx, q, pipe, st, profile, l.UserID, l.ID); err != nil {
@@ -70,6 +80,20 @@ func registerNuance(mux *http.ServeMux, ident identity.Identifier, st nuance.Sto
 		}
 		writeJSON(w, list)
 	})
+	mux.HandleFunc("GET /api/nuance/review", func(w http.ResponseWriter, r *http.Request) {
+		user, ok := requireUser(w, r, ident)
+		if !ok {
+			return
+		}
+		// Replays the server-saved batch. The browser never supplies review
+		// items, so a huge selection cannot overflow the URL or be forged.
+		batch, err := st.ReviewState(r.Context(), user)
+		if err != nil {
+			nuanceError(w, r, err)
+			return
+		}
+		writeReviewBatch(w, batch)
+	})
 	mux.HandleFunc("POST /api/nuance/review", func(w http.ResponseWriter, r *http.Request) {
 		user, ok := requireUser(w, r, ident)
 		if !ok {
@@ -80,13 +104,7 @@ func registerNuance(mux *http.ServeMux, ident identity.Identifier, st nuance.Sto
 			nuanceError(w, r, err)
 			return
 		}
-		if batch.Items == nil {
-			batch.Items = []nuance.ReviewItem{}
-		}
-		if batch.Lessons == nil {
-			batch.Lessons = []nuance.Lesson{}
-		}
-		writeJSON(w, batch)
+		writeReviewBatch(w, batch)
 	})
 	mux.HandleFunc("POST /api/nuance/draw", func(w http.ResponseWriter, r *http.Request) {
 		user, ok := requireUser(w, r, ident)
