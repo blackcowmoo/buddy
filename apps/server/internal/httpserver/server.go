@@ -41,6 +41,7 @@ type JobQueues struct {
 	WordAutoAdd       *asyncjob.Queue
 	WordDefine        *asyncjob.Queue
 	WordResearch      *asyncjob.Queue
+	PhraseHint        *asyncjob.Queue
 }
 
 // Dependencies is the complete HTTP adapter boundary. Required MySQL-backed
@@ -87,6 +88,7 @@ func New(cfg config.Config, deps Dependencies) *http.Server {
 	wordAutoAddQueue := deps.Queues.WordAutoAdd
 	wordDefineQueue := deps.Queues.WordDefine
 	wordResearchQueue := deps.Queues.WordResearch
+	phraseHintQueue := deps.Queues.PhraseHint
 
 	mux := http.NewServeMux()
 
@@ -155,6 +157,7 @@ func New(cfg config.Config, deps Dependencies) *http.Server {
 	mux.HandleFunc("GET /api/articles/{id}/audio", articleAudioHandler(ident, articles, articleAudio))
 	mux.HandleFunc("POST /api/articles/{id}/answer", articleAnswerHandler(ident, articles))
 	mux.HandleFunc("POST /api/articles/{id}/words/define", articleWordDefineHandler(ident, articles, pipe, rdb, wordDefineQueue))
+	mux.HandleFunc("POST /api/articles/{id}/phrases/hint", articlePhraseHintHandler(ident, articles, pipe, rdb, phraseHintQueue))
 	mux.HandleFunc("DELETE /api/articles/{id}", articleDeleteHandler(ident, articles))
 	registerStalePRRedirect(mux, cfg.RootPath)
 

@@ -21,7 +21,7 @@ vi.mock("../lib/articles", async () => {
 
 vi.mock("../lib/wordSearch", async () => {
   const actual = await vi.importActual<typeof import("../lib/wordSearch")>("../lib/wordSearch");
-  return { ...actual, checkDefinedWordStatus: vi.fn(), defineWord: vi.fn() };
+  return { ...actual, checkDefinedWordStatus: vi.fn(), defineWord: vi.fn(), phraseHint: vi.fn() };
 });
 
 vi.mock("../lib/wordReview", async () => {
@@ -43,7 +43,7 @@ import {
 } from "../lib/articles";
 import { formatAbsoluteDate, formatDateDivider } from "../lib/time";
 import { phraseLookupPosition } from "../lib/phraseSearch";
-import { checkDefinedWordStatus, defineWord } from "../lib/wordSearch";
+import { checkDefinedWordStatus, defineWord, phraseHint } from "../lib/wordSearch";
 import { fetchWords, saveWord } from "../lib/wordReview";
 
 // jsdom has no audio playback; ArticleReadAloud uses the real media element
@@ -52,6 +52,9 @@ beforeEach(() => {
   HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
   HTMLMediaElement.prototype.pause = vi.fn();
   vi.mocked(checkDefinedWordStatus).mockResolvedValue(null);
+  // Default: no hint comes back, so tests that only exercise the search
+  // flow (or plain words) render exactly as before the hint feature.
+  vi.mocked(phraseHint).mockResolvedValue(null);
   vi.mocked(fetchWords).mockResolvedValue({ words: [], dueCount: 0 });
   // Default: this article simply has no suggested phrases, so the phrase
   // watch resolves on its first poll and tests don't have to advance timers
@@ -1181,12 +1184,111 @@ describe("ArticleQuiz page — phrase search while reading", () => {
     // A span tap checks the server cache first, at the phrase's first word's
     // split index (3 in the sample summary) — same protocol as a word tap.
     expect(checkDefinedWordStatus).toHaveBeenCalledWith(sampleDraw.id, "announced a new discovery", 3);
+    // The cache miss also auto-fires the vague hint on the same anchor.
+    expect(phraseHint).toHaveBeenCalledWith(sampleDraw.id, "announced a new discovery", 3);
     expect(await screen.findByRole("button", { name: "찾기" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "찾기" }));
 
     expect(defineWord).toHaveBeenCalledWith(sampleDraw.id, "announced a new discovery", 3);
     expect(await screen.findByText("새로운 발견을 발표했다")).toBeInTheDocument();
     expect(screen.getByRole("menu").closest(".article-phrase-anchor")).toBeInTheDocument();
+  });
+
+  it("auto-hints the feeling of a tapped idiom without revealing its meaning", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    vi.mocked(fetchArticlePhrases).mockResolvedValue({ status: "done", phrases: ["announced a new discovery"] });
+    vi.mocked(phraseHint).mockResolvedValue("새로 알아낸 것을 세상에 알리는 상황과 관련돼 있어요.");
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ delay: null });
+    render(<ArticleQuiz />);
+    await openDoneArticle(user);
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+
+    const summary = screen.getByText(articleSummaryMatcher(sampleDraw.summary));
+    await user.click(within(summary).getByRole("button", { name: "announced a new discovery" }));
+
+    // A phrase tap with nothing cached fires the hint request at the same
+    // article/word/position anchor as the definition — but the definition
+    // itself is NOT fetched; only the vague hint appears alongside 찾기.
+    expect(phraseHint).toHaveBeenCalledWith(sampleDraw.id, "announced a new discovery", 3);
+    expect(defineWord).not.toHaveBeenCalled();
+    expect(await screen.findByText("💡 새로 알아낸 것을 세상에 알리는 상황과 관련돼 있어요.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "찾기" })).toBeInTheDocument();
+
+    // The real search still runs untouched once the learner asks for it,
+    // and the definition replaces the hint.
+    vi.mocked(defineWord).mockResolvedValue({
+      word: "announced a new discovery",
+      meaning: "새로운 발견을 발표했다",
+      example: "Scientists announced a new discovery today.",
+    });
+    await user.click(screen.getByRole("button", { name: "찾기" }));
+    expect(defineWord).toHaveBeenCalledWith(sampleDraw.id, "announced a new discovery", 3);
+    expect(await screen.findByText("새로운 발견을 발표했다")).toBeInTheDocument();
+    expect(screen.queryByText(/💡/)).not.toBeInTheDocument();
+  });
+
+  it("shows a placeholder while the tapped idiom's hint is still coming", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    vi.mocked(fetchArticlePhrases).mockResolvedValue({ status: "done", phrases: ["announced a new discovery"] });
+    vi.mocked(phraseHint).mockReturnValue(new Promise(() => {}));
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ delay: null });
+    render(<ArticleQuiz />);
+    await openDoneArticle(user);
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+
+    const summary = screen.getByText(articleSummaryMatcher(sampleDraw.summary));
+    await user.click(within(summary).getByRole("button", { name: "announced a new discovery" }));
+
+    expect(await screen.findByText("💡 표현의 느낌을 정리하는 중…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "찾기" })).toBeInTheDocument();
+    expect(defineWord).not.toHaveBeenCalled();
+  });
+
+  it("never asks for a hint when the tapped phrase's definition is already cached", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    vi.mocked(fetchArticlePhrases).mockResolvedValue({ status: "done", phrases: ["announced a new discovery"] });
+    vi.mocked(checkDefinedWordStatus).mockResolvedValue({
+      status: "done",
+      result: {
+        word: "announced a new discovery",
+        meaning: "새로운 발견을 발표했다",
+        example: "Scientists announced a new discovery today.",
+      },
+    });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ delay: null });
+    render(<ArticleQuiz />);
+    await openDoneArticle(user);
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+
+    const summary = screen.getByText(articleSummaryMatcher(sampleDraw.summary));
+    await user.click(within(summary).getByRole("button", { name: "announced a new discovery" }));
+
+    // A cached definition shows right away — a hint on top would add
+    // nothing and cost a model call.
+    expect(await screen.findByText("새로운 발견을 발표했다")).toBeInTheDocument();
+    expect(phraseHint).not.toHaveBeenCalled();
+    expect(screen.queryByText(/💡/)).not.toBeInTheDocument();
+  });
+
+  it("does not hint single-word taps", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    vi.mocked(defineWord).mockResolvedValue({ word: "Scientists", meaning: "과학자들", example: "" });
+    const user = userEvent.setup({ delay: null });
+    render(<ArticleQuiz />);
+    await openDoneArticle(user);
+
+    const summary = screen.getByText(articleSummaryMatcher(sampleDraw.summary));
+    await user.click(within(summary).getByRole("button", { name: "Scientists" }));
+
+    expect(await screen.findByRole("button", { name: "찾기" })).toBeInTheDocument();
+    expect(phraseHint).not.toHaveBeenCalled();
   });
 
   it("sends a suggested-phrase chip straight to the define job without confirmation", async () => {
@@ -1214,6 +1316,8 @@ describe("ArticleQuiz page — phrase search while reading", () => {
     expect(screen.queryByRole("button", { name: "찾기" })).not.toBeInTheDocument();
     expect(await screen.findByText("새로운 발견을 발표했다")).toBeInTheDocument();
     expect(within(chips).getByRole("button", { name: "announced a new discovery" })).toHaveClass("active");
+    // An explicit chip search is a lookup, not a curiosity tap — no hint.
+    expect(phraseHint).not.toHaveBeenCalled();
   });
 
   it("accepts a free-text query containing spaces", async () => {
