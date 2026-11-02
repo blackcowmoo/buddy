@@ -149,6 +149,13 @@ const (
 	// first attempt) — the dedupe keeps those two, and every concurrent
 	// reader, collapsed into a single generation.
 	KindArticlePhrases Kind = "article-phrases"
+	// KindPhraseHint generates and caches the pre-search meaning hint for one
+	// article phrase the learner tapped (payload: {CacheKey, Request} — see
+	// transport.EnqueuePhraseHintJob). Same durable shape as KindWordDefine,
+	// but its own Kind so a tap-triggered hint queue can never delay an
+	// explicit word search behind it, and the hint's cache entry (see
+	// wordlookup.HintKey) stays separate from the definition's.
+	KindPhraseHint Kind = "phrase-hint"
 )
 
 // Job is the durable Redis envelope for one unit of background work.

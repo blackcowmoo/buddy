@@ -52,6 +52,7 @@ func TestArticleActionsRequireOwnedReadyInstance(t *testing.T) {
 				{"answer", articleAnswerHandler(ident, st)},
 				{"audio", articleAudioHandler(ident, st, &transport.ArticleAudio{})},
 				{"word lookup", articleWordDefineHandler(ident, st, nil, rdb, asyncjob.NewQueue(rdb))},
+				{"phrase hint", articlePhraseHintHandler(ident, st, nil, rdb, asyncjob.NewQueue(rdb))},
 			} {
 				t.Run(action.name, func(t *testing.T) {
 					r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"word":"learn","selectedOptions":[]}`))
@@ -66,6 +67,17 @@ func TestArticleActionsRequireOwnedReadyInstance(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestArticlePhraseHintRequiresRedis mirrors the define endpoint's contract:
+// without Redis configured the hint endpoint reports 503 and never reaches
+// the article store or a generation path.
+func TestArticlePhraseHintRequiresRedis(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/api/articles/draw/phrases/hint", strings.NewReader(`{"word":"break the ice","position":3}`))
+	req.SetPathValue("id", "draw")
+	w := httptest.NewRecorder()
+	articlePhraseHintHandler(fakeIdentifier{id: "alex", ok: true}, &fakeArticleStore{}, nil, nil, nil)(w, req)
+	requireStatus(t, w, http.StatusServiceUnavailable)
 }
 
 func TestArticlePollingStillReturnsUnfinishedInstances(t *testing.T) {

@@ -202,6 +202,12 @@ func main() {
 
 	wordDefineQueue := startWorker(rdb, jobsCtx, asyncjob.KindWordDefine, transport.WordDefineWorkerConcurrency, transport.WordDefineClaimTTL,
 		transport.WordDefineJobHandler(pipe, rdb, articles))
+	// Phrase hints: the non-revealing meaning nudge shown when a learner taps
+	// a suggested phrase on the reading page (see
+	// httpserver.articlePhraseHintHandler). Own worker queue so auto-fired
+	// hint generations never delay explicit word-define searches.
+	phraseHintQueue := startWorker(rdb, jobsCtx, asyncjob.KindPhraseHint, transport.PhraseHintWorkerConcurrency, transport.PhraseHintClaimTTL,
+		transport.PhraseHintJobHandler(pipe, rdb, articles))
 	wordResearchQueue := startWorker(rdb, jobsCtx, asyncjob.KindWordResearch, transport.WordResearchWorkerConcurrency, transport.WordResearchClaimTTL,
 		transport.WordResearchJobHandler(pipe, wordReviews))
 
@@ -305,6 +311,7 @@ func main() {
 			WordAutoAdd:       wordAutoAddQueue,
 			WordDefine:        wordDefineQueue,
 			WordResearch:      wordResearchQueue,
+			PhraseHint:        phraseHintQueue,
 		},
 	})
 

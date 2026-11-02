@@ -113,3 +113,96 @@ func articleWordDefineHandler(ident identity.Identifier, articles newsarticle.St
 		writeJSON(w, articleWordLookupResponse{Status: "pending"})
 	}
 }
+
+type articlePhraseHintResponse struct {
+	Status string `json:"status"`
+	Hint   string `json:"hint,omitempty"`
+}
+
+// articlePhraseHintHandler backs the reading page's phrase tap: it returns a
+// short non-revealing meaning hint (see pipeline.PhraseHint) for the tapped
+// expression, generating it durably on a cache miss. Unlike the define
+// endpoint there is no checkOnly probe — the tap itself is the request, and
+// the learner is only ever shown a hint, never the definition; a real search
+// still goes through articleWordDefineHandler for the full answer.
+func articlePhraseHintHandler(ident identity.Identifier, articles newsarticle.Store, pipe *pipeline.Pipeline, rdb redis.UniversalClient, queue *asyncjob.Queue) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := requireUser(w, r, ident)
+		if !ok {
+			return
+		}
+		if rdb == nil || queue == nil {
+			http.Error(w, "phrase hint requires Redis", http.StatusServiceUnavailable)
+			return
+		}
+		var body struct {
+			Word     string `json:"word"`
+			Position int    `json:"position"`
+		}
+		if !decodeJSON(w, r, &body) {
+			return
+		}
+		word := strings.TrimSpace(body.Word)
+		if word == "" {
+			http.Error(w, "word is required", http.StatusBadRequest)
+			return
+		}
+		if !requireMaxRunes(w, word, wordreview.MaxWordLen, "word is too long") {
+			return
+		}
+		if body.Position < 0 || body.Position > maxWordLookupPosition {
+			http.Error(w, "invalid word position", http.StatusBadRequest)
+			return
+		}
+		inst, ok := requireReadyArticleInstance(w, r, articles, userID, "articles: get phrase hint context")
+		if !ok {
+			return
+		}
+		lookup := wordlookup.Request{
+			ArticleID: inst.Article.ID,
+			Word:      word,
+			Position:  body.Position,
+			Context:   inst.Article.Summary,
+			Language:  pipe.FeedbackLang,
+			Model:     pipe.ChatModel,
+		}
+		key := wordlookup.HintKey(lookup)
+		writeCachedHint := func() (bool, error) {
+			result, found, err := wordlookup.GetHint(r.Context(), rdb, key)
+			if err != nil || !found {
+				return found, err
+			}
+			writeJSON(w, articlePhraseHintResponse{Status: "done", Hint: result.Hint})
+			return true, nil
+		}
+		if found, err := writeCachedHint(); err != nil {
+			serverError(w, "phrase hint: cache read", err)
+			return
+		} else if found {
+			return
+		}
+		pending, err := queue.Pending(r.Context(), asyncjob.KindPhraseHint, key)
+		if err != nil {
+			serverError(w, "phrase hint: pending status", err)
+			return
+		}
+		if pending {
+			writeJSON(w, articlePhraseHintResponse{Status: "pending"})
+			return
+		}
+		// Same completion race guard as articleWordDefineHandler: the job
+		// writes its result before clearing the dedupe marker, so re-read the
+		// cache once no pending job is observed.
+		if found, err := writeCachedHint(); err != nil {
+			serverError(w, "phrase hint: cache re-read", err)
+			return
+		} else if found {
+			return
+		}
+		if err := transport.EnqueuePhraseHintJob(r.Context(), queue, pipe, rdb, lookup, articles); err != nil {
+			serverError(w, "phrase hint: enqueue", err)
+			return
+		}
+		writeJSON(w, articlePhraseHintResponse{Status: "pending"})
+	}
+}

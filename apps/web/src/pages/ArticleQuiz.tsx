@@ -26,7 +26,7 @@ import { DatedList } from "../components/DatedList";
 import { HistoryItem } from "../components/HistoryItem";
 import { ArticleReadAloud } from "../components/ArticleReadAloud";
 import { usePollScaffold } from "../hooks/usePollScaffold";
-import { checkDefinedWordStatus, defineWord } from "../lib/wordSearch";
+import { checkDefinedWordStatus, defineWord, phraseHint } from "../lib/wordSearch";
 import { fetchWords, saveWord, type WordReviewItem, type WordReviewStatus } from "../lib/wordReview";
 import type { WordSuggestion } from "../lib/protocol";
 import { useDismiss } from "../hooks/useDismiss";
@@ -140,13 +140,19 @@ export function ArticleQuiz() {
   // description. `key` is the tapped token's index within draw.summary's
   // split (not the word text alone), since the same word can appear more
   // than once in a paragraph and each tap should look up/save independently.
-  // null means no popover is open.
+  // null means no popover is open. A tapped suggested phrase (`isPhrase`)
+  // additionally gets an auto-fetched meaning hint — a general-sense nudge
+  // that never reveals the memorizable meaning; the full definition still
+  // requires the explicit "찾기" search below.
   const [wordLookup, setWordLookup] = useState<{
     key: number;
     word: string;
     loading: boolean;
     failed: boolean;
     result: WordSuggestion | null;
+    isPhrase: boolean;
+    hint: string | null;
+    hintLoading: boolean;
   } | null>(null);
   const wordLookupRef = useRef<HTMLDivElement>(null);
   const wordLookupAnchorRef = useRef<HTMLSpanElement>(null);
@@ -180,6 +186,11 @@ export function ArticleQuiz() {
   // Include the token position because the server resolves words in context,
   // and the same spelling can have different meanings in different places.
   const wordLookupCacheRef = useRef(new Map<string, WordSuggestion>());
+  // Phrase hints are cached and tracked separately from definitions: a hint
+  // must never be mistaken for (or overwritten by) a real search result,
+  // and vice versa — the same separation the server's hint cache keeps.
+  const phraseHintCacheRef = useRef(new Map<string, string>());
+  const pendingPhraseHintsRef = useRef(new Map<string, Promise<string | null>>());
   // Keep lookup attempts alive while the learner moves between words. A
   // pending lookup must still look like "찾는 중…" when its word is opened
   // again, and a failed attempt must not regress to the initial "찾기" action.
@@ -413,12 +424,35 @@ export function ArticleQuiz() {
     }
   }, [draw, followWordLookup, searchedWords]);
 
+  // A phrase tap asks the server for a non-revealing meaning hint (see
+  // lib/wordSearch.ts's phraseHint) while the definition probe below found
+  // no cached answer — the learner gets a general sense of the idiom without
+  // spoiling the meaning they can still get via an actual search. Hints stay
+  // out of the searched-words history and the phrase-search panel: they
+  // belong to the tap popover only.
+  const startPhraseHint = useCallback((articleID: string, key: number, word: string) => {
+    const hintKey = `${articleID}:${key}`;
+    if (phraseHintCacheRef.current.has(hintKey)) return;
+    setWordLookup((prev) => (prev && prev.key === key ? { ...prev, hintLoading: true } : prev));
+    if (pendingPhraseHintsRef.current.has(hintKey)) return;
+    const hint = phraseHint(articleID, word, key);
+    pendingPhraseHintsRef.current.set(hintKey, hint);
+    void hint.then((text) => {
+      pendingPhraseHintsRef.current.delete(hintKey);
+      if (text) phraseHintCacheRef.current.set(hintKey, text);
+      setWordLookup((prev) =>
+        prev && prev.key === key ? { ...prev, hintLoading: false, hint: text ?? prev.hint } : prev,
+      );
+    });
+  }, []);
+
   // Selects one word tapped inside the reading paragraph (see the word-token
   // buttons in the reading view below). The server cache and durable job
   // status are checked first; only a true miss leaves the learner a second
-  // action to start a lookup.
+  // action to start a lookup. A tapped phrase additionally gets an
+  // auto-requested hint on that miss (see startPhraseHint above).
   const openWordLookup = useCallback(
-    (key: number, word: string) => {
+    (key: number, word: string, isPhrase: boolean) => {
       if (!draw) return;
       setCenterWordLookup(false);
       const lookupKey = `${draw.id}:${key}`;
@@ -432,6 +466,9 @@ export function ArticleQuiz() {
         loading: pending || (!localResult && !failedWordLookupsRef.current.has(lookupKey)),
         failed: !pending && !localResult && failedWordLookupsRef.current.has(lookupKey),
         result: localResult ?? null,
+        isPhrase,
+        hint: phraseHintCacheRef.current.get(lookupKey) ?? null,
+        hintLoading: isPhrase && pendingPhraseHintsRef.current.has(lookupKey),
       });
 
       if (localResult || pending || failedWordLookupsRef.current.has(lookupKey)) return;
@@ -455,9 +492,10 @@ export function ArticleQuiz() {
             ? { ...prev, loading: false, result: serverResult, failed: false }
             : prev,
         );
+        if (isPhrase && !serverResult) startPhraseHint(draw.id, key, word);
       });
     },
-    [draw, followWordLookup, searchedWords, updateSearchedWord],
+    [draw, followWordLookup, searchedWords, startPhraseHint, updateSearchedWord],
   );
 
   // The whole study paragraph is short (one paragraph), so it's sent as
@@ -618,7 +656,7 @@ export function ArticleQuiz() {
                   ? wordLookup?.key === segment.key ? "article-word article-phrase selected" : "article-word article-phrase"
                   : wordLookup?.key === segment.key ? "article-word selected" : "article-word"
               }
-              onClick={() => openWordLookup(segment.key, segment.type === "phrase" ? normalizePhraseQuery(segment.text) : segment.text)}
+              onClick={() => openWordLookup(segment.key, segment.type === "phrase" ? normalizePhraseQuery(segment.text) : segment.text, segment.type === "phrase")}
               aria-haspopup="menu"
               aria-expanded={wordLookup?.key === segment.key}
             >
@@ -643,9 +681,19 @@ export function ArticleQuiz() {
                 </div>
                 {wordLookup.loading && <div className="word-search-status">찾는 중…</div>}
                 {!wordLookup.loading && !wordLookup.result && !wordLookup.failed && (
-                  <button type="button" className="word-learn-btn" onClick={requestWordLookup}>
-                    찾기
-                  </button>
+                  <>
+                    {wordLookup.isPhrase && (wordLookup.hint || wordLookup.hintLoading) && (
+                      <p className="quiz-meaning-hint">
+                        💡 {wordLookup.hint ?? "표현의 느낌을 정리하는 중…"}
+                      </p>
+                    )}
+                    {/* A phrase tap only ever showed the hint above; pressing
+                        찾기 is the learner's actual search, which runs the
+                        normal define flow and reveals the real meaning. */}
+                    <button type="button" className="word-learn-btn" onClick={requestWordLookup}>
+                      찾기
+                    </button>
+                  </>
                 )}
                 {!wordLookup.loading && wordLookup.failed && (
                   <div className="word-search-status">뜻을 가져오지 못했어요.</div>

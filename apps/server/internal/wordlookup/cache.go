@@ -20,6 +20,7 @@ import (
 const (
 	CacheTTL     = 30 * 24 * time.Hour
 	cacheVersion = "v2" // concise, memorization-ready meaning contract
+	hintVersion  = "v1" // non-revealing pre-search hint contract
 )
 
 type Request struct {
@@ -32,9 +33,28 @@ type Request struct {
 }
 
 func Key(r Request) string {
+	return "buddy:word-lookup:" + cacheVersion + ":" + requestHash(r)
+}
+
+// Hint is the pre-search meaning nudge for one tapped article phrase. It
+// deliberately does not carry the memorizable gloss WordSuggestion.Meaning
+// holds, so it lives in its own cache namespace below.
+type Hint struct {
+	Hint string `json:"hint"`
+}
+
+// HintKey is the cache key for one phrase's hint. Same request identity as
+// Key (a hint is resolved in the same article context) but a separate
+// namespace, so a hint is never served as — or overwritten by — the full
+// definition and each can be regenerated under its own prompt contract.
+func HintKey(r Request) string {
+	return "buddy:phrase-hint:" + hintVersion + ":" + requestHash(r)
+}
+
+func requestHash(r Request) string {
 	b, _ := json.Marshal(r)
 	h := sha256.Sum256(b)
-	return "buddy:word-lookup:" + cacheVersion + ":" + hex.EncodeToString(h[:])
+	return hex.EncodeToString(h[:])
 }
 
 func Get(ctx context.Context, rdb redis.UniversalClient, key string) (protocol.WordSuggestion, bool, error) {
@@ -53,6 +73,29 @@ func Get(ctx context.Context, rdb redis.UniversalClient, key string) (protocol.W
 }
 
 func Set(ctx context.Context, rdb redis.UniversalClient, key string, result protocol.WordSuggestion) error {
+	b, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	return rdb.Set(ctx, key, b, CacheTTL).Err()
+}
+
+func GetHint(ctx context.Context, rdb redis.UniversalClient, key string) (Hint, bool, error) {
+	var result Hint
+	raw, err := rdb.Get(ctx, key).Bytes()
+	if err == redis.Nil {
+		return result, false, nil
+	}
+	if err != nil {
+		return result, false, err
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return result, false, err
+	}
+	return result, true, nil
+}
+
+func SetHint(ctx context.Context, rdb redis.UniversalClient, key string, result Hint) error {
 	b, err := json.Marshal(result)
 	if err != nil {
 		return err
