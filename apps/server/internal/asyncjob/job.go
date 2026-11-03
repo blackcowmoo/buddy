@@ -156,6 +156,15 @@ const (
 	// explicit word search behind it, and the hint's cache entry (see
 	// wordlookup.HintKey) stays separate from the definition's.
 	KindPhraseHint Kind = "phrase-hint"
+	// KindQuizAnswerRefine refines the Chat model's fast verdict for one
+	// quiz-answer synonym check through Analysis -> Judge and stores the
+	// terminal result in quizcache (payload: {UserID, SessionID, WordID,
+	// Prompt, Answer, AcceptableAnswers, LearnerAnswer, ChatDraft} — see
+	// transport.EnqueueQuizAnswerRefine). It exists only to warm that cache
+	// off the learner's critical path; there is deliberately no inline
+	// fallback, because with Redis absent the cache itself is absent and
+	// refining would compute a verdict nowhere could store.
+	KindQuizAnswerRefine Kind = "quiz-answer-refine"
 )
 
 // Job is the durable Redis envelope for one unit of background work.

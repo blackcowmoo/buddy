@@ -22,6 +22,7 @@ import (
 	"buddy/server/internal/newsarticle"
 	"buddy/server/internal/nuance"
 	"buddy/server/internal/pipeline"
+	"buddy/server/internal/quizcache"
 	"buddy/server/internal/recording"
 	"buddy/server/internal/store"
 	"buddy/server/internal/stt"
@@ -211,6 +212,14 @@ func main() {
 	wordResearchQueue := startWorker(rdb, jobsCtx, asyncjob.KindWordResearch, transport.WordResearchWorkerConcurrency, transport.WordResearchClaimTTL,
 		transport.WordResearchJobHandler(pipe, wordReviews))
 
+	// Quiz-answer verdict warming: completes the Analysis -> Judge refinement
+	// of a Chat-graded synonym check behind the learner's response (see
+	// httpserver.quizAnswerCheckHandler) and stores the terminal verdict in
+	// the Redis-only quizcache. Without Redis there is no cache to warm, so
+	// the handler never enqueues and this worker staying nil is complete.
+	quizAnswerRefineQueue := startWorker(rdb, jobsCtx, asyncjob.KindQuizAnswerRefine, transport.QuizAnswerRefineWorkerConcurrency, transport.QuizAnswerRefineClaimTTL,
+		transport.QuizAnswerRefineJobHandler(pipe, quizcache.New(rdb, quizcache.CacheTTL), st, wordReviews))
+
 	// End-of-conversation wrap-up: unlike the reply/correction/translation/
 	// title hooks below, this isn't wired onto pipe (nothing mid-conversation
 	// triggers it directly) — httpserver's sessionEndHandler and
@@ -311,6 +320,7 @@ func main() {
 			WordAutoAdd:       wordAutoAddQueue,
 			WordDefine:        wordDefineQueue,
 			WordResearch:      wordResearchQueue,
+			QuizAnswerRefine:  quizAnswerRefineQueue,
 			PhraseHint:        phraseHintQueue,
 		},
 	})

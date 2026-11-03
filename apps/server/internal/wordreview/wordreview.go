@@ -405,12 +405,3 @@ type QuestionStore interface {
 type VersionedReviewer interface {
 	ReviewVersioned(ctx context.Context, userID, id string, questionVersion int, correct, repeat bool, now time.Time) (Word, error)
 }
-
-// AnswerCache stores the result of an expensive synonym check. A true result
-// is permanent; a false result is retained for one year by the SQL store.
-// It is deliberately separate from Store so small in-memory test stores and
-// alternative word stores do not need to implement cache persistence.
-type AnswerCache interface {
-	LookupAnswer(ctx context.Context, prompt, answer, learnerAnswer string, now time.Time) (result bool, found bool, err error)
-	SaveAnswer(ctx context.Context, prompt, answer, learnerAnswer string, result bool, now time.Time) error
-}

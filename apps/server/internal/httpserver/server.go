@@ -17,6 +17,7 @@ import (
 	"buddy/server/internal/newsfeed"
 	"buddy/server/internal/nuance"
 	"buddy/server/internal/pipeline"
+	"buddy/server/internal/quizcache"
 	"buddy/server/internal/recording"
 	"buddy/server/internal/store"
 	"buddy/server/internal/transport"
@@ -42,6 +43,7 @@ type JobQueues struct {
 	WordDefine        *asyncjob.Queue
 	WordResearch      *asyncjob.Queue
 	PhraseHint        *asyncjob.Queue
+	QuizAnswerRefine  *asyncjob.Queue
 }
 
 // Dependencies is the complete HTTP adapter boundary. Required MySQL-backed
@@ -89,6 +91,8 @@ func New(cfg config.Config, deps Dependencies) *http.Server {
 	wordDefineQueue := deps.Queues.WordDefine
 	wordResearchQueue := deps.Queues.WordResearch
 	phraseHintQueue := deps.Queues.PhraseHint
+	quizAnswerRefineQueue := deps.Queues.QuizAnswerRefine
+	quizVerdicts := quizcache.New(deps.Redis, quizcache.CacheTTL)
 
 	mux := http.NewServeMux()
 
@@ -118,11 +122,7 @@ func New(cfg config.Config, deps Dependencies) *http.Server {
 	mux.HandleFunc("POST /api/sessions/{id}/restudy", sessionRestudyHandler(ident, st, pipe, studySummaryQueue))
 	mux.HandleFunc("POST /api/sessions/{id}/quiz/complete", sessionQuizCompleteHandler(ident, st))
 	mux.HandleFunc("POST /api/sessions/{id}/quiz/reset", sessionQuizResetHandler(ident, st, pipe, studyQuizQueue))
-	var answerCache wordreview.AnswerCache
-	if candidate, ok := words.(wordreview.AnswerCache); ok {
-		answerCache = candidate
-	}
-	mux.HandleFunc("POST /api/quiz/check-answer", quizAnswerCheckHandler(ident, pipe, quizOwners{Sessions: st, Words: words}, answerCache))
+	mux.HandleFunc("POST /api/quiz/check-answer", quizAnswerCheckHandler(ident, pipe, quizOwners{Sessions: st, Words: words}, quizVerdicts, quizAnswerRefineQueue))
 	mux.HandleFunc("DELETE /api/sessions/{id}", sessionDeleteHandler(ident, st, audio, recordings, pipe, profileRegenerateQueue))
 	mux.HandleFunc("GET /api/settings", settingsGetHandler(ident, st))
 	mux.HandleFunc("PUT /api/settings", settingsSaveHandler(ident, st))

@@ -10,6 +10,7 @@ import (
 
 	"buddy/server/internal/llm"
 	"buddy/server/internal/pipeline"
+	"buddy/server/internal/quizcache"
 )
 
 type checkOwner struct{ deleted atomic.Bool }
@@ -38,7 +39,6 @@ func TestAnswerChecksDiscardDeletedOwner(t *testing.T) {
 					}}
 					pipe := &pipeline.Pipeline{LLM: model, ChatModel: "chat"}
 					ident := fakeIdentifier{id: "alex", ok: true}
-					cache := &fakeAnswerCache{}
 					var handler http.HandlerFunc
 					var body string
 					switch kind {
@@ -46,10 +46,10 @@ func TestAnswerChecksDiscardDeletedOwner(t *testing.T) {
 						handler = writingCheckHandler(ident, pipe, &ownedWriting{&fakeWritingStore{}, owner})
 						body = `{"promptId":"item","prompt":"문장","answer":"sentence"}`
 					case "session quiz":
-						handler = quizAnswerCheckHandler(ident, pipe, quizOwners{Sessions: owner}, cache)
+						handler = quizAnswerCheckHandler(ident, pipe, quizOwners{Sessions: owner}, nil, nil)
 						body = `{"sessionId":"item","prompt":"p","answer":"a","learnerAnswer":"b"}`
 					case "word quiz":
-						handler = quizAnswerCheckHandler(ident, pipe, quizOwners{Words: owner}, cache)
+						handler = quizAnswerCheckHandler(ident, pipe, quizOwners{Words: owner}, nil, nil)
 						body = `{"wordId":"item","prompt":"p","answer":"a","learnerAnswer":"b"}`
 					}
 					rec := httptest.NewRecorder()
@@ -64,9 +64,6 @@ func TestAnswerChecksDiscardDeletedOwner(t *testing.T) {
 					if calls != want {
 						t.Fatalf("calls=%d", calls)
 					}
-					if cache.saves != 0 {
-						t.Fatal("deleted check cached a verdict")
-					}
 				})
 			}
 		})
@@ -79,10 +76,10 @@ func TestQuizAnswerCheckChecksEachOwnerBeforeCache(t *testing.T) {
 			sessions, words := &checkOwner{}, &checkOwner{}
 			sessions.deleted.Store(deleted == "session")
 			words.deleted.Store(deleted == "word")
-			cache := &fakeAnswerCache{found: true, result: true}
+			cache := &fakeQuizVerdictCache{found: true, verdict: quizcache.Verdict{Correct: true, Similar: true}}
 			// No model is configured: a live owner's cached answer needs no LLM.
 			handler := quizAnswerCheckHandler(fakeIdentifier{id: "alex", ok: true}, &pipeline.Pipeline{},
-				quizOwners{Sessions: sessions, Words: words}, cache)
+				quizOwners{Sessions: sessions, Words: words}, cache, nil)
 			rec := httptest.NewRecorder()
 			handler(rec, httptest.NewRequest(http.MethodPost, "/api/quiz/check-answer", strings.NewReader(
 				`{"sessionId":"s1","wordId":"w1","prompt":"p","answer":"a","learnerAnswer":"b"}`)))
@@ -91,9 +88,9 @@ func TestQuizAnswerCheckChecksEachOwnerBeforeCache(t *testing.T) {
 			if deleted == "neither" {
 				wantStatus, wantLookups = http.StatusOK, 1
 			}
-			if rec.Code != wantStatus || cache.lookups != wantLookups || cache.saves != 0 {
-				t.Fatalf("status=%d lookups=%d saves=%d; want status=%d lookups=%d saves=0",
-					rec.Code, cache.lookups, cache.saves, wantStatus, wantLookups)
+			if rec.Code != wantStatus || cache.lookups != wantLookups || cache.renews != 0 {
+				t.Fatalf("status=%d lookups=%d renews=%d; want status=%d lookups=%d renews=0",
+					rec.Code, cache.lookups, cache.renews, wantStatus, wantLookups)
 			}
 		})
 	}
