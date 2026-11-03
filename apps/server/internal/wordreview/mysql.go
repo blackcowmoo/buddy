@@ -2,7 +2,6 @@ package wordreview
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -20,7 +19,6 @@ import (
 // table carries a buddy_ prefix for the same reason as internal/store's and
 // internal/recording's tables: the database is shared with other services.
 const table = "buddy_word_reviews"
-const answerCacheTable = "buddy_word_answer_checks"
 
 // MySQLStore is the default Store. rw/ro are shared with internal/store's
 // MySQLStore (see its DB() accessor) rather than a second connection pool to
@@ -94,19 +92,6 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 	if err := migration.ApplyLegacy(ctx, rw, "wordreview", steps); err != nil {
 		return nil, fmt.Errorf("wordreview: migrations: %w", err)
 	}
-	const answerCacheSchema = `CREATE TABLE IF NOT EXISTS ` + answerCacheTable + ` (
-		cache_key BINARY(32) NOT NULL,
-		prompt TEXT NOT NULL,
-		answer VARCHAR(255) NOT NULL,
-		learner_answer VARCHAR(255) NOT NULL,
-		result TINYINT(1) NOT NULL,
-		expires_at BIGINT NOT NULL DEFAULT 0,
-		created_at BIGINT NOT NULL,
-		PRIMARY KEY (cache_key)
-	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
-	if _, err := rw.ExecContext(ctx, answerCacheSchema); err != nil {
-		return nil, fmt.Errorf("wordreview: answer cache schema: %w", err)
-	}
 	return &MySQLStore{rw: rw, ro: ro}, nil
 }
 
@@ -124,44 +109,6 @@ func addWordColumns(columns ...string) func(context.Context, *sql.DB) error {
 		}
 		return nil
 	}
-}
-
-func answerCacheKey(prompt, answer, learnerAnswer string) []byte {
-	h := sha256.New()
-	for _, value := range []string{strings.TrimSpace(prompt), strings.TrimSpace(answer), strings.TrimSpace(learnerAnswer)} {
-		h.Write([]byte(strings.ToLower(value)))
-		h.Write([]byte{0})
-	}
-	return h.Sum(nil)
-}
-
-func (s *MySQLStore) LookupAnswer(ctx context.Context, prompt, answer, learnerAnswer string, now time.Time) (bool, bool, error) {
-	var result bool
-	var expiresAt int64
-	err := s.ro.QueryRowContext(ctx, `SELECT result, expires_at FROM `+answerCacheTable+` WHERE cache_key = ?`, answerCacheKey(prompt, answer, learnerAnswer)).Scan(&result, &expiresAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, false, nil
-	}
-	if err != nil {
-		return false, false, fmt.Errorf("wordreview: answer cache lookup: %w", err)
-	}
-	if expiresAt != 0 && expiresAt <= now.Unix() {
-		_, _ = s.rw.ExecContext(ctx, `DELETE FROM `+answerCacheTable+` WHERE cache_key = ?`, answerCacheKey(prompt, answer, learnerAnswer))
-		return false, false, nil
-	}
-	return result, true, nil
-}
-
-func (s *MySQLStore) SaveAnswer(ctx context.Context, prompt, answer, learnerAnswer string, result bool, now time.Time) error {
-	expiresAt := int64(0)
-	if !result {
-		expiresAt = now.Add(365 * 24 * time.Hour).Unix()
-	}
-	_, err := s.rw.ExecContext(ctx, `INSERT INTO `+answerCacheTable+` (cache_key, prompt, answer, learner_answer, result, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE result=VALUES(result), expires_at=VALUES(expires_at)`, answerCacheKey(prompt, answer, learnerAnswer), prompt, answer, learnerAnswer, result, expiresAt, now.Unix())
-	if err != nil {
-		return fmt.Errorf("wordreview: answer cache save: %w", err)
-	}
-	return nil
 }
 
 // scanner lets scanWord read from either *sql.Row or *sql.Rows.

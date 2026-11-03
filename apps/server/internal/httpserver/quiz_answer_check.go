@@ -1,17 +1,17 @@
 package httpserver
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"strings"
-	"time"
 
+	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/identity"
 	"buddy/server/internal/pipeline"
-	"buddy/server/internal/wordreview"
+	"buddy/server/internal/quizcache"
+	"buddy/server/internal/transport"
 	"buddy/server/internal/workguard"
 )
 
@@ -25,8 +25,11 @@ type quizOwners struct{ Sessions, Words any }
 
 // quizAnswerCheckHandler grades synonyms the client cannot match locally.
 // Owner guards stop grading deleted sessions/words, including on cache hits.
-// A nil cache disables reuse and background refinement.
-func quizAnswerCheckHandler(ident identity.Identifier, pipe *pipeline.Pipeline, owners quizOwners, cache wordreview.AnswerCache) http.HandlerFunc {
+// Verdicts are Redis-only (quizcache): a nil store (no Redis) disables reuse
+// and refinement entirely, and a degraded Redis degrades to a miss rather
+// than failing the check — the verdict is regenerable from Chat, so caching
+// is never worth a 500 here.
+func quizAnswerCheckHandler(ident identity.Identifier, pipe *pipeline.Pipeline, owners quizOwners, cache quizcache.Store, refineQueue *asyncjob.Queue) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)
 		if !ok {
@@ -64,12 +67,17 @@ func quizAnswerCheckHandler(ident identity.Identifier, pipe *pipeline.Pipeline, 
 			http.NotFound(w, r)
 			return
 		}
+		key := quizcache.Key(prompt, answer, learnerAnswer)
 		if cache != nil {
-			if result, found, err := cache.LookupAnswer(r.Context(), prompt, answer, learnerAnswer, time.Now()); err != nil {
-				serverError(w, "lookup quiz answer cache", err)
-				return
-			} else if found {
-				writeJSON(w, map[string]any{"correct": result, "similar": result})
+			if cached, found := cache.Lookup(ctx, key); found {
+				if !cached.Correct {
+					// A wrong verdict keeps getting re-hit because the learner keeps
+					// answering this word wrong; renewing its TTL keeps exactly the
+					// verdicts still under active review warm while one-off wrong
+					// answers expire out of the cache on their own.
+					cache.Renew(ctx, key)
+				}
+				writeJSON(w, map[string]any{"correct": cached.Correct, "similar": cached.Similar})
 				return
 			}
 		}
@@ -83,21 +91,25 @@ func quizAnswerCheckHandler(ident identity.Identifier, pipe *pipeline.Pipeline, 
 			return
 		}
 		writeJSON(w, map[string]any{"correct": correct, "similar": correct})
-		if cache != nil {
-			// Preserve the verdict already shown in this attempt, but improve the
-			// durable cache for the next equivalent answer. Background context is
-			// intentional: the HTTP request must finish after Chat, and closing the
-			// page must not cancel Analysis/Judge halfway through.
-			go func(acceptableAnswers []string) {
-				refined, err := pipe.RefineQuizAnswerFromDraft(context.WithoutCancel(ctx), prompt, answer, acceptableAnswers, learnerAnswer, chatDraft)
-				if err != nil {
-					log.Printf("refine quiz answer: %v", err)
-					return
-				}
-				if err := cache.SaveAnswer(context.WithoutCancel(ctx), prompt, answer, learnerAnswer, refined, time.Now()); err != nil {
-					log.Printf("save refined quiz answer cache: %v", err)
-				}
-			}(append([]string(nil), body.AcceptableAnswers...))
+		// The learner already has Chat's verdict; complete the Analysis ->
+		// Judge cascade durably so the next equivalent answer is a cache hit.
+		// No inline fallback when the queue is nil: refinement exists only to
+		// fill the Redis cache, and no queue means no cache (see
+		// asyncjob.KindQuizAnswerRefine).
+		if refineQueue != nil {
+			payload := transport.QuizAnswerRefinePayload{
+				UserID:            userID,
+				SessionID:         body.SessionID,
+				WordID:            body.WordID,
+				Prompt:            prompt,
+				Answer:            answer,
+				AcceptableAnswers: body.AcceptableAnswers,
+				LearnerAnswer:     learnerAnswer,
+				ChatDraft:         chatDraft,
+			}
+			if err := transport.EnqueueQuizAnswerRefine(ctx, refineQueue, pipe, cache, owners.Sessions, owners.Words, payload); err != nil {
+				log.Printf("enqueue quiz answer refine: %v", err)
+			}
 		}
 	}
 }
