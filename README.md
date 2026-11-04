@@ -2,16 +2,18 @@
 
 A voice conversation web app for English practice. You speak, every
 configured STT engine transcribes it concurrently, Buddy replies (streamed +
-spoken via **kokoro-82M in the browser**), and a background track double-checks
-the transcript with a stronger model and shows **grammar / vocabulary
-corrections**.
+optionally spoken via **server-generated read-aloud audio**), and a background
+track double-checks the transcript with a stronger model and shows **grammar /
+vocabulary corrections**.
 
 - **Backend:** Go (single binary, no Python anywhere)
 - **STT:** pluggable ensemble — `mock` (zero setup) → whisper.cpp/parakeet.cpp
   servers, any number of them called concurrently and reconciled by an LLM
 - **LLM:** any OpenAI-compatible server over local HTTP (llama.cpp's
   llama-server, vLLM, LM Studio, or the OpenAI API) — chat + correction
-- **TTS:** kokoro-82M in the browser (WebGPU), so the server stays audio-free
+- **TTS:** server-side Kokoro (`BUDDY_TTS_URL`, any OpenAI-compatible
+  `/v1/audio/speech` server), cached in S3 (`internal/ttsstore`) — the browser
+  just fetches and plays MP3s
 - **Frontend:** React + Vite + TypeScript
 - **One entry point:** the Go server serves the frontend and reverse-proxies to
   Vite in dev — no nginx.
@@ -166,8 +168,8 @@ local storage.
 │                  │                │  └─────────┬───────────┘  candidate)          │
 │                  │                │            ▼ transcript                       │
 │                  │◀──assistant────│   LLM.ChatStream(OpenAI API) ─ token stream   │
-│ kokoro-82M TTS   │   delta        │            │                                  │
-│  (WebGPU) ◀──────│◀─assistant_done│            │                                  │
+│ read-aloud MP3   │   delta        │            │                                  │
+│ (GET audio) ◀────│◀─assistant_done│            │                                  │
 │                  │                │  ┌─────────▼───────────────────────┐          │
 │ correction cards │◀─correction────│  │ REFINE track (goroutine):       │          │
 │ refined subtitle │◀─refined_──────│  │ same candidates, Analysis →     │          │
@@ -334,8 +336,8 @@ docker run --rm -p 8080:8080 buddy
 
 Open **http://localhost:8080**, type a sentence or click **🎙 Talk**. With no
 models installed you'll get mock transcripts and an "(LLM offline)" echo — the
-whole loop is exercised. Click **Enable voice** to download kokoro and hear
-replies (Chrome recommended for WebGPU).
+whole loop is exercised. Read-aloud audio needs `BUDDY_TTS_URL` + `S3_BUCKET`
+(see Deploying below); with neither set, replies stay text-only.
 
 ## Turn on the real engines
 
@@ -476,6 +478,13 @@ temporary raw-audio backup — both share this one S3-compatible config block):*
 | `S3_ACCESS_KEY` / `S3_SECRET_KEY` | Static credentials — no `BUDDY_` prefix, same convention as `MYSQL_*`/`REDIS_*` above, for a shared secret store to inject directly. |
 | `S3_STORAGE_CLASS` | e.g. `STANDARD_IA`; empty uses the bucket's default. |
 
+**Optional (read-aloud audio — chat messages + "오늘의 아티클"; needs `S3_BUCKET` above, since generated audio is cached there):**
+
+| Variable | Purpose |
+|---|---|
+| `BUDDY_TTS_URL` | `voice@url` of an OpenAI-compatible `/v1/audio/speech` server (`internal/tts` targets Kokoro-FastAPI; a bare `url` works too and picks a random Kokoro voice per generation — still cached once). Unset (default) disables read-aloud entirely. The article study job pre-generates each drawn article's audio; message read-aloud generates lazily on first playback — both then serve from the `internal/ttsstore` S3 cache. |
+| `BUDDY_TTS_VOLUME_MULTIPLIER` | Gain Kokoro-FastAPI applies server-side (default `2.25`), so every cached clip is actually louder — a browser's `<audio>.volume` is capped at 1.0. |
+
 **Everything else is optional** (sane defaults, see `.env.example`):
 `BUDDY_ADDR`, `BUDDY_FEEDBACK_LANG`, `BUDDY_MAX_HISTORY_MESSAGES`,
 `PARAKEET_SERVER_URLS` (reserved for a future engine — see
@@ -529,12 +538,13 @@ buddy/
 │   │       ├── identity/        # resolves user ID: anonymous cookie, or OIDC (Dex JWT)
 │   │       ├── stt/             # Recognizer interface: mock, whisper
 │   │       ├── llm/             # Client interface: OpenAI-compatible (llama.cpp)
-│   │       └── tts/             # (extension point; browser does TTS)
+│   │       ├── tts/             # Speaker interface: Kokoro HTTP client (/v1/audio/speech)
+│   │       └── ttsstore/        # generated-audio cache (S3 + MySQL index, TTL-swept)
 │   └── web/                     # React + Vite + TS
 │       ├── public/pcm-worklet.js
 │       └── src/
 │           ├── audio/recorder.ts   # mic → 16k PCM
-│           ├── tts/kokoro.ts       # kokoro-82M (WebGPU)
+│           ├── lib/ttsSettings.ts  # read-aloud rate + auto-read-aloud prefs
 │           ├── lib/ws.ts           # WebSocket client
 │           ├── lib/protocol.ts     # wire types
 │           ├── lib/rootPath.ts     # PR-preview path switcher (hamburger menu)
@@ -579,7 +589,7 @@ without touching the pipeline:
   Library component tests for the hamburger menu (`App.test.tsx`, run under a
   per-file `jsdom` environment since the rest of the suite runs under
   `node`), but most of the conversation UI (message list, corrections,
-  mic/TTS flows) still has no component tests.
+  mic flow) still has no component tests.
 - **No `llm.Translate()` seam.** The correction prompt asks the LLM to emit
   Korean explanations directly in one call. That's simpler than a separate
   translation round-trip, but means "translate this other piece of UI text"
@@ -594,7 +604,6 @@ without touching the pipeline:
   browser `AudioContext({ sampleRate: 16000 })` avoids resampling (Chrome).
 - `protocol.go` and `protocol.ts` are hand-mirrored — change them together.
 - Barge-in: speaking again cancels the in-flight turn (see `transport/ws.go`).
-- kokoro's ONNX runtime is ~21 MB of WASM + the model on first load; it's lazy.
 - The voice recording archive (`internal/recording`) uses `aws-sdk-go-v2`,
   which is pure Go — no cgo, so it doesn't affect the static/scratch export
   build (`docker build --target export`).

@@ -1,7 +1,7 @@
 // Package tts talks to an OpenAI-compatible /v1/audio/speech server —
 // Kokoro-FastAPI (https://github.com/remsky/Kokoro-FastAPI) is the one this
 // app targets, chosen for the same reason the browser-side "오늘의 아티클"
-// read-aloud used kokoro-82M directly (see apps/web/src/tts/kokoro.ts): best
+// read-aloud once ran kokoro-82M directly in WebGPU: best
 // quality-per-CPU-cycle among self-hosted open TTS models, no GPU required.
 // Moving generation server-side (see internal/transport's article study job
 // and the chat message audio handler) removes the reliability problems that
@@ -58,12 +58,11 @@ type Kokoro struct {
 }
 
 // requestTimeout bounds one generation call. CPU-only synthesis of a long
-// passage can legitimately take tens of seconds (see kokoro.ts's
-// GENERATION_TIMEOUT_MS for the client-side equivalent reasoning), but
-// article/message text here is bounded to a paragraph or so, not arbitrary
-// length, so a generous fixed ceiling — rather than no timeout at all — is
-// enough to turn a genuinely stuck upstream into a caught error instead of
-// an indefinitely hung request.
+// passage can legitimately take tens of seconds, but article/message text
+// here is bounded to a paragraph or so, not arbitrary length, so a generous
+// fixed ceiling — rather than no timeout at all — is enough to turn a
+// genuinely stuck upstream into a caught error instead of an indefinitely
+// hung request.
 const requestTimeout = 2 * time.Minute
 
 // NewKokoro normalizes baseURL to end in exactly one "/v1", so a config
