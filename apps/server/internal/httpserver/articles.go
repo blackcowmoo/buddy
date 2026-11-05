@@ -374,7 +374,7 @@ func articleInstanceHandler(ident identity.Identifier, articles newsarticle.Stor
 // key-phrase list (see newsarticle.Article.KeyPhrases): "done" carries the
 // list, "pending" means generation was just (or already is) dispatched for
 // it and the learner's next poll should find it — same shape rationale as
-// articleWordLookupResponse.
+// articleLookupResponse.
 type articlePhrasesResponse struct {
 	Status  string   `json:"status"`
 	Phrases []string `json:"phrases"`

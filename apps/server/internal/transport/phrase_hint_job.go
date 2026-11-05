@@ -36,7 +36,7 @@ func runPhraseHint(ctx context.Context, pipe *pipeline.Pipeline, rdb redis.Unive
 	if rdb == nil {
 		return fmt.Errorf("phrase hint: redis is unavailable")
 	}
-	if _, ok, err := wordlookup.GetHint(ctx, rdb, payload.CacheKey); err != nil {
+	if _, ok, err := wordlookup.Get[wordlookup.Hint](ctx, rdb, payload.CacheKey); err != nil {
 		return fmt.Errorf("phrase hint: cache read: %w", err)
 	} else if ok {
 		return nil
@@ -45,7 +45,7 @@ func runPhraseHint(ctx context.Context, pipe *pipeline.Pipeline, rdb redis.Unive
 	if err != nil {
 		return fmt.Errorf("phrase hint: generate: %w", err)
 	}
-	if err := wordlookup.SetHint(ctx, rdb, payload.CacheKey, wordlookup.Hint{Hint: hint}); err != nil {
+	if err := wordlookup.Set(ctx, rdb, payload.CacheKey, wordlookup.Hint{Hint: hint}); err != nil {
 		return fmt.Errorf("phrase hint: cache write: %w", err)
 	}
 	return nil

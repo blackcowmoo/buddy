@@ -13,8 +13,6 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-
-	"buddy/server/internal/protocol"
 )
 
 const (
@@ -57,8 +55,11 @@ func requestHash(r Request) string {
 	return hex.EncodeToString(h[:])
 }
 
-func Get(ctx context.Context, rdb redis.UniversalClient, key string) (protocol.WordSuggestion, bool, error) {
-	var result protocol.WordSuggestion
+// Get/Set store one cached value as JSON. Definitions and hints never share
+// a namespace (see Key and HintKey), so the codec itself is type-agnostic
+// and one implementation serves every cached kind.
+func Get[T any](ctx context.Context, rdb redis.UniversalClient, key string) (T, bool, error) {
+	var result T
 	raw, err := rdb.Get(ctx, key).Bytes()
 	if err == redis.Nil {
 		return result, false, nil
@@ -72,30 +73,7 @@ func Get(ctx context.Context, rdb redis.UniversalClient, key string) (protocol.W
 	return result, true, nil
 }
 
-func Set(ctx context.Context, rdb redis.UniversalClient, key string, result protocol.WordSuggestion) error {
-	b, err := json.Marshal(result)
-	if err != nil {
-		return err
-	}
-	return rdb.Set(ctx, key, b, CacheTTL).Err()
-}
-
-func GetHint(ctx context.Context, rdb redis.UniversalClient, key string) (Hint, bool, error) {
-	var result Hint
-	raw, err := rdb.Get(ctx, key).Bytes()
-	if err == redis.Nil {
-		return result, false, nil
-	}
-	if err != nil {
-		return result, false, err
-	}
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return result, false, err
-	}
-	return result, true, nil
-}
-
-func SetHint(ctx context.Context, rdb redis.UniversalClient, key string, result Hint) error {
+func Set[T any](ctx context.Context, rdb redis.UniversalClient, key string, result T) error {
 	b, err := json.Marshal(result)
 	if err != nil {
 		return err
