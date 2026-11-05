@@ -10,6 +10,7 @@ import (
 	"buddy/server/internal/asyncjob"
 	"buddy/server/internal/newsarticle"
 	"buddy/server/internal/pipeline"
+	"buddy/server/internal/protocol"
 	"buddy/server/internal/wordlookup"
 	"buddy/server/internal/workguard"
 )
@@ -32,7 +33,7 @@ func runWordDefine(ctx context.Context, pipe *pipeline.Pipeline, rdb redis.Unive
 	if rdb == nil {
 		return fmt.Errorf("word define: redis is unavailable")
 	}
-	if _, ok, err := wordlookup.Get(ctx, rdb, payload.CacheKey); err != nil {
+	if _, ok, err := wordlookup.Get[protocol.WordSuggestion](ctx, rdb, payload.CacheKey); err != nil {
 		return fmt.Errorf("word define: cache read: %w", err)
 	} else if ok {
 		return nil

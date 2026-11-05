@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
@@ -17,9 +18,118 @@ import (
 
 const maxWordLookupPosition = 100000
 
-type articleWordLookupResponse struct {
+// articleLookupResponse is the response shape shared by the article define
+// and phrase-hint endpoints: define answers with Result, the phrase hint with
+// Hint, and the pending/missing progress states carry neither field.
+type articleLookupResponse struct {
 	Status string                   `json:"status"`
 	Result *protocol.WordSuggestion `json:"result,omitempty"`
+	Hint   string                   `json:"hint,omitempty"`
+}
+
+// articleTap is one validated tap on a word or phrase in the learner's
+// article. CheckOnly is set only by the define endpoint's polling probe.
+type articleTap struct {
+	Word      string
+	Position  int
+	CheckOnly bool
+}
+
+// decodeArticleTap validates the payload both tap endpoints receive: a
+// non-empty expression within the column cap and a plausible in-text position.
+func decodeArticleTap(w http.ResponseWriter, r *http.Request) (articleTap, bool) {
+	var body struct {
+		Word      string `json:"word"`
+		Position  int    `json:"position"`
+		CheckOnly bool   `json:"checkOnly"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return articleTap{}, false
+	}
+	word := strings.TrimSpace(body.Word)
+	if word == "" {
+		http.Error(w, "word is required", http.StatusBadRequest)
+		return articleTap{}, false
+	}
+	if !requireMaxRunes(w, word, wordreview.MaxWordLen, "word is too long") {
+		return articleTap{}, false
+	}
+	if body.Position < 0 || body.Position > maxWordLookupPosition {
+		http.Error(w, "invalid word position", http.StatusBadRequest)
+		return articleTap{}, false
+	}
+	return articleTap{Word: word, Position: body.Position, CheckOnly: body.CheckOnly}, true
+}
+
+// articleLookupRequest pins one tap to its article instance so the cache key
+// covers the complete reading context, not just the spelling.
+func articleLookupRequest(pipe *pipeline.Pipeline, inst newsarticle.Instance, tap articleTap) wordlookup.Request {
+	return wordlookup.Request{
+		ArticleID: inst.Article.ID,
+		Word:      tap.Word,
+		Position:  tap.Position,
+		Context:   inst.Article.Summary,
+		Language:  pipe.FeedbackLang,
+		Model:     pipe.ChatModel,
+	}
+}
+
+// runArticleLookup drives the sequence both tap endpoints share: a cache hit
+// answers immediately, and an in-flight generation reports pending without
+// queueing another. Completion writes the result before clearing the queue's
+// dedupe marker, so after observing no pending job the cache is read once
+// more to close the narrow race where both changed between the first read
+// and Pending. checkOnly stops there answering "missing" (define's polling
+// probe must never re-queue work); otherwise the generation is enqueued
+// before the pending acknowledgment — EnqueueAndRunInBackground detaches
+// only the expensive handler, so a navigation or deployment after this
+// response cannot lose the job before Redis has it.
+func runArticleLookup(
+	w http.ResponseWriter,
+	r *http.Request,
+	label string,
+	queue *asyncjob.Queue,
+	kind asyncjob.Kind,
+	key string,
+	cached func(context.Context) (articleLookupResponse, bool, error),
+	checkOnly bool,
+	enqueue func() error,
+) {
+	writeStatus := func(status string) {
+		writeJSON(w, articleLookupResponse{Status: status})
+	}
+	if res, found, err := cached(r.Context()); err != nil {
+		serverError(w, label+": cache read", err)
+		return
+	} else if found {
+		writeJSON(w, res)
+		return
+	}
+	pending, err := queue.Pending(r.Context(), kind, key)
+	if err != nil {
+		serverError(w, label+": pending status", err)
+		return
+	}
+	if pending {
+		writeStatus("pending")
+		return
+	}
+	if res, found, err := cached(r.Context()); err != nil {
+		serverError(w, label+": cache re-read", err)
+		return
+	} else if found {
+		writeJSON(w, res)
+		return
+	}
+	if checkOnly {
+		writeStatus("missing")
+		return
+	}
+	if err := enqueue(); err != nil {
+		serverError(w, label+": enqueue", err)
+		return
+	}
+	writeStatus("pending")
 }
 
 // articleWordDefineHandler derives context from the caller's stored article
@@ -34,89 +144,29 @@ func articleWordDefineHandler(ident identity.Identifier, articles newsarticle.St
 			http.Error(w, "word lookup requires Redis", http.StatusServiceUnavailable)
 			return
 		}
-		var body struct {
-			Word      string `json:"word"`
-			Position  int    `json:"position"`
-			CheckOnly bool   `json:"checkOnly"`
-		}
-		if !decodeJSON(w, r, &body) {
-			return
-		}
-		word := strings.TrimSpace(body.Word)
-		if word == "" {
-			http.Error(w, "word is required", http.StatusBadRequest)
-			return
-		}
-		if !requireMaxRunes(w, word, wordreview.MaxWordLen, "word is too long") {
-			return
-		}
-		if body.Position < 0 || body.Position > maxWordLookupPosition {
-			http.Error(w, "invalid word position", http.StatusBadRequest)
+		tap, ok := decodeArticleTap(w, r)
+		if !ok {
 			return
 		}
 		inst, ok := requireReadyArticleInstance(w, r, articles, userID, "articles: get word context")
 		if !ok {
 			return
 		}
-		lookup := wordlookup.Request{
-			ArticleID: inst.Article.ID,
-			Word:      word,
-			Position:  body.Position,
-			Context:   inst.Article.Summary,
-			Language:  pipe.FeedbackLang,
-			Model:     pipe.ChatModel,
-		}
+		lookup := articleLookupRequest(pipe, inst, tap)
 		key := wordlookup.Key(lookup)
-		writeCachedResult := func() (bool, error) {
-			result, found, err := wordlookup.Get(r.Context(), rdb, key)
-			if err != nil || !found {
-				return found, err
-			}
-			writeJSON(w, articleWordLookupResponse{Status: "done", Result: &result})
-			return true, nil
-		}
-		if found, err := writeCachedResult(); err != nil {
-			serverError(w, "word lookup: cache read", err)
-			return
-		} else if found {
-			return
-		}
-		pending, err := queue.Pending(r.Context(), asyncjob.KindWordDefine, key)
-		if err != nil {
-			serverError(w, "word lookup: pending status", err)
-			return
-		}
-		if pending {
-			writeJSON(w, articleWordLookupResponse{Status: "pending"})
-			return
-		}
-		// Completion writes the result before clearing the queue's dedupe
-		// marker. Re-read after observing no pending job to close the narrow
-		// race where both changed between the first cache read and Pending.
-		if found, err := writeCachedResult(); err != nil {
-			serverError(w, "word lookup: cache re-read", err)
-			return
-		} else if found {
-			return
-		}
-		if body.CheckOnly {
-			writeJSON(w, articleWordLookupResponse{Status: "missing"})
-			return
-		}
-		// Enqueue before acknowledging pending. EnqueueAndRunInBackground
-		// detaches only the expensive handler, so a navigation or deployment
-		// after this response cannot lose the job before Redis has it.
-		if err := transport.EnqueueWordDefineJob(r.Context(), queue, pipe, rdb, lookup, articles); err != nil {
-			serverError(w, "word lookup: enqueue", err)
-			return
-		}
-		writeJSON(w, articleWordLookupResponse{Status: "pending"})
+		runArticleLookup(w, r, "word lookup", queue, asyncjob.KindWordDefine, key,
+			func(ctx context.Context) (articleLookupResponse, bool, error) {
+				result, found, err := wordlookup.Get[protocol.WordSuggestion](ctx, rdb, key)
+				if !found || err != nil {
+					return articleLookupResponse{}, false, err
+				}
+				return articleLookupResponse{Status: "done", Result: &result}, true, nil
+			},
+			tap.CheckOnly,
+			func() error {
+				return transport.EnqueueWordDefineJob(r.Context(), queue, pipe, rdb, lookup, articles)
+			})
 	}
-}
-
-type articlePhraseHintResponse struct {
-	Status string `json:"status"`
-	Hint   string `json:"hint,omitempty"`
 }
 
 // articlePhraseHintHandler backs the reading page's phrase tap: it returns a
@@ -135,74 +185,27 @@ func articlePhraseHintHandler(ident identity.Identifier, articles newsarticle.St
 			http.Error(w, "phrase hint requires Redis", http.StatusServiceUnavailable)
 			return
 		}
-		var body struct {
-			Word     string `json:"word"`
-			Position int    `json:"position"`
-		}
-		if !decodeJSON(w, r, &body) {
-			return
-		}
-		word := strings.TrimSpace(body.Word)
-		if word == "" {
-			http.Error(w, "word is required", http.StatusBadRequest)
-			return
-		}
-		if !requireMaxRunes(w, word, wordreview.MaxWordLen, "word is too long") {
-			return
-		}
-		if body.Position < 0 || body.Position > maxWordLookupPosition {
-			http.Error(w, "invalid word position", http.StatusBadRequest)
+		tap, ok := decodeArticleTap(w, r)
+		if !ok {
 			return
 		}
 		inst, ok := requireReadyArticleInstance(w, r, articles, userID, "articles: get phrase hint context")
 		if !ok {
 			return
 		}
-		lookup := wordlookup.Request{
-			ArticleID: inst.Article.ID,
-			Word:      word,
-			Position:  body.Position,
-			Context:   inst.Article.Summary,
-			Language:  pipe.FeedbackLang,
-			Model:     pipe.ChatModel,
-		}
+		lookup := articleLookupRequest(pipe, inst, tap)
 		key := wordlookup.HintKey(lookup)
-		writeCachedHint := func() (bool, error) {
-			result, found, err := wordlookup.GetHint(r.Context(), rdb, key)
-			if err != nil || !found {
-				return found, err
-			}
-			writeJSON(w, articlePhraseHintResponse{Status: "done", Hint: result.Hint})
-			return true, nil
-		}
-		if found, err := writeCachedHint(); err != nil {
-			serverError(w, "phrase hint: cache read", err)
-			return
-		} else if found {
-			return
-		}
-		pending, err := queue.Pending(r.Context(), asyncjob.KindPhraseHint, key)
-		if err != nil {
-			serverError(w, "phrase hint: pending status", err)
-			return
-		}
-		if pending {
-			writeJSON(w, articlePhraseHintResponse{Status: "pending"})
-			return
-		}
-		// Same completion race guard as articleWordDefineHandler: the job
-		// writes its result before clearing the dedupe marker, so re-read the
-		// cache once no pending job is observed.
-		if found, err := writeCachedHint(); err != nil {
-			serverError(w, "phrase hint: cache re-read", err)
-			return
-		} else if found {
-			return
-		}
-		if err := transport.EnqueuePhraseHintJob(r.Context(), queue, pipe, rdb, lookup, articles); err != nil {
-			serverError(w, "phrase hint: enqueue", err)
-			return
-		}
-		writeJSON(w, articlePhraseHintResponse{Status: "pending"})
+		runArticleLookup(w, r, "phrase hint", queue, asyncjob.KindPhraseHint, key,
+			func(ctx context.Context) (articleLookupResponse, bool, error) {
+				result, found, err := wordlookup.Get[wordlookup.Hint](ctx, rdb, key)
+				if !found || err != nil {
+					return articleLookupResponse{}, false, err
+				}
+				return articleLookupResponse{Status: "done", Hint: result.Hint}, true, nil
+			},
+			false,
+			func() error {
+				return transport.EnqueuePhraseHintJob(r.Context(), queue, pipe, rdb, lookup, articles)
+			})
 	}
 }
