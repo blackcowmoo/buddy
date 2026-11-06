@@ -135,20 +135,14 @@ func (p *Pipeline) AnalyzeCorrectionFromDraft(ctx context.Context, text, context
 	return parseCorrection(raw)
 }
 
-// AnalyzeCorrectionFast is AnalyzeCorrection's FAST-track counterpart: one
-// call to the chat model (p.LLM/p.ChatModel) instead of the analysis
-// ensemble, so correct() can show a result immediately while the slower,
-// more accurate ensemble pass keeps running in the background — see
-// correct()'s doc comment. Same prompt and JSON shape as AnalyzeCorrection;
-// only the model tier differs.
-func (p *Pipeline) AnalyzeCorrectionFast(ctx context.Context, text, contextMsg string) (corrected string, issues []protocol.Issue, translation string, err error) {
-	_, corrected, issues, translation, err = p.analyzeCorrectionFast(ctx, text, contextMsg)
-	return corrected, issues, translation, err
-}
-
-// analyzeCorrectionFast returns the raw Chat JSON as well as its parsed
-// fields. The raw form is the lossless handoff to Analysis/Judge and is also
-// safe to serialize into an async-job payload.
+// analyzeCorrectionFast is AnalyzeCorrection's FAST track: one call to the
+// chat model (p.LLM/p.ChatModel) instead of the analysis ensemble, so
+// correct() can show a result immediately while the slower, more accurate
+// ensemble pass keeps running in the background — see correct()'s doc
+// comment. Same prompt and JSON shape as AnalyzeCorrection; only the model
+// tier differs. It returns the raw Chat JSON as well as its parsed fields:
+// the raw form is the lossless handoff to Analysis/Judge and is also safe to
+// serialize into an async-job payload.
 func (p *Pipeline) analyzeCorrectionFast(ctx context.Context, text, contextMsg string) (raw, corrected string, issues []protocol.Issue, translation string, err error) {
 	raw, err = p.chatDraft(ctx, correctionSystemPrompt(p.FeedbackLang), renderCorrectionInput(contextMsg, text), true, reusableCorrection)
 	if err != nil {
@@ -158,7 +152,7 @@ func (p *Pipeline) analyzeCorrectionFast(ctx context.Context, text, contextMsg s
 	return raw, corrected, issues, translation, err
 }
 
-// parseCorrection parses AnalyzeCorrection/AnalyzeCorrectionFast's shared
+// parseCorrection parses AnalyzeCorrection/analyzeCorrectionFast's shared
 // strict-JSON output shape.
 func parseCorrection(raw string) (corrected string, issues []protocol.Issue, translation string, err error) {
 	parsed, err := parseJSON[struct {
