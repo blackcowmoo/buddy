@@ -35,11 +35,8 @@ Return STRICT JSON only, no prose, in exactly this shape:
 {"suggestions":[{"word":"<English word or short phrase>","meaning":"<brief %[1]s gloss>","example":"<one example English sentence using it>"}]}
 Rules:
 - "word" MUST stay in English.
-- "word" MUST be lowercase, except the pronoun "I" and its contractions
-  ("I'm", "I'll", "I'd", "I've") when they are part of the word/phrase.
 %[2]s
-- "example" MUST be a natural English sentence that uses "word".
-- If the description is too vague to suggest anything meaningful, return an empty "suggestions" array rather than guessing wildly.`, native, dictionaryMeaningRules(native))
+- If the description is too vague to suggest anything meaningful, return an empty "suggestions" array rather than guessing wildly.`, native, vocabularyCoreRules(native))
 }
 
 // All vocabulary sources share the same flashcard contract. Context selects
@@ -88,6 +85,17 @@ Keep these examples' concise style; do not copy their words or meanings when
 the input refers to a different word or sense.`
 	}
 	return rules
+}
+
+// vocabularyCoreRules is the spelling, dictionary-meaning, and example block
+// that wordSuggestionSystemPrompt, wordDefineSystemPrompt, and
+// wordAutoSuggestSystemPrompt all state after their own first "word" rule, so
+// the flashcard contract is written down exactly once.
+func vocabularyCoreRules(native string) string {
+	return fmt.Sprintf(`- "word" MUST be lowercase, except the pronoun "I" and its contractions
+  ("I'm", "I'll", "I'd", "I've") when they are part of the word/phrase.
+%[1]s
+- "example" MUST be a natural English sentence that uses "word".`, dictionaryMeaningRules(native))
 }
 
 // GenerateWordReviewQuestion turns one verified dictionary entry into the
@@ -319,10 +327,7 @@ Return STRICT JSON only, no prose, in exactly this shape:
 {"word":"<the word/phrase, corrected to its dictionary form if "word" was an inflected form found in "context">","meaning":"<brief %[1]s gloss, specific to how it's used in "context">","example":"<one example English sentence using "word", may reuse the sentence from "context">"}
 Rules:
 - "word" MUST stay in English.
-- "word" MUST be lowercase, except the pronoun "I" and its contractions
-  ("I'm", "I'll", "I'd", "I've") when they are part of the word/phrase.
-%[2]s
-- "example" MUST be a natural English sentence that uses "word".`, native, dictionaryMeaningRules(native))
+%[2]s`, native, vocabularyCoreRules(native))
 }
 
 // autoAddSuggestionCount is how many candidates SuggestNewWords asks for —
@@ -371,10 +376,7 @@ Return STRICT JSON only, no prose, in exactly this shape:
 {"suggestions":[{"word":"<English word or short phrase>","meaning":"<brief %[1]s gloss>","example":"<one example English sentence using it>"}]}
 Rules:
 - "word" MUST stay in English, and MUST NOT be one already in the learner's tracked list.
-- "word" MUST be lowercase, except the pronoun "I" and its contractions
-  ("I'm", "I'll", "I'd", "I've") when they are part of the word/phrase.
-%[3]s
-- "example" MUST be a natural English sentence that uses "word".`, native, autoAddSuggestionCount, dictionaryMeaningRules(native))
+%[3]s`, native, autoAddSuggestionCount, vocabularyCoreRules(native))
 }
 
 func renderAutoSuggestInput(learnerProfile string, existingWords []string) string {
