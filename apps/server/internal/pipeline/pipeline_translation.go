@@ -73,7 +73,7 @@ func (p *Pipeline) AnalyzeTranslationFromDraft(ctx context.Context, text, chatDr
 
 // AnalyzeTranslationFast is AnalyzeTranslation's FAST-track counterpart: one
 // call to the chat model (p.LLM/p.ChatModel) instead of the analysis
-// ensemble, mirroring AnalyzeCorrectionFast — see translateAssistant()'s
+// ensemble, mirroring analyzeCorrectionFast — see translateAssistant()'s
 // two-stage flow. The Chat model's own queue applies to this call. A blank
 // (whitespace-only) result is treated as an error, matching analyze()'s own
 // "no blank winners" contract. chatDraft handles trimming and validation.
