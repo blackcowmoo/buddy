@@ -116,6 +116,23 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
+// rowQuerier is the subset of *sql.DB and *sql.Tx needed to run one query row.
+type rowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// lookupWord runs the canonical single-row word lookup. Callers keep their own
+// sql.ErrNoRows handling so each public method's error contract is unchanged.
+func lookupWord(ctx context.Context, db rowQuerier, id, userID string) *sql.Row {
+	return db.QueryRowContext(ctx, `SELECT `+wordColumns+` FROM `+table+` WHERE id=? AND user_id=?`, id, userID)
+}
+
+// lockWord is lookupWord inside a transaction; the row lock serialises
+// background reconciliation with interactive edits.
+func lockWord(ctx context.Context, tx rowQuerier, id, userID string) *sql.Row {
+	return tx.QueryRowContext(ctx, `SELECT `+wordColumns+` FROM `+table+` WHERE id=? AND user_id=? FOR UPDATE`, id, userID)
+}
+
 func scanWord(row scanner, userID string) (Word, error) {
 	var w Word
 	var nextReviewAt, lastReviewedAt, createdAt int64
@@ -183,7 +200,7 @@ func (s *MySQLStore) SaveOriginal(ctx context.Context, userID, word, meaning, ex
 func (s *MySQLStore) Get(ctx context.Context, userID, id string) (Word, error) {
 	// Background workers act on this snapshot immediately after a status write;
 	// replica lag must not make them miss pending work or reuse an old example.
-	w, err := scanWord(s.rw.QueryRowContext(ctx, `SELECT `+wordColumns+` FROM `+table+` WHERE id = ? AND user_id = ?`, id, userID), userID)
+	w, err := scanWord(lookupWord(ctx, s.rw, id, userID), userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Word{}, nil
 	}
@@ -263,7 +280,7 @@ func (s *MySQLStore) SaveQuestion(ctx context.Context, userID, id string, questi
 		return Word{}, false, fmt.Errorf("wordreview: save question: %w", err)
 	}
 	saved, _ := res.RowsAffected()
-	w, err := scanWord(s.rw.QueryRowContext(ctx, `SELECT `+wordColumns+` FROM `+table+` WHERE id = ? AND user_id = ?`, id, userID), userID)
+	w, err := scanWord(lookupWord(ctx, s.rw, id, userID), userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Word{}, false, nil
 	}
@@ -286,7 +303,7 @@ func (s *MySQLStore) MarkVerified(ctx context.Context, userID, id string, now ti
 	if n, _ := res.RowsAffected(); n == 0 {
 		return Word{}, nil
 	}
-	w, err := scanWord(s.rw.QueryRowContext(ctx, `SELECT `+wordColumns+` FROM `+table+` WHERE id = ? AND user_id = ?`, id, userID), userID)
+	w, err := scanWord(lookupWord(ctx, s.rw, id, userID), userID)
 	if err != nil {
 		return Word{}, fmt.Errorf("wordreview: mark verified: lookup: %w", err)
 	}
@@ -303,7 +320,7 @@ func (s *MySQLStore) MarkRejected(ctx context.Context, userID, id string, reason
 	if n, _ := res.RowsAffected(); n == 0 {
 		return Word{}, nil
 	}
-	w, err := scanWord(s.rw.QueryRowContext(ctx, `SELECT `+wordColumns+` FROM `+table+` WHERE id = ? AND user_id = ?`, id, userID), userID)
+	w, err := scanWord(lookupWord(ctx, s.rw, id, userID), userID)
 	if err != nil {
 		return Word{}, fmt.Errorf("wordreview: mark rejected: lookup: %w", err)
 	}
@@ -314,7 +331,7 @@ func (s *MySQLStore) MarkRejected(ctx context.Context, userID, id string, reason
 // never missed because of replica lag, same reasoning as
 // internal/recording's Delete.
 func (s *MySQLStore) Review(ctx context.Context, userID, id string, correct, repeat bool, now time.Time) (Word, error) {
-	w, err := scanWord(s.rw.QueryRowContext(ctx, `SELECT `+wordColumns+` FROM `+table+` WHERE id = ? AND user_id = ?`, id, userID), userID)
+	w, err := scanWord(lookupWord(ctx, s.rw, id, userID), userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Word{}, nil
 	}
@@ -325,7 +342,7 @@ func (s *MySQLStore) Review(ctx context.Context, userID, id string, correct, rep
 }
 
 func (s *MySQLStore) ReviewVersioned(ctx context.Context, userID, id string, questionVersion int, correct, repeat bool, now time.Time) (Word, error) {
-	w, err := scanWord(s.rw.QueryRowContext(ctx, `SELECT `+wordColumns+` FROM `+table+` WHERE id = ? AND user_id = ?`, id, userID), userID)
+	w, err := scanWord(lookupWord(ctx, s.rw, id, userID), userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Word{}, nil
 	}
