@@ -121,7 +121,7 @@ func (s *MySQLStore) SelectMeaning(ctx context.Context, userID, id string, choic
 		return Word{}, err
 	}
 	defer tx.Rollback()
-	w, err := scanWord(tx.QueryRowContext(ctx, `SELECT `+wordColumns+` FROM `+table+` WHERE id=? AND user_id=? FOR UPDATE`, id, userID), userID)
+	w, err := scanWord(lockWord(ctx, tx, id, userID), userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Word{}, nil
 	}

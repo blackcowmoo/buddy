@@ -18,7 +18,7 @@ func (s *MySQLStore) StartResearch(ctx context.Context, userID, id string) (Word
 	}
 	// The worker and client must receive the revision just written, even when
 	// the read replica has not caught up with the pending intent yet.
-	w, err := scanWord(s.rw.QueryRowContext(ctx, `SELECT `+wordColumns+` FROM `+table+` WHERE id=? AND user_id=?`, id, userID), userID)
+	w, err := scanWord(lookupWord(ctx, s.rw, id, userID), userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Word{}, nil
 	}
@@ -43,7 +43,7 @@ func (s *MySQLStore) FinishResearch(ctx context.Context, before Word, results []
 		status, string(b), before.ID, before.UserID, ResearchPending, before.ResearchRevision, before.Word, before.Meaning, before.Example); err != nil {
 		return Word{}, fmt.Errorf("wordreview: research finish: %w", err)
 	}
-	w, err := scanWord(db.QueryRowContext(ctx, `SELECT `+wordColumns+` FROM `+table+` WHERE id=? AND user_id=?`, before.ID, before.UserID), before.UserID)
+	w, err := scanWord(lookupWord(ctx, db, before.ID, before.UserID), before.UserID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Word{}, nil
 	}
@@ -59,7 +59,7 @@ func (s *MySQLStore) SelectResearch(ctx context.Context, userID, id string, revi
 		return Word{}, err
 	}
 	defer tx.Rollback()
-	w, err := scanWord(tx.QueryRowContext(ctx, `SELECT `+wordColumns+` FROM `+table+` WHERE id=? AND user_id=? FOR UPDATE`, id, userID), userID)
+	w, err := scanWord(lockWord(ctx, tx, id, userID), userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Word{}, nil
 	}
