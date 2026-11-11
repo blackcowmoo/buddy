@@ -259,12 +259,17 @@ func (p *Pipeline) HandleText(ctx context.Context, userID, sessionID string, ses
 		source = protocol.SourceText
 	}
 	turn := sess.NextTurn()
-	emit(protocol.ServerEvent{Type: protocol.EvFinal, Turn: turn, Text: text, Source: source})
 	// Capture the conversation as of BEFORE this turn, so the correction
 	// pass can judge whether the sentence fits without the sentence itself
 	// contaminating its own context (mirrors HandleUtterance).
 	contextMsg := renderCorrectionContext(sess.Export())
+	// Append before emitting EvFinal — same happens-before contract as
+	// runReply's onDone: transport's deferred final save() exports sess when
+	// a fast client closes right after receiving events for this turn, so
+	// every message must already be in the session by the time the event
+	// announcing it can reach the client.
 	sess.AppendUser(text)
+	emit(protocol.ServerEvent{Type: protocol.EvFinal, Turn: turn, Text: text, Source: source})
 	// Reply first: the assistant's answer is what the learner is waiting on,
 	// so it streams and fully completes before correction starts. correct()
 	// is a single quick, non-streaming call, so when it used to run
