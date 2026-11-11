@@ -554,6 +554,93 @@ func TestHandleTextEndToEnd(t *testing.T) {
 	}
 }
 
+// TestTurnEventsEmitOnlyAfterMessagesAreInSession is the regression test for
+// the disconnect race that surfaced as a rare CI timeout in transport's
+// TestWSMemoryPersistsAcrossReconnects: HandleText/runReply used to emit
+// EvFinal/EvAssistantDone before appending those messages to sess, so a
+// client that closed the socket the instant the event arrived fired
+// transport's deferred final save() — which exports sess — before the turn
+// landed, and nothing re-saves after the connection handler returns, losing
+// the message from Profile.Recent forever. Checking sess.Snapshot() from
+// inside the emit closure turns that ordering contract into a deterministic
+// assertion: with the old order these checks fail on every run, because the
+// same goroutine that emits has not appended yet.
+func TestTurnEventsEmitOnlyAfterMessagesAreInSession(t *testing.T) {
+	const userText = "Hello name Alex"
+	const replyText = "Nice to meet you!"
+
+	shared := &fakeLLM{
+		chatReply: replyText,
+		complete: func(msgs []llm.Message) (string, error) {
+			return `{"corrected":"Hello, my name is Alex.","issues":[]}`, nil
+		},
+	}
+	p := &Pipeline{
+		LLM:       shared,
+		ChatModel: "chat-model",
+		Analysis:  []Candidate{{Model: "correct-model", LLM: shared}},
+	}
+	sess := session.New("sys")
+
+	var mu sync.Mutex
+	seen := map[protocol.EventType]int{}
+	p.HandleText(context.Background(), "alex", "sess-1", sess, userText, protocol.SourceText, func(ev protocol.ServerEvent) {
+		switch ev.Type {
+		case protocol.EvFinal:
+			snap := sess.Snapshot()
+			if len(snap) == 0 || snap[len(snap)-1] != (llm.Message{Role: llm.RoleUser, Content: userText}) {
+				t.Errorf("final_transcript emitted before the user message was appended; snapshot at emit time: %+v", snap)
+			}
+		case protocol.EvAssistantDone:
+			snap := sess.Snapshot()
+			if len(snap) < 2 || snap[len(snap)-2] != (llm.Message{Role: llm.RoleUser, Content: userText}) ||
+				snap[len(snap)-1] != (llm.Message{Role: llm.RoleAssistant, Content: replyText}) {
+				t.Errorf("assistant_done emitted before the reply was appended; snapshot at emit time: %+v", snap)
+			}
+		}
+		mu.Lock()
+		seen[ev.Type]++
+		mu.Unlock()
+	})
+
+	// The contract checks above only ran if these events actually fired.
+	mu.Lock()
+	defer mu.Unlock()
+	if seen[protocol.EvFinal] != 1 || seen[protocol.EvAssistantDone] != 1 {
+		t.Fatalf("expected exactly one final_transcript and one assistant_done, saw %+v", seen)
+	}
+}
+
+// TestGreetingEmitsDoneOnlyAfterAppend covers StartConversation's greeting —
+// the same contract as TestTurnEventsEmitOnlyAfterMessagesAreInSession, for
+// the turn-0 path transport also relies on when a client disconnects right
+// after the opening line.
+func TestGreetingEmitsDoneOnlyAfterAppend(t *testing.T) {
+	const greeting = "Hey! What's on your mind today?"
+
+	sess := session.New("sys")
+	p := &Pipeline{LLM: &fakeLLM{chatReply: greeting}, ChatModel: "m"}
+
+	var doneWithoutAppend bool
+	var sawDone bool
+	p.StartConversation(context.Background(), "alex", "sess-1", sess, func(ev protocol.ServerEvent) {
+		if ev.Type != protocol.EvAssistantDone {
+			return
+		}
+		sawDone = true
+		snap := sess.Snapshot()
+		if len(snap) == 0 || snap[len(snap)-1] != (llm.Message{Role: llm.RoleAssistant, Content: greeting}) {
+			doneWithoutAppend = true
+		}
+	})
+	if !sawDone {
+		t.Fatal("assistant_done never emitted")
+	}
+	if doneWithoutAppend {
+		t.Error("assistant_done emitted before the greeting was appended to the session")
+	}
+}
+
 // TestHandleTextRepliesBeforeCorrecting guards the priority order documented
 // on HandleText: the assistant's answer must fully stream and complete
 // before correct() (grammar feedback + this turn's translation) even starts,

@@ -38,8 +38,16 @@ func (p *Pipeline) runReply(ctx context.Context, userID, sessionID string, sess 
 		if workguard.Check(context.WithoutCancel(ctx)) != nil {
 			return
 		}
-		emit(protocol.ServerEvent{Type: protocol.EvAssistantDone, Turn: turn, Text: full})
+		// Append BEFORE emitting assistant_done: a client that closes the
+		// instant the event lands fires transport's deferred final save(),
+		// which exports sess — and nothing re-saves after that, because the
+		// save ticker stops when the connection's handler returns. Emitting
+		// first raced that save and could drop this reply from the persisted
+		// Profile.Recent forever (the transcript row was safe via
+		// persistEvent; only the LLM context was at risk). Observed as a
+		// rare CI timeout in transport's TestWSMemoryPersistsAcrossReconnects.
 		sess.AppendAssistant(full)
+		emit(protocol.ServerEvent{Type: protocol.EvAssistantDone, Turn: turn, Text: full})
 		if strings.TrimSpace(full) != "" {
 			// context.WithoutCancel: the reply already streamed to the learner,
 			// so its translation is a self-contained piece of work with
