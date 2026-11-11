@@ -6,7 +6,7 @@
 // into tappable word/phrase units, and turning a free-text query into the
 // (word, position) pair the durable word-lookup cache is keyed by.
 
-export type SummarySegment =
+type SummarySegment =
   // Verbatim non-word run (spaces, punctuation) between tappable units.
   | { type: "gap"; text: string }
   // Single tappable word; `key` is the token's index within

@@ -1,8 +1,8 @@
 import type { Page } from "./route";
 
-export type LearningDestinationId = Exclude<Page, "chat" | "nuance-review">;
+type LearningDestinationId = Exclude<Page, "chat" | "nuance-review">;
 
-export interface LearningDestination {
+interface LearningDestination {
   href: LearningDestinationId;
   label: string;
   description: string;
