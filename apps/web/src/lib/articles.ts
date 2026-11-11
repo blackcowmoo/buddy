@@ -130,7 +130,7 @@ export async function fetchArticleInstances(): Promise<ArticleInstance[]> {
 // Anything unreadable — 409 (article summary still generating), a transient
 // 5xx, bad JSON — also reports "pending": the durable job recovers on its
 // own and the poll simply checks again.
-export type ArticlePhrasesResult =
+type ArticlePhrasesResult =
   | { status: "done"; phrases: string[] }
   | { status: "pending" };
 
