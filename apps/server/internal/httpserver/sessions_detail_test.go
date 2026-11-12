@@ -99,6 +99,22 @@ func awaitNamedQueueLength(t *testing.T, rdb *redis.Client, key string, want int
 	}
 }
 
+// assertQueueStaysEmpty waits past the async enqueue goroutine's normal
+// completion time, then fails if the named queue received anything — the
+// negative counterpart to awaitNamedQueueLength, which can't assert "nothing"
+// because polling for 0 would pass before the goroutine ever runs.
+func assertQueueStaysEmpty(t *testing.T, rdb *redis.Client, key, reason string) {
+	t.Helper()
+	time.Sleep(200 * time.Millisecond)
+	n, err := rdb.LLen(context.Background(), key).Result()
+	if err != nil {
+		t.Fatalf("LLen: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("queue length = %d, want 0 (%s)", n, reason)
+	}
+}
+
 func TestSessionDetailEnqueuesBackfillWhenATurnIsMissingTranslation(t *testing.T) {
 	rdb := requireRedis(t)
 	q := backfill.NewQueue(rdb)
@@ -140,16 +156,7 @@ func TestSessionDetailDoesNotEnqueueWhenEveryTurnIsTranslated(t *testing.T) {
 	h.ServeHTTP(rec, req)
 
 	requireStatus(t, rec, http.StatusOK)
-	// Nothing should show up even after waiting past the async goroutine's
-	// normal completion time.
-	time.Sleep(200 * time.Millisecond)
-	n, err := rdb.LLen(context.Background(), "buddy:job:{translation}:queue").Result()
-	if err != nil {
-		t.Fatalf("LLen: %v", err)
-	}
-	if n != 0 {
-		t.Fatalf("queue length = %d, want 0 (every turn already has a translation)", n)
-	}
+	assertQueueStaysEmpty(t, rdb, "buddy:job:{translation}:queue", "every turn already has a translation")
 }
 
 // TestSessionDetailEnqueuesCorrectionBackfillWhenAUserTurnHasNoCorrectionStatus
@@ -205,14 +212,7 @@ func TestSessionDetailDoesNotEnqueueCorrectionBackfillWhenAlreadyTrackedOrDone(t
 	h.ServeHTTP(rec, req)
 
 	requireStatus(t, rec, http.StatusOK)
-	time.Sleep(200 * time.Millisecond)
-	n, err := rdb.LLen(context.Background(), "buddy:job:{correction-backfill}:queue").Result()
-	if err != nil {
-		t.Fatalf("LLen: %v", err)
-	}
-	if n != 0 {
-		t.Fatalf("queue length = %d, want 0 (no turn is untracked)", n)
-	}
+	assertQueueStaysEmpty(t, rdb, "buddy:job:{correction-backfill}:queue", "no turn is untracked")
 }
 
 // TestSessionDetailEnqueuesStudySummaryBackfillWhenLegacyResetLeftIssuesUnrecovered
@@ -269,14 +269,7 @@ func TestSessionDetailDoesNotEnqueueStudySummaryBackfillWhenNoIssuesFlagged(t *t
 	h.ServeHTTP(rec, req)
 
 	requireStatus(t, rec, http.StatusOK)
-	time.Sleep(200 * time.Millisecond)
-	n, err := rdb.LLen(context.Background(), "buddy:job:{study-summary}:queue").Result()
-	if err != nil {
-		t.Fatalf("LLen: %v", err)
-	}
-	if n != 0 {
-		t.Fatalf("queue length = %d, want 0 (no issues to recover)", n)
-	}
+	assertQueueStaysEmpty(t, rdb, "buddy:job:{study-summary}:queue", "no issues to recover")
 }
 
 // TestSessionDetailEnqueuesStudyQuizBackfillWhenNeverAttempted covers a
@@ -328,14 +321,7 @@ func TestSessionDetailDoesNotEnqueueStudyQuizBackfillWhenAlreadyAttempted(t *tes
 	h.ServeHTTP(rec, req)
 
 	requireStatus(t, rec, http.StatusOK)
-	time.Sleep(200 * time.Millisecond)
-	n, err := rdb.LLen(context.Background(), "buddy:job:{study-quiz}:queue").Result()
-	if err != nil {
-		t.Fatalf("LLen: %v", err)
-	}
-	if n != 0 {
-		t.Fatalf("queue length = %d, want 0 (quiz already attempted)", n)
-	}
+	assertQueueStaysEmpty(t, rdb, "buddy:job:{study-quiz}:queue", "quiz already attempted")
 }
 
 // TestSessionDetailDoesNotEnqueueStudyQuizBackfillForUnendedSession guards
@@ -357,14 +343,7 @@ func TestSessionDetailDoesNotEnqueueStudyQuizBackfillForUnendedSession(t *testin
 	h.ServeHTTP(rec, req)
 
 	requireStatus(t, rec, http.StatusOK)
-	time.Sleep(200 * time.Millisecond)
-	n, err := rdb.LLen(context.Background(), "buddy:job:{study-quiz}:queue").Result()
-	if err != nil {
-		t.Fatalf("LLen: %v", err)
-	}
-	if n != 0 {
-		t.Fatalf("queue length = %d, want 0 (session was never ended)", n)
-	}
+	assertQueueStaysEmpty(t, rdb, "buddy:job:{study-quiz}:queue", "session was never ended")
 }
 
 func TestSessionDetailWithNilCorrectionQueueDoesNotPanic(t *testing.T) {
