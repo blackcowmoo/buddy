@@ -54,50 +54,37 @@ func (s *MySQLStore) FinishResearch(ctx context.Context, before Word, results []
 // a browser-side Delete could return the old rejected example and then delete
 // that very same row. A transaction preserves identity and all review progress.
 func (s *MySQLStore) SelectResearch(ctx context.Context, userID, id string, revision int, choice ResearchSuggestion) (Word, error) {
-	tx, err := s.rw.BeginTx(ctx, nil)
-	if err != nil {
-		return Word{}, err
-	}
-	defer tx.Rollback()
-	w, err := scanWord(lockWord(ctx, tx, id, userID), userID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Word{}, nil
-	}
-	if err != nil {
-		return Word{}, err
-	}
-	if w.Status == StatusPending || MeaningNeedsReview(w) || w.ResearchStatus != ResearchDone || w.ResearchRevision != revision {
-		return Word{}, ErrResearchConflict
-	}
-	matched := false
-	for _, result := range w.ResearchResults {
-		if result.Verified && result.Word == choice.Word && result.Meaning == choice.Meaning && result.Example == choice.Example {
-			matched = true
-			break
+	return s.withLockedWord(ctx, userID, id, func(tx *sql.Tx, w Word) (Word, error) {
+		if w.Status == StatusPending || MeaningNeedsReview(w) || w.ResearchStatus != ResearchDone || w.ResearchRevision != revision {
+			return Word{}, ErrResearchConflict
 		}
-	}
-	if !matched {
-		return Word{}, ErrResearchConflict
-	}
-	w.Word, w.Meaning, w.Example = choice.Word, choice.Meaning, choice.Example
-	w.Status, w.VerifyReason = StatusVerified, ""
-	w.ResearchStatus, w.ResearchResults = ResearchNone, nil
-	w.ReviewQuestion = Question{}
-	w.MeaningVersion, w.MeaningTargetVersion = CurrentMeaningVersion, CurrentMeaningVersion
-	w.MeaningStatus, w.MeaningError, w.PreviousMeaning = MeaningConfirmed, "", ""
-	w.MeaningRevision++
-	_, err = tx.ExecContext(ctx, `UPDATE `+table+` SET word=?, meaning=?, example=?, status=?, verify_reason='',
+		matched := false
+		for _, result := range w.ResearchResults {
+			if result.Verified && result.Word == choice.Word && result.Meaning == choice.Meaning && result.Example == choice.Example {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return Word{}, ErrResearchConflict
+		}
+		w.Word, w.Meaning, w.Example = choice.Word, choice.Meaning, choice.Example
+		w.Status, w.VerifyReason = StatusVerified, ""
+		w.ResearchStatus, w.ResearchResults = ResearchNone, nil
+		w.ReviewQuestion = Question{}
+		w.MeaningVersion, w.MeaningTargetVersion = CurrentMeaningVersion, CurrentMeaningVersion
+		w.MeaningStatus, w.MeaningError, w.PreviousMeaning = MeaningConfirmed, "", ""
+		w.MeaningRevision++
+		_, err := tx.ExecContext(ctx, `UPDATE `+table+` SET word=?, meaning=?, example=?, status=?, verify_reason='',
 		research_status='', research_results=NULL, review_question_version=0, review_prompt='', review_answer='', review_answers=NULL,
 		meaning_version=?, meaning_target_version=?, meaning_status=?, meaning_error='', previous_meaning=NULL, meaning_revision=?
 		WHERE id=? AND user_id=?`, w.Word, w.Meaning, w.Example, w.Status, w.MeaningVersion, w.MeaningTargetVersion, w.MeaningStatus, w.MeaningRevision, id, userID)
-	if mysqlerr.Is(err, 1062) {
-		return Word{}, ErrResearchConflict
-	}
-	if err != nil {
-		return Word{}, fmt.Errorf("wordreview: research select: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return Word{}, err
-	}
-	return w, nil
+		if mysqlerr.Is(err, 1062) {
+			return Word{}, ErrResearchConflict
+		}
+		if err != nil {
+			return Word{}, fmt.Errorf("wordreview: research select: %w", err)
+		}
+		return w, nil
+	})
 }

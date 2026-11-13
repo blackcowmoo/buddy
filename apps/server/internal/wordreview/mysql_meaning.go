@@ -3,7 +3,6 @@ package wordreview
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 
 	"buddy/server/internal/mysqlerr"
@@ -116,65 +115,52 @@ func (s *MySQLStore) failMeaningForVersion(ctx context.Context, before Word, rea
 }
 
 func (s *MySQLStore) SelectMeaning(ctx context.Context, userID, id string, choice MeaningChoice, revision int) (Word, error) {
-	tx, err := s.rw.BeginTx(ctx, nil)
-	if err != nil {
-		return Word{}, err
-	}
-	defer tx.Rollback()
-	w, err := scanWord(lockWord(ctx, tx, id, userID), userID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Word{}, nil
-	}
-	if err != nil {
-		return Word{}, err
-	}
-	if w.Status != StatusVerified || w.MeaningRevision != revision {
-		return Word{}, ErrMeaningConflict
-	}
-	switch choice {
-	case MeaningChoiceCleaned:
-		if w.MeaningStatus == MeaningConfirmed {
-			return w, nil
-		}
-		if w.MeaningStatus != MeaningDone || w.MeaningTargetVersion == 0 || w.MeaningTargetVersion < w.MeaningVersion {
+	return s.withLockedWord(ctx, userID, id, func(tx *sql.Tx, w Word) (Word, error) {
+		if w.Status != StatusVerified || w.MeaningRevision != revision {
 			return Word{}, ErrMeaningConflict
 		}
-		w.MeaningStatus = MeaningConfirmed
-		w.MeaningVersion = w.MeaningTargetVersion
-		w.ResearchStatus, w.ResearchResults = ResearchConfirmed, nil
-	case MeaningChoiceOriginal:
-		if w.MeaningStatus != MeaningDone && w.MeaningStatus != MeaningFailed {
+		switch choice {
+		case MeaningChoiceCleaned:
+			if w.MeaningStatus == MeaningConfirmed {
+				return w, nil
+			}
+			if w.MeaningStatus != MeaningDone || w.MeaningTargetVersion == 0 || w.MeaningTargetVersion < w.MeaningVersion {
+				return Word{}, ErrMeaningConflict
+			}
+			w.MeaningStatus = MeaningConfirmed
+			w.MeaningVersion = w.MeaningTargetVersion
+			w.ResearchStatus, w.ResearchResults = ResearchConfirmed, nil
+		case MeaningChoiceOriginal:
+			if w.MeaningStatus != MeaningDone && w.MeaningStatus != MeaningFailed {
+				return Word{}, ErrMeaningConflict
+			}
+			if w.MeaningTargetVersion > CurrentMeaningVersion {
+				return Word{}, ErrMeaningConflict
+			}
+			if w.PreviousMeaning != "" {
+				w.Meaning = w.PreviousMeaning
+			}
+			w.MeaningStatus, w.MeaningTargetVersion = MeaningPending, CurrentMeaningVersion
+			w.MeaningRevision++
+		default:
 			return Word{}, ErrMeaningConflict
 		}
-		if w.MeaningTargetVersion > CurrentMeaningVersion {
+		w.PreviousMeaning, w.MeaningError = "", ""
+		query := `UPDATE ` + table + ` SET meaning=?, previous_meaning=NULL, meaning_status=?, meaning_version=?, meaning_target_version=?, meaning_revision=?, meaning_error=''`
+		args := []any{w.Meaning, w.MeaningStatus, w.MeaningVersion, w.MeaningTargetVersion, w.MeaningRevision}
+		if choice == MeaningChoiceCleaned {
+			query += `, research_status=?, research_results=NULL`
+			args = append(args, ResearchConfirmed)
+		}
+		_, err := tx.ExecContext(ctx, query+` WHERE id=? AND user_id=?`, append(args, id, userID)...)
+		if mysqlerr.Is(err, 1062) {
+			// Restoring an old gloss can collide with a card added since cleanup.
+			// Keep both cards and their progress intact for the learner to resolve.
 			return Word{}, ErrMeaningConflict
 		}
-		if w.PreviousMeaning != "" {
-			w.Meaning = w.PreviousMeaning
+		if err != nil {
+			return Word{}, fmt.Errorf("word meaning: select: %w", err)
 		}
-		w.MeaningStatus, w.MeaningTargetVersion = MeaningPending, CurrentMeaningVersion
-		w.MeaningRevision++
-	default:
-		return Word{}, ErrMeaningConflict
-	}
-	w.PreviousMeaning, w.MeaningError = "", ""
-	query := `UPDATE ` + table + ` SET meaning=?, previous_meaning=NULL, meaning_status=?, meaning_version=?, meaning_target_version=?, meaning_revision=?, meaning_error=''`
-	args := []any{w.Meaning, w.MeaningStatus, w.MeaningVersion, w.MeaningTargetVersion, w.MeaningRevision}
-	if choice == MeaningChoiceCleaned {
-		query += `, research_status=?, research_results=NULL`
-		args = append(args, ResearchConfirmed)
-	}
-	_, err = tx.ExecContext(ctx, query+` WHERE id=? AND user_id=?`, append(args, id, userID)...)
-	if mysqlerr.Is(err, 1062) {
-		// Restoring an old gloss can collide with a card added since cleanup.
-		// Keep both cards and their progress intact for the learner to resolve.
-		return Word{}, ErrMeaningConflict
-	}
-	if err != nil {
-		return Word{}, fmt.Errorf("word meaning: select: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return Word{}, err
-	}
-	return w, nil
+		return w, nil
+	})
 }
