@@ -133,6 +133,34 @@ func lockWord(ctx context.Context, tx rowQuerier, id, userID string) *sql.Row {
 	return tx.QueryRowContext(ctx, `SELECT `+wordColumns+` FROM `+table+` WHERE id=? AND user_id=? FOR UPDATE`, id, userID)
 }
 
+// withLockedWord opens a transaction, locks and scans the row, and runs fn
+// against it, committing only when fn succeeded — the shape both interactive
+// edits (SelectMeaning, SelectResearch) share. A deleted row resolves to the
+// (Word{}, nil) no-op both methods already promise; each edit keeps its own
+// conflict rules and UPDATE inside fn.
+func (s *MySQLStore) withLockedWord(ctx context.Context, userID, id string, fn func(*sql.Tx, Word) (Word, error)) (Word, error) {
+	tx, err := s.rw.BeginTx(ctx, nil)
+	if err != nil {
+		return Word{}, err
+	}
+	defer tx.Rollback()
+	w, err := scanWord(lockWord(ctx, tx, id, userID), userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Word{}, nil
+	}
+	if err != nil {
+		return Word{}, err
+	}
+	out, err := fn(tx, w)
+	if err != nil {
+		return Word{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Word{}, err
+	}
+	return out, nil
+}
+
 func scanWord(row scanner, userID string) (Word, error) {
 	var w Word
 	var nextReviewAt, lastReviewedAt, createdAt int64
