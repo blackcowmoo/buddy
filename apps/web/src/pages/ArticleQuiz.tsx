@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { EmptyState, LearningIntro } from "../components/LearningIntro";
 import { confirmThenDelete } from "../lib/confirmDelete";
 import {
@@ -90,6 +90,39 @@ function learnButtonLabel(status: TrackedWordStatus | undefined, checking: boole
   if (status === "verified") return "✓ 학습 중";
   if (status === "rejected") return "✓ 제외됨";
   return "학습하기";
+}
+
+// The two definition surfaces — the anchored word-tap popover and the
+// inline phrase-search result — render the same header and the same
+// loading/failed/definition body, differing only in the close-button label,
+// the failure copy, and which entry the save button is wired to. One pair of
+// helpers keeps the surfaces' wording in sync by construction.
+function LookupHeader({ word, closeLabel, onClose }: { word: string; closeLabel: string; onClose: () => void }) {
+  return (
+    <div className="word-lookup-header">
+      <span className="word-search-word">{word}</span>
+      <button type="button" className="ghost icon-btn" onClick={onClose} aria-label={closeLabel}>
+        ✕
+      </button>
+    </div>
+  );
+}
+
+function LookupDefinition({ state, failedMessage, children }: {
+  state: { loading: boolean; failed: boolean; result: WordSuggestion | null };
+  failedMessage: string;
+  children: ReactNode;
+}) {
+  if (state.loading) return <div className="word-search-status">찾는 중…</div>;
+  if (state.failed) return <div className="word-search-status">{failedMessage}</div>;
+  if (!state.result) return null;
+  return (
+    <>
+      <span className="word-search-meaning">{state.result.meaning}</span>
+      <span className="word-search-example">{state.result.example}</span>
+      {children}
+    </>
+  );
 }
 
 function searchedWordsStorageKey(articleID: string) {
@@ -668,18 +701,7 @@ export function ArticleQuiz() {
                 role="menu"
                 ref={wordLookupRef}
               >
-                <div className="word-lookup-header">
-                  <span className="word-search-word">{wordLookup.word}</span>
-                  <button
-                    type="button"
-                    className="ghost icon-btn"
-                    onClick={() => setWordLookup(null)}
-                    aria-label="표현 뜻 닫기"
-                  >
-                    ✕
-                  </button>
-                </div>
-                {wordLookup.loading && <div className="word-search-status">찾는 중…</div>}
+                <LookupHeader word={wordLookup.word} closeLabel="표현 뜻 닫기" onClose={() => setWordLookup(null)} />
                 {!wordLookup.loading && !wordLookup.result && !wordLookup.failed && (
                   <>
                     {wordLookup.isPhrase && (wordLookup.hint || wordLookup.hintLoading) && (
@@ -695,16 +717,9 @@ export function ArticleQuiz() {
                     </button>
                   </>
                 )}
-                {!wordLookup.loading && wordLookup.failed && (
-                  <div className="word-search-status">뜻을 가져오지 못했어요.</div>
-                )}
-                {!wordLookup.loading && !wordLookup.failed && wordLookup.result && (
-                  <>
-                    <span className="word-search-meaning">{wordLookup.result.meaning}</span>
-                    <span className="word-search-example">{wordLookup.result.example}</span>
-                    {learnWordButton(wordLookup)}
-                  </>
-                )}
+                <LookupDefinition state={wordLookup} failedMessage="뜻을 가져오지 못했어요.">
+                  {learnWordButton(wordLookup)}
+                </LookupDefinition>
               </div>
             )}
           </span>
@@ -854,28 +869,10 @@ export function ArticleQuiz() {
                 )}
                 {phraseSearch && (
                   <div className="article-phrase-result">
-                    <div className="word-lookup-header">
-                      <span className="word-search-word">{phraseSearch.text}</span>
-                      <button
-                        type="button"
-                        className="ghost icon-btn"
-                        onClick={() => setPhraseSearch(null)}
-                        aria-label="표현 검색 결과 닫기"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                    {phraseSearch.loading && <div className="word-search-status">찾는 중…</div>}
-                    {!phraseSearch.loading && phraseSearch.failed && (
-                      <div className="word-search-status">뜻을 가져오지 못했어요. 다시 검색해 보세요.</div>
-                    )}
-                    {!phraseSearch.loading && !phraseSearch.failed && phraseSearch.result && (
-                      <>
-                        <span className="word-search-meaning">{phraseSearch.result.meaning}</span>
-                        <span className="word-search-example">{phraseSearch.result.example}</span>
-                        {learnWordButton({ word: phraseSearch.text, result: phraseSearch.result })}
-                      </>
-                    )}
+                    <LookupHeader word={phraseSearch.text} closeLabel="표현 검색 결과 닫기" onClose={() => setPhraseSearch(null)} />
+                    <LookupDefinition state={phraseSearch} failedMessage="뜻을 가져오지 못했어요. 다시 검색해 보세요.">
+                      {learnWordButton({ word: phraseSearch.text, result: phraseSearch.result })}
+                    </LookupDefinition>
                   </div>
                 )}
               </div>
