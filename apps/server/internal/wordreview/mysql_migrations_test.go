@@ -83,7 +83,7 @@ func TestLegacyColumnMigrationsPreserveWords(t *testing.T) {
 		"word_reviews.review_question_version", "word_reviews.review_prompt", "word_reviews.review_answer",
 		"word_reviews.review_answers", "word_reviews.dictionary_meaning", "word_reviews.meaning_revision",
 		"word_reviews.meaning_target_version",
-		"word_reviews.research_revision",
+		"word_reviews.research_revision", "word_reviews.confirm_unchanged_results",
 	}
 	if !reflect.DeepEqual(names, wantNames) {
 		t.Fatalf("migration names = %v, want %v", names, wantNames)
@@ -162,6 +162,104 @@ func TestMeaningVersionMigrationPreservesOnlyExplicitConfirmations(t *testing.T)
 			if err != nil || !reflect.DeepEqual(got, want) {
 				t.Fatalf("%s: migration changed confirmation or progress: %+v want=%+v err=%v", phase, got, want, err)
 			}
+		}
+	}
+}
+
+func TestUnchangedDoneResultsConfirmOnMigration(t *testing.T) {
+	db := newMigrationTestDB(t)
+	ctx := context.Background()
+	st, err := NewMySQL(ctx, db, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Seed the states a pre-auto-confirmation worker could have left behind:
+	// finished results whose gloss equals the learner's baseline (the pointless
+	// identical choice), plus controls the upgrade must never touch.
+	insert := func(id, status, meaningStatus, meaning, previous string, version, target int, research string, results string) {
+		t.Helper()
+		_, err := db.ExecContext(ctx, `INSERT INTO `+table+`
+			(id, user_id, word, meaning, example, stage, review_count, correct_streak,
+			 next_review_at, last_reviewed_at, status, verify_reason, created_at,
+			 review_prompt, meaning_version, meaning_status, meaning_error, previous_meaning,
+			 meaning_revision, meaning_target_version, research_status, research_results)
+			VALUES (?, 'learner', ?, ?, 'The facility closed.', 2, 5, 1, 1700000200,
+			 1700000100, ?, '', 1700000000, '', ?, ?, '', ?, 3, ?, ?, NULLIF(?, ''))`,
+			id, id, meaning, status, version, meaningStatus, previous, target, research, results)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert("unchanged", StatusVerified, MeaningDone, "생산 시설", "생산 시설", 1, CurrentMeaningVersion, ResearchConfirmed, "")
+	insert("unchanged-research", StatusVerified, MeaningDone, "생산 시설", "생산 시설", 1, CurrentMeaningVersion, ResearchDone,
+		`[{"word":"facility","meaning":"설비","example":"The facility closed.","verified":true}]`)
+	insert("changed", StatusVerified, MeaningDone, "제조 시설", "생산 시설", 1, CurrentMeaningVersion, ResearchConfirmed, "")
+	insert("pending", StatusVerified, MeaningPending, "생산 시설", "생산 시설", 1, CurrentMeaningVersion, ResearchConfirmed, "")
+	insert("unverified", StatusPending, MeaningDone, "생산 시설", "생산 시설", 1, CurrentMeaningVersion, ResearchConfirmed, "")
+
+	before := map[string]Word{}
+	for _, id := range []string{"unchanged", "unchanged-research", "changed", "pending", "unverified"} {
+		w, err := st.Get(ctx, "learner", id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[id] = w
+	}
+	// Replay the upgrade the way a deployment re-runs it on an existing database.
+	if _, err := db.ExecContext(ctx, `DELETE FROM buddy_schema_migrations WHERE component='wordreview' AND version=12`); err != nil {
+		t.Fatal(err)
+	}
+	st, err = NewMySQL(ctx, db, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, id := range []string{"unchanged", "unchanged-research"} {
+		got, err := st.Get(ctx, "learner", id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := before[id]
+		want.MeaningStatus, want.PreviousMeaning = MeaningConfirmed, ""
+		want.MeaningVersion = CurrentMeaningVersion
+		want.ResearchStatus, want.ResearchResults = ResearchConfirmed, nil
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s: unchanged result=%+v want=%+v", id, got, want)
+		}
+	}
+	for _, id := range []string{"changed", "pending", "unverified"} {
+		got, err := st.Get(ctx, "learner", id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got, before[id]) {
+			t.Fatalf("%s: migration changed a control row: got=%+v want=%+v", id, got, before[id])
+		}
+	}
+	// A restart with the ledger intact must not redo (or extend) the repair.
+	if _, err := NewMySQL(ctx, db, db); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"unchanged", "unchanged-research"} {
+		got, err := st.Get(ctx, "learner", id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := before[id]
+		want.MeaningStatus, want.PreviousMeaning = MeaningConfirmed, ""
+		want.MeaningVersion = CurrentMeaningVersion
+		want.ResearchStatus, want.ResearchResults = ResearchConfirmed, nil
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s: restart changed a confirmed result: got=%+v want=%+v", id, got, want)
+		}
+	}
+	for _, id := range []string{"changed", "pending", "unverified"} {
+		got, err := st.Get(ctx, "learner", id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got, before[id]) {
+			t.Fatalf("%s: restart changed a control row: got=%+v want=%+v", id, got, before[id])
 		}
 	}
 }
