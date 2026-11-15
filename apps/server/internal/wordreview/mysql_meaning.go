@@ -22,6 +22,21 @@ func migrateMeaningVersions(ctx context.Context, db *sql.DB) error {
 	return err
 }
 
+// autoConfirmIdenticalMeanings retires cleanup results that finished before
+// unchanged-gloss results started confirming automatically. A stored result
+// identical to the learner's baseline carries no new information, so those
+// rows receive the same confirmation SaveMeaning writes today instead of
+// showing the learner two identical options to choose between.
+func autoConfirmIdenticalMeanings(ctx context.Context, db *sql.DB) error {
+	_, err := db.ExecContext(ctx, `UPDATE `+table+` SET previous_meaning=NULL,
+		meaning_status=?, meaning_error='', meaning_version=meaning_target_version,
+		research_status=?, research_results=NULL
+		WHERE status=? AND meaning_status=? AND meaning_target_version>0
+		AND BINARY meaning=BINARY COALESCE(previous_meaning, '')`,
+		MeaningConfirmed, ResearchConfirmed, StatusVerified, MeaningDone)
+	return err
+}
+
 func (s *MySQLStore) StartMeaningCleanup(ctx context.Context, userID string) error {
 	// The target version prevents every poll from redoing an unconfirmed result
 	// or retrying a failure. A newer version invalidates older worker snapshots
@@ -68,10 +83,11 @@ func (s *MySQLStore) saveMeaningForVersion(ctx context.Context, before Word, mea
 	}
 	set := `previous_meaning=COALESCE(previous_meaning, meaning), meaning=?, meaning_status='done', meaning_error=''`
 	args := []any{meaning}
-	if version >= MeaningOptimizationVersion && baseline == meaning {
-		// Older unconfirmed suggestions can survive a version bump. Compare
-		// against the learner's original gloss so merely repeating a suggestion
-		// cannot silently accept it. An unchanged gloss needs no choice.
+	if baseline == meaning {
+		// Compare against the learner's original gloss so merely repeating a
+		// suggestion cannot silently accept it. An unchanged gloss needs no
+		// choice: the learner would only confirm what they already have, so
+		// the new result is selected automatically at any contract version.
 		set = `previous_meaning=NULL, meaning=?, meaning_status='confirmed', meaning_error='', meaning_version=?, research_status=?, research_results=NULL`
 		args = append(args, version, ResearchConfirmed)
 	}

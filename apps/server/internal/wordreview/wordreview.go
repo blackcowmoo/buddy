@@ -250,9 +250,11 @@ type Word struct {
 // pending work or its result. Changed results await the learner's choice.
 const CurrentMeaningVersion = 2
 
-// MeaningOptimizationVersion starts the fast necessity check and automatic
-// confirmation of byte-identical meanings. Keep the in-flight version-2
-// migration unchanged; the next contract bump activates both optimizations.
+// MeaningOptimizationVersion starts the fast necessity pre-check that lets a
+// confident compliant gloss skip the normalization cascade. Automatic
+// confirmation of byte-identical results is deliberately not gated by it: an
+// unchanged result always confirms at the contract version that produced it,
+// so the learner is never asked to choose between two identical glosses.
 const MeaningOptimizationVersion = 3
 
 const (
@@ -286,7 +288,7 @@ type MeaningSelectionStore interface {
 // StartMeaningCleanup schedules older versions, including previously confirmed
 // entries, once per version. Pending rows are durable work intent; a list refresh
 // can resume an interrupted enqueue. Changed results and failures await learner
-// action; identical results confirm automatically from MeaningOptimizationVersion.
+// action; identical results confirm automatically.
 type MeaningStore interface {
 	StartMeaningCleanup(context.Context, string) error
 	PendingMeanings(context.Context, string) ([]Word, error)

@@ -382,7 +382,7 @@ func TestFailedMeaningCanRetryButCannotConfirm(t *testing.T) {
 	}
 }
 
-func TestMeaningVersionRefreshConfirmsUnchangedOnlyWhenEnabled(t *testing.T) {
+func TestMeaningVersionRefreshConfirmsUnchangedAutomatically(t *testing.T) {
 	for _, newMeaning := range []string{"생산 시설", "제조 시설"} {
 		t.Run(newMeaning, func(t *testing.T) {
 			st, _, done := preparedMeaning(t)
@@ -427,7 +427,7 @@ func TestMeaningVersionRefreshConfirmsUnchangedOnlyWhenEnabled(t *testing.T) {
 			}
 			result, err := st.Get(ctx, done.UserID, done.ID)
 			want.Meaning, want.PreviousMeaning, want.MeaningStatus = newMeaning, previous.Meaning, MeaningDone
-			autoConfirmed := CurrentMeaningVersion >= MeaningOptimizationVersion && newMeaning == previous.Meaning
+			autoConfirmed := newMeaning == previous.Meaning
 			if autoConfirmed {
 				want.PreviousMeaning, want.MeaningStatus, want.MeaningVersion = "", MeaningConfirmed, CurrentMeaningVersion
 			}
@@ -594,7 +594,7 @@ func pendingMeaningAtVersion(t *testing.T, version int, previous string) (*MySQL
 	return st, pending
 }
 
-func TestMeaningAutomaticConfirmationStartsAtNextVersion(t *testing.T) {
+func TestMeaningIdenticalResultConfirmsAtEveryVersion(t *testing.T) {
 	for _, tt := range []struct {
 		name      string
 		version   int
@@ -602,12 +602,15 @@ func TestMeaningAutomaticConfirmationStartsAtNextVersion(t *testing.T) {
 		meaning   string
 		confirmed bool
 	}{
-		{name: "version 2 unchanged still needs choice", version: 2, meaning: "생산 시설"},
+		{name: "version 2 unchanged confirms", version: 2, meaning: "생산 시설", confirmed: true},
+		{name: "version 2 restored learner baseline confirms", version: 2, previous: "맥락상 생산 시설을 의미함", meaning: "맥락상 생산 시설을 의미함", confirmed: true},
 		{name: "version 3 unchanged confirms", version: 3, meaning: "생산 시설", confirmed: true},
 		{name: "later version unchanged confirms", version: 4, meaning: "생산 시설", confirmed: true},
 		{name: "changed meaning needs choice", version: 3, meaning: "제조 시설"},
+		{name: "current version changed meaning needs choice", version: 2, meaning: "제조 시설"},
 		{name: "whitespace difference needs choice", version: 3, meaning: "생산 시설 "},
 		{name: "repeated suggestion needs choice", version: 3, previous: "맥락상 생산 시설을 의미함", meaning: "생산 시설"},
+		{name: "current version repeated suggestion needs choice", version: 2, previous: "맥락상 생산 시설을 의미함", meaning: "생산 시설"},
 		{name: "restored learner baseline confirms", version: 3, previous: "맥락상 생산 시설을 의미함", meaning: "맥락상 생산 시설을 의미함", confirmed: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

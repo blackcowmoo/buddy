@@ -58,18 +58,21 @@ are versioned on both the server and browser so old results are refreshed while
 preserving the browser's search history. Legacy completed meanings retain their
 result version during migration; only explicitly confirmed meanings count as upgraded.
 
-`CurrentMeaningVersion` remains 2 so ongoing work keeps its existing behavior.
+`CurrentMeaningVersion` remains 2 so ongoing work keeps its existing contract.
 Starting with the next meaning contract (`MeaningOptimizationVersion = 3`), each
 entry first receives one Chat-model check against the shared dictionary-gloss rules.
 An explicit `needsCleanup: false` skips the normalization cascade; an uncertain,
 invalid, or failed check uses the existing Chat → Analysis → Judge cleanup path.
 Update the shared rules when bumping the meaning contract so the preflight and
-cleanup evaluate the same requirements. Whether skipped or normalized, a result
-that exactly matches the original gloss is automatically confirmed at the target
-version, without a learner prompt. A different original from an earlier unconfirmed
-result still requires a choice, even if the latest cleanup leaves that result
-unchanged. Confirmation preserves review progress and prevents the same version
-from being queued again. No new meaning migration is triggered by this change.
+cleanup evaluate the same requirements. At every contract version — including the
+in-flight version-2 migration — a result that exactly matches the learner's
+baseline gloss is automatically selected and confirmed at the target version,
+without a learner prompt; a server upgrade also confirms already-finished
+unchanged results left behind earlier, so two identical options are never
+presented. A different original from an earlier unconfirmed result still
+requires a choice, even if the latest cleanup leaves that result unchanged.
+Confirmation preserves review progress and prevents the same version from being
+queued again. No new meaning migration is triggered by this change.
 
 Bumping `wordreview.CurrentQuestionVersion` upgrades stored questions the same
 way and never interrupts an attempt. Opening the word list queues background

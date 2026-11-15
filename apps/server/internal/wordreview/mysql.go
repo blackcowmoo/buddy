@@ -88,6 +88,7 @@ func NewMySQL(ctx context.Context, rw, ro *sql.DB) (*MySQLStore, error) {
 		{Version: 9, Name: "word_reviews.meaning_revision", Up: addWordColumns("meaning_revision INT NOT NULL DEFAULT 0")},
 		{Version: 10, Name: "word_reviews.meaning_target_version", Up: migrateMeaningVersions},
 		{Version: 11, Name: "word_reviews.research_revision", Up: addWordColumns("research_revision INT NOT NULL DEFAULT 0")},
+		{Version: 12, Name: "word_reviews.confirm_unchanged_results", Up: autoConfirmIdenticalMeanings},
 	}
 	if err := migration.ApplyLegacy(ctx, rw, "wordreview", steps); err != nil {
 		return nil, fmt.Errorf("wordreview: migrations: %w", err)
