@@ -577,9 +577,6 @@ func (s *MySQLStore) Get(ctx context.Context, userID, id string) (Instance, erro
 	return inst, nil
 }
 
-// Answer reads/writes via rw (not ro) so an instance created moments ago is
-// never missed because of replica lag, same reasoning as
-// wordreview.MySQLStore.Review.
 // allCorrect reports whether every selected option matches its
 // sub-question's CorrectOptionIndex, index-wise — false (not a panic) on a
 // length mismatch, which shouldn't happen from the real client (see
@@ -597,6 +594,9 @@ func allCorrect(selected []int, subQuestions []SubQuestion) bool {
 	return true
 }
 
+// Answer reads/writes via rw (not ro) so an instance created moments ago is
+// never missed because of replica lag, same reasoning as
+// wordreview.MySQLStore.Review.
 func (s *MySQLStore) Answer(ctx context.Context, userID, id string, selectedOptions []int) (Instance, error) {
 	inst, err := scanInstance(s.rw.QueryRowContext(ctx, `
 		SELECT `+instanceColumns+` FROM `+instancesTable+` i JOIN `+articlesTable+` a ON a.id = i.article_id
