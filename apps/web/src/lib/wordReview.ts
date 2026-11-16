@@ -1,7 +1,7 @@
 import { fetchJSON, postJSON, requestOK } from "./fetchJSON";
 import type { WordSuggestion } from "./protocol";
 
-// Mirrors httpserver's wordItem shape (apps/server/internal/httpserver/words.go).
+// Mirrors httpserver's wordItem shape (apps/server/internal/httpserver/words_review.go).
 // No "retired" field: a word is never removed from review rotation, just
 // reviewed less and less often as nextReviewAt drifts further out (see
 // wordreview.stageIntervals' doc server-side for why there's no ceiling).
