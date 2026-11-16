@@ -106,14 +106,6 @@ type articleStudyJobPayload struct {
 	Description string
 }
 
-// runArticleStudy is the actual work behind asyncjob.KindArticleStudy: check
-// the reserved article is still StatusPending (a no-op otherwise — already
-// completed by an earlier attempt, or by a racing concurrent draw of the
-// same URL), ask pipeline.Pipeline.GenerateArticleStudy to summarize +
-// quiz it, and persist the result. Shared by ArticleStudyJobHandler (the
-// queued, durable path) and RunArticleStudyInline (httpserver.
-// articleDrawHandler's fallback when Redis isn't configured) so both paths
-// behave identically.
 // toNewsArticleSubQuestions converts pipeline.GenerateArticleStudy's
 // protocol.ArticleSubQuestion (the LLM-call JSON shape) into
 // newsarticle.SubQuestion (the persisted shape) — kept as two distinct
@@ -133,6 +125,14 @@ func toNewsArticleSubQuestions(qs []protocol.ArticleSubQuestion) []newsarticle.S
 	return out
 }
 
+// runArticleStudy is the actual work behind asyncjob.KindArticleStudy: check
+// the reserved article is still StatusPending (a no-op otherwise — already
+// completed by an earlier attempt, or by a racing concurrent draw of the
+// same URL), ask pipeline.Pipeline.GenerateArticleStudy to summarize +
+// quiz it, and persist the result. Shared by ArticleStudyJobHandler (the
+// queued, durable path) and RunArticleStudyInline (httpserver.
+// articleDrawHandler's fallback when Redis isn't configured) so both paths
+// behave identically.
 func runArticleStudy(ctx context.Context, pipe *pipeline.Pipeline, articles newsarticle.Store, audio *ArticleAudio, phrasesQueue *asyncjob.Queue, articleID, source, title, description string) error {
 	ctx = workguard.BindStore(ctx, articles, "", articleID)
 	target, ok, err := articles.GetArticle(ctx, articleID)
