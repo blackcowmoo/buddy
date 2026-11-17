@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState, LearningIntro } from "../components/LearningIntro";
+import { issueLabel } from "../components/GrammarControl";
 import type { Correction } from "../lib/protocol";
 import { LoadingHint } from "../components/LoadingHint";
 import { LearningPage } from "../components/LearningPage";
@@ -13,16 +14,9 @@ import { newestFirst } from "../lib/listView";
 
 type LoadState = "loading" | "ready";
 
-// Issue.type comes from the Judge's correction schema (lib/protocol.ts);
-// an unknown value falls back to the generic label so a new server-side
-// type never renders as an empty badge.
-const issueTypeLabels: Record<string, string> = {
-  grammar: "문법",
-  vocabulary: "어휘",
-  phrasing: "표현",
-  context: "맥락",
-};
-const issueTypeLabel = (type: string) => issueTypeLabels[type] ?? "교정";
+// Issue.type (the Judge's correction schema, see lib/protocol.ts) gets the
+// same Korean badge label the chat's correction feedback uses — one shared
+// map (GrammarControl's issueLabel), so the two views can't drift apart.
 
 // The writing page follows ArticleQuiz's staged flow: the root view is the
 // learner's problem history, opening/drawing a problem shows the answer
@@ -189,7 +183,7 @@ export function Writing() {
                 {result.issues.map((issue, i) => (
                   <li className="writing-issue" key={i}>
                     <div className="writing-issue-head">
-                      <span className="writing-issue-badge">{issueTypeLabel(issue.type)}</span>
+                      <span className="writing-issue-badge">{issueLabel(issue.type)}</span>
                       <p className="writing-issue-swap"><span className="writing-issue-from">{issue.span}</span> <span aria-hidden="true">→</span> <strong>{issue.suggestion}</strong></p>
                     </div>
                     <p className="writing-issue-note">{issue.explanationTranslation || issue.explanation}</p>
