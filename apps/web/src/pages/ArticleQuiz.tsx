@@ -58,6 +58,27 @@ export function shouldCenterWordLookup(anchorLeft: number, panelWidth: number, v
 // draw a new one.
 type View = "reading" | "quiz" | "result" | null;
 
+// Mirror the open article into the URL's ?article= query (the same pattern
+// as WordNuance.tsx's ?lesson=), so refreshing the reading view reopens that
+// article instead of dropping back to the list, and browser back/forward
+// walks list ↔ article. A query param rather than a path segment because
+// lib/route.ts resolves pages by pathname suffix ("/article?... still
+// resolves to the article page) and the server's SPA fallback already
+// serves index.html for it.
+function articleParamId(): string | null {
+  return new URLSearchParams(window.location.search).get("article");
+}
+
+// `replace` swaps the URL in place for corrections (a stale id), while
+// learner-driven open/back actions push real history entries.
+function setArticleParam(id: string | null, replace = false): void {
+  const url = new URL(window.location.href);
+  if (id) url.searchParams.set("article", id);
+  else url.searchParams.delete("article");
+  if (replace) window.history.replaceState(null, "", url);
+  else window.history.pushState(null, "", url);
+}
+
 type DrawState = "idle" | "drawing" | "noMore" | "error";
 type TrackedWordStatus = WordReviewStatus | "saving";
 
@@ -219,6 +240,11 @@ export function ArticleQuiz() {
   // Include the token position because the server resolves words in context,
   // and the same spelling can have different meanings in different places.
   const wordLookupCacheRef = useRef(new Map<string, WordSuggestion>());
+  // Invalidates an in-flight openInstance fetch when the learner moves on
+  // (back to the list, another row, a new draw, or a browser back/forward
+  // popstate) before its response lands, so a late answer cannot reopen a
+  // detail view the learner already left.
+  const navigationRef = useRef(0);
   // Phrase hints are cached and tracked separately from definitions: a hint
   // must never be mistaken for (or overwritten by) a real search result,
   // and vice versa — the same separation the server's hint cache keeps.
@@ -357,6 +383,7 @@ export function ArticleQuiz() {
   const visibleInstances = instances.slice(0, visibleInstanceCount);
 
   const showDraw = useCallback((next: ArticleDraw) => {
+    navigationRef.current++;
     setDraw(next);
     setSelections([]);
     setResult(null);
@@ -377,6 +404,7 @@ export function ArticleQuiz() {
     const res = await drawArticle();
     if (res.status === "ok") {
       showDraw(res.draw);
+      setArticleParam(res.draw.id);
       if (res.draw.status !== "done") {
         const token = {};
         pollTokenRef.current = token;
@@ -389,12 +417,24 @@ export function ArticleQuiz() {
 
   // Reopens one of the caller's own draws from the list, whether it's done
   // (read the past summary/quiz result) or still generating (resume
-  // watching it finish instead of it looking abandoned).
+  // watching it finish instead of it looking abandoned). `push` records the
+  // id in the URL (see setArticleParam); the URL-restore paths (mount
+  // effect, popstate) pass false because the URL already carries it.
   const openInstance = useCallback(
-    async (id: string) => {
+    async (id: string, push = true) => {
+      const openToken = ++navigationRef.current;
       const found = await fetchArticleInstance(id);
-      if (!found) return;
+      if (openToken !== navigationRef.current) return;
+      if (!found) {
+        // A restored/shared ?article= id that no longer resolves (deleted,
+        // typo) must not strand the URL on a detail that can never render.
+        // From a plain list click the param isn't set yet, so this is a
+        // URL-preserving no-op there.
+        if (articleParamId() !== null) setArticleParam(null, true);
+        return;
+      }
       showDraw(found);
+      if (push) setArticleParam(id);
       if (found.status !== "done" || !found.translation) {
         const token = {};
         pollTokenRef.current = token;
@@ -619,6 +659,11 @@ export function ArticleQuiz() {
   }, [draw, selections, allAnswered, submitting]);
 
   const backToList = useCallback(() => {
+    navigationRef.current++; // drop any in-flight openInstance response
+    // Only an in-app back has a param to undo; a popstate that already
+    // landed on the param-less URL must not push another list entry (that
+    // would break the browser's forward button).
+    if (articleParamId() !== null) setArticleParam(null);
     pollTokenRef.current = null; // stop watching; generation itself keeps going server-side
     phrasesTokenRef.current = null; // ditto for the key-phrases watch
     phrasesWatchedRef.current = null;
@@ -634,6 +679,23 @@ export function ArticleQuiz() {
     setPhraseQuery("");
     loadInstances();
   }, [loadInstances, phrasesTokenRef]);
+
+  // A refresh on the reading view (or a shared article link) reopens the
+  // article named in the URL instead of showing the list, and browser
+  // back/forward between the pushed list/detail entries opens whatever the
+  // landed URL names — or resets to the list when it names nothing
+  // (mirrors WordNuance.tsx's popstate handling).
+  useEffect(() => {
+    const restored = articleParamId();
+    if (restored) void openInstance(restored, false);
+    const pop = () => {
+      const next = articleParamId();
+      if (next) void openInstance(next, false);
+      else backToList();
+    };
+    window.addEventListener("popstate", pop);
+    return () => window.removeEventListener("popstate", pop);
+  }, [openInstance, backToList]);
 
   const handleDelete = (id: string) =>
     confirmThenDelete("이 아티클 퀴즈를 삭제할까요?", deleteArticleInstance, id, setInstances);
