@@ -51,6 +51,10 @@ import { fetchWords, saveWord } from "../lib/wordReview";
 beforeEach(() => {
   HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
   HTMLMediaElement.prototype.pause = vi.fn();
+  // The page mirrors the open article into ?article= (see ArticleQuiz.tsx's
+  // setArticleParam), so every test starts from a param-less URL to keep
+  // history entries from leaking between tests.
+  window.history.replaceState(null, "", "/article");
   vi.mocked(checkDefinedWordStatus).mockResolvedValue(null);
   // Default: no hint comes back, so tests that only exercise the search
   // flow (or plain words) render exactly as before the hint feature.
@@ -1416,5 +1420,133 @@ describe("ArticleQuiz page — phrase search while reading", () => {
 
     await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
     expect(fetchArticlePhrases).toHaveBeenCalledWith(sampleDraw.id);
+  });
+});
+
+describe("ArticleQuiz page — open article survives a refresh", () => {
+  it("reopens the article named in ?article= instead of showing the list", async () => {
+    // Regression guard: refreshing while reading an article used to drop the
+    // learner back to the list, because the open draw lived only in React
+    // state — the URL now carries it (see ArticleQuiz.tsx's setArticleParam).
+    window.history.replaceState(null, "", "/article?article=i1");
+    vi.mocked(fetchArticleInstances).mockResolvedValue(articleHistory(1));
+    vi.mocked(fetchArticleInstance).mockResolvedValue(sampleDraw);
+    render(<ArticleQuiz />);
+
+    expect(fetchArticleInstance).toHaveBeenCalledWith("i1");
+    expect(await screen.findByText(articleSummaryMatcher(sampleDraw.summary))).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "새로운 이야기를 읽어 봐요" })).not.toBeInTheDocument();
+  });
+
+  it("resumes watching a still-generating article restored from the URL", async () => {
+    window.history.replaceState(null, "", "/article?article=i1");
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(fetchArticleInstance).mockResolvedValue(pendingDraw);
+    render(<ArticleQuiz />);
+
+    expect(await screen.findByText(/아티클을 요약하고 문제를 만드는 중이에요/)).toBeInTheDocument();
+  });
+
+  it("a stale ?article= id that no longer resolves falls back to the list and clears the URL", async () => {
+    window.history.replaceState(null, "", "/article?article=deleted");
+    vi.mocked(fetchArticleInstances).mockResolvedValue(articleHistory(1));
+    vi.mocked(fetchArticleInstance).mockResolvedValue(null);
+    render(<ArticleQuiz />);
+
+    expect(await screen.findByRole("heading", { name: "새로운 이야기를 읽어 봐요" })).toBeInTheDocument();
+    expect(window.location.search).toBe("");
+  });
+
+  it("opening a past article records it in the URL", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue(articleHistory(1));
+    vi.mocked(fetchArticleInstance).mockResolvedValue(sampleDraw);
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+
+    await user.click(await screen.findByRole("button", { name: /\[BBC\] Story 0/ }));
+    await screen.findByText(articleSummaryMatcher(sampleDraw.summary));
+    expect(window.location.search).toBe("?article=i0");
+  });
+
+  it("a fresh draw records the new article in the URL", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+
+    await user.click(await screen.findByRole("button", { name: "새 아티클 뽑기" }));
+    await screen.findByText(articleSummaryMatcher(sampleDraw.summary));
+    expect(window.location.search).toBe(`?article=${sampleDraw.id}`);
+  });
+
+  it("the in-app back button returns to the list and clears the URL", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue(articleHistory(1));
+    vi.mocked(fetchArticleInstance).mockResolvedValue(sampleDraw);
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+
+    await user.click(await screen.findByRole("button", { name: /\[BBC\] Story 0/ }));
+    await screen.findByText(articleSummaryMatcher(sampleDraw.summary));
+
+    await user.click(screen.getByRole("button", { name: "목록으로" }));
+    expect(screen.getByRole("heading", { name: "새로운 이야기를 읽어 봐요" })).toBeInTheDocument();
+    expect(window.location.search).toBe("");
+  });
+
+  it("a browser back from the article returns to the list", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue(articleHistory(1));
+    vi.mocked(fetchArticleInstance).mockResolvedValue(sampleDraw);
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+
+    await user.click(await screen.findByRole("button", { name: /\[BBC\] Story 0/ }));
+    await screen.findByText(articleSummaryMatcher(sampleDraw.summary));
+
+    // jsdom cannot walk its own history stack; replicate what a browser back
+    // does to the URL and fire the event it pairs with (same shape as
+    // WordNuance.test.tsx).
+    await act(async () => {
+      window.history.replaceState(null, "", "/article");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(screen.getByRole("heading", { name: "새로운 이야기를 읽어 봐요" })).toBeInTheDocument();
+    expect(screen.queryByText(articleSummaryMatcher(sampleDraw.summary))).not.toBeInTheDocument();
+  });
+
+  it("a browser forward into an article opens it without pushing another entry", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue(articleHistory(1));
+    vi.mocked(fetchArticleInstance).mockResolvedValue(sampleDraw);
+    render(<ArticleQuiz />);
+    await screen.findByRole("heading", { name: "새로운 이야기를 읽어 봐요" });
+
+    await act(async () => {
+      window.history.replaceState(null, "", "/article?article=i0");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(await screen.findByText(articleSummaryMatcher(sampleDraw.summary))).toBeInTheDocument();
+    // The landed URL already names the article, so opening it must not push
+    // a duplicate entry the back button would have to undo twice.
+    expect(window.location.search).toBe("?article=i0");
+  });
+
+  it("a late fetch for an article the learner left cannot reopen the detail view", async () => {
+    // The row click's fetch hangs; before it lands the learner hits the
+    // browser back (popstate to the list). The stale response must not
+    // resurrect the reading view over the list.
+    vi.mocked(fetchArticleInstances).mockResolvedValue(articleHistory(1));
+    let resolveFetch: ((draw: ArticleDraw | null) => void) | null = null;
+    vi.mocked(fetchArticleInstance).mockReturnValue(new Promise((resolve) => { resolveFetch = resolve; }));
+    const user = userEvent.setup();
+    render(<ArticleQuiz />);
+
+    await user.click(await screen.findByRole("button", { name: /\[BBC\] Story 0/ }));
+    await act(async () => {
+      window.history.replaceState(null, "", "/article");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await act(async () => { resolveFetch?.(sampleDraw); });
+
+    expect(screen.getByRole("heading", { name: "새로운 이야기를 읽어 봐요" })).toBeInTheDocument();
+    expect(screen.queryByText(articleSummaryMatcher(sampleDraw.summary))).not.toBeInTheDocument();
   });
 });
