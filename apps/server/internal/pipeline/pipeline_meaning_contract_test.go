@@ -38,10 +38,14 @@ func TestMeaningContractSharedByGenerationAndVerification(t *testing.T) {
 		model := &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
 			prompt := msgs[0].Content
 			captured = append(captured, prompt)
-			if strings.Contains(prompt, "List up to 6 distinct common meanings") {
+			switch {
+			case strings.Contains(prompt, "Check whether the existing meaning"):
+				return `{"needsCleanup":false}`, nil
+			case strings.Contains(prompt, "List up to 6 distinct common meanings"):
 				return `{"suggestions":[{"word":"bank","meaning":"은행","example":"I went to the bank."}]}`, nil
+			default:
+				return `{"sameSense":true,"meaning":"운영하다"}`, nil
 			}
-			return `{"sameSense":true,"meaning":"운영하다"}`, nil
 		}}
 		p := &Pipeline{FeedbackLang: lang, LLM: model, Analysis: []Candidate{{LLM: model}}, Judge: model}
 		if _, err := p.NeedsWordMeaningCleanup(context.Background(), "run", "경영하다", "She runs the company."); err != nil {

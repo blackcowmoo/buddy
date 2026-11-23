@@ -363,32 +363,40 @@ func TestMeaningSelectionBlocksReviewUntilConfirmed(t *testing.T) {
 }
 
 func TestFailedMeaningKeepsOriginalAsFinalChoice(t *testing.T) {
-	st, pending, done := preparedMeaning(t)
+	st, pending := pendingMeaningAtVersion(t, CurrentMeaningVersion, "")
 	ctx := context.Background()
 	if err := st.FailMeaning(ctx, pending, "불확실한 뜻"); err != nil {
 		t.Fatal(err)
 	}
-	failed, err := st.Get(ctx, done.UserID, done.ID)
+	failed, err := st.Get(ctx, pending.UserID, pending.ID)
 	if err != nil || failed.MeaningStatus != MeaningFailed {
 		t.Fatalf("failed=%+v err=%v", failed, err)
 	}
-	if _, err := st.SelectMeaning(ctx, done.UserID, done.ID, MeaningChoiceCleaned, failed.MeaningRevision); !errors.Is(err, ErrMeaningConflict) {
+	// A failed cleanup never invents a gloss: the learner's current meaning
+	// stays in place, which is exactly what keeping the original confirms.
+	if failed.Meaning != pending.Meaning || failed.MeaningError != "불확실한 뜻" {
+		t.Fatalf("failed cleanup changed the baseline: %+v", failed)
+	}
+	if _, err := st.SelectMeaning(ctx, pending.UserID, pending.ID, MeaningChoiceCleaned, failed.MeaningRevision); !errors.Is(err, ErrMeaningConflict) {
 		t.Fatalf("failed result confirmed: %v", err)
 	}
-	kept, err := st.SelectMeaning(ctx, done.UserID, done.ID, MeaningChoiceOriginal, failed.MeaningRevision)
+	kept, err := st.SelectMeaning(ctx, pending.UserID, pending.ID, MeaningChoiceOriginal, failed.MeaningRevision)
 	want := failed
 	want.MeaningStatus = MeaningConfirmed
 	want.MeaningVersion = CurrentMeaningVersion
 	want.MeaningError = ""
-	want.ResearchStatus = ResearchConfirmed
+	want.ResearchStatus, want.ResearchResults = ResearchConfirmed, nil
 	want.MeaningRevision++
 	if err != nil || !reflect.DeepEqual(kept, want) {
 		t.Fatalf("kept=%+v want=%+v err=%v", kept, want, err)
 	}
-	if err := st.StartMeaningCleanup(ctx, done.UserID); err != nil {
+	if due, err := st.DueCount(ctx, pending.UserID, pending.NextReviewAt.Add(24*time.Hour)); err != nil || due != 1 {
+		t.Fatalf("kept failure not study-ready: due=%d err=%v", due, err)
+	}
+	if err := st.StartMeaningCleanup(ctx, pending.UserID); err != nil {
 		t.Fatal(err)
 	}
-	if again, err := st.Get(ctx, done.UserID, done.ID); err != nil || !reflect.DeepEqual(again, want) {
+	if again, err := st.Get(ctx, pending.UserID, pending.ID); err != nil || !reflect.DeepEqual(again, want) {
 		t.Fatalf("kept failure reopened: %+v err=%v", again, err)
 	}
 }

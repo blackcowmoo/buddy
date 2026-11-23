@@ -17,17 +17,31 @@ type generatedSavingFakeStore struct {
 	generatedCalls int
 }
 
+// SaveGenerated mirrors SaveGenerated's dedup rule: a duplicate triple keeps
+// the existing row untouched (which may be a legacy unversioned row), so only
+// a freshly created row receives the contract stamps.
 func (s *generatedSavingFakeStore) SaveGenerated(ctx context.Context, userID, word, meaning, example, originalWord string) (wordreview.Word, error) {
-	saved, err := s.fakeWordReviewStore.Save(ctx, userID, word, meaning, example)
-	if err == nil {
-		saved.MeaningVersion = wordreview.CurrentMeaningVersion
-		saved.MeaningStatus = wordreview.MeaningConfirmed
-		saved.ResearchStatus = wordreview.ResearchConfirmed
-		s.mu.Lock()
-		s.generatedCalls++
-		s.mu.Unlock()
+	s.mu.Lock()
+	for _, w := range s.words {
+		if w.UserID == userID && w.Word == word && w.Meaning == meaning {
+			s.generatedCalls++
+			s.mu.Unlock()
+			return w, nil
+		}
 	}
-	return saved, err
+	s.mu.Unlock()
+	saved, err := s.fakeWordReviewStore.Save(ctx, userID, word, meaning, example)
+	if err != nil {
+		return saved, err
+	}
+	saved.MeaningVersion = wordreview.CurrentMeaningVersion
+	saved.MeaningStatus = wordreview.MeaningConfirmed
+	saved.ResearchStatus = wordreview.ResearchConfirmed
+	s.mu.Lock()
+	s.words[saved.ID] = saved
+	s.generatedCalls++
+	s.mu.Unlock()
+	return saved, nil
 }
 
 // SaveWordAndVerify's meanings always come from prompts embedding the current
