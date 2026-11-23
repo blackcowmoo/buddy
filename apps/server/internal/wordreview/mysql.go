@@ -203,8 +203,24 @@ func (s *MySQLStore) Save(ctx context.Context, userID, word, meaning, example st
 }
 
 func (s *MySQLStore) SaveOriginal(ctx context.Context, userID, word, meaning, example, originalWord string) (Word, error) {
+	return s.saveWord(ctx, userID, word, meaning, example, originalWord, false)
+}
+
+// SaveGenerated stores a contract-generated gloss as already compliant:
+// meaning_version/meaning_status and research_status are stamped so the
+// cleanup migration only re-assesses it after a later CurrentMeaningVersion
+// bump. Dedup and lookup semantics are identical to SaveOriginal.
+func (s *MySQLStore) SaveGenerated(ctx context.Context, userID, word, meaning, example, originalWord string) (Word, error) {
+	return s.saveWord(ctx, userID, word, meaning, example, originalWord, true)
+}
+
+func (s *MySQLStore) saveWord(ctx context.Context, userID, word, meaning, example, originalWord string, contractGenerated bool) (Word, error) {
 	db := workguard.Executor(ctx, s.rw)
 	now := time.Now()
+	meaningVersion, meaningStatus, researchStatus := 0, "", ""
+	if contractGenerated {
+		meaningVersion, meaningStatus, researchStatus = CurrentMeaningVersion, MeaningConfirmed, ResearchConfirmed
+	}
 	// INSERT IGNORE: the UNIQUE KEY on (user_id, word, meaning) makes this a
 	// no-op if the learner already chose to study this exact word+meaning —
 	// re-selecting it from a later search must not reset progress already
@@ -213,9 +229,9 @@ func (s *MySQLStore) SaveOriginal(ctx context.Context, userID, word, meaning, ex
 	// MarkVerified resets it — a pending word is excluded from Due/DueCount
 	// regardless (see their WHERE clauses).
 	_, err := db.ExecContext(ctx, `
-		INSERT IGNORE INTO `+table+` (id, user_id, word, original_word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, research_status, research_results, review_question_version, review_prompt, review_answer, review_answers, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?, 0, ?, '', '', NULL, 0, '', '', NULL, ?)
-	`, uuid.New().String(), userID, word, originalWord, meaning, example, now.Add(intervalForStage(0)).Unix(), StatusPending, now.Unix())
+		INSERT IGNORE INTO `+table+` (id, user_id, word, original_word, meaning, example, stage, review_count, correct_streak, next_review_at, last_reviewed_at, status, verify_reason, research_status, research_results, review_question_version, review_prompt, review_answer, review_answers, created_at, meaning_version, meaning_status)
+		VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?, 0, ?, '', ?, NULL, 0, '', '', NULL, ?, ?, ?)
+	`, uuid.New().String(), userID, word, originalWord, meaning, example, now.Add(intervalForStage(0)).Unix(), StatusPending, researchStatus, now.Unix(), meaningVersion, meaningStatus)
 	if err != nil {
 		return Word{}, fmt.Errorf("wordreview: save: insert: %w", err)
 	}

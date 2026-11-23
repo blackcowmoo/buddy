@@ -278,8 +278,10 @@ const (
 var ErrMeaningConflict = errors.New("wordreview: meaning selection is stale or conflicts with an existing word")
 
 // A revision binds the learner's choice to the result they actually saw.
-// Accepting the cleaned gloss confirms its target version; choosing the original
-// queues a new revision without changing the confirmed version or review history.
+// Both choices are final for the reviewed version: accepting the cleaned gloss
+// confirms it, and keeping the original confirms the retained gloss at the
+// reviewed version too (never a regeneration — the next cleanup only comes
+// with a later contract bump). Review history is preserved either way.
 type MeaningSelectionStore interface {
 	SelectMeaning(context.Context, string, string, MeaningChoice, int) (Word, error)
 }
@@ -385,6 +387,18 @@ type Store interface {
 
 type OriginalSaver interface {
 	SaveOriginal(ctx context.Context, userID, word, meaning, example, originalWord string) (Word, error)
+}
+
+// GeneratedSaver stores a word whose meaning was generated under the current
+// dictionary-meaning contract (pipeline.dictionaryMeaningRules). Stamping it
+// confirmed at CurrentMeaningVersion means the cleanup migration treats the
+// gloss as already compliant with the prompt that produced it: it enters
+// study once verified and is re-checked only when a later contract version
+// ships. Callers must only use this for meanings the current prompt wrote —
+// anything else (e.g. legacy capture fields) must go through SaveOriginal so
+// the cleanup pass can assess it.
+type GeneratedSaver interface {
+	SaveGenerated(ctx context.Context, userID, word, meaning, example, originalWord string) (Word, error)
 }
 
 // QuestionStore is optional so lightweight Store implementations used by

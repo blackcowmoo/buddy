@@ -30,7 +30,7 @@ func wordMeaningCleanupScheduler(words wordreview.Store, pipe *pipeline.Pipeline
 	}
 }
 
-func wordMeaningSelectionHandler(ident identity.Identifier, words wordreview.Store, schedule func(context.Context, string)) http.HandlerFunc {
+func wordMeaningSelectionHandler(ident identity.Identifier, words wordreview.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)
 		if !ok {
@@ -65,9 +65,8 @@ func wordMeaningSelectionHandler(ident identity.Identifier, words wordreview.Sto
 			http.NotFound(w, r)
 			return
 		}
-		if updated.MeaningStatus == wordreview.MeaningPending {
-			schedule(r.Context(), userID)
-		}
+		// Both choices are terminal for the reviewed version (see
+		// MeaningSelectionStore), so no cleanup re-enqueue is ever needed here.
 		writeJSON(w, toWordItem(updated))
 	}
 }

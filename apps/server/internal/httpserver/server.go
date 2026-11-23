@@ -140,7 +140,7 @@ func New(cfg config.Config, deps Dependencies) *http.Server {
 	mux.HandleFunc("POST /api/words/auto-add", wordAutoAddHandler(ident, words, st, pipe, wordVerifyQueue, wordAutoAddQueue))
 	mux.HandleFunc("GET /api/words/auto-add", wordAutoAddStatusHandler(ident, st))
 	resumeMeanings := wordMeaningCleanupScheduler(words, pipe, wordResearchQueue)
-	mux.HandleFunc("POST /api/words/{id}/meaning", wordMeaningSelectionHandler(ident, words, resumeMeanings))
+	mux.HandleFunc("POST /api/words/{id}/meaning", wordMeaningSelectionHandler(ident, words))
 	mux.HandleFunc("GET /api/words", wordsListHandler(ident, words, pipe, wordVerifyQueue, resumeMeanings))
 	mux.HandleFunc("POST /api/words/{id}/review", wordReviewHandler(ident, words))
 	mux.HandleFunc("DELETE /api/words/{id}", wordDeleteHandler(ident, words))
