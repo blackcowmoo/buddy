@@ -153,21 +153,29 @@ func (s *MySQLStore) SelectMeaning(ctx context.Context, userID, id string, choic
 			if w.MeaningTargetVersion > CurrentMeaningVersion {
 				return Word{}, ErrMeaningConflict
 			}
+			// Keeping the previous gloss is the learner's final answer for
+			// this contract version, not a request to regenerate it again.
+			// Confirm it at the reviewed version so the cleanup migration
+			// only asks again after a later prompt bump; a failed cleanup
+			// still leaves the baseline gloss, which is what the learner is
+			// choosing to keep.
 			if w.PreviousMeaning != "" {
 				w.Meaning = w.PreviousMeaning
 			}
-			w.MeaningStatus, w.MeaningTargetVersion = MeaningPending, CurrentMeaningVersion
+			version := w.MeaningTargetVersion
+			if w.MeaningVersion > version {
+				version = w.MeaningVersion
+			}
+			w.MeaningStatus = MeaningConfirmed
+			w.MeaningVersion = version
+			w.ResearchStatus, w.ResearchResults = ResearchConfirmed, nil
 			w.MeaningRevision++
 		default:
 			return Word{}, ErrMeaningConflict
 		}
 		w.PreviousMeaning, w.MeaningError = "", ""
-		query := `UPDATE ` + table + ` SET meaning=?, previous_meaning=NULL, meaning_status=?, meaning_version=?, meaning_target_version=?, meaning_revision=?, meaning_error=''`
-		args := []any{w.Meaning, w.MeaningStatus, w.MeaningVersion, w.MeaningTargetVersion, w.MeaningRevision}
-		if choice == MeaningChoiceCleaned {
-			query += `, research_status=?, research_results=NULL`
-			args = append(args, ResearchConfirmed)
-		}
+		query := `UPDATE ` + table + ` SET meaning=?, previous_meaning=NULL, meaning_status=?, meaning_version=?, meaning_target_version=?, meaning_revision=?, meaning_error='', research_status=?, research_results=NULL`
+		args := []any{w.Meaning, w.MeaningStatus, w.MeaningVersion, w.MeaningTargetVersion, w.MeaningRevision, ResearchConfirmed}
 		_, err := tx.ExecContext(ctx, query+` WHERE id=? AND user_id=?`, append(args, id, userID)...)
 		if mysqlerr.Is(err, 1062) {
 			// Restoring an old gloss can collide with a card added since cleanup.

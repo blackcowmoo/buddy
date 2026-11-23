@@ -126,18 +126,13 @@ func (s *meaningSelectionHTTPStore) SelectMeaning(_ context.Context, user, id st
 	return s.result, s.err
 }
 
-func TestMeaningSelectionHandlerScopesChoiceAndSchedulesOnlyRetry(t *testing.T) {
+func TestMeaningSelectionHandlerScopesChoiceAndNeverRequeues(t *testing.T) {
 	for _, choice := range []wordreview.MeaningChoice{wordreview.MeaningChoiceCleaned, wordreview.MeaningChoiceOriginal} {
 		t.Run(string(choice), func(t *testing.T) {
-			status := wordreview.MeaningConfirmed
-			if choice == wordreview.MeaningChoiceOriginal {
-				status = wordreview.MeaningPending
-			}
 			st := &meaningSelectionHTTPStore{fakeWordStore: &fakeWordStore{}, result: wordreview.Word{
-				ID: "w1", UserID: "alex", Meaning: "생산 시설", MeaningStatus: status, MeaningRevision: 7,
+				ID: "w1", UserID: "alex", Meaning: "생산 시설", MeaningStatus: wordreview.MeaningConfirmed, MeaningRevision: 7,
 			}}
-			var scheduled string
-			h := wordMeaningSelectionHandler(fakeIdentifier{id: "alex", ok: true}, st, func(_ context.Context, user string) { scheduled = user })
+			h := wordMeaningSelectionHandler(fakeIdentifier{id: "alex", ok: true}, st)
 			r := httptest.NewRequest("POST", "/api/words/w1/meaning", strings.NewReader(`{"userID":"sam","choice":"`+string(choice)+`","revision":6}`))
 			r.SetPathValue("id", "w1")
 			rec := httptest.NewRecorder()
@@ -150,11 +145,8 @@ func TestMeaningSelectionHandlerScopesChoiceAndSchedulesOnlyRetry(t *testing.T) 
 			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 				t.Fatal(err)
 			}
-			if got.ID != "w1" || got.MeaningStatus != status || got.MeaningRevision != 7 {
+			if got.ID != "w1" || got.MeaningStatus != wordreview.MeaningConfirmed || got.MeaningRevision != 7 {
 				t.Fatalf("response=%+v", got)
-			}
-			if choice == wordreview.MeaningChoiceOriginal && scheduled != "alex" || choice == wordreview.MeaningChoiceCleaned && scheduled != "" {
-				t.Fatalf("scheduled=%q for %s", scheduled, choice)
 			}
 		})
 	}
@@ -187,7 +179,7 @@ func TestMeaningSelectionHandlerRejectsInvalidRequests(t *testing.T) {
 			if body == "" {
 				body = `{"choice":"cleaned","revision":1}`
 			}
-			h := wordMeaningSelectionHandler(fakeIdentifier{id: "alex", ok: !tc.unauthorized}, words, func(context.Context, string) { t.Error("scheduled invalid request") })
+			h := wordMeaningSelectionHandler(fakeIdentifier{id: "alex", ok: !tc.unauthorized}, words)
 			r := httptest.NewRequest("POST", "/api/words/w1/meaning", strings.NewReader(body))
 			r.SetPathValue("id", "w1")
 			rec := httptest.NewRecorder()

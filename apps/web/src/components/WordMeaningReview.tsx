@@ -18,10 +18,10 @@ export function WordMeaningReview({ word, selecting, error, onSelect }: {
           </button>
           {word.previousMeaning && (
             <button type="button" className="ghost word-meaning-choice" disabled={selecting} onClick={() => onSelect("original")}
-              aria-label={`정리 전 뜻 ${word.previousMeaning} 이 뜻으로 다시 정리`}>
+              aria-label={`정리 전 뜻 ${word.previousMeaning} 이 뜻으로 확정`}>
               <span className="hint">정리 전 뜻</span>
               <span>{word.previousMeaning}</span>
-              <span>이 뜻으로 다시 정리</span>
+              <span>이 뜻으로 확정</span>
             </button>
           )}
         </div>
@@ -30,7 +30,7 @@ export function WordMeaningReview({ word, selecting, error, onSelect }: {
       {word.meaningStatus === "failed" && (
         <>
           <span className="hint">{word.meaningError}</span>
-          <button type="button" className="ghost" disabled={selecting} onClick={() => onSelect("original")}>이 뜻으로 다시 정리</button>
+          <button type="button" className="ghost" disabled={selecting} onClick={() => onSelect("original")}>이 뜻으로 확정</button>
         </>
       )}
       {selecting && <span className="hint" role="status">선택을 저장 중…</span>}

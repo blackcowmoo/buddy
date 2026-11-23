@@ -56,6 +56,7 @@ func captureCorrectionWords(ctx context.Context, pipe *pipeline.Pipeline, words 
 			continue // nothing actually corrected here
 		}
 		meaning := strings.TrimSpace(issue.StudyMeaning)
+		contractGloss := meaning != ""
 		if meaning == "" {
 			// Older queued corrections lack the gloss field. Preserve their
 			// capture behavior; existing entries can use the meaning cleanup.
@@ -67,7 +68,15 @@ func captureCorrectionWords(ctx context.Context, pipe *pipeline.Pipeline, words 
 
 		var saved wordreview.Word
 		err := workguard.Commit(ctx, func(ctx context.Context) (err error) {
-			saved, err = words.Save(ctx, userID, word, meaning, example)
+			// studyMeaning is produced by the correction prompt's embedded
+			// dictionary-meaning contract, so stamp it confirmed; the legacy
+			// explanation fallback was never contract-checked and must go
+			// through the cleanup pass instead.
+			if saver, ok := words.(wordreview.GeneratedSaver); ok && contractGloss {
+				saved, err = saver.SaveGenerated(ctx, userID, word, meaning, example, word)
+			} else {
+				saved, err = words.Save(ctx, userID, word, meaning, example)
+			}
 			return err
 		})
 		if err != nil {

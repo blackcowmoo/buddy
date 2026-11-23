@@ -136,7 +136,11 @@ func EnqueueWordVerifyJob(ctx context.Context, queue *asyncjob.Queue, pipe *pipe
 // word needs, whether it's one learner-picked word (httpserver.
 // wordSaveHandler) or a batch of system-suggested ones (runWordAutoAdd in
 // word_auto_add_job.go), so a system-suggested word is fact-checked exactly
-// the same way a manually picked one is, no shortcut.
+// the same way a manually picked one is, no shortcut. Stores implementing
+// wordreview.GeneratedSaver receive the meaning stamped at the current
+// meaning-contract version: these glosses were produced by prompts embedding
+// that contract, so the cleanup migration must not re-derive them until the
+// contract itself changes.
 func SaveWordAndVerify(ctx context.Context, words wordreview.Store, pipe *pipeline.Pipeline, wordVerifyQueue *asyncjob.Queue, userID, word, meaning, example, originalWord string) (wordreview.Word, error) {
 	word = wordreview.NormalizeWord(word)
 	if strings.TrimSpace(originalWord) == "" {
@@ -144,9 +148,16 @@ func SaveWordAndVerify(ctx context.Context, words wordreview.Store, pipe *pipeli
 	}
 	var saved wordreview.Word
 	var err error
-	if originalSaver, ok := words.(wordreview.OriginalSaver); ok {
-		saved, err = originalSaver.SaveOriginal(ctx, userID, word, meaning, example, originalWord)
-	} else {
+	// Every meaning that reaches this path was written by a prompt embedding
+	// the current dictionary-meaning contract (word popup suggestions,
+	// DefineWord, auto-add), so stamp it confirmed: cleanup must only
+	// re-assess it after a contract version bump, not on the next list load.
+	switch saver := words.(type) {
+	case wordreview.GeneratedSaver:
+		saved, err = saver.SaveGenerated(ctx, userID, word, meaning, example, originalWord)
+	case wordreview.OriginalSaver:
+		saved, err = saver.SaveOriginal(ctx, userID, word, meaning, example, originalWord)
+	default:
 		saved, err = words.Save(ctx, userID, word, meaning, example)
 	}
 	if err != nil {
