@@ -175,6 +175,25 @@ func (f *fakeArticleStore) SetArticlePhrases(ctx context.Context, id string, phr
 	return nil
 }
 
+// SetArticlePhraseHints mirrors MySQLStore.SetArticlePhraseHints's
+// first-writer-wins no-op conditions (see
+// newsarticle.Store.SetArticlePhraseHints).
+func (f *fakeArticleStore) SetArticlePhraseHints(ctx context.Context, id string, hints map[string]string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(hints) == 0 {
+		return nil
+	}
+	for url, a := range f.byURL {
+		if a.ID != id || a.Status != newsarticle.StatusDone || strings.TrimSpace(a.Summary) == "" || len(a.KeyPhraseHints) > 0 {
+			continue
+		}
+		a.KeyPhraseHints = hints
+		f.byURL[url] = a
+	}
+	return nil
+}
+
 func (f *fakeArticleStore) GetArticle(ctx context.Context, id string) (newsarticle.Article, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -947,13 +966,19 @@ func phrasesRequest(id string) *http.Request {
 }
 
 // TestArticlePhrasesHandlerReturnsCachedPhrases guards the read path's whole
-// point: once a shared Article row carries its phrase list, every reader is
-// served straight from the cache row — the LLM is never re-consulted.
+// point: once a shared Article row carries its phrase list and hints, every
+// reader is served straight from the cache row — the LLM is never
+// re-consulted, and nothing is dispatched.
 func TestArticlePhrasesHandlerReturnsCachedPhrases(t *testing.T) {
 	st := &fakeArticleStore{byUser: map[string][]newsarticle.Instance{
 		"alex": {{ID: "i1", UserID: "alex", Article: newsarticle.Article{
 			ID: "a1", Summary: "The two sides agreed to talk again after months of silence.",
-			Status: newsarticle.StatusDone, KeyPhrases: []string{"agreed to", "months of"},
+			Status:     newsarticle.StatusDone,
+			KeyPhrases: []string{"agreed to", "months of"},
+			KeyPhraseHints: map[string]string{
+				"agreed to": "양쪽이 같은 마음으로 나아가는 느낌이에요.",
+				"months of": "시간의 길이를 강조하는 표현이에요.",
+			},
 		}}},
 	}}
 	llmCalls := 0
@@ -974,6 +999,9 @@ func TestArticlePhrasesHandlerReturnsCachedPhrases(t *testing.T) {
 	if got.Status != "done" || strings.Join(got.Phrases, "|") != "agreed to|months of" {
 		t.Fatalf("got %+v, want the cached phrase list served as done", got)
 	}
+	if got.Hints["agreed to"] == "" {
+		t.Fatalf("Hints = %v, want the stored feeling notes served alongside the phrases", got.Hints)
+	}
 	time.Sleep(50 * time.Millisecond)
 	if llmCalls != 0 {
 		t.Fatalf("LLM calls = %d, want 0 (cached phrases must be reused)", llmCalls)
@@ -983,8 +1011,9 @@ func TestArticlePhrasesHandlerReturnsCachedPhrases(t *testing.T) {
 // TestArticlePhrasesHandlerGeneratesOnceForArticleWithoutPhrases guards the
 // lazy path for a done article whose list never landed (the shape every
 // pre-feature article row is in): the first read reports "pending" and
-// dispatches generation; the generated list lands on the shared row so a
-// later poll is served "done" — and a second reader never re-pays the call.
+// dispatches generation; the generated list — and the hint pass that follows
+// it in the same job — land on the shared row so a later poll is served
+// "done" with both — and a second reader never re-pays the calls.
 func TestArticlePhrasesHandlerGeneratesOnceForArticleWithoutPhrases(t *testing.T) {
 	// The shared row lives in byURL (what GetArticle/SetArticlePhrases read
 	// and write, mirroring the real instance→article join); the instance
@@ -1002,6 +1031,9 @@ func TestArticlePhrasesHandlerGeneratesOnceForArticleWithoutPhrases(t *testing.T
 	llmCalls := 0
 	pipe := &pipeline.Pipeline{LLM: &fakeArticleLLM{complete: func(msgs []llm.Message) (string, error) {
 		llmCalls++
+		if len(msgs) > 0 && strings.Contains(msgs[0].Content, `"hints":[`) {
+			return `{"hints":[{"phrase":"agreed to","hint":"양쪽이 같은 마음으로 나아가는 느낌이에요."},{"phrase":"months of","hint":"시간의 길이를 강조하는 표현이에요."}]}`, nil
+		}
 		return `{"phrases":["agreed to","months of"]}`, nil
 	}}, ChatModel: "m"}
 	h := articlePhrasesHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, nil)
@@ -1019,7 +1051,7 @@ func TestArticlePhrasesHandlerGeneratesOnceForArticleWithoutPhrases(t *testing.T
 
 	waitForCondition(t, 2*time.Second, func() bool {
 		a, ok, err := st.GetArticle(context.Background(), "a1")
-		return err == nil && ok && len(a.KeyPhrases) == 2
+		return err == nil && ok && len(a.KeyPhrases) == 2 && len(a.KeyPhraseHints) == 2
 	})
 
 	rec2 := httptest.NewRecorder()
@@ -1031,8 +1063,73 @@ func TestArticlePhrasesHandlerGeneratesOnceForArticleWithoutPhrases(t *testing.T
 	if second.Status != "done" || strings.Join(second.Phrases, "|") != "agreed to|months of" {
 		t.Fatalf("second response = %+v, want the generated list served as done", second)
 	}
-	if llmCalls != 1 {
-		t.Fatalf("LLM calls = %d, want exactly 1 (cached result reused on the next read)", llmCalls)
+	if second.Hints["agreed to"] == "" {
+		t.Fatalf("second response hints = %v, want the generated feelings served with the list", second.Hints)
+	}
+	if llmCalls != 2 {
+		t.Fatalf("LLM calls = %d, want exactly 2 (one per phase, cached result reused on the next read)", llmCalls)
+	}
+}
+
+// TestArticlePhrasesHandlerBackfillsMissingHints guards the legacy-row read:
+// phrases are served as done immediately (the learner never waits on the
+// hint pass), while the same request nudges the two-phase job to generate
+// only the missing hints — a later poll finds them, and the finished phrase
+// list is never re-paid.
+func TestArticlePhrasesHandlerBackfillsMissingHints(t *testing.T) {
+	st := &fakeArticleStore{
+		byURL: map[string]newsarticle.Article{"u1": {
+			ID: "a1", Summary: "The two sides agreed to talk again after months of silence.",
+			Status: newsarticle.StatusDone, KeyPhrases: []string{"agreed to", "months of"},
+		}},
+		byUser: map[string][]newsarticle.Instance{
+			"alex": {{ID: "i1", UserID: "alex", Article: newsarticle.Article{
+				ID: "a1", Summary: "The two sides agreed to talk again after months of silence.",
+				Status: newsarticle.StatusDone, KeyPhrases: []string{"agreed to", "months of"},
+			}}},
+		},
+	}
+	phraseCalls, hintCalls := 0, 0
+	pipe := &pipeline.Pipeline{LLM: &fakeArticleLLM{complete: func(msgs []llm.Message) (string, error) {
+		if len(msgs) > 0 && strings.Contains(msgs[0].Content, `"hints":[`) {
+			hintCalls++
+			return `{"hints":[{"phrase":"agreed to","hint":"양쪽이 같은 마음으로 나아가는 느낌이에요."},{"phrase":"months of","hint":"시간의 길이를 강조하는 표현이에요."}]}`, nil
+		}
+		phraseCalls++
+		return `{"phrases":["should not run — the stored list must be reused"]}`, nil
+	}}, ChatModel: "m"}
+	h := articlePhrasesHandler(fakeIdentifier{id: "alex", ok: true}, st, pipe, nil)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, phrasesRequest("i1"))
+	requireStatus(t, rec, http.StatusOK)
+	var first articlePhrasesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &first); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if first.Status != "done" || strings.Join(first.Phrases, "|") != "agreed to|months of" || len(first.Hints) != 0 {
+		t.Fatalf("first response = %+v, want done with the stored phrases and no hints yet", first)
+	}
+
+	waitForCondition(t, 2*time.Second, func() bool {
+		a, ok, err := st.GetArticle(context.Background(), "a1")
+		return err == nil && ok && len(a.KeyPhraseHints) == 2
+	})
+	if phraseCalls != 0 {
+		t.Fatalf("phrase calls = %d, want 0 (a legacy row's list must never be re-generated)", phraseCalls)
+	}
+
+	rec2 := httptest.NewRecorder()
+	h.ServeHTTP(rec2, phrasesRequest("i1"))
+	var second articlePhrasesResponse
+	if err := json.Unmarshal(rec2.Body.Bytes(), &second); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if second.Status != "done" || second.Hints["months of"] == "" {
+		t.Fatalf("second response = %+v, want done with the backfilled hints", second)
+	}
+	if hintCalls != 1 {
+		t.Fatalf("hint calls = %d, want exactly 1 (cached hints reused on the next read)", hintCalls)
 	}
 }
 

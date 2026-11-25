@@ -249,6 +249,21 @@ func (s *fakeNewsArticleStore) SetArticlePhrases(ctx context.Context, id string,
 	return nil
 }
 
+// SetArticlePhraseHints mirrors MySQLStore.SetArticlePhraseHints's
+// first-writer-wins no-op conditions (see
+// newsarticle.Store.SetArticlePhraseHints).
+func (s *fakeNewsArticleStore) SetArticlePhraseHints(ctx context.Context, id string, hints map[string]string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.articles[id]
+	if !ok || a.Status != newsarticle.StatusDone || strings.TrimSpace(a.Summary) == "" || len(a.KeyPhraseHints) > 0 || len(hints) == 0 {
+		return nil
+	}
+	a.KeyPhraseHints = hints
+	s.articles[id] = a
+	return nil
+}
+
 func (s *fakeNewsArticleStore) GetArticle(ctx context.Context, id string) (newsarticle.Article, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

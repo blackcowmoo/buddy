@@ -59,6 +59,18 @@ type Article struct {
 	// and there were none" (the prompt always finds at least one phrase in a
 	// real paragraph, and generation returns an error otherwise).
 	KeyPhrases []string
+	// KeyPhraseHints maps each KeyPhrases entry (exact same strings) to the
+	// short native-language "feeling" note pipeline.SuggestPhraseHints
+	// generated for it — pre-search nudge semantics identical to PhraseHint
+	// (never the memorizable gloss). Generated in a second pass right after
+	// KeyPhrases land (see transport.runArticlePhrases) so a learner tapping
+	// a chip reads its hint instantly instead of waiting on a fresh LLM
+	// call, and stored on the shared Article so every reader of the same
+	// story reuses it. Like KeyPhrases, empty means "not generated (yet)" —
+	// a partial map is possible (per-entry generation gaps fall back to the
+	// lazy tap-time hint), an empty one never is (see
+	// Store.SetArticlePhraseHints).
+	KeyPhraseHints map[string]string
 	// Description is the feed's own short snippet (newsfeed.Candidate.
 	// Description) that pipeline.GenerateArticleStudy needs as input,
 	// persisted here — not just held transiently in the draw request — so
@@ -215,6 +227,12 @@ type Store interface {
 	// Article.KeyPhrases), and generation failures are retried by the next
 	// read rather than cached as "this paragraph has no phrases".
 	SetArticlePhrases(ctx context.Context, id string, phrases []string) error
+	// SetArticlePhraseHints persists the hint map generated for a
+	// StatusDone Article's KeyPhrases (see Article.KeyPhraseHints). Same
+	// first-writer-wins no-op semantics as SetArticlePhrases — the write
+	// only lands while the stored hint map is still empty, and an empty map
+	// is never persisted so empty keeps meaning "not generated yet".
+	SetArticlePhraseHints(ctx context.Context, id string, hints map[string]string) error
 
 	// UsedURLs returns every Article URL userID has already drawn an
 	// Instance for — the exclusion set httpserver's draw handler filters

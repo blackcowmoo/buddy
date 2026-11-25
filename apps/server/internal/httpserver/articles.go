@@ -374,10 +374,15 @@ func articleInstanceHandler(ident identity.Identifier, articles newsarticle.Stor
 // key-phrase list (see newsarticle.Article.KeyPhrases): "done" carries the
 // list, "pending" means generation was just (or already is) dispatched for
 // it and the learner's next poll should find it — same shape rationale as
-// articleLookupResponse.
+// articleLookupResponse. Hints carries the phrases' pre-search "feelings"
+// (see newsarticle.Article.KeyPhraseHints) and is omitted while they haven't
+// generated yet — the second job pass writes them just behind the list, so
+// the browser polls a few more times to pick them up (and falls back to
+// tap-time hints if they never arrive).
 type articlePhrasesResponse struct {
-	Status  string   `json:"status"`
-	Phrases []string `json:"phrases"`
+	Status  string            `json:"status"`
+	Phrases []string          `json:"phrases"`
+	Hints   map[string]string `json:"hints,omitempty"`
 }
 
 // articlePhrasesHandler returns the caller's article key-phrase suggestions.
@@ -388,9 +393,12 @@ type articlePhrasesResponse struct {
 // deduped by article ID through the same transport.DispatchArticlePhrases
 // the study job uses, behind the same queue.Pending + re-read dance
 // articleWordDefineHandler uses, so a learner's polling loop can't stack up
-// duplicate generations — and answers "pending". A pending article 409s via
-// requireReadyArticleInstance: there is no summary to extract phrases from
-// yet, and the study job will dispatch this itself on completion.
+// duplicate generations — and answers "pending". A row whose phrases landed
+// but whose hints haven't answers "done" with the phrases immediately and
+// nudges the same (now two-phase) job to fill only the missing hint phase.
+// A pending article 409s via requireReadyArticleInstance: there is no
+// summary to extract phrases from yet, and the study job will dispatch this
+// itself on completion.
 func articlePhrasesHandler(ident identity.Identifier, articles newsarticle.Store, pipe *pipeline.Pipeline, phrasesQueue *asyncjob.Queue) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := requireUser(w, r, ident)
@@ -402,7 +410,18 @@ func articlePhrasesHandler(ident identity.Identifier, articles newsarticle.Store
 			return
 		}
 		if len(inst.Article.KeyPhrases) > 0 {
-			writeJSON(w, articlePhrasesResponse{Status: "done", Phrases: inst.Article.KeyPhrases})
+			if len(inst.Article.KeyPhraseHints) == 0 && pipe != nil {
+				// Legacy row (or a failed hint pass): the phrases answer the
+				// learner now; the shared job runs only its hint phase
+				// behind them. Deduped by article ID like every dispatch
+				// here, and the job's per-phase cached checks turn a
+				// redundant nudge into a no-op.
+				if err := transport.DispatchArticlePhrases(r.Context(), phrasesQueue, pipe, articles, inst.Article.ID); err != nil {
+					serverError(w, "articles: dispatch phrase hints "+inst.Article.ID, err)
+					return
+				}
+			}
+			writeJSON(w, articlePhrasesResponse{Status: "done", Phrases: inst.Article.KeyPhrases, Hints: inst.Article.KeyPhraseHints})
 			return
 		}
 		if phrasesQueue != nil {
@@ -426,7 +445,7 @@ func articlePhrasesHandler(ident identity.Identifier, articles newsarticle.Store
 				return
 			}
 			if exists && len(fresh.KeyPhrases) > 0 {
-				writeJSON(w, articlePhrasesResponse{Status: "done", Phrases: fresh.KeyPhrases})
+				writeJSON(w, articlePhrasesResponse{Status: "done", Phrases: fresh.KeyPhrases, Hints: fresh.KeyPhraseHints})
 				return
 			}
 		}

@@ -141,13 +141,17 @@ const (
 	// one article (payload: {ArticleID} — see
 	// transport.DispatchArticlePhrases), extracted by the Chat-model-only
 	// pipeline.SuggestArticlePhrases and stored on the shared Article row
-	// (see newsarticle.Article.KeyPhrases). Two producers share the one
-	// DedupeKey (the article ID): the article study job dispatches right
-	// after CompleteArticle (so a fresh article is usually cached before
-	// anyone reads it), and httpserver's phrases GET dispatches on a read of
-	// a done article whose list never landed (legacy rows, or a failed
-	// first attempt) — the dedupe keeps those two, and every concurrent
-	// reader, collapsed into a single generation.
+	// (see newsarticle.Article.KeyPhrases), then followed in the same job by
+	// pipeline.SuggestPhraseHints writing that list's pre-search "feeling"
+	// hints (see newsarticle.Article.KeyPhraseHints) — each phase skips
+	// itself when its column is already filled, so a partial row is
+	// backfilled without re-paying the finished phase. Two producers share
+	// the one DedupeKey (the article ID): the article study job dispatches
+	// right after CompleteArticle (so a fresh article is usually cached
+	// before anyone reads it), and httpserver's phrases GET dispatches on a
+	// read of a done article whose list — or hints — never landed (legacy
+	// rows, or a failed first attempt) — the dedupe keeps those two, and
+	// every concurrent reader, collapsed into a single generation.
 	KindArticlePhrases Kind = "article-phrases"
 	// KindPhraseHint generates and caches the pre-search meaning hint for one
 	// article phrase the learner tapped (payload: {CacheKey, Request} — see

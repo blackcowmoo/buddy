@@ -63,7 +63,7 @@ beforeEach(() => {
   // Default: this article simply has no suggested phrases, so the phrase
   // watch resolves on its first poll and tests don't have to advance timers
   // unless they exercise phrase delivery itself.
-  vi.mocked(fetchArticlePhrases).mockResolvedValue({ status: "done", phrases: [] });
+  vi.mocked(fetchArticlePhrases).mockResolvedValue({ status: "done", phrases: [], hints: {} });
 });
 
 afterEach(() => {
@@ -1145,7 +1145,7 @@ describe("ArticleQuiz page — phrase search while reading", () => {
   it("groups a suggested phrase into one tappable unit in the paragraph", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
-    vi.mocked(fetchArticlePhrases).mockResolvedValue({ status: "done", phrases: ["announced a new discovery"] });
+    vi.mocked(fetchArticlePhrases).mockResolvedValue({ status: "done", phrases: ["announced a new discovery"], hints: {} });
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ delay: null });
     render(<ArticleQuiz />);
@@ -1170,7 +1170,7 @@ describe("ArticleQuiz page — phrase search while reading", () => {
   it("looks up a tapped phrase span through the same anchored popover", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
-    vi.mocked(fetchArticlePhrases).mockResolvedValue({ status: "done", phrases: ["announced a new discovery"] });
+    vi.mocked(fetchArticlePhrases).mockResolvedValue({ status: "done", phrases: ["announced a new discovery"], hints: {} });
     vi.mocked(defineWord).mockResolvedValue({
       word: "announced a new discovery",
       meaning: "새로운 발견을 발표했다",
@@ -1201,7 +1201,7 @@ describe("ArticleQuiz page — phrase search while reading", () => {
   it("auto-hints the feeling of a tapped idiom without revealing its meaning", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
-    vi.mocked(fetchArticlePhrases).mockResolvedValue({ status: "done", phrases: ["announced a new discovery"] });
+    vi.mocked(fetchArticlePhrases).mockResolvedValue({ status: "done", phrases: ["announced a new discovery"], hints: {} });
     vi.mocked(phraseHint).mockResolvedValue("새로 알아낸 것을 세상에 알리는 상황과 관련돼 있어요.");
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ delay: null });
@@ -1233,10 +1233,96 @@ describe("ArticleQuiz page — phrase search while reading", () => {
     expect(screen.queryByText(/💡/)).not.toBeInTheDocument();
   });
 
+  it("shows the pre-generated feeling the instant an expression is tapped", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    vi.mocked(fetchArticlePhrases).mockResolvedValue({
+      status: "done",
+      phrases: ["announced a new discovery"],
+      hints: { "announced a new discovery": "새로 알아낸 것을 세상에 알리는 상황과 관련돼 있어요." },
+    });
+    // A definition probe that never answers: the feeling note must already
+    // be on screen regardless of what the (slower) probe does.
+    vi.mocked(checkDefinedWordStatus).mockReturnValue(new Promise(() => {}));
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ delay: null });
+    render(<ArticleQuiz />);
+    await openDoneArticle(user);
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+
+    const summary = screen.getByText(articleSummaryMatcher(sampleDraw.summary));
+    await user.click(within(summary).getByRole("button", { name: "announced a new discovery" }));
+
+    // The whole point of pre-generation: no tap-time hint request, and the
+    // note reads immediately while the definition check still runs behind it.
+    expect(phraseHint).not.toHaveBeenCalled();
+    expect(screen.getByText("💡 새로 알아낸 것을 세상에 알리는 상황과 관련돼 있어요.")).toBeInTheDocument();
+    // The explicit search flow is untouched — the note is not an answer.
+    expect(defineWord).not.toHaveBeenCalled();
+  });
+
+  it("picks up hints that land just after the phrase list and then stops polling", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    const hints = { "announced a new discovery": "새로 알아낸 것을 세상에 알리는 상황과 관련돼 있어요." };
+    vi.mocked(fetchArticlePhrases)
+      .mockResolvedValueOnce({ status: "done", phrases: ["announced a new discovery"], hints: {} })
+      .mockResolvedValue({ status: "done", phrases: ["announced a new discovery"], hints });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ delay: null });
+    render(<ArticleQuiz />);
+    await openDoneArticle(user);
+
+    // The list lands first, hints still missing: chips render right away and
+    // the watch keeps checking behind them.
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(screen.getByRole("group", { name: "이 아티클의 주요 표현" })).toBeInTheDocument();
+    expect(fetchArticlePhrases).toHaveBeenCalledTimes(1);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(fetchArticlePhrases).toHaveBeenCalledTimes(2);
+    // With hints in hand the watch is done — no further requests.
+    await act(async () => { await vi.advanceTimersByTimeAsync(9000); });
+    expect(fetchArticlePhrases).toHaveBeenCalledTimes(2);
+
+    const summary = screen.getByText(articleSummaryMatcher(sampleDraw.summary));
+    await user.click(within(summary).getByRole("button", { name: "announced a new discovery" }));
+    expect(phraseHint).not.toHaveBeenCalled();
+    expect(await screen.findByText("💡 새로 알아낸 것을 세상에 알리는 상황과 관련돼 있어요.")).toBeInTheDocument();
+  });
+
+  it("gives up topping up for hints after a bounded number of polls and falls back to tap-time hints", async () => {
+    vi.mocked(fetchArticleInstances).mockResolvedValue([]);
+    vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
+    vi.mocked(fetchArticlePhrases).mockResolvedValue({
+      status: "done",
+      phrases: ["announced a new discovery"],
+      hints: {},
+    });
+    vi.mocked(phraseHint).mockResolvedValue("새로 알아낸 것을 세상에 알리는 상황과 관련돼 있어요.");
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ delay: null });
+    render(<ArticleQuiz />);
+    await openDoneArticle(user);
+
+    // First poll + the bounded top-ups, then silence even though the hint
+    // pass never lands (see articlePhraseHintTopUpPolls).
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(fetchArticlePhrases).toHaveBeenCalledTimes(9);
+    await act(async () => { await vi.advanceTimersByTimeAsync(12_000); });
+    expect(fetchArticlePhrases).toHaveBeenCalledTimes(9);
+
+    // The learner still gets the lazy per-tap hint the feature had before.
+    const summary = screen.getByText(articleSummaryMatcher(sampleDraw.summary));
+    await user.click(within(summary).getByRole("button", { name: "announced a new discovery" }));
+    expect(phraseHint).toHaveBeenCalledWith(sampleDraw.id, "announced a new discovery", 3);
+    expect(await screen.findByText("💡 새로 알아낸 것을 세상에 알리는 상황과 관련돼 있어요.")).toBeInTheDocument();
+  });
+
   it("shows a placeholder while the tapped idiom's hint is still coming", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
-    vi.mocked(fetchArticlePhrases).mockResolvedValue({ status: "done", phrases: ["announced a new discovery"] });
+    vi.mocked(fetchArticlePhrases).mockResolvedValue({ status: "done", phrases: ["announced a new discovery"], hints: {} });
     vi.mocked(phraseHint).mockReturnValue(new Promise(() => {}));
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ delay: null });
@@ -1255,7 +1341,7 @@ describe("ArticleQuiz page — phrase search while reading", () => {
   it("never asks for a hint when the tapped phrase's definition is already cached", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
-    vi.mocked(fetchArticlePhrases).mockResolvedValue({ status: "done", phrases: ["announced a new discovery"] });
+    vi.mocked(fetchArticlePhrases).mockResolvedValue({ status: "done", phrases: ["announced a new discovery"], hints: {} });
     vi.mocked(checkDefinedWordStatus).mockResolvedValue({
       status: "done",
       result: {
@@ -1298,7 +1384,7 @@ describe("ArticleQuiz page — phrase search while reading", () => {
   it("sends a suggested-phrase chip straight to the define job without confirmation", async () => {
     vi.mocked(fetchArticleInstances).mockResolvedValue([]);
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
-    vi.mocked(fetchArticlePhrases).mockResolvedValue({ status: "done", phrases: ["announced a new discovery"] });
+    vi.mocked(fetchArticlePhrases).mockResolvedValue({ status: "done", phrases: ["announced a new discovery"], hints: {} });
     vi.mocked(defineWord).mockResolvedValue({
       word: "announced a new discovery",
       meaning: "새로운 발견을 발표했다",
@@ -1385,7 +1471,7 @@ describe("ArticleQuiz page — phrase search while reading", () => {
     vi.mocked(drawArticle).mockResolvedValue({ status: "ok", draw: sampleDraw });
     vi.mocked(fetchArticlePhrases)
       .mockResolvedValueOnce({ status: "pending" })
-      .mockResolvedValue({ status: "done", phrases: ["a new discovery"] });
+      .mockResolvedValue({ status: "done", phrases: ["a new discovery"], hints: {} });
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ delay: null });
     render(<ArticleQuiz />);

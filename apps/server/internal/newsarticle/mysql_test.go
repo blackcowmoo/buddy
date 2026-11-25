@@ -960,3 +960,137 @@ func TestSetArticlePhrasesNoOpGuards(t *testing.T) {
 		t.Fatalf("orphan article KeyPhrases = %v, want empty (write must not land without an instance)", found.KeyPhrases)
 	}
 }
+
+// ---- SetArticlePhraseHints ---------------------------------------------------
+
+func TestSchemaIncludesArticleKeyPhraseHintsColumn(t *testing.T) {
+	st := requireStore(t)
+	var count int
+	err := st.ro.QueryRowContext(context.Background(), `
+		SELECT COUNT(*) FROM information_schema.columns
+		WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?
+	`, articlesTable, "key_phrase_hints_json").Scan(&count)
+	if err != nil {
+		t.Fatalf("check key_phrase_hints_json schema: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("key_phrase_hints_json column count = %d, want 1", count)
+	}
+}
+
+// TestSetArticlePhraseHintsRoundTripAndFirstWriterWins guards the storage
+// half of pre-generated feelings: the map survives GetArticle and the
+// instance join (keyed by the exact phrase strings), a second writer's
+// UPDATE matches nothing, and an empty write is dropped so empty keeps
+// meaning "not generated".
+func TestSetArticlePhraseHintsRoundTripAndFirstWriterWins(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+	article := mustSaveArticle(t, st, "https://example.com/hints-roundtrip")
+	hints := map[string]string{"reach a deal": "양쪽이 합의에 이르는 느낌이에요.", "in response to": "무언가에 대한 반응으로 일어난 느낌이에요."}
+
+	if err := st.SetArticlePhraseHints(ctx, article.ID, hints); err != nil {
+		t.Fatalf("SetArticlePhraseHints() error = %v", err)
+	}
+	found, ok, err := st.GetArticle(ctx, article.ID)
+	if err != nil || !ok {
+		t.Fatalf("GetArticle() = (%+v, %v, %v)", found, ok, err)
+	}
+	if len(found.KeyPhraseHints) != 2 || found.KeyPhraseHints["reach a deal"] == "" {
+		t.Fatalf("KeyPhraseHints = %v, want the persisted map back under the exact phrase keys", found.KeyPhraseHints)
+	}
+
+	// The instance join must surface the same map — that's what the
+	// phrases GET handler serves without a second query.
+	instances, err := st.List(ctx, "study-fixture")
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	var drawn *Instance
+	for i := range instances {
+		if instances[i].Article.ID == article.ID {
+			drawn = &instances[i]
+		}
+	}
+	if drawn == nil {
+		t.Fatal("mustSaveArticle's instance not found in List()")
+	}
+	if len(drawn.Article.KeyPhraseHints) != 2 {
+		t.Fatalf("instance join KeyPhraseHints = %v, want the persisted map", drawn.Article.KeyPhraseHints)
+	}
+
+	// Second writer: no-op, first answer stands.
+	if err := st.SetArticlePhraseHints(ctx, article.ID, map[string]string{"reach a deal": "clobbered"}); err != nil {
+		t.Fatalf("second SetArticlePhraseHints() error = %v", err)
+	}
+	found, _, err = st.GetArticle(ctx, article.ID)
+	if err != nil {
+		t.Fatalf("GetArticle() error = %v", err)
+	}
+	if found.KeyPhraseHints["reach a deal"] != "양쪽이 합의에 이르는 느낌이에요." {
+		t.Fatalf("KeyPhraseHints = %v, want first writer's map to win", found.KeyPhraseHints)
+	}
+
+	// Empty write: dropped, map intact.
+	if err := st.SetArticlePhraseHints(ctx, article.ID, nil); err != nil {
+		t.Fatalf("empty SetArticlePhraseHints() error = %v", err)
+	}
+	found, _, err = st.GetArticle(ctx, article.ID)
+	if err != nil {
+		t.Fatalf("GetArticle() error = %v", err)
+	}
+	if len(found.KeyPhraseHints) != 2 {
+		t.Fatalf("KeyPhraseHints = %v after empty write, want the original map", found.KeyPhraseHints)
+	}
+}
+
+// TestSetArticlePhraseHintsNoOpGuards covers the same WHERE-clause states as
+// TestSetArticlePhrasesNoOpGuards: still-generating and instance-less rows
+// must never receive a hint write.
+func TestSetArticlePhraseHintsNoOpGuards(t *testing.T) {
+	st := requireStore(t)
+	ctx := context.Background()
+
+	pending, err := st.ReserveArticle(ctx, "BBC", "Pending", "https://example.com/hints-pending", "snippet", time.Time{})
+	if err != nil {
+		t.Fatalf("ReserveArticle() error = %v", err)
+	}
+	if err := st.SetArticlePhraseHints(ctx, pending.ID, map[string]string{"a phrase": "느낌"}); err != nil {
+		t.Fatalf("SetArticlePhraseHints() on pending error = %v", err)
+	}
+	found, _, err := st.GetArticle(ctx, pending.ID)
+	if err != nil {
+		t.Fatalf("GetArticle() error = %v", err)
+	}
+	if len(found.KeyPhraseHints) != 0 {
+		t.Fatalf("pending article KeyPhraseHints = %v, want empty (write must not land)", found.KeyPhraseHints)
+	}
+
+	orphan := mustSaveArticle(t, st, "https://example.com/hints-orphan")
+	instances, err := st.List(ctx, "study-fixture")
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	orphanInstanceID := ""
+	for _, inst := range instances {
+		if inst.Article.ID == orphan.ID {
+			orphanInstanceID = inst.ID
+		}
+	}
+	if orphanInstanceID == "" {
+		t.Fatal("mustSaveArticle's instance not found in List()")
+	}
+	if err := st.Delete(ctx, "study-fixture", orphanInstanceID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if err := st.SetArticlePhraseHints(ctx, orphan.ID, map[string]string{"a phrase": "느낌"}); err != nil {
+		t.Fatalf("SetArticlePhraseHints() on orphan error = %v", err)
+	}
+	found, _, err = st.GetArticle(ctx, orphan.ID)
+	if err != nil {
+		t.Fatalf("GetArticle() error = %v", err)
+	}
+	if len(found.KeyPhraseHints) != 0 {
+		t.Fatalf("orphan article KeyPhraseHints = %v, want empty (write must not land without an instance)", found.KeyPhraseHints)
+	}
+}
