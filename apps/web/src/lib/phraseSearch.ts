@@ -38,6 +38,16 @@ export function normalizePhraseQuery(query: string): string {
     .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
 }
 
+// Identity for looking a tapped expression up in the article's pre-generated
+// hint map. The server stores hints keyed by its own exact phrase strings,
+// while a tap yields the summary substring at that spot, which can differ in
+// case and in the punctuation sitting between words — so both sides are
+// matched through lowercase + normalized-whitespace folding, mirroring the
+// server's own hint-key normalization.
+export function phraseHintKey(text: string): string {
+  return normalizePhraseQuery(text).toLocaleLowerCase();
+}
+
 function phraseWords(phrase: string): string[] {
   const normalized = normalizePhraseQuery(phrase);
   return normalized === "" ? [] : normalized.split(" ");

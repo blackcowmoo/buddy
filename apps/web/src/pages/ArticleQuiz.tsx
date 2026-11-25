@@ -15,6 +15,7 @@ import {
 import {
   freeTextEntryKey,
   normalizePhraseQuery,
+  phraseHintKey,
   phraseLookupPosition,
   segmentArticleSummary,
 } from "../lib/phraseSearch";
@@ -40,6 +41,15 @@ import { newestFirst } from "../lib/listView";
 // server tells an already-open client "it's ready now" (same reasoning as
 // App.tsx's pollEndedField).
 const articleStudyPollIntervalMs = 3000;
+// The phrases GET answers "done" as soon as the phrase list lands, but the
+// same job generates each phrase's feeling hint in a second pass right
+// behind it, so a "done without hints" answer means "almost". The watch
+// keeps checking a bounded number of extra times for those hints — the
+// generation is normally already running, and a few ticks easily cover it.
+// Bounded because a poll must not run forever if the hint pass permanently
+// failed (same reasoning as lib/wordSearch.ts's phraseHint retry cap); the
+// tap-time hint endpoint remains the fallback either way.
+const articlePhraseHintTopUpPolls = 8;
 const articleListPageSize = 20;
 const articleListLoadThreshold = 80;
 
@@ -309,6 +319,13 @@ export function ArticleQuiz() {
   // are idioms.
   const [phrases, setPhrases] = useState<string[]>([]);
   const phrasesWatchedRef = useRef<string | null>(null);
+  // The article's pre-generated feeling notes, keyed by phraseHintKey (the
+  // server keys them by its own exact phrase strings; taps yield the summary
+  // substring, which can differ in case/inter-word punctuation). Read at tap
+  // time, never rendered on its own, and reset with the article — a hint is
+  // about this article's usage, so it must not leak across articles. Like
+  // every other hint here it never enters the searched-words history.
+  const articlePhraseHintsRef = useRef(new Map<string, string>());
 
   // Polls one draw's status until it leaves "pending"/"failed" — started
   // right after a fresh draw, or when reopening a still-generating row from
@@ -329,23 +346,35 @@ export function ArticleQuiz() {
   );
 
   // Once an article's own summary is ready, watch for its suggested key
-  // phrases. The GET itself dispatches generation on a cache miss (see
-  // lib/articles.ts's fetchArticlePhrases), and anything that isn't a real
-  // phrase list reports "pending", so the poll simply keeps checking until
-  // the durable job lands. Navigating away stops watching only.
+  // phrases and their pre-generated feeling hints. The GET itself dispatches
+  // generation on a cache miss (see lib/articles.ts's fetchArticlePhrases),
+  // and anything that isn't a real phrase list reports "pending", so the
+  // poll simply keeps checking until the durable job lands. A "done" that
+  // still has no hints means the job's hint pass is running behind the
+  // already-landed list: keep polling a bounded number of extra times for
+  // them (see articlePhraseHintTopUpPolls). Navigating away stops watching
+  // only.
   useEffect(() => {
     if (!draw || draw.status !== "done") return;
     if (phrasesWatchedRef.current === draw.id) return;
     phrasesWatchedRef.current = draw.id;
     const token = {};
     phrasesTokenRef.current = token;
+    let hintTopUps = 0;
     startPhrasesPoll(token, {
       intervalMs: articleStudyPollIntervalMs,
       fetchResult: () => fetchArticlePhrases(draw.id),
       onResult: (result) => {
         if (result.status === "done") {
           setPhrases(result.phrases);
-          return false;
+          for (const [phrase, hint] of Object.entries(result.hints)) {
+            articlePhraseHintsRef.current.set(phraseHintKey(phrase), hint);
+          }
+          // Stop once every phrase that could have a note has one — an
+          // empty list has nothing to hint about either.
+          if (articlePhraseHintsRef.current.size > 0 || result.phrases.length === 0) return false;
+          hintTopUps += 1;
+          return hintTopUps <= articlePhraseHintTopUpPolls;
         }
         return true;
       },
@@ -393,6 +422,7 @@ export function ArticleQuiz() {
     setSearchedWords(loadSearchedWords(next.id));
     setSearchedWordsOpen(false);
     setPhrases([]);
+    articlePhraseHintsRef.current = new Map();
     phrasesWatchedRef.current = null;
     setPhraseSearch(null);
     setPhraseQuery("");
@@ -497,12 +527,12 @@ export function ArticleQuiz() {
     }
   }, [draw, followWordLookup, searchedWords]);
 
-  // A phrase tap asks the server for a non-revealing meaning hint (see
-  // lib/wordSearch.ts's phraseHint) while the definition probe below found
-  // no cached answer — the learner gets a general sense of the idiom without
-  // spoiling the meaning they can still get via an actual search. Hints stay
-  // out of the searched-words history and the phrase-search panel: they
-  // belong to the tap popover only.
+  // Fallback tap-time hint: asks the server for a non-revealing meaning hint
+  // (see lib/wordSearch.ts's phraseHint) for a phrase the article's
+  // pre-generated hint map doesn't cover — the learner gets a general sense
+  // of the idiom without spoiling the meaning they can still get via an
+  // actual search. Hints stay out of the searched-words history and the
+  // phrase-search panel: they belong to the tap popover only.
   const startPhraseHint = useCallback((articleID: string, key: number, word: string) => {
     const hintKey = `${articleID}:${key}`;
     if (phraseHintCacheRef.current.has(hintKey)) return;
@@ -533,6 +563,12 @@ export function ArticleQuiz() {
         ?? searchedWords.find((item) => item.key === key && item.word === word)?.result
         ?? null;
       const pending = pendingWordLookupsRef.current.has(lookupKey);
+      // The article's pre-generated feeling note for this exact expression,
+      // if the generation job already wrote one — the whole point of
+      // generating hints up front is that the learner never waits on one.
+      const articleHint = isPhrase
+        ? articlePhraseHintsRef.current.get(phraseHintKey(word)) ?? null
+        : null;
       setWordLookup({
         key,
         word,
@@ -540,7 +576,7 @@ export function ArticleQuiz() {
         failed: !pending && !localResult && failedWordLookupsRef.current.has(lookupKey),
         result: localResult ?? null,
         isPhrase,
-        hint: phraseHintCacheRef.current.get(lookupKey) ?? null,
+        hint: phraseHintCacheRef.current.get(lookupKey) ?? articleHint,
         hintLoading: isPhrase && pendingPhraseHintsRef.current.has(lookupKey),
       });
 
@@ -565,7 +601,10 @@ export function ArticleQuiz() {
             ? { ...prev, loading: false, result: serverResult, failed: false }
             : prev,
         );
-        if (isPhrase && !serverResult) startPhraseHint(draw.id, key, word);
+        // Only expressions the article's pre-generated hints don't already
+        // cover need a tap-time hint; fetching one for a note that's on
+        // screen would just re-pay the same answer.
+        if (isPhrase && !serverResult && !articleHint) startPhraseHint(draw.id, key, word);
       });
     },
     [draw, followWordLookup, searchedWords, startPhraseHint, updateSearchedWord],
@@ -764,13 +803,22 @@ export function ArticleQuiz() {
                 ref={wordLookupRef}
               >
                 <LookupHeader word={wordLookup.word} closeLabel="표현 뜻 닫기" onClose={() => setWordLookup(null)} />
+                {/* The feeling note sits outside the "still checking" branch on
+                    purpose: the article's pre-generated hints make it available
+                    the instant the phrase opens, and it must keep showing while
+                    the definition probe runs behind it (and while the slower
+                    tap-time hint is still being written). It disappears once a
+                    real answer or a failure is on screen — the same rule the
+                    lazy path has always followed: a hint is never shown
+                    alongside, or mistaken for, the actual meaning. */}
+                {wordLookup.isPhrase && !wordLookup.result && !wordLookup.failed &&
+                  (wordLookup.hint || wordLookup.hintLoading) && (
+                    <p className="quiz-meaning-hint">
+                      💡 {wordLookup.hint ?? "표현의 느낌을 정리하는 중…"}
+                    </p>
+                  )}
                 {!wordLookup.loading && !wordLookup.result && !wordLookup.failed && (
                   <>
-                    {wordLookup.isPhrase && (wordLookup.hint || wordLookup.hintLoading) && (
-                      <p className="quiz-meaning-hint">
-                        💡 {wordLookup.hint ?? "표현의 느낌을 정리하는 중…"}
-                      </p>
-                    )}
                     {/* A phrase tap only ever showed the hint above; pressing
                         찾기 is the learner's actual search, which runs the
                         normal define flow and reveals the real meaning. */}

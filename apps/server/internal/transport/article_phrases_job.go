@@ -30,14 +30,20 @@ type articlePhrasesJobPayload struct {
 // stack up concurrent generations while one is already running in-process.
 var articlePhrasesInlineJobs asyncjob.InlineRunner
 
-// runArticlePhrases generates and caches one article's key-phrase list.
-// Every early-exit is a nil no-op rather than an error: the article is
-// gone, its study isn't done (nothing to extract phrases from yet — the
-// study job will dispatch this itself right after CompleteArticle), or the
-// list already exists (the shared cached answer every future reader reuses,
-// which is the entire point of persisting it). SetArticlePhrases's own
-// first-writer-wins guard covers the race between two generators that both
-// passed the cached check.
+// runArticlePhrases generates and caches one article's shared key-phrase
+// list and, in a second pass behind it, the non-revealing usage hints for
+// every phrase on that list (see newsarticle.Article.KeyPhraseHints) — so a
+// learner who opens the article right after it finishes generating reads
+// each chip's feeling instantly instead of paying a fresh LLM call per tap.
+// Each phase runs only while its own column is still empty, so a job that
+// dies (or a pre-feature article) gets the missing phase backfilled without
+// ever re-paying the phase that already landed; the Set*'s first-writer-wins
+// guards cover races between concurrent generators. A missing phase's
+// early-exit is a nil no-op rather than an error: the article is gone, its
+// study isn't done (nothing to extract from yet — the study job dispatches
+// this itself right after CompleteArticle), or both answers already exist
+// (the shared cached result every future reader reuses, which is the entire
+// point of persisting it).
 func runArticlePhrases(ctx context.Context, pipe *pipeline.Pipeline, articles newsarticle.Store, articleID string) error {
 	ctx = workguard.BindStore(ctx, articles, "", articleID)
 	if err := workguard.Check(ctx); err != nil {
@@ -47,15 +53,28 @@ func runArticlePhrases(ctx context.Context, pipe *pipeline.Pipeline, articles ne
 	if err != nil {
 		return fmt.Errorf("article phrases: get: %w", err)
 	}
-	if !ok || target.Status != newsarticle.StatusDone || len(target.KeyPhrases) > 0 {
+	if !ok || target.Status != newsarticle.StatusDone {
 		return nil
 	}
-	phrases, err := pipe.SuggestArticlePhrases(ctx, target.Summary)
-	if err != nil {
-		return fmt.Errorf("article phrases: generate: %w", err)
+	if len(target.KeyPhrases) == 0 {
+		phrases, err := pipe.SuggestArticlePhrases(ctx, target.Summary)
+		if err != nil {
+			return fmt.Errorf("article phrases: generate: %w", err)
+		}
+		if err := articles.SetArticlePhrases(ctx, articleID, phrases); err != nil {
+			return fmt.Errorf("article phrases: save: %w", err)
+		}
+		target.KeyPhrases = phrases
 	}
-	if err := articles.SetArticlePhrases(ctx, articleID, phrases); err != nil {
-		return fmt.Errorf("article phrases: save: %w", err)
+	if len(target.KeyPhrases) == 0 || len(target.KeyPhraseHints) > 0 {
+		return nil
+	}
+	hints, err := pipe.SuggestPhraseHints(ctx, target.Summary, target.KeyPhrases)
+	if err != nil {
+		return fmt.Errorf("article phrase hints: generate: %w", err)
+	}
+	if err := articles.SetArticlePhraseHints(ctx, articleID, hints); err != nil {
+		return fmt.Errorf("article phrase hints: save: %w", err)
 	}
 	return nil
 }

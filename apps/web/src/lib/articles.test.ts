@@ -164,7 +164,11 @@ describe("fetchArticlePhrases", () => {
       json: () => Promise.resolve({ status: "done", phrases: ["in spite of", "made headway"] }),
     });
     vi.stubGlobal("fetch", fetchMock);
-    await expect(fetchArticlePhrases("i1")).resolves.toEqual({ status: "done", phrases: ["in spite of", "made headway"] });
+    await expect(fetchArticlePhrases("i1")).resolves.toEqual({
+      status: "done",
+      phrases: ["in spite of", "made headway"],
+      hints: {},
+    });
     expect(fetchMock).toHaveBeenCalledWith("api/articles/i1/phrases");
   });
 
@@ -173,7 +177,40 @@ describe("fetchArticlePhrases", () => {
       ok: true,
       json: () => Promise.resolve({ status: "done", phrases: ["made headway", 42, null, "   ", {}] }),
     }));
-    await expect(fetchArticlePhrases("i1")).resolves.toEqual({ status: "done", phrases: ["made headway"] });
+    await expect(fetchArticlePhrases("i1")).resolves.toEqual({ status: "done", phrases: ["made headway"], hints: {} });
+  });
+
+  // The pre-generated feeling notes ride along with the list. They are
+  // rendered as-is, so a malformed entry must be dropped, not rendered.
+  it("keeps usable pre-generated hints and drops malformed ones", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        status: "done",
+        phrases: ["in spite of", "made headway"],
+        hints: {
+          "in spite of": "막무가내로 밀고 나가는 뉘앙스",
+          "made headway": "   ",
+          " ": "공백 키는 버려진다",
+          "broken": { text: "문자열이 아닌 값은 버려진다" },
+        },
+      }),
+    }));
+    await expect(fetchArticlePhrases("i1")).resolves.toEqual({
+      status: "done",
+      phrases: ["in spite of", "made headway"],
+      hints: { "in spite of": "막무가내로 밀고 나가는 뉘앙스" },
+    });
+  });
+
+  // A legacy row whose hint pass has not landed yet: the list is a real
+  // verdict (the caller tops the hints up behind it), not a parse failure.
+  it("still reports done with an empty hint map when the response has none", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ status: "done", phrases: ["made headway"], hints: null }),
+    }));
+    await expect(fetchArticlePhrases("i1")).resolves.toEqual({ status: "done", phrases: ["made headway"], hints: {} });
   });
 
   // The server never persists an empty suggestion list, and any hiccup must

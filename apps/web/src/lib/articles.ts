@@ -127,27 +127,43 @@ export async function fetchArticleInstances(): Promise<ArticleInstance[]> {
 // every reader answers from MySQL alone. "pending" means generation hasn't
 // landed yet: this very GET dispatches it (transport.DispatchArticlePhrases,
 // deduped per article), so the caller's retry loop drives it to completion.
+// hints carries each phrase's pre-generated feeling note keyed by the exact
+// phrase string; it can still be empty on a "done" answer while the job's
+// second hint pass runs behind the list — the caller polls a few more times
+// for it and falls back to tap-time hints if it never arrives.
 // Anything unreadable — 409 (article summary still generating), a transient
 // 5xx, bad JSON — also reports "pending": the durable job recovers on its
 // own and the poll simply checks again.
 type ArticlePhrasesResult =
-  | { status: "done"; phrases: string[] }
+  | { status: "done"; phrases: string[]; hints: Record<string, string> }
   | { status: "pending" };
 
 const phrasesPending: ArticlePhrasesResult = { status: "pending" };
+
+// parsePhraseHints defensively narrows the response's hints map: only
+// non-empty string entries under non-empty string keys are usable lookup
+// entries; anything else is dropped rather than rendered.
+function parsePhraseHints(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object") return {};
+  const out: Record<string, string> = {};
+  for (const [phrase, hint] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof hint === "string" && hint.trim() !== "" && phrase.trim() !== "") out[phrase] = hint;
+  }
+  return out;
+}
 
 export async function fetchArticlePhrases(id: string): Promise<ArticlePhrasesResult> {
   try {
     const res = await fetch(`api/articles/${encodeURIComponent(id)}/phrases`);
     if (!res.ok) return phrasesPending;
-    const body = (await res.json()) as { status?: unknown; phrases?: unknown };
+    const body = (await res.json()) as { status?: unknown; phrases?: unknown; hints?: unknown };
     // The server never persists an empty suggestion list (empty means "not
     // generated yet"), so a "done" answer with nothing usable left after
     // defensive filtering is treated as still pending rather than a real
     // verdict that would stop the caller's polling.
     if (body.status === "done" && Array.isArray(body.phrases)) {
       const phrases = body.phrases.filter((phrase): phrase is string => typeof phrase === "string" && phrase.trim() !== "");
-      if (phrases.length > 0) return { status: "done", phrases };
+      if (phrases.length > 0) return { status: "done", phrases, hints: parsePhraseHints(body.hints) };
     }
     return phrasesPending;
   } catch {
