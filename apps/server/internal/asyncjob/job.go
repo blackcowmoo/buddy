@@ -136,6 +136,16 @@ const (
 	KindWordDefine    Kind = "word-define"
 	KindWordResearch  Kind = "word-research"
 	KindWritingPrompt Kind = "writing-prompt"
+	// KindWritingCheck grades one submitted answer for the Today's
+	// Sentence page (payload: {PromptID, UserID} — see
+	// transport.DispatchWritingCheck). Queued rather than run inline in
+	// the submit request for the same reason as KindStudySummary: the
+	// correction cascade runs against a slow local model, and a learner
+	// who navigates away mid-check must still find the graded result on
+	// the stored answer when they return (see writing.Prompt.CheckStatus).
+	// Its DedupeKey is the prompt ID, so poll-triggered re-dispatches and
+	// an explicit re-check collapse into the one run in flight.
+	KindWritingCheck Kind = "writing-check"
 	KindNuance        Kind = "nuance"
 	// KindArticlePhrases generates the cached key-phrase suggestion list for
 	// one article (payload: {ArticleID} — see

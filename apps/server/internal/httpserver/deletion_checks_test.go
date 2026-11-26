@@ -19,13 +19,11 @@ func (s *checkOwner) WorkExists(context.Context, string, string) (bool, error) {
 	return !s.deleted.Load(), nil
 }
 
-type ownedWriting struct {
-	*fakeWritingStore
-	*checkOwner
-}
-
+// Writing answers are graded by the detached writing-check job, not in this
+// request, so its deleted-owner guards live in transport's check-job tests;
+// only the synchronous quiz checks remain here.
 func TestAnswerChecksDiscardDeletedOwner(t *testing.T) {
-	for _, kind := range []string{"writing", "session quiz", "word quiz"} {
+	for _, kind := range []string{"session quiz", "word quiz"} {
 		t.Run(kind, func(t *testing.T) {
 			for _, before := range []bool{true, false} {
 				t.Run(map[bool]string{true: "before call", false: "during call"}[before], func(t *testing.T) {
@@ -42,9 +40,6 @@ func TestAnswerChecksDiscardDeletedOwner(t *testing.T) {
 					var handler http.HandlerFunc
 					var body string
 					switch kind {
-					case "writing":
-						handler = writingCheckHandler(ident, pipe, &ownedWriting{&fakeWritingStore{}, owner})
-						body = `{"promptId":"item","prompt":"문장","answer":"sentence"}`
 					case "session quiz":
 						handler = quizAnswerCheckHandler(ident, pipe, quizOwners{Sessions: owner}, nil, nil)
 						body = `{"sessionId":"item","prompt":"p","answer":"a","learnerAnswer":"b"}`

@@ -1,8 +1,23 @@
 import { fetchJSON, postJSON, requestOK } from "./fetchJSON";
-import type { Correction } from "./protocol";
+import type { Issue } from "./protocol";
 
 type WritingStatus = "pending" | "done" | "failed";
-export interface WritingPrompt { id: string; korean: string; status: WritingStatus; createdAt: number }
+// "" is the server's "no check bound to the stored answer" state; "pending"
+// means a detached server-side check is running (or waiting to be re-run).
+export type WritingCheckStatus = "" | "pending" | "done" | "failed";
+
+export interface WritingPrompt {
+  id: string;
+  korean: string;
+  status: WritingStatus;
+  createdAt: number;
+  // The persisted answer and its asynchronously graded result: reopening
+  // the page restores both instead of starting from an empty editor.
+  answer?: string;
+  checkStatus?: WritingCheckStatus;
+  corrected?: string;
+  issues?: Issue[];
+}
 
 export function fetchWritingPrompts(): Promise<WritingPrompt[]> {
   return fetchJSON<WritingPrompt[]>("api/writing", []);
@@ -20,6 +35,12 @@ export function deleteWritingPrompt(id: string): Promise<boolean> {
 	return requestOK(`api/writing/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
-export function checkWriting(prompt: string, answer: string, promptId?: string): Promise<Correction | null> {
-  return postJSON<Correction | null>("api/writing/check", { prompt, answer, promptId }, null);
+// Submitting only persists the answer and starts the server-side check; the
+// grade arrives via polling the prompt, so navigating away never cancels it.
+export function checkWriting(promptId: string, answer: string): Promise<WritingPrompt | null> {
+  return postJSON<WritingPrompt | null>("api/writing/check", { promptId, answer }, null);
+}
+
+export function recheckWriting(promptId: string): Promise<WritingPrompt | null> {
+  return postJSON<WritingPrompt | null>(`api/writing/${encodeURIComponent(promptId)}/recheck`, {}, null);
 }
