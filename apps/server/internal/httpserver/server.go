@@ -38,6 +38,7 @@ type JobQueues struct {
 	ArticleStudy      *asyncjob.Queue
 	ArticlePhrases    *asyncjob.Queue
 	Writing           *asyncjob.Queue
+	WritingCheck      *asyncjob.Queue
 	Nuance            *asyncjob.Queue
 	WordAutoAdd       *asyncjob.Queue
 	WordDefine        *asyncjob.Queue
@@ -87,6 +88,7 @@ func New(cfg config.Config, deps Dependencies) *http.Server {
 	articleStudyQueue := deps.Queues.ArticleStudy
 	articlePhrasesQueue := deps.Queues.ArticlePhrases
 	writingQueue := deps.Queues.Writing
+	writingCheckQueue := deps.Queues.WritingCheck
 	wordAutoAddQueue := deps.Queues.WordAutoAdd
 	wordDefineQueue := deps.Queues.WordDefine
 	wordResearchQueue := deps.Queues.WordResearch
@@ -131,9 +133,10 @@ func New(cfg config.Config, deps Dependencies) *http.Server {
 	}
 	mux.HandleFunc("GET /api/writing", writingListHandler(ident, writingStore))
 	mux.HandleFunc("POST /api/writing/draw", writingDrawHandler(ident, writingStore, st.GetLearnerProfile, pipe, writingQueue))
-	mux.HandleFunc("GET /api/writing/{id}", writingInstanceHandler(ident, writingStore))
+	mux.HandleFunc("GET /api/writing/{id}", writingInstanceHandler(ident, writingStore, pipe, writingCheckQueue))
 	mux.HandleFunc("DELETE /api/writing/{id}", writingDeleteHandler(ident, writingStore))
-	mux.HandleFunc("POST /api/writing/check", writingCheckHandler(ident, pipe, deps.Writing))
+	mux.HandleFunc("POST /api/writing/check", writingCheckHandler(ident, writingStore, pipe, writingCheckQueue))
+	mux.HandleFunc("POST /api/writing/{id}/recheck", writingRecheckHandler(ident, writingStore, pipe, writingCheckQueue))
 	mux.HandleFunc("POST /api/words/suggest", wordSuggestHandler(ident, pipe))
 	mux.HandleFunc("POST /api/words/define", wordDefineHandler(ident, pipe))
 	mux.HandleFunc("POST /api/words/save", wordSaveHandler(ident, words, pipe, wordVerifyQueue))

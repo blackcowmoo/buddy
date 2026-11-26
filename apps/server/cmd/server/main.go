@@ -156,6 +156,8 @@ func main() {
 
 	writingQueue := startWorker(rdb, jobsCtx, asyncjob.KindWritingPrompt, transport.WritingWorkerConcurrency, transport.WritingClaimTTL,
 		transport.WritingJobHandler(pipe, writingStore, st.GetLearnerProfile))
+	writingCheckQueue := startWorker(rdb, jobsCtx, asyncjob.KindWritingCheck, transport.WritingWorkerConcurrency, transport.WritingCheckClaimTTL,
+		transport.WritingCheckJobHandler(pipe, writingStore))
 
 	// "오늘의 아티클" read-aloud + (on demand) chat message read-aloud TTS:
 	// optional, disabled unless both BUDDY_TTS_URL and S3Bucket are set (see
@@ -316,6 +318,7 @@ func main() {
 			ArticleStudy:      articleStudyQueue,
 			ArticlePhrases:    articlePhrasesQueue,
 			Writing:           writingQueue,
+			WritingCheck:      writingCheckQueue,
 			Nuance:            nuanceQueue,
 			WordAutoAdd:       wordAutoAddQueue,
 			WordDefine:        wordDefineQueue,

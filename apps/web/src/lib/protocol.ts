@@ -12,7 +12,7 @@ type EventType =
   | "assistant_translation"
   | "error";
 
-interface Issue {
+export interface Issue {
   type: string; // "grammar" | "vocabulary" | "phrasing" | "context"
   span: string;
   suggestion: string;
