@@ -24,7 +24,7 @@ func TestGenerateNuanceUsesProfileExclusionsAndUniqueDraw(t *testing.T) {
 		system, input = msgs[0].Content, msgs[1].Content
 		return string(data), nil
 	}}}}}
-	c, err := p.GenerateNuance(context.Background(), "likes travel", []string{"curious / nosy"}, "draw-123")
+	c, err := p.GenerateNuance(context.Background(), "likes travel", []string{"curious / nosy"}, nil, "draw-123")
 	if err != nil || len(c.Questions) != 5 {
 		t.Fatalf("generation: %+v %v", c, err)
 	}
@@ -88,13 +88,13 @@ func TestGenerateNuanceRejectsIncompleteAndMalformedOutput(t *testing.T) {
 	for _, raw := range []string{`{}`, `not json`, `{"words":[],"questions":[]}`} {
 		t.Run(raw, func(t *testing.T) {
 			p := &Pipeline{Analysis: []Candidate{{LLM: &fakeLLM{complete: func([]llm.Message) (string, error) { return raw, nil }}}}}
-			if _, err := p.GenerateNuance(context.Background(), "", nil, "id"); !errors.Is(err, nuance.ErrInvalid) {
+			if _, err := p.GenerateNuance(context.Background(), "", nil, nil, "id"); !errors.Is(err, nuance.ErrInvalid) {
 				t.Fatalf("GenerateNuance() error = %v, want nuance.ErrInvalid", err)
 			}
 		})
 	}
 	p := &Pipeline{Analysis: []Candidate{{LLM: &fakeLLM{complete: func([]llm.Message) (string, error) { return "", errors.New("offline") }}}}}
-	if _, err := p.GenerateNuance(context.Background(), "", nil, "id"); err == nil {
+	if _, err := p.GenerateNuance(context.Background(), "", nil, nil, "id"); err == nil {
 		t.Fatal("model error lost")
 	}
 }
@@ -107,7 +107,7 @@ func TestGenerateNuanceAcceptsWrappedJSONAndOwnsQuestionIDs(t *testing.T) {
 	p := &Pipeline{Analysis: []Candidate{{LLM: &fakeLLM{complete: func([]llm.Message) (string, error) {
 		return "Here is the lesson:\n```json\n" + string(data) + "\n```", nil
 	}}}}}
-	c, err := p.GenerateNuance(context.Background(), "", nil, "id")
+	c, err := p.GenerateNuance(context.Background(), "", nil, nil, "id")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestGenerateNuanceLowercasesModelCasing(t *testing.T) {
 		system = msgs[0].Content
 		return upper, nil
 	}}}}}
-	c, err := p.GenerateNuance(context.Background(), "", nil, "id")
+	c, err := p.GenerateNuance(context.Background(), "", nil, nil, "id")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestGenerateNuanceRepairsInvalidFinalWithOneDirectJudgeCall(t *testing.T) {
 		}},
 		JudgeModel: "judge",
 	}
-	c, err := p.GenerateNuance(context.Background(), "likes travel", nil, "draw-1")
+	c, err := p.GenerateNuance(context.Background(), "likes travel", nil, nil, "draw-1")
 	if err != nil || len(c.Questions) != 5 {
 		t.Fatalf("GenerateNuance() = (%+v, %v)", c, err)
 	}
@@ -210,7 +210,7 @@ func TestGenerateNuanceStopsAfterOneInvalidRepair(t *testing.T) {
 		}},
 		JudgeModel: "judge",
 	}
-	if _, err := p.GenerateNuance(context.Background(), "", nil, "id"); !errors.Is(err, nuance.ErrInvalid) {
+	if _, err := p.GenerateNuance(context.Background(), "", nil, nil, "id"); !errors.Is(err, nuance.ErrInvalid) {
 		t.Fatalf("GenerateNuance() error = %v, want nuance.ErrInvalid", err)
 	}
 	if judgeCalls != 2 {
@@ -231,7 +231,7 @@ func TestGenerateNuanceKeepsRepairTransportFailureRetryable(t *testing.T) {
 		}},
 		JudgeModel: "judge",
 	}
-	_, err := p.GenerateNuance(context.Background(), "", nil, "id")
+	_, err := p.GenerateNuance(context.Background(), "", nil, nil, "id")
 	if err == nil || errors.Is(err, nuance.ErrInvalid) {
 		t.Fatalf("GenerateNuance() error = %v, want a retryable transport error", err)
 	}
@@ -303,7 +303,7 @@ func TestGenerateNuanceAuditsAndRepairsAmbiguousQuestions(t *testing.T) {
 		}},
 		JudgeModel: "judge",
 	}
-	c, err := p.GenerateNuance(context.Background(), "likes travel", nil, "draw-1")
+	c, err := p.GenerateNuance(context.Background(), "likes travel", nil, nil, "draw-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,7 +363,7 @@ func TestGenerateNuanceKeepsValidLessonWhenClarityStepFails(t *testing.T) {
 				}},
 				JudgeModel: "judge",
 			}
-			c, err := p.GenerateNuance(context.Background(), "", nil, "id")
+			c, err := p.GenerateNuance(context.Background(), "", nil, nil, "id")
 			if err != nil {
 				t.Fatalf("a failed clarity step must not fail a valid lesson: %v", err)
 			}
@@ -589,4 +589,59 @@ func TestDecodeNuanceDiscardsPartiallyParsedObjects(t *testing.T) {
 			t.Errorf("%s error = %v, want the extracted object's answer type error", label, err)
 		}
 	}
+}
+
+func TestGenerateNuancePinsRequestedWords(t *testing.T) {
+	data, err := os.ReadFile("../nuance/testdata/lesson.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := strings.ReplaceAll(string(data), `"word": "cheap"`, `"word": "affordable"`)
+	if other == string(data) {
+		t.Fatal("fixture no longer contains the replaceable word")
+	}
+
+	t.Run("requested pair reaches the prompt and is accepted", func(t *testing.T) {
+		var system, input string
+		p := &Pipeline{Analysis: []Candidate{{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			system, input = msgs[0].Content, msgs[1].Content
+			return string(data), nil
+		}}}}}
+		c, err := p.GenerateNuance(context.Background(), "", nil, []string{"inexpensive", "cheap"}, "draw-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(input, `"requestedWords":["inexpensive","cheap"]`) {
+			t.Fatalf("requested pair missing from the prompt input: %s", input)
+		}
+		if !strings.Contains(system, "compare exactly those words") {
+			t.Fatal("system prompt lacks the pinned-pair instruction")
+		}
+		if len(c.Words) != 2 {
+			t.Fatalf("words = %+v", c.Words)
+		}
+	})
+
+	t.Run("random draws carry no requested words", func(t *testing.T) {
+		var input string
+		p := &Pipeline{Analysis: []Candidate{{LLM: &fakeLLM{complete: func(msgs []llm.Message) (string, error) {
+			input = msgs[1].Content
+			return string(data), nil
+		}}}}}
+		if _, err := p.GenerateNuance(context.Background(), "", nil, nil, "draw-2"); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(input, "requestedWords") {
+			t.Fatalf("random draw carries requestedWords: %s", input)
+		}
+	})
+
+	t.Run("a candidate with other words is rejected", func(t *testing.T) {
+		p := &Pipeline{Analysis: []Candidate{{LLM: &fakeLLM{complete: func([]llm.Message) (string, error) {
+			return other, nil
+		}}}}}
+		if _, err := p.GenerateNuance(context.Background(), "", nil, []string{"cheap", "inexpensive"}, "draw-3"); !errors.Is(err, nuance.ErrInvalid) {
+			t.Fatalf("GenerateNuance() error = %v, want nuance.ErrInvalid", err)
+		}
+	})
 }

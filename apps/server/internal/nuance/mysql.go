@@ -97,12 +97,12 @@ func lowercaseStoredWords(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-const columns = `id,user_id,status,created_at,revision,content_json,state_json`
+const columns = `id,user_id,status,created_at,revision,content_json,state_json,requested_words`
 
 func scan(s interface{ Scan(...any) error }) (Lesson, error) {
 	var l Lesson
-	var content, state []byte
-	if err := s.Scan(&l.ID, &l.UserID, &l.Status, &l.CreatedAt, &l.Revision, &content, &state); err != nil {
+	var content, state, requested []byte
+	if err := s.Scan(&l.ID, &l.UserID, &l.Status, &l.CreatedAt, &l.Revision, &content, &state, &requested); err != nil {
 		if err == sql.ErrNoRows {
 			return l, ErrNotFound
 		}
@@ -116,12 +116,23 @@ func scan(s interface{ Scan(...any) error }) (Lesson, error) {
 	if err := json.Unmarshal(state, &l.State); err != nil {
 		return l, err
 	}
+	if len(requested) > 0 {
+		if err := json.Unmarshal(requested, &l.RequestedWords); err != nil {
+			return l, err
+		}
+	}
 	return l, nil
 }
-func (s *MySQLStore) Create(ctx context.Context, userID string) (Lesson, error) {
-	l := Lesson{ID: uuid.NewString(), UserID: userID, Status: StatusPending, CreatedAt: time.Now().Unix(), State: State{Progress: map[string]Progress{}, Queue: []string{}}}
+func (s *MySQLStore) Create(ctx context.Context, userID string, requestedWords []string) (Lesson, error) {
+	l := Lesson{ID: uuid.NewString(), UserID: userID, Status: StatusPending, RequestedWords: requestedWords, CreatedAt: time.Now().Unix(), State: State{Progress: map[string]Progress{}, Queue: []string{}}}
 	state, _ := json.Marshal(l.State)
-	_, err := s.db.ExecContext(ctx, `INSERT INTO buddy_nuance_lessons (id,user_id,status,created_at,state_json) VALUES (?,?,?,?,?)`, l.ID, userID, l.Status, l.CreatedAt, string(state))
+	// NULL requested_words means "pick randomly"; only a validated pair is stored.
+	var requested any
+	if len(requestedWords) > 0 {
+		encoded, _ := json.Marshal(requestedWords)
+		requested = string(encoded)
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO buddy_nuance_lessons (id,user_id,status,created_at,state_json,requested_words) VALUES (?,?,?,?,?,?)`, l.ID, userID, l.Status, l.CreatedAt, string(state), requested)
 	return l, err
 }
 func (s *MySQLStore) List(ctx context.Context, userID string) ([]Lesson, error) {

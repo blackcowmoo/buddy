@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -72,6 +73,61 @@ func (c *Content) Lowercase() bool {
 		}
 	}
 	return changed
+}
+
+// requestedWordPattern accepts one dictionary-shaped English word: letters
+// with optional inner hyphens or apostrophes. It keeps a learner-submitted
+// comparison to plain words, so free text cannot be smuggled into prompts and
+// the random generator stays the fallback for anything else.
+var requestedWordPattern = regexp.MustCompile(`^[A-Za-z]+(?:[-'][A-Za-z]+)*$`)
+
+const maxRequestedWordLen = 32
+
+// NormalizeRequestedWords validates the two words a learner asked to compare.
+// It lowercases them like stored words and reports ok=false for anything
+// unusable — not exactly two entries, blank or oversized text, non-word
+// shapes, or the same word twice — so callers fall back to random generation
+// instead of failing the draw.
+func NormalizeRequestedWords(words []string) ([]string, bool) {
+	if len(words) != 2 {
+		return nil, false
+	}
+	out := make([]string, 0, len(words))
+	for _, raw := range words {
+		word := strings.TrimSpace(raw)
+		if word == "" || len(word) > maxRequestedWordLen || !requestedWordPattern.MatchString(word) {
+			return nil, false
+		}
+		out = append(out, strings.ToLower(word))
+	}
+	if out[0] == out[1] {
+		return nil, false
+	}
+	return out, true
+}
+
+// MatchesRequestedWordSet reports whether the lesson compares exactly the
+// requested words, ignoring order. Requested words come from
+// NormalizeRequestedWords (distinct, lowercase) and lesson words are already
+// lowercased by the contract, so set equality with equal lengths is exact.
+func (c Content) MatchesRequestedWordSet(requested []string) bool {
+	if len(c.Words) != len(requested) {
+		return false
+	}
+	unmatched := make(map[string]bool, len(requested))
+	for _, word := range requested {
+		unmatched[strings.ToLower(word)] = true
+	}
+	for _, w := range c.Words {
+		word := strings.ToLower(w.Word)
+		if !unmatched[word] {
+			return false
+		}
+		// A content word may repeat only if the same word were requested
+		// twice, which NormalizeRequestedWords already rejects.
+		delete(unmatched, word)
+	}
+	return len(unmatched) == 0
 }
 
 // A comparison is the complete word set, independent of order, case, or spacing.
@@ -201,13 +257,18 @@ type State struct {
 	Feedback *Feedback           `json:"feedback,omitempty"`
 }
 type Lesson struct {
-	ID        string   `json:"id"`
-	UserID    string   `json:"-"`
-	Status    string   `json:"status"`
-	CreatedAt int64    `json:"createdAt"`
-	Revision  int      `json:"revision"`
-	Content   *Content `json:"content,omitempty"`
-	State     State    `json:"state"`
+	ID     string   `json:"id"`
+	UserID string   `json:"-"`
+	Status string   `json:"status"`
+	// RequestedWords are the words the learner asked to compare at draw time.
+	// They live on the row (not the job payload) because recovery rebuilds
+	// generation from the lesson, and they are internal: the client only ever
+	// sees the generated content.
+	RequestedWords []string `json:"-"`
+	CreatedAt      int64    `json:"createdAt"`
+	Revision       int      `json:"revision"`
+	Content        *Content `json:"content,omitempty"`
+	State          State    `json:"state"`
 }
 type ReviewItem struct {
 	LessonID   string `json:"lessonId"`
@@ -299,7 +360,11 @@ func (l *Lesson) Apply(a Action, now time.Time) error {
 }
 
 type Store interface {
-	Create(context.Context, string) (Lesson, error)
+	// Create starts a pending lesson. requestedWords, already validated by
+	// NormalizeRequestedWords (nil for a random draw), records the words the
+	// learner asked to compare so every generation attempt for this row —
+	// including one started by recovery — targets them.
+	Create(context.Context, string, []string) (Lesson, error)
 	List(context.Context, string) ([]Lesson, error)
 	Get(context.Context, string, string) (Lesson, error)
 	Delete(context.Context, string, string) error

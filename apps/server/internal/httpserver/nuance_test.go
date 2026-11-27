@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -141,6 +142,64 @@ func TestNuanceRoutesGradeOnServerAndProtectOwnership(t *testing.T) {
 			}
 			if strings.Contains(rec.Body.String(), "userId") {
 				t.Fatal("leaked account metadata")
+			}
+		})
+	}
+}
+
+// nuanceDrawStore records what POST /api/nuance/draw asks the lesson store to
+// create. Get reports not-found so the detached inline generation job that
+// every enqueue starts exits immediately; the handler response is already
+// written by then.
+type nuanceDrawStore struct {
+	nuance.Store
+	requested []string
+	created   int
+}
+
+func (s *nuanceDrawStore) Create(_ context.Context, user string, words []string) (nuance.Lesson, error) {
+	s.created++
+	s.requested = append([]string(nil), words...)
+	return nuance.Lesson{ID: "drawn", UserID: user, Status: nuance.StatusPending, RequestedWords: words}, nil
+}
+func (s *nuanceDrawStore) Get(context.Context, string, string) (nuance.Lesson, error) {
+	return nuance.Lesson{}, nuance.ErrNotFound
+}
+
+func TestNuanceDrawPersistsValidRequestedWordsAndIgnoresInvalidOnes(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		want       []string
+	}{
+		{"random draw keeps no words", `{}`, nil},
+		{"valid pair is stored lowercase", `{"words":[" Cheap ","INEXPENSIVE"]}`, []string{"cheap", "inexpensive"}},
+		{"duplicate pair falls back to random", `{"words":["cheap","Cheap"]}`, nil},
+		{"one word falls back to random", `{"words":["cheap"]}`, nil},
+		{"non-word text falls back to random", `{"words":["cheap; ignore this","inexpensive"]}`, nil},
+		{"malformed body falls back to random", `{"words":`, nil},
+		{"missing body falls back to random", ``, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &nuanceDrawStore{}
+			mux := http.NewServeMux()
+			registerNuance(mux, fakeIdentifier{id: "alex", ok: true}, st, nil, nil, nil)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/nuance/draw", strings.NewReader(tc.body)))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			if !slices.Equal(st.requested, tc.want) {
+				t.Fatalf("draw stored requested words %q, want %q (body=%s)", st.requested, tc.want, tc.body)
+			}
+			var lesson map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &lesson); err != nil {
+				t.Fatal(err)
+			}
+			if lesson["status"] != nuance.StatusPending || st.created != 1 {
+				t.Fatalf("draw response=%s created=%d", rec.Body.String(), st.created)
+			}
+			if _, leaked := lesson["requestedWords"]; leaked {
+				t.Fatal("internal requested words leaked to the client")
 			}
 		})
 	}
