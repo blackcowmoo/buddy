@@ -33,6 +33,9 @@ export function WordNuance() {
   const [busy, setBusy] = useState(false);
   const [practicing, setPracticing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [drawMode, setDrawMode] = useState<"random" | "words">("random");
+  const [wordA, setWordA] = useState("");
+  const [wordB, setWordB] = useState("");
   const busyRef = useRef(false);
   const navigation = useRef(0);
 
@@ -111,11 +114,23 @@ export function WordNuance() {
       }
     });
   };
+  // The server validates the pair and silently falls back to random words,
+  // so the client only blocks obviously unusable input (blank or the same
+  // word twice) to avoid a pointless draw.
+  const requestedPair = (): string[] | null => {
+    const a = wordA.trim();
+    const b = wordB.trim();
+    if (!a || !b || a.toLowerCase() === b.toLowerCase()) return null;
+    return [a, b];
+  };
   const create = () => {
+    const words = drawMode === "words" ? requestedPair() : null;
+    if (drawMode === "words" && !words) return;
     const token = navigation.current;
     void run(async () => {
-      const lesson = await drawNuanceLesson();
+      const lesson = await drawNuanceLesson(words ?? undefined);
       if (!lesson) { setError("문제를 만들지 못했어요. 다시 시도해 주세요."); return; }
+      if (words) { setWordA(""); setWordB(""); }
       remember(lesson);
       if (token !== navigation.current) return;
       navigation.current++; setSelected(lesson); setPracticing(false); navigate(lesson.id);
@@ -139,9 +154,27 @@ export function WordNuance() {
     {!selected ? <>
       <LearningIntro eyebrow="같은 뜻, 미묘하게 다른 느낌" title="상황에 맞는 단어를 익혀요" description="서로 바꿔 써도 기본 뜻이 통하는 단어들을 비교해요. 상황과 의도에 따라 달라지는 말투와 느낌을 익혀 보세요." />
       <PageToolbar>
-        <button type="button" onClick={create} disabled={busy || loading}>{busy ? "처리 중…" : "＋ 새 문제 만들기"}</button>
+        <button type="button" onClick={create} disabled={busy || loading || (drawMode === "words" && !requestedPair())}>{busy ? "처리 중…" : "＋ 새 문제 만들기"}</button>
         {hasReview && <a className="nuance-review-link" aria-disabled={busy || loading} onClick={(event) => { if (busy || loading) event.preventDefault(); }} href={window.location.pathname.replace(/\/nuance\/?$/, "/nuance-review")}>복습 시작</a>}
       </PageToolbar>
+      <form className="nuance-draw-form" onSubmit={(event) => { event.preventDefault(); create(); }}
+        onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); create(); } }}>
+        <fieldset className="nuance-draw-modes">
+          <legend>새 문제 방식</legend>
+          <label>
+            <input type="radio" name="nuance-draw-mode" checked={drawMode === "random"} onChange={() => setDrawMode("random")} />
+            무작위 단어
+          </label>
+          <label>
+            <input type="radio" name="nuance-draw-mode" checked={drawMode === "words"} onChange={() => setDrawMode("words")} />
+            두 단어 직접 고르기
+          </label>
+        </fieldset>
+        {drawMode === "words" && <div className="nuance-draw-words">
+          <label>첫 단어<input className="nuance-draw-word" lang="en" value={wordA} onChange={(e) => setWordA(e.target.value)} placeholder="cheap" autoComplete="off" spellCheck={false} /></label>
+          <label>두 번째 단어<input className="nuance-draw-word" lang="en" value={wordB} onChange={(e) => setWordB(e.target.value)} placeholder="inexpensive" autoComplete="off" spellCheck={false} /></label>
+        </div>}
+      </form>
       <PageSection title="나의 뉘앙스 학습 기록" description={`${lessons.length}개 묶음 · 복습할 문맥 ${due}개`}>
         {error && <p role="alert">{error}</p>}
         {loading && <LoadingHint />}

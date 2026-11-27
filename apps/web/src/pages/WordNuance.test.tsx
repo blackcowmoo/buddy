@@ -265,3 +265,35 @@ it("follows browser history back and forward to a saved lesson", async () => {
   await act(async () => { window.history.replaceState(null, "", "/nuance?lesson=lesson-1"); window.dispatchEvent(new PopStateEvent("popstate")); });
   expect(screen.getByRole("button", { name: "상황 연습" })).toBeInTheDocument();
 });
+it("draws random words by default and a chosen pair when the learner picks words", async () => {
+  vi.mocked(api.drawNuanceLesson).mockResolvedValue(structuredClone(lesson));
+  render(<WordNuance />);
+  const create = await screen.findByRole("button", { name: "＋ 새 문제 만들기" });
+  expect(create).toBeEnabled();
+  expect(screen.queryByLabelText("첫 단어")).not.toBeInTheDocument();
+
+  fireEvent.click(create);
+  await waitFor(() => expect(api.drawNuanceLesson).toHaveBeenCalledWith(undefined));
+  await screen.findByRole("button", { name: "상황 연습" });
+
+  fireEvent.click(screen.getByRole("button", { name: "목록으로" }));
+  const createAgain = await screen.findByRole("button", { name: "＋ 새 문제 만들기" });
+  await waitFor(() => expect(createAgain).toBeEnabled());
+  fireEvent.click(screen.getByText("두 단어 직접 고르기"));
+  expect(screen.getByLabelText("첫 단어")).toBeInTheDocument();
+  expect(createAgain).toBeDisabled();
+
+  fireEvent.change(screen.getByLabelText("첫 단어"), { target: { value: " Happy " } });
+  fireEvent.change(screen.getByLabelText("두 번째 단어"), { target: { value: "happy" } });
+  expect(createAgain).toBeDisabled(); // same word twice is not a pair
+
+  fireEvent.change(screen.getByLabelText("두 번째 단어"), { target: { value: "glad" } });
+  expect(createAgain).toBeEnabled();
+  fireEvent.click(createAgain);
+  await waitFor(() => expect(api.drawNuanceLesson).toHaveBeenCalledWith(["Happy", "glad"]));
+  // A words draw clears the inputs so the next explicit-words attempt starts fresh.
+  await screen.findByRole("button", { name: "상황 연습" });
+  fireEvent.click(screen.getByRole("button", { name: "목록으로" }));
+  await waitFor(() => expect(screen.getByLabelText("첫 단어")).toHaveValue(""));
+  expect(screen.getByLabelText("두 번째 단어")).toHaveValue("");
+});

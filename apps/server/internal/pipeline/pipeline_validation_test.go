@@ -77,7 +77,7 @@ func TestGenerationRetryRegeneratesInvalidTerminalOutput(t *testing.T) {
 			return err
 		}},
 		{"nuance invalid lesson with interrupted repair", 1, `{}`, string(nuanceData), true, func(ctx context.Context, p *Pipeline) error {
-			_, err := p.GenerateNuance(ctx, "profile", nil, "draw")
+			_, err := p.GenerateNuance(ctx, "profile", nil, nil, "draw")
 			return err
 		}},
 	} {

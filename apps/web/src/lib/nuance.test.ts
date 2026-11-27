@@ -42,3 +42,11 @@ it("counts due questions at the scheduled boundary and keeps option order stable
   expect(nuanceOptions(l, "q0", 1)).toEqual([...options].reverse());
   expect(l.content!.words.map((w) => w.word)).toEqual(["cheap", "inexpensive"]);
 });
+it("sends the requested word pair only when the learner chose one", async () => {
+  const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, json: async () => null } as Response);
+  await drawNuanceLesson();
+  expect(JSON.parse(String(fetch.mock.lastCall?.[1]?.body))).toEqual({});
+  await drawNuanceLesson(["cheap", "inexpensive"]);
+  expect(fetch).toHaveBeenLastCalledWith("api/nuance/draw", expect.objectContaining({ method: "POST" }));
+  expect(JSON.parse(String(fetch.mock.lastCall?.[1]?.body))).toEqual({ words: ["cheap", "inexpensive"] });
+});

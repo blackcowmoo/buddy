@@ -393,3 +393,73 @@ func TestNuanceResumeKeepsInputsAcrossRevisionAndProfileChanges(t *testing.T) {
 		t.Fatalf("resumed lesson = %+v", st.lesson)
 	}
 }
+
+func TestNuanceRequestedPairIsPinnedIntoGeneration(t *testing.T) {
+	data, err := os.ReadFile("../nuance/testdata/lesson.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &nuanceJobStore{lesson: nuance.Lesson{ID: "lesson", Status: nuance.StatusPending, RequestedWords: []string{"cheap", "inexpensive"}}}
+	var inputs []string
+	model := nuanceLLM{
+		messages: func(msgs []llm.Message) { inputs = append(inputs, msgs[1].Content) },
+		complete: func(context.Context) (string, error) { return string(data), nil },
+	}
+	pipe := &pipeline.Pipeline{Analysis: []pipeline.Candidate{{LLM: model}}}
+	job := asyncjob.Job{Payload: mustPayload(nuanceJobPayload{UserID: "user", LessonID: "lesson"})}
+	if err := NuanceJobHandler(pipe, st, func(context.Context, string) (string, error) { return "", nil })(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	if len(inputs) != 1 || !strings.Contains(inputs[0], `"requestedWords":["cheap","inexpensive"]`) {
+		t.Fatalf("generation did not receive the requested pair: %q", inputs)
+	}
+	if st.lesson.Status != nuance.StatusDone || st.lesson.Content == nil || nuanceComparison(*st.lesson.Content) != "cheap / inexpensive" {
+		t.Fatalf("lesson = %+v", st.lesson)
+	}
+}
+
+func TestNuanceUnusableRequestedPairFallsBackToRandomWords(t *testing.T) {
+	data, err := os.ReadFile("../nuance/testdata/lesson.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The stored pair (cheap/inexpensive) is usable, so every case pins a
+	// different requested pair and checks the draw still completes:
+	//  1. the model output ignores the requested pair, so the pinned decode
+	//     rejects it (terminal ErrInvalid) and the random set saves;
+	//  2. the requested pair duplicates an already-saved comparison, so
+	//     Complete rejects it and the random set saves instead of retrying
+	//     the same pair three times.
+	for _, tc := range []struct {
+		name             string
+		requested        []string
+		completionErrors []error
+		wantCompletions  int
+	}{
+		{"model did not use the requested pair", []string{"happy", "glad"}, nil, 1},
+		{"requested pair already compared", []string{"cheap", "inexpensive"}, []error{nuance.ErrDuplicate}, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &nuanceJobStore{
+				lesson:           nuance.Lesson{ID: "lesson", Status: nuance.StatusPending, RequestedWords: tc.requested},
+				completionErrors: tc.completionErrors,
+			}
+			var inputs []string
+			model := nuanceLLM{
+				messages: func(msgs []llm.Message) { inputs = append(inputs, msgs[1].Content) },
+				complete: func(context.Context) (string, error) { return string(data), nil },
+			}
+			pipe := &pipeline.Pipeline{Analysis: []pipeline.Candidate{{LLM: model}}}
+			job := asyncjob.Job{Payload: mustPayload(nuanceJobPayload{UserID: "user", LessonID: "lesson"})}
+			if err := NuanceJobHandler(pipe, st, func(context.Context, string) (string, error) { return "", nil })(context.Background(), job); err != nil {
+				t.Fatal(err)
+			}
+			if len(inputs) != 2 || !strings.Contains(inputs[0], "requestedWords") || strings.Contains(inputs[1], "requestedWords") {
+				t.Fatalf("fallback to random generation missing: %q", inputs)
+			}
+			if st.completionCalls != tc.wantCompletions || st.lesson.Status != nuance.StatusDone || st.lesson.Content == nil {
+				t.Fatalf("draw failed instead of falling back: completions=%d lesson=%+v", st.completionCalls, st.lesson)
+			}
+		})
+	}
+}

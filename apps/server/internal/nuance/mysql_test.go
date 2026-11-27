@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -67,7 +68,7 @@ func requireDB(t *testing.T) *MySQLStore {
 func persistedLesson(t *testing.T, st *MySQLStore) Lesson {
 	t.Helper()
 	ctx := context.Background()
-	l, err := st.Create(ctx, t.Name())
+	l, err := st.Create(ctx, t.Name(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -419,7 +420,7 @@ func TestMySQLLateGenerationCannotReplacePracticedContent(t *testing.T) {
 func TestMySQLGenerationTransitionsAdvanceRevisionForFreshRetry(t *testing.T) {
 	st := requireDB(t)
 	ctx := context.Background()
-	l, err := st.Create(ctx, t.Name())
+	l, err := st.Create(ctx, t.Name(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -441,7 +442,7 @@ func TestMySQLGenerationTransitionsAdvanceRevisionForFreshRetry(t *testing.T) {
 
 func pendingLesson(t *testing.T, st *MySQLStore, user string) Lesson {
 	t.Helper()
-	l, err := st.Create(context.Background(), user)
+	l, err := st.Create(context.Background(), user, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -451,6 +452,38 @@ func pendingLesson(t *testing.T, st *MySQLStore, user string) Lesson {
 		}
 	})
 	return l
+}
+
+// The requested pair must survive the Create/Get round trip on the row (not
+// just the job payload), because recovery re-enqueues generation from the
+// lesson itself.
+func TestMySQLRequestedWordsRoundTrip(t *testing.T) {
+	st := requireDB(t)
+	ctx := context.Background()
+	l, err := st.Create(ctx, t.Name(), []string{"cheap", "inexpensive"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Delete(ctx, l.UserID, l.ID) })
+	got, err := st.Get(ctx, l.UserID, l.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got.RequestedWords, []string{"cheap", "inexpensive"}) {
+		t.Fatalf("requested words not persisted: %+v", got)
+	}
+	random, err := st.Create(ctx, t.Name(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Delete(ctx, random.UserID, random.ID) })
+	got, err = st.Get(ctx, random.UserID, random.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RequestedWords != nil {
+		t.Fatalf("random draw stored requested words: %+v", got.RequestedWords)
+	}
 }
 
 func comparisonContent(words ...string) Content {

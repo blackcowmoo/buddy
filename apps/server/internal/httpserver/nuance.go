@@ -2,7 +2,9 @@ package httpserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 
@@ -111,7 +113,15 @@ func registerNuance(mux *http.ServeMux, ident identity.Identifier, st nuance.Sto
 		if !ok {
 			return
 		}
-		l, err := st.Create(r.Context(), user)
+		// The optional body may carry the pair the learner wants to compare.
+		// A missing, unreadable, or invalid body is deliberately not an error:
+		// the draw falls back to random words so every request yields a lesson.
+		var body struct {
+			Words []string `json:"words"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 4<<10)).Decode(&body)
+		requested, _ := nuance.NormalizeRequestedWords(body.Words)
+		l, err := st.Create(r.Context(), user, requested)
 		if err != nil {
 			nuanceError(w, r, err)
 			return

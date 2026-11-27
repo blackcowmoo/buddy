@@ -63,9 +63,10 @@ func runNuance(ctx context.Context, pipe *pipeline.Pipeline, st nuance.Store, pr
 	// this draw's inputs before those transitions so a resumed job still
 	// reaches the model checkpoints written by its previous replica.
 	type generationInput struct {
-		Profile  string
-		Previous []string
-		Revision int
+		Profile   string
+		Previous  []string
+		Requested []string
+		Revision  int
 	}
 	input, err := checkpoint.JSON(ctx, "nuance-generation-input:v1", func() (generationInput, error) {
 		learner, err := profile(ctx, p.UserID)
@@ -82,7 +83,7 @@ func runNuance(ctx context.Context, pipe *pipeline.Pipeline, st nuance.Store, pr
 				previous = append(previous, nuanceComparison(*old.Content))
 			}
 		}
-		return generationInput{Profile: learner, Previous: previous, Revision: l.Revision}, nil
+		return generationInput{Profile: learner, Previous: previous, Requested: l.RequestedWords, Revision: l.Revision}, nil
 	})
 	if err != nil {
 		return err
@@ -93,14 +94,25 @@ func runNuance(ctx context.Context, pipe *pipeline.Pipeline, st nuance.Store, pr
 	previous := input.Previous
 	// Explicit retries create a new job and take a fresh revision snapshot;
 	// duplicate candidates within one job retain their distinct attempt IDs.
-	for attempt := 0; attempt < nuanceGenerationAttempts; attempt++ {
+	words := input.Requested
+	for attempt, budget := 0, nuanceGenerationAttempts; budget > 0; {
 		// Only the prompt is bounded; MySQL checks the entire saved history.
 		if len(previous) > 100 {
 			previous = previous[len(previous)-100:]
 		}
 		requestID := fmt.Sprintf("%s:%d:%d", p.LessonID, input.Revision, attempt)
-		c, err := pipe.GenerateNuance(ctx, input.Profile, previous, requestID)
+		attempt++
+		c, err := pipe.GenerateNuance(ctx, input.Profile, previous, words, requestID)
 		if err != nil {
+			// A learner-requested pair that cannot become a valid lesson must
+			// still produce a lesson: drop the pair and generate randomly,
+			// with a fresh attempt budget, instead of failing the draw.
+			if words != nil && errors.Is(err, nuance.ErrInvalid) {
+				log.Printf("nuance: requested words %v cannot form lesson %s, generating random words: %v", words, p.LessonID, err)
+				words = nil
+				budget = nuanceGenerationAttempts
+				continue
+			}
 			// A candidate that still violates the lesson contract after its
 			// focused Judge repair will fail identically on an automatic job
 			// retry. Persist the terminal state and reserve queue retries for
@@ -112,9 +124,18 @@ func runNuance(ctx context.Context, pipe *pipeline.Pipeline, st nuance.Store, pr
 			}
 			return err
 		}
+		budget--
 		err = st.Complete(ctx, p.LessonID, c)
 		if !errors.Is(err, nuance.ErrDuplicate) {
 			return err
+		}
+		// A requested pair that repeats a saved comparison cannot be saved by
+		// re-rolling the same words; fall back to a random set the same way.
+		if words != nil {
+			log.Printf("nuance: requested words %v repeat a saved comparison for lesson %s, generating random words", words, p.LessonID)
+			words = nil
+			budget = nuanceGenerationAttempts
+			continue
 		}
 		// Include the rejected comparison even if it is old or another draw
 		// saved it after we loaded the exclusions. The attempt ID avoids cache reuse.

@@ -93,7 +93,14 @@ prefix). Like article practice, the page lists the learner's generated lessons
 and opens each one in a focused comparison/practice view. **새 문제 만들기**
 uses the analysis LLM and learner profile to generate 2–3 interchangeable English
 words, Korean usage explanations, translated examples, and 4–6 context
-questions. The generation prompt requires every option to preserve grammar and
+questions. The draw form offers two modes: **무작위 단어** (the generator picks
+the set) or **두 단어 직접 고르기**, where the learner types the two English
+words to compare; `POST /api/nuance/draw` accepts an optional `{"words": […]}`
+body. The server validates the pair (exactly two distinct dictionary-shaped
+words) and pins generation to it; a pair that cannot become a valid lesson —
+invalid shape, a model output that ignores the request, or a comparison that
+already exists — silently falls back to random words instead of failing the
+draw. The generation prompt requires every option to preserve grammar and
 the same core meaning in every exercise sentence; the preferred answer depends
 on tone, register, or speaker attitude. Shared Korean translations alone do not
 qualify a word set. Explanations compare the feeling of each substitution, and
