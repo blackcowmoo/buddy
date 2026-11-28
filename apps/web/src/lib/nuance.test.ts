@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { afterEach, expect, it, vi } from "vitest";
-import { deleteNuanceLesson, drawNuanceLesson, dueQuestions, fetchNuanceLesson, fetchNuanceLessons, nextReview, nuanceOptions, practiceNuance, retryNuanceLesson, startNuanceReview } from "./nuance";
+import { canRepeatQuestion, deleteNuanceLesson, drawNuanceLesson, dueQuestions, fetchNuanceLesson, fetchNuanceLessons, nextReview, nuanceOptions, practiceNuance, retryNuanceLesson, startNuanceReview } from "./nuance";
 import { nuanceFixture } from "./nuance.testData";
 
 afterEach(() => vi.restoreAllMocks());
@@ -41,6 +41,21 @@ it("counts due questions at the scheduled boundary and keeps option order stable
   expect(nuanceOptions(structuredClone(l), "q0", 0)).toEqual(options);
   expect(nuanceOptions(l, "q0", 1)).toEqual([...options].reverse());
   expect(l.content!.words.map((w) => w.word)).toEqual(["cheap", "inexpensive"]);
+});
+// Repeating a correct context only softens a stage the answer would have
+// earned, so the shared rule lives here: stage 0 going in (first attempt, or a
+// miss that already reset progress) and a wrong answer both withhold it.
+it("offers repeat only for a correct answer that had progress to hold back", () => {
+  const l = nuanceFixture();
+  expect(canRepeatQuestion(l)).toBe(false); // nothing graded yet
+  l.state.feedback = { questionId: "q0", selected: "cheap", correct: false, previousStage: 3 };
+  expect(canRepeatQuestion(l)).toBe(false);
+  l.state.feedback = { questionId: "q0", selected: "cheap", correct: true };
+  expect(canRepeatQuestion(l)).toBe(false); // first-ever attempt
+  l.state.feedback = { questionId: "q0", selected: "cheap", correct: true, previousStage: 0 };
+  expect(canRepeatQuestion(l)).toBe(false); // progress already reset by a miss
+  l.state.feedback = { questionId: "q0", selected: "cheap", correct: true, previousStage: 2 };
+  expect(canRepeatQuestion(l)).toBe(true);
 });
 it("sends the requested word pair only when the learner chose one", async () => {
   const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, json: async () => null } as Response);

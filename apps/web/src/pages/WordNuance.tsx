@@ -6,7 +6,7 @@ import { DatedList } from "../components/DatedList";
 import { HistoryItem } from "../components/HistoryItem";
 import { LoadingHint } from "../components/LoadingHint";
 import { NuanceQuestionCard } from "../components/NuanceQuestionCard";
-import { deleteNuanceLesson, drawNuanceLesson, dueQuestions, fetchNuanceLesson, fetchNuanceLessons, lessonTitle, nextReview, practiceNuance, retryNuanceLesson, type NuanceAction, type NuanceLesson } from "../lib/nuance";
+import { canRepeatQuestion, deleteNuanceLesson, drawNuanceLesson, dueQuestions, fetchNuanceLesson, fetchNuanceLessons, lessonTitle, nextReview, practiceNuance, retryNuanceLesson, type NuanceAction, type NuanceLesson } from "../lib/nuance";
 import { formatAbsoluteDateTime, formatMessageTime } from "../lib/time";
 import { newestFirst } from "../lib/listView";
 
@@ -210,7 +210,7 @@ export function WordNuance() {
           <NuanceQuestionCard key={`${selected.id}-${question.id}-${selected.state.progress[question.id]?.attempts ?? 0}`} lesson={selected} question={question} busy={busy} onAnswer={(word) => act("answer", { questionId: question.id, selected: word })} />
           {selected.state.feedback && <PageToolbar label="복습 진행">
             <button type="button" disabled={busy} onClick={() => act("next")}>{busy ? "저장 중…" : "다음 문맥"}</button>
-            {selected.state.feedback.correct && <button type="button" className="ghost" disabled={busy} onClick={() => act("next", { repeat: true })}>맞혔지만 다시 복습</button>}
+            {canRepeatQuestion(selected) && <button type="button" className="ghost" disabled={busy} onClick={() => act("next", { repeat: true })}>맞혔지만 다시 복습</button>}
           </PageToolbar>}
         </> : <section className="quiz-panel" aria-live="polite"><h3>이 묶음의 문맥을 모두 풀었어요</h3><p>맞힌 문제는 간격을 두고 다시 나와요.</p>{next !== null && <p className="hint">다음 복습: {formatAbsoluteDateTime(next)}</p>}<button type="button" className="ghost" onClick={back}>학습 목록 보기</button></section>}
       </PageSection>}

@@ -4,7 +4,7 @@ import { NuanceQuestionCard } from "../components/NuanceQuestionCard";
 import { LearningIntro } from "../components/LearningIntro";
 import { LearningPage } from "../components/LearningPage";
 import { BackButton, PageSection, PageToolbar } from "../components/PageLayout";
-import { dueQuestions, fetchNuanceLesson, fetchNuanceReview, practiceNuance, startNuanceReview, type NuanceAction, type NuanceLesson, type NuanceReviewItem } from "../lib/nuance";
+import { canRepeatQuestion, dueQuestions, fetchNuanceLesson, fetchNuanceReview, practiceNuance, startNuanceReview, type NuanceAction, type NuanceLesson, type NuanceReviewItem } from "../lib/nuance";
 
 function nuanceListPath() {
   return window.location.pathname.replace(/\/nuance-review\/?$/, "/nuance");
@@ -104,7 +104,7 @@ export function WordNuanceReview() {
         />
         {current.lesson.state.feedback && <PageToolbar label="복습 진행">
           <button type="button" disabled={busy} onClick={() => act("next")}>{busy ? "저장 중…" : "다음 문맥"}</button>
-          {current.lesson.state.feedback.correct && <button type="button" className="ghost" disabled={busy} onClick={() => act("next", { repeat: true })}>맞혔지만 다시 복습</button>}
+          {canRepeatQuestion(current.lesson) && <button type="button" className="ghost" disabled={busy} onClick={() => act("next", { repeat: true })}>맞혔지만 다시 복습</button>}
         </PageToolbar>}
       </>}
       {!loading && !current && !error && <section className="quiz-panel" aria-live="polite">

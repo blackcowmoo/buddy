@@ -38,7 +38,11 @@ export interface NuanceLesson {
   state: {
     progress: Record<string, NuanceProgress>;
     queue: string[];
-    feedback?: { questionId: string; selected: string; correct: boolean };
+    // previousStage is the question's stage going into the graded answer, so
+    // a reset (stage 0) is visible even though stage now already holds the
+    // outcome of that answer. Feedback saved before the server reported it
+    // omits the field.
+    feedback?: { questionId: string; selected: string; correct: boolean; previousStage?: number };
   };
 }
 export interface NuanceAction {
@@ -78,6 +82,18 @@ export function nextReview(lesson: NuanceLesson): number | null {
   const times = lesson.content?.questions.map((q) => lesson.state.progress[q.id]?.nextReviewAt ?? 0);
   return times?.length ? Math.min(...times) : null;
 }
+// Repeating a correct context holds its stage and reuses the interval that
+// just elapsed, so the action only means something when there is a step
+// forward to give up. A miss resets the stage to 0 (see the server's shared
+// NextSchedule), so after a miss — or on a first-ever attempt — the learner
+// already has the reset progress and repeating would only cost the stage the
+// answer earned. Withhold it there, as the word review page withholds its
+// forced-guess button at stage 0.
+export function canRepeatQuestion(lesson: NuanceLesson): boolean {
+  const feedback = lesson.state.feedback;
+  return !!feedback?.correct && (feedback.previousStage ?? 0) > 0;
+}
+
 export function lessonTitle(lesson: NuanceLesson): string {
   return lesson.content?.words.map((w) => w.word).join(" / ") || (lesson.status === "failed" ? "문제 생성 실패" : "새 비교 묶음을 만드는 중…");
 }

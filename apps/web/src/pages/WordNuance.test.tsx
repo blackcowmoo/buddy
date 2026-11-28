@@ -35,15 +35,28 @@ async function start() {
   fireEvent.click(screen.getByRole("button", { name: "상황 연습" }));
   await screen.findByRole("region", { name: /상황 0/ });
 }
+// Mirrors the server's Apply: feedback records the stage going into the answer,
+// a correct answer steps it up, and a miss resets it to 0.
 function answer(correct: boolean, questionId = "q0") {
   const next = respond((l) => {
     const q = l.content!.questions.find((q) => q.id === questionId)!;
     const selected = correct ? q.answer : l.content!.words.find((w) => w.word !== q.answer)!.word;
-    l.state.feedback = { questionId, selected, correct };
-    l.state.progress[questionId] = { stage: correct ? 1 : 0, attempts: 1, correct: correct ? 1 : 0, lastReviewedAt: 1700000000, nextReviewAt: correct ? 4102444800 : 0 };
+    const before = l.state.progress[questionId];
+    l.state.feedback = { questionId, selected, correct, previousStage: before?.stage ?? 0 };
+    l.state.progress[questionId] = {
+      stage: correct ? (before?.stage ?? 0) + 1 : 0,
+      attempts: (before?.attempts ?? 0) + 1,
+      correct: (before?.correct ?? 0) + (correct ? 1 : 0),
+      lastReviewedAt: 1700000000,
+      nextReviewAt: correct ? 4102444800 : 0,
+    };
   });
   fireEvent.click(screen.getByRole("button", { name: next.state.feedback!.selected }));
   fireEvent.click(screen.getByRole("button", { name: "답안 확인" }));
+}
+// Gives one context the review history a forced guess would give up.
+function established(questionId: string, stage: number) {
+  lesson.state.progress[questionId] = { stage, attempts: stage, correct: stage, lastReviewedAt: 1699000000, nextReviewAt: 1700000000 };
 }
 it("uses the shared history layout for long titles, descriptions, and review status", async () => {
   const word = "pneumonoultramicroscopicsilicovolcanoconiosis".repeat(3);
@@ -106,6 +119,8 @@ it("lists generated history, omits search and dictionary links, and opens the co
   expect(screen.queryByText(/의도에 더 잘 맞는 표현을 놓친 문맥은 다시 풀고/)).not.toBeInTheDocument();
 });
 it("hides the translation and explanation until the server grades, then saves the forced-guess choice", async () => {
+  // The forced guess gives up a step forward, so it needs a stage to give up.
+  established("q0", 2);
   await open(); await start();
   expect(screen.queryByText(lesson.content!.questions[0].translation)).not.toBeInTheDocument();
   const before = within(screen.getByRole("group", { name: "표현 선택" })).getAllByRole("button").map((b) => b.textContent);
@@ -119,6 +134,24 @@ it("hides the translation and explanation until the server grades, then saves th
   await screen.findByRole("region", { name: /상황 1/ });
   expect(api.practiceNuance).toHaveBeenLastCalledWith("lesson-1", { kind: "next", revision: 3, repeat: true });
   expect(screen.getByRole("button", { name: "답안 확인" })).toBeDisabled();
+});
+// A miss resets the context to stage 0, so the retry's correct answer earns no
+// step for the forced guess to hold back. Offering it there would only cost the
+// stage the answer earned, so it stays hidden, as on the word review page.
+it("withholds the forced-guess choice on a context whose progress a miss just reset", async () => {
+  established("q0", 2);
+  await open(); await start();
+  answer(false);
+  await screen.findByText("이 문제는 잠시 뒤 다시 나와요.");
+  expect(screen.queryByRole("button", { name: "맞혔지만 다시 복습" })).not.toBeInTheDocument();
+  respond((l) => { l.state.feedback = undefined; l.state.queue = ["q0"]; });
+  fireEvent.click(screen.getByRole("button", { name: "다음 문맥" }));
+  await screen.findByRole("button", { name: "답안 확인" });
+  answer(true);
+  await screen.findByText("의도에 맞는 표현이에요");
+  const progress = screen.getByRole("group", { name: "복습 진행" });
+  expect(within(progress).getByRole("button", { name: "다음 문맥" })).toBeEnabled();
+  expect(within(progress).queryByRole("button", { name: "맞혔지만 다시 복습" })).not.toBeInTheDocument();
 });
 it("allows revising a choice before checking it like the other quizzes", async () => {
   await open(); await start();
