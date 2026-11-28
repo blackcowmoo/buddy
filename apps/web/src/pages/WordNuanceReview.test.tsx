@@ -52,8 +52,17 @@ beforeEach(() => {
     if (action.kind === "answer") {
       const question = lesson.content!.questions.find((candidate) => candidate.id === action.questionId)!;
       const correct = action.selected === question.answer;
-      lesson.state.feedback = { questionId: question.id, selected: action.selected!, correct };
-      lesson.state.progress[question.id] = { stage: correct ? 1 : 0, attempts: 1, correct: correct ? 1 : 0, lastReviewedAt: 1700000000, nextReviewAt: correct ? 4102444800 : 0 };
+      const before = lesson.state.progress[question.id];
+      lesson.state.feedback = {
+        questionId: question.id, selected: action.selected!, correct, previousStage: before?.stage ?? 0,
+      };
+      lesson.state.progress[question.id] = {
+        stage: correct ? (before?.stage ?? 0) + 1 : 0,
+        attempts: (before?.attempts ?? 0) + 1,
+        correct: (before?.correct ?? 0) + (correct ? 1 : 0),
+        lastReviewedAt: 1700000000,
+        nextReviewAt: correct ? 4102444800 : 0,
+      };
     } else if (action.kind === "next") {
       const feedback = lesson.state.feedback!;
       lesson.state.queue.shift();
@@ -67,6 +76,9 @@ beforeEach(() => {
 afterEach(cleanup);
 
 it("draws every question of the review batch across all lessons without putting items in the URL", async () => {
+  // q0 carries review history, so the progress toolbar shows the full pair of
+  // actions: a stage is what "review again" holds back.
+  lessons[0].state.progress.q0 = { stage: 2, attempts: 2, correct: 2, lastReviewedAt: 1699000000, nextReviewAt: 1700000000 };
   render(<WordNuanceReview />);
   expect(await screen.findByText("이번 복습 7문제 · 남은 문제 7개")).toBeInTheDocument();
   const review = screen.getByRole("region", { name: "오늘의 뉘앙스 복습" });
@@ -94,6 +106,22 @@ it("draws every question of the review batch across all lessons without putting 
   expect(screen.getAllByRole("main")).toHaveLength(1);
   expect(screen.getAllByRole("banner")).toHaveLength(1);
   expect(window.location.search).toBe("");
+});
+
+// A miss leaves the question at stage 0 (the shared NextSchedule resets it), so
+// the next correct answer has no step forward for "review again" to hold back.
+// Offering it there would only cost the stage that answer earned, so it stays
+// hidden, the way the word review page hides its forced-guess button.
+it("withholds the review-again action while a context's progress is reset to stage 0", async () => {
+  lessons[0].state.progress.q0 = { stage: 0, attempts: 2, correct: 1, lastReviewedAt: 1700000000, nextReviewAt: 1700000000 };
+  render(<WordNuanceReview />);
+  await screen.findByText("이번 복습 7문제 · 남은 문제 7개");
+  fireEvent.click(screen.getByRole("button", { name: "cheap" }));
+  fireEvent.click(screen.getByRole("button", { name: "답안 확인" }));
+  await screen.findByText("의도에 맞는 표현이에요");
+  const progress = screen.getByRole("group", { name: "복습 진행" });
+  expect(within(progress).getByRole("button", { name: "다음 문맥" })).toBeEnabled();
+  expect(within(progress).queryByRole("button", { name: "맞혔지만 다시 복습" })).not.toBeInTheDocument();
 });
 
 it("restores the server-owned batch without drawing another batch or touching the URL", async () => {
